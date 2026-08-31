@@ -11,6 +11,7 @@ DIST=$1
 SW="$DIST/service_worker.js"
 WORKER_WASM="$DIST/worker_bg.wasm"
 WORKER_GLUE="$DIST/worker.js"
+INDEX="$DIST/index.html"
 VERSION="$DIST/version.json"
 
 [ -f "$SW" ] || {
@@ -23,6 +24,10 @@ VERSION="$DIST/version.json"
 }
 [ -f "$WORKER_GLUE" ] || {
     echo "stamp-service-worker: missing $WORKER_GLUE" >&2
+    exit 1
+}
+[ -f "$INDEX" ] || {
+    echo "stamp-service-worker: missing $INDEX" >&2
     exit 1
 }
 
@@ -67,8 +72,9 @@ case "$BUILD_ID" in
 esac
 
 TMP="$SW.tmp"
+INDEX_TMP="$INDEX.tmp"
 VERSION_TMP="$VERSION.tmp"
-trap 'rm -f "$TMP" "$VERSION_TMP"' EXIT HUP INT TERM
+trap 'rm -f "$TMP" "$INDEX_TMP" "$VERSION_TMP"' EXIT HUP INT TERM
 
 grep -q '^const BUILD_ID = ' "$SW" || {
     echo "stamp-service-worker: $SW has no BUILD_ID declaration" >&2
@@ -78,6 +84,10 @@ grep -q '^const WORKER_WASM_HASH = ' "$SW" || {
     echo "stamp-service-worker: $SW has no WORKER_WASM_HASH declaration" >&2
     exit 1
 }
+if [ "$(grep -c '<meta name="tonk-worker-build" content="' "$INDEX")" -ne 1 ]; then
+    echo "stamp-service-worker: $INDEX must have one tonk-worker-build meta tag" >&2
+    exit 1
+fi
 
 sed -e "s|^const BUILD_ID = .*|const BUILD_ID = \"$BUILD_ID\";|" \
     -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$WASM_HASH\";|" \
@@ -91,10 +101,18 @@ grep -q "^const WORKER_WASM_HASH = \"$WASM_HASH\";$" "$TMP" || {
     exit 1
 }
 
+sed '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="'"$BUILD_ID"'"/' \
+    "$INDEX" > "$INDEX_TMP"
+grep -q "name=\"tonk-worker-build\" content=\"$BUILD_ID\"" "$INDEX_TMP" || {
+    echo "stamp-service-worker: document build verification failed" >&2
+    exit 1
+}
+
 printf '{ "build": "%s", "workerWasm": "%s" }\n' \
     "$BUILD_ID" "$WASM_HASH" > "$VERSION_TMP"
 
 mv -f "$TMP" "$SW"
+mv -f "$INDEX_TMP" "$INDEX"
 mv -f "$VERSION_TMP" "$VERSION"
 trap - EXIT HUP INT TERM
 

@@ -20,6 +20,10 @@ pub const ERROR_KIND_HEADER: &str = "x-tonk-error-kind";
 /// boundary.
 pub const STALE_BUILD_ERROR_KIND: &str = "stale-build";
 
+/// Request header carrying the immutable worker generation the calling page
+/// was emitted against.
+pub const PAGE_BUILD_HEADER: &str = "x-tonk-build";
+
 mod account;
 mod claim;
 mod conclusion;

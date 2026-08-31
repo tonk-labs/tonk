@@ -186,7 +186,7 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
 pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 
 /// The build header the page sends on every `/api/*` request.
-const BUILD_HEADER: &str = "x-tonk-build";
+const BUILD_HEADER: &str = tonk_worker_api::PAGE_BUILD_HEADER;
 
 /// This worker's stamped build id. Only the browser build has one —
 /// natively there is no service worker to be out of step with, so the

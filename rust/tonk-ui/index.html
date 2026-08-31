@@ -3,6 +3,24 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Rewritten alongside service_worker.js at post-build. This is the
+             worker API generation this DOCUMENT was emitted against; unlike
+             /version.json it never changes during the document's lifetime. -->
+        <meta name="tonk-worker-build" content="dev" />
+        <script>
+            (() => {
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]',
+                )?.content;
+                // `dev` deliberately remains unstamped: the worker uses the
+                // same placeholder but the production wire format is exactly
+                // 16 lowercase hex characters. The post-build step replaces
+                // the meta value before anything can be deployed.
+                if (/^[0-9a-f]{16}$/.test(build || "")) {
+                    globalThis.tonkBuild = build;
+                }
+            })();
+        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -1010,51 +1028,19 @@
                 // reports a build other than the one this worker is running,
                 // announce it; `<tonk-site>` renders the reload affordance.
                 const BUILD_PROBE_MS = 15 * 60 * 1000;
-                // The build THIS document loaded with, fixed for its
-                // lifetime. Staleness is measured against it: the page is
-                // stale exactly when the served build differs from the one
-                // it started on, and a reload is what resolves that.
-                let ourBuild = null;
-
-                // Publish this document's build so the host layer can
-                // send it on every `/api/*` request. `skipWaiting` +
-                // `claim` swap the worker underneath a running page, so
-                // without this the page cannot tell that the worker
-                // answering it belongs to a different build.
-                //
-                // NOT on `window.tonk`. That name is the sealed guest's
-                // bridge object, and `page_effect::forward` tests for its
-                // presence to decide "am I running inside a guest?" —
-                // creating it on the TOP page made the host believe it was
-                // a guest, so every `navigate_to` forwarded to a
-                // `navigate` method that does not exist here and returned
-                // early. Links and menu buttons silently stopped working.
-                const publishBuild = (build) => {
-                    ourBuild = build;
-                    globalThis.tonkBuild = build;
-                };
-                // Record our own build first, then poll for divergence.
-                void (async () => {
-                    try {
-                        const response = await fetch("/version.json", {
-                            cache: "no-store",
-                        });
-                        if (response.ok) {
-                            const { build } = await response.json();
-                            if (build) publishBuild(build);
-                        }
-                    } catch {
-                        // Offline at boot — the handshake header is simply
-                        // absent, which the worker treats as "cannot
-                        // classify" and lets through.
-                    }
-                    setInterval(checkStale, BUILD_PROBE_MS);
-                    // Also on focus: a tab returned to after a deploy is the
-                    // likeliest moment for the prompt to matter.
-                    document.addEventListener("visibilitychange", () => {
-                        if (document.visibilityState === "visible") checkStale();
-                    });
-                })();
+                // The post-build step stamped this immutable value into the
+                // document and the early head script published it before the
+                // app loader. `/version.json` is discovery only: using its
+                // mutable answer as provenance lets a cached old document
+                // impersonate the currently deployed generation.
+                const ourBuild = globalThis.tonkBuild ?? null;
+                void checkStale();
+                setInterval(checkStale, BUILD_PROBE_MS);
+                // Also on focus: a tab returned to after a deploy is the
+                // likeliest moment for the prompt to matter.
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") checkStale();
+                });
 
         </script>
     </body>

@@ -160,10 +160,13 @@ fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
             // Awaiting consumes the rejection: a beat that loses the race
             // with a navigation or a worker swap fails quietly, and the
             // next beat covers.
-            let _ = wasm_bindgen_futures::JsFuture::from(
+            if let Ok(resp_value) = wasm_bindgen_futures::JsFuture::from(
                 win.fetch_with_str_and_init("/api/sync?why=keepalive", &init),
             )
-            .await;
+            .await
+            {
+                let _ = crate::http::worker_response(resp_value);
+            }
         }
     });
 }

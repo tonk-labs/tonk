@@ -121,10 +121,28 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
     response_text(resp_value).await
 }
 
-async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
+/// Convert one fetch result and observe worker control metadata before any
+/// caller reads, streams, or discards its typed body.
+pub(crate) fn worker_response(resp_value: JsValue) -> Result<Response, ErrorDetail> {
     let resp: Response = resp_value
         .dyn_into()
         .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let marked_stale = resp.status() == 409
+        && resp
+            .headers()
+            .get(tonk_worker_api::ERROR_KIND_HEADER)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(tonk_worker_api::STALE_BUILD_ERROR_KIND);
+    if marked_stale {
+        announce_update();
+    }
+    Ok(resp)
+}
+
+async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -135,15 +153,6 @@ async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
     if !resp.ok() {
-        // `409` from the version handshake means this page is talking to
-        // a worker from a different build (`skipWaiting` + `claim` swap
-        // the worker underneath a running page). Nothing the caller can
-        // do about it, and retrying will fail identically — so raise the
-        // same update prompt the version probe raises and let the user
-        // reload onto a matched pair.
-        if resp.status() == 409 && body_text.contains("stale-build") {
-            announce_update();
-        }
         return Err(ErrorDetail::http(
             resp.status(),
             format!("HTTP {}: {body_text}", resp.status()),
@@ -210,9 +219,7 @@ pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorD
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -290,9 +297,7 @@ pub(crate) async fn frame_stream(
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return a Response"))?;
+    let resp = worker_response(resp_value)?;
     if !resp.ok() {
         return Err(ErrorDetail::http(
             resp.status(),
@@ -432,9 +437,7 @@ pub(crate) async fn post_text(
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -455,9 +458,12 @@ pub(crate) async fn post_text(
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod request_header_tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
     use js_sys::Reflect;
-    use wasm_bindgen::JsValue;
+    use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -511,6 +517,66 @@ mod request_header_tests {
             build.as_deref(),
             Some("fedcba9876543210"),
             "the keepalive's shared header builder must carry the page build"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_announces_a_marked_stale_response_without_reading_the_error_kind_from_its_body() {
+        let headers = Headers::new().unwrap();
+        headers.set("x-tonk-error-kind", "stale-build").unwrap();
+        let init = web_sys::ResponseInit::new();
+        init.set_status(409);
+        init.set_headers(&headers);
+        let response = Response::new_with_opt_str_and_init(
+            Some(r#"{"error":{"kind":"body-shape-may-change"}}"#),
+            &init,
+        )
+        .unwrap();
+
+        let announcements = Rc::new(Cell::new(0));
+        let observed = announcements.clone();
+        let listener = Closure::<dyn FnMut()>::new(move || observed.set(observed.get() + 1));
+        let window = web_sys::window().unwrap();
+        window
+            .add_event_listener_with_callback(
+                "tonk-update-available",
+                listener.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+
+        let observed_response = worker_response(response.into()).unwrap();
+        assert!(
+            !observed_response.body_used(),
+            "observing the control header must leave the typed body untouched for the caller",
+        );
+        let text = JsFuture::from(observed_response.text().unwrap())
+            .await
+            .unwrap()
+            .as_string();
+        assert_eq!(
+            text.as_deref(),
+            Some(r#"{"error":{"kind":"body-shape-may-change"}}"#),
+        );
+
+        let unmarked = web_sys::ResponseInit::new();
+        unmarked.set_status(409);
+        let body_only = Response::new_with_opt_str_and_init(
+            Some(r#"{"error":{"kind":"stale-build"}}"#),
+            &unmarked,
+        )
+        .unwrap();
+        let _ = response_text(body_only.into()).await;
+
+        window
+            .remove_event_listener_with_callback(
+                "tonk-update-available",
+                listener.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+        assert_eq!(
+            announcements.get(),
+            1,
+            "the machine-readable response header, never a body substring, owns the prompt"
         );
     }
 }

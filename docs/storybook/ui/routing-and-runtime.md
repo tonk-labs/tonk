@@ -150,31 +150,53 @@ boundary: activation does not claim an older page, an explicit cold-start claim
 does take control, and an update-aware page claims its activated successor
 before exactly one guarded reload.
 
-The load-time alignment also has a write barrier for the overlap window. Every
-top-document `/api` request carries the page build through the same request
-context used by the host, including account, profile, site-registration, and
-background-sync mutations. A worker from another valid build keeps ordinary
-GET/HEAD reads, exact query/subscription POSTs, and an evaluate POST with one
-canonical `transact=false` parameter available, but refuses every other POST
-and every PUT/PATCH/DELETE with a typed `409 stale-build`. Its response marker
-lets both host and direct UI transports dispatch the static shell's existing
-update-ready prompt without consuming the normal error body, so reload is the
-next action and no local data is cleared. `GET /api/migrate/repo-vs-profile` is an
-explicit write exception because it commits a backfill; future mutating
-GET/HEAD routes must be declared in the same contract. Unknown non-read routes
-default to writes rather than relying on route suffixes.
+The load-time alignment also has a write barrier for the overlap window. The
+artifact build writes the same lowercase build id into `index.html`, the
+service worker, and `version.json`. A small document script publishes the HTML
+value before the Rust/Wasm loader can mount. The live `version.json` request is
+only update discovery: its result cannot replace the immutable provenance of
+the already-loaded document.
 
-An actually missing build header remains compatible for an older page or
-sealed context that cannot stamp one. A present empty, malformed, non-text, or
-duplicate header on a write instead fails closed with typed `400
-invalid-build-header`; it cannot masquerade as missing and does not raise an
-update prompt. Mismatched or malformed
-metadata never tears down reads or live subscriptions, so a stale page remains
-responsive enough to show the update and preserve local continuity. The exact
-route-effect inventory and header parser are covered at the worker boundary;
-the UI request-construction tests enumerate its direct mutation paths. The
-real-browser two-generation and malformed-header matrix in `UI-03` remains an
-open verification item.
+Every top-document `/api` request carries that page build through the same
+request context used by the host, including account, profile,
+site-registration, and background-sync mutations. Current sealed guests inherit
+the immutable build in their ready context. Their trusted portal relay removes
+any guest-supplied build value, browser-normalizes the target, and stamps the
+host value only on `/api` and `/api/...`; durable blob upload and language-server
+POSTs therefore have the same barrier, while provider and deployment-control
+requests cannot receive the worker-only header from the relay.
+
+A worker from another valid build keeps ordinary GET/HEAD requests, exact
+query/subscription POSTs, and an evaluate POST with one canonical
+`transact=false` parameter available, but refuses every other POST and every
+PUT/PATCH/DELETE with a typed `409 stale-build`. Both host and direct UI
+transports inspect the exact response header before any caller consumes the
+typed body, then dispatch the static shell's existing update-ready prompt.
+Reload is the next action and no local data is cleared. `GET
+/api/migrate/repo-vs-profile` is an explicit write exception because it commits
+a backfill. Some other GET handlers perform worker-owned, idempotent
+reconciliation such as a lazy mount or view binding; they remain
+overlap-compatible because they do not interpret stale page input. Future
+GET/HEAD routes whose page input authorizes a mutation must be declared in the
+same contract. Unknown non-read routes default to writes rather than relying on
+route suffixes.
+
+An actually missing build header remains compatible for a genuinely
+pre-protocol or development page. That is an explicit rollout exception, not a
+proof that builds match: an old page can still mutate through a newer worker by
+omitting the header, and a direct browser navigation to the committing migration
+cannot carry a custom header. The header is compatibility provenance, not
+authentication or a security boundary. Current generated documents and their
+sealed guests do stamp it. A present empty, malformed, non-text, or duplicate
+header on a write instead fails closed with typed `400 invalid-build-header`;
+it cannot masquerade as missing and does not raise an update prompt. Mismatched
+or malformed metadata never tears down reads or live subscriptions, so a stale
+page remains responsive enough to show the update and preserve local
+continuity. The exact route-effect inventory and header parser are covered at
+the worker boundary; artifact, request-construction, portal-relay, and response
+tests cover the individual transports. The real-browser two-generation matrix,
+including nested sealed guests and the deliberate pre-protocol exception, in
+`UI-03` remains an open verification item.
 
 An explicit readiness rejection is a terminal boot result, not an unobserved
 stall. Before returning without an application root, the UI asks the static

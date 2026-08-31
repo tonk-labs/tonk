@@ -1,19 +1,19 @@
 # Service-worker stale-write barrier implementation plan
 
-**Goal:** Prevent a page from mutating Tonk through a service worker from another build while preserving reads, subscriptions, dry-run evaluation, and compatibility for older or sealed contexts that cannot send a build stamp.
+**Goal:** Prevent a protocol-capable page or sealed guest from mutating Tonk through a service worker from another build while preserving reads, subscriptions, dry-run evaluation, and an explicit migration path for genuinely older contexts that cannot send a build stamp.
 
-**Approach:** Put all top-document UI requests to the local `/api` worker surface behind one build-aware request adapter that reuses `tonk-host`'s request-context header source. Replace the worker's suffix-only write check with a default-safe method-and-route policy: explicit read-like POST routes pass, known state-changing exceptions are pinned, and every other non-read method is treated as a write. Keep the existing structured stale-build response and update prompt rather than introducing another UI state.
+**Approach:** Stamp immutable document build metadata into `index.html` alongside the worker artifacts and publish it before the app can mount; keep live `version.json` strictly as update discovery. Put top-document UI requests to the local `/api` worker surface behind one build-aware request adapter, and let the trusted portal propagate and overwrite that provenance for sealed-guest worker requests. Replace the worker's suffix-only write check with a default-safe method-and-route policy: explicit read-like POST routes pass, known state-changing exceptions are pinned, and every other non-read method is treated as a write. Keep the existing structured stale-build response and update prompt rather than introducing another UI state.
 
 **Constraints:**
 
 - Preserve local IndexedDB, CacheStorage, profiles, passkeys, and registrations. This change must not clear, unregister, or reload anything automatically.
 - Preserve an existing stale page's GET/HEAD reads, query POSTs/SSE subscriptions, and an evaluate request only when its parsed query contains exactly one lowercase `transact=false` value. The handler's looser `0`/`no`/case-insensitive aliases remain valid requests but are conservatively write-gated across a build mismatch.
-- Treat missing `x-tonk-build` as unclassified and compatible for pre-protocol pages and sealed guests. Treat a present empty, non-text, duplicate, or otherwise invalid build header as a typed fail-closed error on a classified write.
+- Treat missing `x-tonk-build` as unclassified and compatible for genuinely pre-protocol or development pages. Current generated pages and their sealed guests carry immutable provenance. Treat a present empty, non-text, duplicate, or otherwise invalid build header as a typed fail-closed error on a classified write.
 - Treat `GET /api/migrate/repo-vs-profile` as state-changing because its handler commits a backfill. Other GET handlers retain read continuity even when they reconcile caches or derived local facts.
 - Treat every POST other than the explicit query/dry-run shapes as state-changing, including `/api/language-server` and unknown future routes. Treat PUT, PATCH, and DELETE as state-changing by default. Future mutating GET/HEAD routes are forbidden unless their exceptional semantics are added to both the classifier and route contract; the current manual route inventory is review evidence, not the safety mechanism for unknown non-read methods.
-- Stamp all direct same-origin worker requests from `tonk-ui`, plus `tonk-host`'s site registration and sync keepalive. Do not stamp account/access-provider requests, `/.well-known/tonk`, `/ucan/`, or deployment artifact probes: those are network/service surfaces, not worker `/api` routes.
+- Stamp all direct same-origin worker requests from `tonk-ui`, `tonk-host`'s site registration and sync keepalive, and trusted portal relays of normalized `/api` paths (including durable blob upload and LSP POST). Strip guest-supplied build provenance from provider/control paths. Do not stamp account/access-provider requests, `/.well-known/tonk`, `/ucan/`, or deployment artifact probes: those are network/service surfaces, not worker `/api` routes.
 - Reuse `tonk_host::bridge::context_headers()` as the browser header source so `x-tonk-build`, site, path, and hash behavior cannot drift between host and UI clients. Native compilation and tests supply no browser headers unless a focused request-construction test injects them.
-- Add no dependencies or lock-file changes. Run Cargo with `CARGO_INCREMENTAL=0` and stop broad compilation if filesystem free space falls below 15 GB.
+- Reuse only existing workspace crates: `tonk-host` may depend on the existing `tonk-worker-api` wire crate so request and response header constants cannot drift. Add no external dependencies or lock-file changes. Run Cargo with `CARGO_INCREMENTAL=0` and stop broad compilation if filesystem free space falls below 15 GB.
 - Preserve the existing update-ready prompt and its safe copy. No visual or interaction change is required; Storybook documents the stronger refusal contract and unchanged read continuity.
 
 ## File map
@@ -22,12 +22,14 @@
 - `rust/tonk-worker-api/src/lib.rs`: own the stale-build response marker shared by worker and UI.
 - `rust/tonk-worker/src/router/route_table.rs`: pin current mutating and explicitly read-like route examples against the classifier.
 - `rust/tonk-worker/src/router/evaluate.rs`: expose one strict predicate for the classifier's canonical, unambiguous dry-run query.
+- `rust/tonk-ui/index.html`, `rust/tonk-ui/scripts/stamp-service-worker.sh`: emit and synchronously publish immutable document provenance; keep the live version probe discovery-only.
 - `rust/tonk-ui/src/worker_client.rs`: own worker readiness, same-origin `/api` URL construction, context/build headers, and stale-response update notification.
 - `rust/tonk-ui/src/lib.rs`: register the internal worker client module.
 - `rust/tonk-ui/src/api.rs`: route every direct local-worker request through the adapter while leaving external provider requests on raw `reqwest`.
 - `rust/tonk-ui/src/register_dialog.rs`: route invite-status query polling through the same adapter.
-- `rust/tonk-host/src/http.rs`: expose one crate-local context-header applicator and stamp site registration.
-- `rust/tonk-host/src/host.rs`: stamp the state-changing sync keepalive through the shared header source.
+- `rust/tonk-host/src/bridge.rs`, `rust/tonk-portal/src/bridge.rs`: propagate immutable build provenance into nested sealed guests and let the trusted relay replace it only on normalized worker paths.
+- `rust/tonk-host/src/http.rs`: expose one crate-local context-header applicator, stamp site registration, and observe the exact stale response marker before any caller handles the body.
+- `rust/tonk-host/src/host.rs`: stamp the state-changing sync keepalive through the shared header source and observe its response marker.
 - `docs/storybook/ui/routing-and-runtime.md`: document the stale-page read/write contract and recovery behavior.
 - `docs/storybook/app/data.json`, `docs/storybook/app/data.js`: regenerate the product-map artifacts.
 
@@ -105,16 +107,25 @@
 - [x] Update the Storybook source with the exact header compatibility, read exceptions, typed stale/invalid refusal, and “reload to update” recovery. Record the dry-run and migration assumptions.
 - [x] Run `python3 docs/storybook/scripts/build.py`, `python3 docs/storybook/scripts/build.py --check`, and `python3 docs/storybook/scripts/check-links.py docs/storybook`; expect regenerated source/data parity and all links green.
 - [x] Run `CARGO_INCREMENTAL=0 cargo fmt --all -- --check`, the focused native worker/UI/host tests with nonzero counts, `CARGO_INCREMENTAL=0 cargo check -p tonk-ui --target wasm32-unknown-unknown`, relevant focused wasm tests with nonzero counts, all Node service-worker tests, and `git diff --check`.
-- [x] Confirm no cache/storage/registration clearing, dependency/lock change, provider request stamping, or unrelated UI change. Commit one coherent local change without pushing.
+- [x] Confirm no cache/storage/registration clearing, external dependency/lock change, provider request stamping, or unrelated UI change. Commit one coherent local change without pushing.
+
+### Task 5: Close independent-review transport and provenance gaps
+
+- [x] Add an artifact test proving the post-build step emits one identical build id in `index.html`, `service_worker.js`, and `version.json`; observe RED when the document had no immutable metadata, then stamp it in the existing post-build transaction.
+- [x] Add a boot contract proving immutable metadata is published before the Rust loader and the live version probe cannot replace it; observe RED against the asynchronous `/version.json` assignment, then make the probe discovery-only.
+- [x] Add a source contract covering the real blob-upload and LSP POST paths; observe RED while sealed guests had no build and the relay trusted caller headers, then propagate the build and make the trusted relay normalize the URL, delete caller provenance, and set one host value only for `/api`.
+- [x] Add a host source contract proving JSON, site, SSE, asserted-notation, and keepalive responses use one exact header observer before body handling; observe RED against the body-substring/ignored-response paths, then centralize them.
+- [x] Run the focused browser-Wasm behavioral tests for host marker timing/body preservation and portal build overwrite/provider exclusion once the shared disk floor permits the repository wrapper.
+- [x] Re-run focused/broader Node, Rust, Wasm, Storybook, formatting, and diff checks; record exact counts below.
 
 ## Execution record
 
 ### Assumptions and deliberate boundaries
 
-- Production build stamps are the 16 lowercase hexadecimal identifiers emitted by `stamp-service-worker.sh`; development or sealed contexts with no stamp retain the missing-header compatibility path.
-- Missing build metadata remains compatible even for a write. This is an explicit migration tradeoff for older pages, not evidence that the builds match. Any present invalid or ambiguous metadata fails closed.
+- Production build stamps are the 16 lowercase hexadecimal identifiers emitted by `stamp-service-worker.sh` into the worker and immutable document metadata. Development and genuinely pre-protocol contexts retain the missing-header compatibility path.
+- Missing build metadata remains compatible even for a write. This is an explicit rollout tradeoff for older pages, not evidence that the builds match: an old page can still mutate through a newer worker by omitting the header. The header is compatibility provenance, not authentication or a security boundary. Any present invalid or ambiguous metadata fails closed.
 - Query/subscription POSTs are read-like only at the two exact route shapes. Evaluate is read-like only with one decoded, canonical lowercase `transact=false`; aliases accepted by the handler are conservatively write-gated.
-- Existing GET/HEAD routes are treated as reads except the committing repository/profile migration. A future mutating GET/HEAD must be added to the exceptional classifier and route contract.
+- Existing GET/HEAD routes remain overlap-compatible except the committing repository/profile migration. Some ordinary GET handlers perform current-worker-owned idempotent reconciliation (status/outbox refresh, lazy mount, or view binding); they do not interpret a stale page body. A future GET/HEAD whose page input authorizes a mutation must be added to the exceptional classifier and route contract. A direct browser navigation cannot carry this custom header, so the migration's primary visitable form still uses the documented missing-header compatibility path.
 - External account/access-provider calls, `/ucan/`, and `/.well-known/tonk` are not worker requests and remain on their existing clients without Tonk worker headers.
 - No new visual state was added. A marked stale-build response dispatches the existing update-ready event; an invalid-header response does not prompt, reload, clear data, or alter registrations.
 
@@ -129,6 +140,8 @@
 
 - Native: worker handshake `7 passed`, route table/effect contract `4 passed`, UI worker client `3 passed`.
 - Wasm/browser: host site/keepalive header tests `2 passed` (`51 filtered`); UI worker client tests `3 passed` (`44 filtered`); `cargo check -p tonk-ui --target wasm32-unknown-unknown` passed. All Cargo commands used `CARGO_INCREMENTAL=0`.
-- Node: all service-worker source contracts passed (`45 passed`, `0 failed`). Storybook regenerated and checked at `26` screens, `78` journeys, `115` verification items, and `6` triage findings; all `173` local links passed.
-- Source audit: the production `tonk-ui` raw-client `/api` bypass grep returned no matches (exit `1`); the only direct host `/api` fetch is keepalive and it calls the shared header builder first.
-- The real two-generation `UI-03` browser checklist remains open. Layer tests prove classification, stamping, response signaling, and browser-target compilation, but do not simulate an old deployed page and a newly activated worker end to end.
+- Node: all service-worker source contracts passed (`48 passed`, `0 failed`). Storybook regenerated and checked at `26` screens, `78` journeys, `115` verification items, and `6` triage findings; all `173` local links passed.
+- Follow-up browser-Wasm: four separate exact filters passed (`1/1` each, `1463 skipped` each): host response-marker timing/body preservation, trusted portal build overwrite, normalized provider/control-path stripping, and nested ready-context build propagation. The `test:web:debug` menu command does not forward its filter arguments; its accidental broad archive run was stopped and is not counted. The four recorded results came from direct filtered `cargo nextest run` invocations against the repository's just-built Wasm archive. All build/test commands used `CARGO_INCREMENTAL=0`.
+- Formatting and source sanity: `cargo fmt --all -- --check` and `git diff --check` passed after the final mechanical formatting change.
+- Source audit: the production `tonk-ui` raw-client `/api` bypass grep returned no matches (exit `1`); the direct host keepalive calls the shared header builder and response observer. The trusted portal now stamps normalized worker requests made by sealed components, including blob upload and LSP, while stripping the header from provider/control paths.
+- The real two-generation `UI-03` browser checklist remains open. Layer tests prove classification, stamping, response signaling, and browser-target compilation, but do not simulate an old deployed page, nested sealed guest, and newly activated worker end to end. Pre-protocol pages remain deliberately unclassifiable until a later enforcement rollout can distinguish them safely.

@@ -2179,7 +2179,7 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
     // make the path a cross-origin absolute URL its OWN `window.fetch` override
     // can't relay (origin `null` → CORS). The string path lets each level's
     // override catch the host-relative `/…` and relay up to its parent.
-    let init = match build_relayed_request(data) {
+    let init = match build_relayed_request(&path, data) {
         Ok(init) => init,
         Err(e) => return post_error(port, "fetch-error", &id, &e),
     };
@@ -2268,7 +2268,7 @@ fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<L
 /// `method`/`headers`/`body`. `headers` is an array of `[name, value]` pairs;
 /// `body` is a string (our `/api` bodies are JSON) or absent.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String> {
+fn build_relayed_request(path: &str, data: &JsValue) -> Result<web_sys::RequestInit, String> {
     let init = web_sys::RequestInit::new();
     let method = get_str(data, "method").unwrap_or_else(|| "GET".to_owned());
     init.set_method(&method);
@@ -2287,6 +2287,18 @@ fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String>
             }
         }
     }
+    // Build provenance belongs to the trusted host document, never guest
+    // content. Remove any caller-supplied value, then stamp exactly one value
+    // only when the browser-normalized target is the worker API. Provider and
+    // deployment-control paths must never receive this worker-only header.
+    let _ = headers.delete(tonk_worker_api::PAGE_BUILD_HEADER);
+    if is_worker_api_path(path)
+        && let Some(build) = tonk_host::bridge::build_id()
+    {
+        headers
+            .set(tonk_worker_api::PAGE_BUILD_HEADER, &build)
+            .map_err(|e| format!("{}: {e:?}", tonk_worker_api::PAGE_BUILD_HEADER))?;
+    }
     init.set_headers(&headers);
 
     // Body — only for methods that carry one. A bodyless GET/HEAD with a body
@@ -2297,6 +2309,18 @@ fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String>
     }
 
     Ok(init)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn is_worker_api_path(path: &str) -> bool {
+    let Ok(url) = web_sys::Url::new_with_base(path, "https://tonk.invalid/") else {
+        return false;
+    };
+    if url.origin() != "https://tonk.invalid" {
+        return false;
+    }
+    let path = url.pathname();
+    path == "/api" || path.starts_with("/api/")
 }
 
 /// Perform a host-side `fetch(path, init)` and return the `Response`. The path is
@@ -2653,7 +2677,7 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model, origin, repo, branch }`) the
+/// Build the `context` object (`{ this, model, origin, build, repo, branch }`) the
 /// iframe receives in its `ready` envelope. `this`/`model` come from the
 /// host's attributes; `origin` is the host page's real origin (the opaque
 /// guest's is `"null"`); `repo`/`branch` come from the portal's `with`
@@ -2714,6 +2738,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // routing indirection binds `entity` to this so it resolves the facts the SW
     // actually stamped.
     let site = tonk_host::bridge::site_id();
+    let build = tonk_host::bridge::build_id().unwrap_or_default();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
@@ -2735,6 +2760,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // fallback route for consumers with no `with` of their own.
     let _ = Reflect::set(&context, &"with".into(), &JsValue::from_str(&with));
     let _ = Reflect::set(&context, &"site".into(), &JsValue::from_str(&site));
+    let _ = Reflect::set(&context, &"build".into(), &JsValue::from_str(&build));
     context
 }
 
@@ -3464,6 +3490,38 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_forwards_the_parent_context_build() {
+        let win = window().expect("window");
+        let previous = Reflect::get(&win, &"tonk".into()).unwrap();
+        let tonk = Object::new();
+        let ctx = Object::new();
+        let _ = Reflect::set(&ctx, &"build".into(), &"0123456789abcdef".into());
+        let _ = Reflect::set(&tonk, &"context".into(), &ctx);
+        let _ = Reflect::set(&win, &"tonk".into(), &tonk);
+
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+
+        let ready = listener.wait_for("ready").await;
+        let context = Reflect::get(&ready, &"context".into()).expect("context");
+        let build = get_str(&context, "build");
+
+        if previous.is_undefined() {
+            let _ = Reflect::delete_property(&win, &"tonk".into());
+        } else {
+            let _ = Reflect::set(&win, &"tonk".into(), &previous);
+        }
+
+        assert_eq!(
+            build.as_deref(),
+            Some("0123456789abcdef"),
+            "nested sealed guests must inherit immutable document provenance",
+        );
+    }
+
+    #[dialog_common::test]
     async fn it_relays_a_query_envelope_and_returns_rows() {
         let host = FakeHost::install();
         let canned = Array::new();
@@ -4056,10 +4114,14 @@ mod tests {
     }
 
     /// The relay forwards the FULL request (method, headers, body), not just a
-    /// GET path, so POST query/subscribe/transact route through it. This
-    /// verifies `build_relayed_request` reconstructs each from the envelope.
+    /// GET path, so POST query/subscribe/transact route through it. The trusted
+    /// host replaces any guest-supplied build value with its immutable one.
     #[dialog_common::test]
-    async fn it_builds_a_relayed_request_with_method_headers_body() {
+    async fn it_builds_a_relayed_worker_request_with_host_provenance() {
+        let window = web_sys::window().expect("window");
+        let previous = Reflect::get(&window, &"tonkBuild".into()).unwrap();
+        let _ = Reflect::set(&window, &"tonkBuild".into(), &"0123456789abcdef".into());
+
         // Envelope shaped like what the guest posts: method + [[name,value]]
         // header pairs + a string body.
         let data = Object::new();
@@ -4069,25 +4131,23 @@ mod tests {
         pair.push(&"content-type".into());
         pair.push(&"application/json".into());
         headers.push(&pair);
+        let untrusted_build = Array::new();
+        untrusted_build.push(&tonk_worker_api::PAGE_BUILD_HEADER.into());
+        untrusted_build.push(&"ffffffffffffffff".into());
+        headers.push(&untrusted_build);
         let _ = Reflect::set(&data, &"headers".into(), &headers);
         let _ = Reflect::set(&data, &"body".into(), &"{\"q\":1}".into());
 
         // `build_relayed_request` reconstructs the `RequestInit`; the path is
         // fetched separately as a bare string (see `handle_host_fetch`).
         // Materialize a real `Request` from the init to read the fields back.
-        let init = build_relayed_request(&data).expect("request");
+        let path = "/api/repository/x/branch/main/blob";
+        let init = build_relayed_request(path, &data).expect("request");
         let request =
-            web_sys::Request::new_with_str_and_init("/api/repository/x/branch/main/query", &init)
-                .expect("request from init");
+            web_sys::Request::new_with_str_and_init(path, &init).expect("request from init");
 
         assert_eq!(request.method(), "POST");
-        assert!(
-            request
-                .url()
-                .ends_with("/api/repository/x/branch/main/query"),
-            "url: {}",
-            request.url(),
-        );
+        assert!(request.url().ends_with(path), "url: {}", request.url(),);
         assert_eq!(
             request
                 .headers()
@@ -4097,10 +4157,71 @@ mod tests {
                 .as_deref(),
             Some("application/json"),
         );
+        assert_eq!(
+            request
+                .headers()
+                .get(tonk_worker_api::PAGE_BUILD_HEADER)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("0123456789abcdef"),
+            "the host's immutable build must replace guest-supplied provenance",
+        );
         let body = JsFuture::from(request.text().expect("text()"))
             .await
             .expect("await body");
         assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
+
+        if previous.is_undefined() {
+            let _ = Reflect::delete_property(&window, &"tonkBuild".into());
+        } else {
+            let _ = Reflect::set(&window, &"tonkBuild".into(), &previous);
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_normalizes_worker_paths_and_strips_builds_from_control_requests() {
+        for path in [
+            "/api",
+            "/api?health=1",
+            "/api/language-server",
+            "/api/repository/x/branch/main/blob",
+        ] {
+            assert!(is_worker_api_path(path), "{path} is a worker API path");
+        }
+        for path in [
+            "/apiary",
+            "/ucan/",
+            "/.well-known/tonk",
+            "/api/../ucan/",
+            "/api/%2e%2e/ucan/",
+            "//provider.example/api",
+        ] {
+            assert!(
+                !is_worker_api_path(path),
+                "{path} must not leak the worker build header to a provider/control path",
+            );
+        }
+
+        let data = Object::new();
+        let headers = Array::new();
+        let untrusted_build = Array::new();
+        untrusted_build.push(&tonk_worker_api::PAGE_BUILD_HEADER.into());
+        untrusted_build.push(&"ffffffffffffffff".into());
+        headers.push(&untrusted_build);
+        let _ = Reflect::set(&data, &"headers".into(), &headers);
+        let path = "/.well-known/tonk";
+        let init = build_relayed_request(path, &data).expect("control request");
+        let request =
+            web_sys::Request::new_with_str_and_init(path, &init).expect("request from init");
+        assert!(
+            request
+                .headers()
+                .get(tonk_worker_api::PAGE_BUILD_HEADER)
+                .unwrap()
+                .is_none(),
+            "the relay must remove caller provenance from non-worker requests",
+        );
     }
 
     /// A relayed response must carry the URL the host fetched.
