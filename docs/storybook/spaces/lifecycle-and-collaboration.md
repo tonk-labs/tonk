@@ -46,6 +46,25 @@ This is a source-derived presentation decision for `COLLAB-01`, `WEB-04`, and
 `WEB-05`, pinned to `a3f8657d3`. No FABB screenshot was recaptured, so the
 existing images retain their older visual provenance.
 
+### Space-switcher and absent-space presentation decision
+
+The FABB space switcher reads the convergent account space directory, not the
+device-specific replica index. It lists each non-active directory entry once,
+uses the directory's mirrored name so an unreplicated space is still legible,
+and keeps the existing seven-row limit with `more` as the path to the complete
+Hub directory.
+
+Opening a space that is neither local nor accessible leaves the FABB available
+as the route to those other spaces and replaces the old generic centered alert
+with the same stone/ink edge wall used by the join ceremony. The state carries
+the Tonk wordmark, a plainly worded explanation, and a 40px desktop/44px compact
+join action; light/dark palette, keyboard focus, reduced motion, and tactile
+press behavior follow the surrounding Rust UI contract.
+
+This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
+`WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
+cover the authored contract; running-product browser evidence remains distinct.
+
 ## The interaction, event by event
 
 ```mermaid
@@ -97,9 +116,11 @@ name, and collisions before registration.
 ### Exit early
 
 List, status, help, dry-run, and notation-preview paths do not mutate the space.
-`space rm` confirmation decline, `space unbind` with no exact binding, identical
-data writes, already-configured idempotent migrations, and rejected ownership
-changes finish without unrelated writes.
+`space rm` confirmation decline, Hub removal cancellation, `space unbind` with
+no exact binding, identical data writes, already-configured idempotent
+migrations, and rejected ownership changes finish without unrelated writes. In
+the Hub, Escape closes the confirmation and restores focus to the remove action
+for the same row.
 
 Invalid names, missing selection, stale bindings, ambiguous account-space
 names, invalid invite URLs/DIDs, wrong recipients, absent upstreams, and
@@ -131,9 +152,10 @@ registers the repository locally. Revocation crosses when the immutable
 revocation is published, not when a local UI row disappears.
 
 Local `space rm` crosses a filesystem boundary; `--keep-data` deliberately
-crosses only registry/binding boundaries. Hosted-space deletion crosses an
-account-service boundary for an exact repository subject and is described with
-account deletion review.
+crosses only registry/binding boundaries. The Hub crosses the same local
+removal boundary only when the confirmation action for that row is submitted.
+Hosted-space deletion crosses an account-service boundary for an exact
+repository subject and is described with account deletion review.
 
 ### Remain in flight
 
@@ -172,7 +194,8 @@ not permission to rewrite refs.
 Unbind settles with data and registration unchanged. `rm --keep-data` settles
 with an adoptable, unregistered site. Destructive local removal settles only
 after data and registry/binding state agree, or reports an explicit partial
-state that recovery can inspect.
+state that recovery can inspect. A successful Hub confirmation removes the
+exact subject from the profile listing and then removes its row from the Hub.
 
 ## Modifiers
 

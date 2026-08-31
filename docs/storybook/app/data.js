@@ -124,32 +124,32 @@ window.STORYBOOK_DATA = {
       "variants": "Fresh, linked, add-account, revoke, delete, callback queries."
     },
     {
-      "evidence": "Whole happy path plus DOM form tests.",
-      "gaps": "Passkey cancel/unavailable/PRF fallback, local save failure, remote timeout, response lost after commit, reload at every stage.",
+      "evidence": "Whole happy path plus DOM form tests; account-action presenter unit tests distinguish passkey cancellation, missing PRF support, and unavailable browser ceremonies.",
+      "gaps": "Whole-browser passkey failure matrix, local save failure, remote timeout, response lost after commit, reload at every stage.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B02",
       "title": "Choose Create and create a fresh account/passkey.",
       "variants": "Root missing; provider-free root; add-account profile."
     },
     {
-      "evidence": "Browser test expects zero credentials across a taken address and an edit to a free one.",
-      "gaps": "Restart and retry; concurrent availability race; local-root boundary.",
+      "evidence": "Browser test expects zero credentials across a taken address and an edit to a free one; presenter tests cover lookup dispatch and account-options subscription failures.",
+      "gaps": "Whole-browser lookup/subscription faults, restart and retry, concurrent availability race, local-root boundary.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B03",
       "title": "Enter an email and follow the ceremony it names.",
       "variants": "Address known, unknown, malformed, or the service unreachable."
     },
     {
-      "evidence": "None in activate.rs.",
-      "gaps": "Every branch, duplicate click, reload, offline, malformed body, receipt-report failure.",
+      "evidence": "Presenter unit coverage prevents an unclassified service body from becoming activation-page copy.",
+      "gaps": "Whole activation branches, duplicate click, reload, offline, malformed body, receipt-report failure.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B04",
       "title": "Receive and open the activation email link.",
       "variants": "Missing, damaged, valid, expired, already used link."
     },
     {
-      "evidence": "Partial component logic; happy activation used by broader browser tests.",
-      "gaps": "Resend success/error/rate limit, stale email, Active idempotency, Suspended copy.",
+      "evidence": "Partial component logic; happy activation used by broader browser tests; presenter tests cover a failed activation watcher and resend fallback.",
+      "gaps": "Whole-browser watcher failure, resend success/error/rate limit, stale email, Active idempotency, Suspended copy.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B05",
       "title": "See activation pending and resend an activation email.",
@@ -196,8 +196,8 @@ window.STORYBOOK_DATA = {
       "variants": "One/two accounts; disjoint and same-named spaces; one unavailable account."
     },
     {
-      "evidence": "Partial rendering/status tests.",
-      "gaps": "Retry convergence, forbidden edits, reload loop, malformed descriptor, service return after offline.",
+      "evidence": "Browser regression navigates to settings before email confirmation, waits through the enrollment race, requires email-verification guidance, and keeps display-name editing disabled; partial rendering/status tests cover other states.",
+      "gaps": "Full offline-to-online convergence, malformed descriptor, Suspended recovery, and service return after offline.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B11",
       "title": "Load settings when account state is unconfigured or unhydrated.",
@@ -212,16 +212,16 @@ window.STORYBOOK_DATA = {
       "variants": "C2, C3, CX; repository ready/unhydrated."
     },
     {
-      "evidence": "Partial DOM keyboard/blur tests.",
-      "gaps": "Remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
+      "evidence": "Partial DOM keyboard/blur tests; pending-verification browser coverage proves the field remains disabled, and presenter unit tests mask transport details.",
+      "gaps": "Ready-state remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B13",
       "title": "Change the account display name.",
       "variants": "Ready/unhydrated/revoked; Enter/blur; same/different value."
     },
     {
-      "evidence": "Partial custody browser coverage.",
-      "gaps": "Ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
+      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration.",
+      "gaps": "Whole ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B14",
       "title": "Add another passkey.",
@@ -332,8 +332,8 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Whole browser revoke-CLI flow; DOM list tests.",
-      "gaps": "Offline, passkey cancel/wrong assertion, partial service publish, reload, concurrent revoke.",
+      "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
+      "gaps": "Offline, partial service publish, reload, concurrent revoke.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-01",
       "title": "View devices and revoke another device in browser settings.",
@@ -364,8 +364,8 @@ window.STORYBOOK_DATA = {
       "variants": "Owned/joined/unknown/already deleted; stale plan; customer unavailable."
     },
     {
-      "evidence": "Whole browser account deletion/reuse-email flow.",
-      "gaps": "Passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
+      "evidence": "Whole browser account deletion/reuse-email flow; presenter tests say that passkey cancellation deleted nothing and reserve uncertain wording for request/response failures.",
+      "gaps": "Whole-browser passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-05",
       "title": "Review and delete the whole account.",
@@ -428,12 +428,12 @@ window.STORYBOOK_DATA = {
       "variants": "Parent/nested/exact/vanished path."
     },
     {
-      "evidence": "Broad process coverage.",
-      "gaps": "Signal/crash during removal, failed partial filesystem delete, concurrent use/sync.",
+      "evidence": "Broad process coverage plus a whole-browser confirmation/removal regression covering modal focus, form submission, profile removal, and Hub disappearance.",
+      "gaps": "Signal/crash during removal, failed partial filesystem delete, concurrent use/sync, unrelated-space browser boundary.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-07",
       "title": "Remove a space locally with confirmation.",
-      "variants": "TTY/no TTY; yes/no; owned/listed/local-only; data missing."
+      "variants": "CLI TTY/no TTY; browser keyboard/touch; yes/no; owned/listed/local-only; data missing."
     },
     {
       "evidence": "Whole process coverage.",
@@ -460,12 +460,12 @@ window.STORYBOOK_DATA = {
       "variants": "Signed out; same/different owner; creating profile absent with repository signer retained; same-owner retry after sharing; customer states; provider offline."
     },
     {
-      "evidence": "Eleven account_spaces tests cover many list/pull cases.",
-      "gaps": "Process JSON/error matrix, concurrent rename/delete, corrupted local account branch.",
+      "evidence": "Eleven account_spaces tests cover many list/pull cases; focused FABB query and browser-DOM frame regressions cover current directory rows, name mirrors, active exclusion, and vintage unnamed entries.",
+      "gaps": "Process JSON/error matrix, concurrent rename/delete, corrupted local account branch, and whole-browser cross-device directory convergence.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SPACE-11",
-      "title": "List spaces from the account directory.",
-      "variants": "Empty; duplicate names; joined/owned; offline cached; stale deletion."
+      "title": "List spaces from the account directory in the CLI, Hub, or FABB.",
+      "variants": "Empty; duplicate names; joined/owned; active space excluded; unreplicated target; offline cached; stale deletion."
     },
     {
       "evidence": "Broad account_spaces integration coverage.",
@@ -724,7 +724,7 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing/provider-free/registered; customer states; revoked."
     },
     {
-      "evidence": "Rendering/portal coverage, inspector renderer tests, and some E2E paths.",
+      "evidence": "Rendering/portal coverage, inspector renderer tests, some E2E paths, and structural coverage for the actionable Tonk edge wall on an absent-space route.",
       "gaps": "Top-level real-browser route matrix, configured-upstream probe, and interactive behavior beyond headless render.",
       "group": "Browser shell and runtime",
       "id": "UI-04",
@@ -828,7 +828,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-fab/src/skin.rs"
       ],
       "status": "captured",
-      "summary": "The expanded floating action bar names the current space and exposes switching, renaming, sharing, sync, and appearance actions.",
+      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
       "surface": "browser"
     },
     {
@@ -850,7 +850,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-fab/src/share.rs"
       ],
       "status": "captured",
-      "summary": "Invite claim, accountless accreditation, share, and access-loss states explain what will change before authority moves.",
+      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
       "surface": "browser"
     },
     {
@@ -912,7 +912,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The account creation form collects an email and explains passkey and activation consequences before ceremony submission.",
+      "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
       "surface": "browser"
     },
     {
@@ -978,7 +978,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "Account facts, passkey provenance, sync activation, browser profiles, and account-management actions remain visible in one panel.",
+      "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
       "surface": "browser"
     },
     {
@@ -1001,7 +1001,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The devices panel identifies this device and offers passkey-authorized revocation for other devices.",
+      "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
       "surface": "browser"
     },
     {
@@ -1021,7 +1021,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The destructive confirmation enumerates owned hosted spaces, preserves joined-space boundaries, and requires exact arming.",
+      "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
       "surface": "browser"
     },
     {
@@ -1030,6 +1030,7 @@ window.STORYBOOK_DATA = {
       "capture": "production-source fixture",
       "id": "WEB-14",
       "journey_ids": [
+        "ACCT-B04",
         "ACCT-B06",
         "ACCT-B07"
       ],
@@ -1040,7 +1041,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/activate.rs"
       ],
       "status": "captured",
-      "summary": "An emailed activation link can be accepted on any device without exposing root authority.",
+      "summary": "An emailed activation link can be accepted on any device; damaged, expired, offline, and unknown failures each lead to a safe next step.",
       "surface": "browser"
     },
     {
@@ -1049,6 +1050,7 @@ window.STORYBOOK_DATA = {
       "capture": "production-source fixture",
       "id": "WEB-15",
       "journey_ids": [
+        "ACCT-B04",
         "ACCT-B06",
         "ACCT-B07"
       ],
@@ -1059,7 +1061,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-ui/src/activate.rs"
       ],
       "status": "captured",
-      "summary": "Successful and failed activation settle with explicit sync status and a safe route back to Tonk.",
+      "summary": "Successful and failed activation settle explicitly without exposing service response bodies, routes, or HTTP details.",
       "surface": "browser"
     },
     {
@@ -1143,6 +1145,7 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account status and devices",
       "source_paths": [
+        "rust/tonk-cli/src/bin/tonk.rs",
         "rust/tonk-cli/src/account.rs",
         "rust/tonk-cli/src/account_state.rs",
         "rust/tonk-cli/src/account_session.rs",
@@ -1429,6 +1432,22 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "A customer waiting for email confirmation remains an account on every surface (Remain in flight).",
+      "device": "returning-browser + responsive",
+      "file": "verification/accounts.md",
+      "id": "LIFE-28",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
+      "claim": "Every browser account failure names the failed action, safe remaining state, and next step (Output, errors, and recovery).",
+      "device": "fault + keyboard",
+      "file": "verification/accounts.md",
+      "id": "LIFE-29",
+      "priority": "P1",
+      "result": "—"
+    },
+    {
       "claim": "Registered customer sees pending notice and resend recovery (Remain in flight).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -1502,7 +1521,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Enter/blur/concurrent account renames have one defined result (Edge cases).",
-      "device": "two-actor",
+      "device": "two-actor + fault",
       "file": "verification/accounts.md",
       "id": "LIFE-21",
       "priority": "P1",
@@ -1686,7 +1705,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Revoking another device denies later remote access and preserves unrelated/local state (Settle).",
-      "device": "two-actor",
+      "device": "two-actor + fault",
       "file": "verification/accounts.md",
       "id": "AUTH-03",
       "priority": "P1",
@@ -1726,7 +1745,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Whole-account deletion releases exact owned scope and rotates deleted profile (Settle).",
-      "device": "returning-browser",
+      "device": "returning-browser + fault",
       "file": "verification/accounts.md",
       "id": "AUTH-08",
       "priority": "P1",
@@ -1933,8 +1952,8 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Account directory list/pull handles duplicates, offline cache, missing/stale and exact subjects (Resolve).",
-      "device": "cli + offline",
+      "claim": "Account directory list/pull and the FABB switcher handle duplicates, offline cache, missing/stale and exact subjects (Space-switcher and absent-space presentation decision).",
+      "device": "cli + browser + offline",
       "file": "verification/cli-spaces-ui.md",
       "id": "SPACE-10",
       "priority": "P1",
@@ -1947,6 +1966,14 @@ window.STORYBOOK_DATA = {
       "id": "SPACE-11",
       "priority": "P1",
       "result": "—"
+    },
+    {
+      "claim": "Hub confirmation removes its exact local space while cancellation remains an exit-early path (Settle).",
+      "device": "fresh-browser + keyboard",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-12",
+      "priority": "P1",
+      "result": "Pass (local, 2026-08-29): the focused real-browser regression completed every step against the built product."
     },
     {
       "claim": "Status reports R0–R6 without mutation (Settle).",
@@ -1973,7 +2000,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Sharing a spot with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
+      "claim": "Sharing a space with no account raises registration in place and finishes the interrupted share (Cross a boundary).",
       "device": "fresh-browser",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-00",
@@ -2209,8 +2236,8 @@ window.STORYBOOK_DATA = {
     "blocked": 0,
     "fail": 0,
     "other": 0,
-    "pass": 0,
-    "unrun": 112
+    "pass": 1,
+    "unrun": 114
   },
   "visualCommit": "49a873a23"
 };

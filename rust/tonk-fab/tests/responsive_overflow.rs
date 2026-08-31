@@ -146,6 +146,33 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
         .expect("mount parent");
 
     set_parent_width(&parent, &fab, 375, true, false).await;
+    for selector in ["[data-cell=space]", "[data-cell=share]", "[data-cell=more]"] {
+        let trigger = shadow_element(&fab, selector);
+        assert!(
+            !trigger.has_attribute("aria-haspopup"),
+            "{selector} is a disclosure trigger, not a menu button"
+        );
+    }
+    for (selector, label) in [
+        ("tonk-menu[data-for=space]", "space actions"),
+        ("tonk-menu[slot=sub]", "spaces"),
+        ("tonk-menu[data-for=share]", "share actions"),
+        ("tonk-menu[data-for=overflow]", "more actions"),
+    ] {
+        let group = light_element(&fab, selector);
+        assert_eq!(group.get_attribute("role").as_deref(), Some("group"));
+        assert_eq!(group.get_attribute("aria-label").as_deref(), Some(label));
+    }
+    let actions = fab.query_selector_all("tonk-mi").expect("action selector");
+    for index in 0..actions.length() {
+        let action = actions
+            .item(index)
+            .expect("action")
+            .dyn_into::<Element>()
+            .expect("action element");
+        let row = menu_row(&action);
+        assert_eq!(row.tag_name(), "BUTTON", "stack actions stay real buttons");
+    }
     fab.set_attribute("up", "").expect("open upward");
     shadow_element(&fab, "[data-cell=more]")
         .unchecked_into::<HtmlElement>()
@@ -297,7 +324,12 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
         light_element(&fab, "[data-overflow-mode]")
             .get_attribute("role")
             .as_deref(),
-        Some("menuitemcheckbox")
+        None
+    );
+    let mode_is_dark = (fab.get_attribute("mode").as_deref() == Some("dark")).to_string();
+    assert_eq!(
+        mode_row.get_attribute("aria-pressed").as_deref(),
+        Some(mode_is_dark.as_str())
     );
     shadow_element(&fab, "[data-cell=share]")
         .unchecked_into::<HtmlElement>()
@@ -357,8 +389,9 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
             .as_deref()
             .is_some_and(|mode| mode == "dark" || mode == "light")
     );
+    let mode_button = menu_row(&light_element(&fab, "[data-overflow-mode]"));
     assert_eq!(
-        light_element(&fab, "[data-overflow-mode]").get_attribute("aria-checked"),
+        mode_button.get_attribute("aria-pressed"),
         Some((mode_after.as_deref() == Some("dark")).to_string())
     );
     assert!(overflow.has_attribute("hidden"));

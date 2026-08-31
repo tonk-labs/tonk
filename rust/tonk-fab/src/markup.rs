@@ -96,9 +96,9 @@ pub const BAR_HTML: &str = r#"<div class="w">
   <div class="bar" part="bar">
     <button class="cell fab" data-cell="sync" part="fab" title="sync status · drag to move"><span class="disc st"></span></button>
     <div class="run">
-      <button class="cell space" data-cell="space" title="space name" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-space-menu"><span class="n"></span></button>
-      <button class="cell share chrome" data-cell="share" title="share with others" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-share-menu">share</button>
-      <button class="cell more chrome" data-cell="more" title="more actions" aria-label="more actions" aria-haspopup="true" aria-expanded="false" aria-controls="fabb-overflow-menu"><span class="more-glyph" aria-hidden="true">&#9652;</span></button>
+      <button class="cell space" data-cell="space" title="space name" aria-expanded="false" aria-controls="fabb-space-menu"><span class="n"></span></button>
+      <button class="cell share chrome" data-cell="share" title="share with others" aria-expanded="false" aria-controls="fabb-share-menu">share</button>
+      <button class="cell more chrome" data-cell="more" title="more actions" aria-label="more actions" aria-expanded="false" aria-controls="fabb-overflow-menu"><span class="more-glyph" aria-hidden="true">&#9652;</span></button>
       <button class="cell toggle" data-cell="toggle" role="switch" title="dark / light" aria-label="dark mode"></button>
     </div>
   </div>
@@ -136,10 +136,10 @@ pub const STACK_GAP_PX: i32 = 7;
 /// library.
 pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></ui-sync-status>
 <ui-space-name headless space="{space}"></ui-space-name>
-<tonk-menu id="fabb-space-menu" slot="menu" data-for="space" hidden>
+<tonk-menu id="fabb-space-menu" slot="menu" data-for="space" role="group" aria-label="space actions" hidden>
   <tonk-mi chrome data-mi-new>new<span class="g">+</span></tonk-mi>
   <tonk-mi chrome data-mi-open>open<span class="g">&#9656;</span>
-    <tonk-menu slot="sub">
+    <tonk-menu slot="sub" role="group" aria-label="spaces">
       <ui-space-switcher exclude="{space}"></ui-space-switcher>
       <tonk-mi muted chrome data-mi-home title="back to the directory at home">more<span class="g">&#8598;</span></tonk-mi>
     </tonk-menu>
@@ -147,7 +147,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
   <tonk-mi chrome data-mi-rename>rename<span class="g rename-mark" aria-hidden="true"></span></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
-<tonk-menu id="fabb-share-menu" slot="menu" data-for="share" hidden>
+<tonk-menu id="fabb-share-menu" slot="menu" data-for="share" role="group" aria-label="share actions" hidden>
   <tonk-mi chrome data-mi-back hidden>back<span class="g">&#9666;</span></tonk-mi>
   <tonk-mi chrome data-share-account>log in to share<span class="g">&#8598;</span></tonk-mi>
   <tonk-mi chrome data-share-link hidden>
@@ -155,13 +155,13 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     <span class="say say--copying">copying&hellip;</span>
     <span class="say say--copied">copied</span>
     <span class="say say--failed">couldn&rsquo;t copy</span>
-    <span class="say say--activation">sharing needs an activated email</span>
+    <span class="say say--activation">confirm your email to share</span>
   </tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
 </tonk-menu>
-<tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" hidden>
+<tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" role="group" aria-label="more actions" hidden>
   <tonk-mi chrome data-overflow-share>share<span class="g">&#9656;</span></tonk-mi>
-  <tonk-mi chrome data-overflow-mode role="menuitemcheckbox" aria-checked="false"><span data-mode-label>dark mode</span></tonk-mi>
+  <tonk-mi chrome data-overflow-mode pressed="false"><span data-mode-label>dark mode</span></tonk-mi>
 </tonk-menu>"#;
 
 /// Styles for the slotted stack content.
@@ -395,6 +395,24 @@ mod tests {
         assert!(share < mode);
         assert!(!html.contains("data-overflow-collapse"));
         assert_eq!(html.matches(r#"data-for="share""#).count(), 1);
+    }
+
+    #[test]
+    fn it_describes_stacks_as_named_disclosure_groups() {
+        assert!(
+            !BAR_HTML.contains("aria-haspopup"),
+            "disclosure triggers must not claim menu behavior"
+        );
+        let html = stacks_html("did:key:z6Mk");
+        for label in ["space actions", "spaces", "share actions", "more actions"] {
+            assert!(
+                html.contains(&format!(r#"role="group" aria-label="{label}""#)),
+                "the {label} stack must be a named group"
+            );
+        }
+        assert!(!html.contains("menuitemcheckbox"));
+        assert!(!html.contains("aria-checked"));
+        assert!(html.contains(r#"data-overflow-mode pressed="false""#));
     }
 
     #[test]

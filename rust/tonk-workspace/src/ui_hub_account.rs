@@ -89,6 +89,7 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
         let _ = row.set_attribute("role", "menuitem");
         if is_active {
             let _ = row.set_attribute("aria-current", "true");
+            let _ = row.set_attribute("aria-disabled", "true");
             let _ = row.set_attribute("tabindex", "-1");
         } else {
             let _ = row.set_attribute("type", "button");
@@ -239,8 +240,36 @@ impl CustomElement for UiHubAccount {
 
         let host = this.clone();
         let keydown: KeyClosure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            if event.key() == "Escape" {
-                close_menu(&host, true);
+            let open = account_trigger(&host)
+                .and_then(|trigger| trigger.get_attribute("aria-expanded"))
+                .as_deref()
+                == Some("true");
+            if !open {
+                return;
+            }
+            match event.key().as_str() {
+                "ArrowDown" => {
+                    event.prevent_default();
+                    move_menu_focus(&host, 1, false);
+                }
+                "ArrowUp" => {
+                    event.prevent_default();
+                    move_menu_focus(&host, -1, false);
+                }
+                "Home" => {
+                    event.prevent_default();
+                    move_menu_focus(&host, 1, true);
+                }
+                "End" => {
+                    event.prevent_default();
+                    move_menu_focus(&host, -1, true);
+                }
+                "Escape" => {
+                    event.prevent_default();
+                    close_menu(&host, true);
+                }
+                "Tab" => close_menu(&host, false),
+                _ => {}
             }
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
@@ -412,6 +441,47 @@ fn open_menu(this: &HtmlElement) {
     {
         menu.set_hidden(false);
     }
+    if let Some(first) = menu_items(this).first() {
+        let _ = first.focus();
+    }
+}
+
+fn menu_items(this: &HtmlElement) -> Vec<HtmlElement> {
+    let Ok(nodes) = this.query_selector_all("[data-account-menu] [role=menuitem]") else {
+        return Vec::new();
+    };
+    (0..nodes.length())
+        .filter_map(|index| nodes.item(index))
+        .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+        .filter(|item| {
+            item.get_attribute("aria-disabled").as_deref() != Some("true")
+                && !item.matches(":disabled").unwrap_or(false)
+                && !item.hidden()
+        })
+        .collect()
+}
+
+fn move_menu_focus(this: &HtmlElement, direction: i32, endpoint: bool) {
+    let items = menu_items(this);
+    if items.is_empty() {
+        return;
+    }
+    let next = if endpoint {
+        if direction > 0 { 0 } else { items.len() - 1 }
+    } else {
+        let active = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element());
+        let current = active
+            .and_then(|active| {
+                items
+                    .iter()
+                    .position(|item| active.is_same_node(Some(item)))
+            })
+            .unwrap_or_else(|| if direction > 0 { items.len() - 1 } else { 0 });
+        (current as i32 + direction).rem_euclid(items.len() as i32) as usize
+    };
+    let _ = items[next].focus();
 }
 
 fn close_menu(this: &HtmlElement, restore_focus: bool) {
@@ -670,6 +740,97 @@ mod tests {
             document
                 .active_element()
                 .is_some_and(|active| active.is_same_node(Some(&trigger)))
+        );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_moves_focus_through_the_account_menu_with_the_keyboard() {
+        let host = account_element();
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "primary".into(),
+                profiles: vec![
+                    profile("primary", Some("Ada"), None, Some("remote"), true),
+                    profile("second", Some("Grace"), None, Some("remote"), false),
+                    profile("third", Some("Katherine"), None, Some("remote"), false),
+                ],
+            },
+        );
+        let document = window().unwrap().document().unwrap();
+        let trigger: HtmlElement = host
+            .query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        trigger.click();
+
+        let active_profile = || {
+            document
+                .active_element()
+                .and_then(|element| element.get_attribute("data-profile"))
+        };
+        assert_eq!(active_profile().as_deref(), Some("second"));
+
+        let key = |value: &str| {
+            let init = KeyboardEventInit::new();
+            init.set_key(value);
+            init.set_bubbles(true);
+            document
+                .active_element()
+                .unwrap()
+                .dispatch_event(
+                    &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+                )
+                .unwrap();
+        };
+        key("ArrowUp");
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .has_attribute("data-add-profile"),
+            "ArrowUp wraps to the last enabled item"
+        );
+        key("ArrowDown");
+        assert_eq!(active_profile().as_deref(), Some("second"));
+        key("End");
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .has_attribute("data-add-profile")
+        );
+        key("Home");
+        assert_eq!(active_profile().as_deref(), Some("second"));
+        key("Escape");
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&trigger))
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-expanded").as_deref(),
+            Some("false")
+        );
+
+        trigger.click();
+        let focused = document.active_element().unwrap();
+        let init = KeyboardEventInit::new();
+        init.set_key("Tab");
+        init.set_bubbles(true);
+        let tab = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        focused.dispatch_event(&tab).unwrap();
+        assert!(
+            !tab.default_prevented(),
+            "Tab keeps its browser-default move"
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-expanded").as_deref(),
+            Some("false")
         );
         host.remove();
     }

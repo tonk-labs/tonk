@@ -327,9 +327,9 @@ mod failure_vocabulary {
                 "This share link is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
-                "Tonk could not reach this spot. Try again.",
-                "This spot's host declined the invite. Its owner needs to check the spot's plan.",
-                "Tonk could not join this spot.",
+                "Tonk could not reach this space. Try again.",
+                "This space's host declined the invite. Its owner needs to check the space's plan.",
+                "Tonk could not join this space.",
             ],
         );
     }
@@ -394,7 +394,7 @@ mod failure_vocabulary {
 
     /// A policy refusal is the REMOTE's verdict on a chain that proved
     /// out, not a local breakage. It landed in the `_` catch-all and was
-    /// reported as `claim-failed` ("Tonk could not join this spot"),
+    /// reported as `claim-failed` ("Tonk could not join this space"),
     /// which blames this device for a decision taken on the server —
     /// the real one being an unprovisioned subject, which no amount of
     /// retrying or re-inviting fixes.
@@ -885,7 +885,7 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         // The account directory is how another of this account's
         // devices recovers this claim: alongside the membership
         // facts, record the mount configuration the invite carried,
-        // or a fresh sign-in lists a spot it can never mount.
+        // or a fresh sign-in lists a space it can never mount.
         // Renewals record too. Best-effort, and strictly after the local
         // commit — the
         // join is already complete.
@@ -1300,7 +1300,7 @@ fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
         // policy predicate on the delegation said no, or the remote
         // declined to serve the subject at all. Nothing on this device
         // is wrong, so `claim-failed` — which says the local claim
-        // broke, and reads as "Tonk could not join this spot" — pointed
+        // broke, and reads as "Tonk could not join this space" — pointed
         // the user at the wrong thing entirely.
         AuthorizeError::PolicyViolation { .. } | AuthorizeError::Declined { .. } => {
             JoinFailure::refused(format!("remote refused: {authorization}"))
@@ -2021,20 +2021,20 @@ mod invite_presence_tests {
     #[test]
     fn it_separates_a_redeemable_invite_from_an_empty_visit() {
         assert!(carries_invite(
-            "https://tonk.spot/join?access=chain&remote=https%3A%2F%2Fs#seed"
+            "https://tonk.space/join?access=chain&remote=https%3A%2F%2Fs#seed"
         ));
         // A malformed chain is still an ATTEMPT: it must reach the claim
         // path and fail with its reason, not be mistaken for an empty visit.
-        assert!(carries_invite("https://tonk.spot/join?access=not-a-chain"));
+        assert!(carries_invite("https://tonk.space/join?access=not-a-chain"));
 
-        assert!(!carries_invite("https://tonk.spot/join"));
-        assert!(!carries_invite("https://tonk.spot/join#seed"));
+        assert!(!carries_invite("https://tonk.space/join"));
+        assert!(!carries_invite("https://tonk.space/join#seed"));
         assert!(
-            !carries_invite("https://tonk.spot/join?access="),
+            !carries_invite("https://tonk.space/join?access="),
             "an empty access parameter carries no chain"
         );
         assert!(!carries_invite(
-            "https://tonk.spot/join?remote=https%3A%2F%2Fs"
+            "https://tonk.space/join?remote=https%3A%2F%2Fs"
         ));
         assert!(!carries_invite("not a url"));
     }
@@ -2921,7 +2921,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Re-opening an invite link for a spot this profile already holds
+    /// Re-opening an invite link for a space this profile already holds
     /// must not re-route the authority its sync presigns with: the
     /// renewal saves the same account-rooted chain again, and the
     /// certificate walk (which never consults the clock, see
@@ -3210,7 +3210,7 @@ pub(crate) mod tests {
                 .expect("the repository name commits");
         }
 
-        // The shape `core.yaml` seeds for a lean spot: a pinned concept for
+        // The shape `core.yaml` seeds for a lean space: a pinned concept for
         // the canvas, and the cardinality-one `tonk/space` alias pointing at
         // it. The space route mounts whatever that alias resolves to.
         const SPACE_MODEL: &str = r#"concept!: &blank
@@ -3221,7 +3221,7 @@ pub(crate) mod tests {
       the: xyz.tonk.replica/subject
       as: entity
       cardinality: one
-      description: The spot this canvas belongs to
+      description: The space this canvas belongs to
 
 name!:
   this: id:tonk/space

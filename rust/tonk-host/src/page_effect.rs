@@ -6,8 +6,8 @@
 //! — and the bridge dispatcher runs in the guest's PARENT, which is not
 //! necessarily the page.
 //!
-//! Spot content is a guest inside the profile chrome, which is itself a
-//! guest. A message from spot content is dispatched one hop up, in an
+//! Space content is a guest inside the profile chrome, which is itself a
+//! guest. A message from space content is dispatched one hop up, in an
 //! opaque-origin `about:srcdoc` document, where performing the effect
 //! either throws or corrupts the wrong frame. See the design spec.
 //!

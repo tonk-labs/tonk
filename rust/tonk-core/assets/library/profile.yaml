@@ -13,11 +13,11 @@
 # definitions below are self-contained: the directory view's
 # `model: space` resolves to the `&space` anchor here.
 
-# A space (replica) the profile has access to. These records live on
-# the profile repository's main branch — one per repository this device
-# has joined or created. The Hub queries them on the profile main branch
-# (the top site's `with="main@profile:tonk"` context) so the user can pick
-# which space to open.
+# A space the account has access to. These convergent directory records live
+# on the profile repository's main branch — one per repository across the
+# account, with `local` overlaid by each device. The Hub queries them in the
+# top site's `with="main@profile:tonk"` context so the user can pick which
+# space to open or replicate locally.
 concept!: &space
   this: tonk:space
   description: A space on this account.
@@ -58,7 +58,7 @@ concept!: &space
       description: >
         Whether THIS device holds a replica. Overlay-only (the worker
         stamps it at boot and on mount), so it never replicates; a row
-        without it renders as a hollow spot that replicates on first
+        without it renders as a hollow space that replicates on first
         visit.
       the: xyz.tonk.space/local
       cardinality: one
@@ -97,8 +97,8 @@ command!: &space/create
 # asserts this transient; the worker's `RemoveSpaceHandler` retracts the
 # replica record from this branch, evicts the space from the reactor
 # (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced spot can be rejoined via an invite link; a
-# local-only spot is gone for good, which the confirm copy states.
+# device-local — a synced space can be rejoined via an invite link; a
+# local-only space is gone for good, which the confirm copy states.
 # `subject` reads the form's `data-remove` attribute. Deliberately NOT
 # `data-subject`: `tonk/rename-repository` transients already carry
 # `dataset/subject`, and a remove command matched on that attribute
@@ -342,6 +342,7 @@ view/directory!:
         .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
           opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
         .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
+        ui-space-remove { display:contents; }
         .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
           color:inherit; font:inherit; letter-spacing:inherit;
           text-transform:lowercase; cursor:pointer; }
@@ -353,36 +354,15 @@ view/directory!:
           width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
           color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
         .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
-        /* ── the remove cluster — the page dims, the surface never ──
-           Driven by the same native radios the rest of the view uses: no
-           script runs in a seeded view, so the open state has to be
-           something CSS can hold. */
-        .rm-radio { position:absolute; opacity:0; pointer-events:none; }
-        .mscrim { display:none; position:fixed; inset:0; z-index:30; background:var(--dim); }
-        .modal { display:none; position:fixed; left:50%; top:34vh;
-          transform:translateX(-50%); width:432px; z-index:31; }
-        .srow-wrap > .rm-radio:checked ~ .mscrim,
-        .srow-wrap > .rm-radio:checked ~ .modal { display:block; }
-        /* solid cards — no filter behind opaque paint */
-        .modal .blk { background:var(--card);
-          -webkit-backdrop-filter:none; backdrop-filter:none; }
-        .m-hrow { display:flex; margin-right:-36px; margin-bottom:7px; }
-        .m-head { flex:1; display:flex; align-items:flex-end; justify-content:flex-start;
-          padding:0 16px 9px; font-size:13px; }
-        .m-x { width:36px; flex:none; display:grid; place-items:center;
-          border-radius:0 18px 18px 0; font-size:15px; cursor:pointer; }
-        .m-x:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
-        .m-body { height:auto; min-height:110px; padding:16px;
-          font-family:var(--sans); font-weight:600; font-size:13.5px;
-          line-height:1.6; color:var(--ink); text-transform:none; }
-        .m-name { text-transform:none; }
-        .m-foot { display:flex; justify-content:flex-end; margin-top:7px; }
-        /* the run fuses flush — the fill boundary is the divider */
+        .remove-form { margin:0; font-family:var(--sans); font-weight:600;
+          font-size:13.5px; line-height:1.6; text-transform:none; }
         .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
-          min-width:144px; padding:0 10px 9px 24px; font-size:13px; cursor:pointer; }
+          min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
+          background:var(--card); color:var(--ink); font:inherit; font-size:13px;
+          cursor:pointer; }
         .m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
         .m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
-          min-width:144px; padding:0 10px 9px 24px; background:var(--ink);
+          min-width:144px; padding:0 10px 9px 24px; border:0; background:var(--ink);
           color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
           cursor:pointer; white-space:nowrap; }
         /* brightness on near-black reads as nothing — wash it instead */
@@ -402,15 +382,16 @@ view/directory!:
           .srow .n { max-width:calc(100% - 150px); }
         }
         @media (max-width:640px) {
-          .modal { width:min(432px, calc(100vw - 84px));
-            top:max(20vh, calc(env(safe-area-inset-top) + 90px)); }
+          .hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }
+          .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
+          .m-cancel, .m-go { min-height:44px; }
         }
         @media (max-width:607px) {
           .hubcol { width:min(432px, calc(100vw - 32px)); }
           .hc-acct { width:168px; }
           .hc-view { width:144px; }
-          .hc-cfg { width:84px; }
-          .hub-page .mode-cap { width:36px; }
+          .hc-cfg { width:76px; }
+          .hub-page .mode-cap { width:44px; flex:0 0 44px; }
         }
         @media (max-width:519px) {
           .hub-logo { top:62px; }
@@ -441,46 +422,33 @@ view/directory!:
              Each per-space consumer carries its OWN subject; the routing
              helpers read an element's own attribute and never walk ancestors. -->
         <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
-          <!-- The confirm's open state, held by a native radio because no
-               script runs in a seeded view. `tabindex=-1`: this is invisible
-               chrome, and Tab landing on it would silently arm a destructive
-               overlay. The named group means opening one confirm closes any
-               other. -->
-          <input class="rm-radio" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
           <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
           <!-- Both verbs sit outside the anchor and are laid over it: a
                <button> inside an <a> is invalid markup the parser reshapes,
                and a <label for> inside one navigates rather than opening the
                confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                so the reveal still follows the row and not just the verbs. -->
-          <span class="verbs">
-            <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
-            <label class="verb-remove" for="rm-{subject}">remove</label>
-          </span>
-          <div class="mscrim"></div>
-          <div class="modal chrome" role="alertdialog" aria-modal="true">
-            <form onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
-              <div class="m-hrow">
-                <div class="m-head blk">confirm space removal</div>
-                <label class="m-x blk" for="rm-closed" aria-label="close">&#215;</label>
-              </div>
-              <div class="m-body blk">
+          <ui-space-remove>
+            <span class="verbs">
+              <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
+              <button class="verb-remove" type="button" data-space-remove-open>remove</button>
+            </span>
+            <tonk-dialog data-space-remove-dialog heading="confirm space removal">
+              <form id="remove-{subject}" class="remove-form" onsubmit=space/remove data-remove={subject}>
                 Remove {name} from this device? A synced space can be rejoined with
                 a share link; a local-only space is gone for good. Removing it
                 does not delete other members' copies.
-              </div>
-              <div class="m-foot">
-                <label class="m-cancel blk" for="rm-closed">cancel</label>
-                <button class="m-go" type="submit">remove space</button>
-              </div>
-            </form>
-          </div>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}">remove space</button>
+            </tonk-dialog>
+          </ui-space-remove>
         </div>
         <!-- Creating asks nothing up front: the space starts "Untitled" (the
              worker uniquifies the sentinel) and is renamed in place with the
              bar's block cursor the moment you land in it. No remote is
-             carried: the worker resolves where a spot syncs from the
-             account's own registration, so a spot created before anyone
+             carried: the worker resolves where a space syncs from the
+             account's own registration, so a space created before anyone
              registers stays local until it is shared. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
@@ -488,9 +456,6 @@ view/directory!:
         </form>
       </div>
 
-      <!-- The shared "everything closed" state for the confirm radios. Last,
-           so a row's own radio can never be un-checked by it accidentally. -->
-      <input class="rm-radio" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
       </main>
     </div>
 
@@ -866,7 +831,7 @@ view!: &join/route-view
             --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
             --edge-soft:#5b4953; --edge-card:#f7f6f5;
             --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
-            min-height:100vh; padding:1px; color:var(--edge-ink);
+            min-height:100vh; min-height:100dvh; padding:1px; color:var(--edge-ink);
             background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
               'Bahnschrift','Arial Narrow',system-ui,sans-serif;
             font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
@@ -934,10 +899,14 @@ view!: &join/route-view
             background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
           .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
           @media (max-width:680px) {
-            .edge-mast { left:16px; top:24px; width:98px; }
+            .edge-mast { left:16px; top:18px; width:98px; min-height:44px;
+              display:flex; align-items:center; }
             .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
             .edge-run { flex-direction:column; }
-            .ebtn { min-height:44px; }
+            .edge-field, .ebtn, .ebtn.solid button { min-height:44px; }
+            .edge-field { height:44px; padding-bottom:0; align-items:stretch; }
+            .edge-input { min-height:44px; font-size:16px; }
+            .edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }
           }
           @media (prefers-reduced-motion:reduce) {
             .edge-cur, .edge-wall:has(tonk-invite-link[data-state="invalid"])
@@ -1091,7 +1060,7 @@ view!: &space-view
   model: tonk:space/chrome
   display: |
     <style>
-      /* A spot this device does not hold answers every query with a
+      /* A space this device does not hold answers every query with a
          404, which `<tonk-display>` classifies as `unknown` — a
          terminal state, unlike `offline`, so nothing retries and
          nothing arrives later. The title display below is the one
@@ -1103,17 +1072,62 @@ view!: &space-view
          share and roster in this case (see fab.css's
          `[data-unknown-space]`), since those act on a space that
          is not here. */
-      .space-unknown { display: flex; flex-direction: column; gap: 12px;
-        align-items: center; text-align: center; margin: 15vh auto 0;
-        width: min(460px, 90%); }
-      .space-unknown h1 { margin: 0; line-height: 36px; text-wrap: balance; }
-      .space-unknown p { color: var(--wa-color-text-quiet); margin: 0; }
-      .space-unknown-join { display: inline-flex; align-items: center;
-        padding: 8px 20px; border-radius: var(--wa-border-radius-pill);
-        background: var(--wa-color-brand-fill-loud);
-        color: var(--wa-color-brand-on-loud); text-decoration: none;
-        font-weight: 500; }
-      .space-unknown-join:hover { opacity: .85; }
+      /* The absent-space state is profile chrome, not space content. It uses
+         the same edge wall, palette, typography, and compact geometry as the
+         `/join` ceremony instead of inheriting Web Awesome's pill skin. */
+      .space-unknown {
+        --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+        --edge-soft:#5b4953; --edge-card:#f7f6f5;
+        --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+        position:fixed; inset:0; min-height:100vh; min-height:100dvh;
+        overflow:auto; padding:1px; background:var(--edge-page);
+        color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
+          'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+        font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
+      :root.wa-dark .space-unknown {
+        --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+        --edge-soft:#c8c3bf; --edge-card:#1b1718;
+        --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15); }
+      .space-unknown *, .space-unknown *::before, .space-unknown *::after {
+        box-sizing:border-box; }
+      .space-unknown ::selection { background:var(--edge-ink); color:var(--edge-on); }
+      .space-unknown :focus-visible { outline:none;
+        box-shadow:inset 0 0 0 2px var(--edge-on),
+          inset 0 0 0 4px var(--edge-ink); }
+      .space-unknown-mast { position:fixed; left:48px; top:48px; width:132px;
+        color:var(--edge-ink); z-index:2; }
+      .space-unknown-mast img { display:block; width:100%; height:auto; }
+      :root.wa-dark .space-unknown-mast img { filter:invert(1); }
+      .space-unknown-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
+        margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+      .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+        margin:0; background:var(--edge-card);
+        box-shadow:0 0 0 1px var(--edge-ring); }
+      .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
+        color:var(--edge-ink);
+        font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+        font-weight:600; line-height:1.55; text-wrap:balance; }
+      .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+        font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+        font-weight:400; line-height:1.55; text-wrap:pretty; }
+      .space-unknown-run { display:flex; }
+      .space-unknown-join { width:100%; min-height:40px; padding:8px 10px;
+        display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+        background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
+        text-transform:lowercase; cursor:pointer; transition-property:scale;
+        transition-duration:150ms; transition-timing-function:ease-out; }
+      .space-unknown-join:hover {
+        background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
+      .space-unknown-join:active { scale:.96; }
+      @media (max-width:680px) {
+        .space-unknown-mast { left:16px; top:18px; width:98px; min-height:44px;
+          display:flex; align-items:center; }
+        .space-unknown-wall { margin-left:16px; margin-top:132px; }
+        .space-unknown-join { min-height:44px; }
+      }
+      @media (prefers-reduced-motion:reduce) {
+        .space-unknown-join { transition:none; }
+      }
       /* Keyed off the display's own state, NOT a wrapper element: wrapping
          these siblings in a container changed which element the template
          engine picks as the repeat node (the outermost subject-referencing
@@ -1125,18 +1139,18 @@ view!: &space-view
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
-      <!-- `no-model` is now the absent-spot panel below, which sets its
+      <!-- `no-model` is now the absent-space panel below, which sets its
            own title; a second `no-model` child would render alongside it
            and fight over `document.title` (update_slot_children shows
            EVERY matching child, not the first). `no-entity` keeps the
            quiet placeholder: the concept resolved, the row just is not
            here yet. -->
       <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
-      <!-- The absent-spot case. A repository this device has not
+      <!-- The absent-space case. A repository this device has not
            replicated answers every query with the EMPTY SET, so
            `tonk:repository` resolves to nothing and this display lands
            in `no-model` — the same state a not-yet-synced concept
-           reaches, which is exactly right: the spot may arrive later,
+           reaches, which is exactly right: the space may arrive later,
            and when it does the standing subscription delivers a real
            frame and this panel is replaced in place.
 
@@ -1145,8 +1159,10 @@ view!: &space-view
            someone whose actual problem is that they were never invited. -->
       <div slot="no-model" class="space-unknown">
         <tonk-title text="Not here — Tonk"></tonk-title>
-        <h1>You don't have this spot</h1>
-        <p>It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <div class="space-unknown-wall">
+          <h1 class="space-unknown-statement">you don't have this space</h1>
+          <p class="space-unknown-narrator">It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
         <!-- A plain top-level path. The guest classifies this as in-app
              (it resolves against the synthetic per-space origin) and asks
              the host to navigate; the host recognises `/join` as a
@@ -1160,16 +1176,19 @@ view!: &space-view
              sealed FRAME to /join instead of the host navigating the top
              window — the join page booting inside an opaque origin with no
              service worker. Styled as a button below. -->
-        <a class="space-unknown-join" href="/join">Join a spot</a>
+          <div class="space-unknown-run">
+            <a class="space-unknown-join" href="/join">join a space<span aria-hidden="true">&#9656;</span></a>
+          </div>
+        </div>
       </div>
-      <!-- A spot created before `tonk:view/title` existed has no
+      <!-- A space created before `tonk:view/title` existed has no
            `view/title!:` row on its branch, so `view=tonk:view/title`
            resolves nothing and the display enters `no-view` — a `danger`
            state. `update_slot_children` toggles `hidden`, it never adds
            or removes children, so with no matching slot child the
            built-in red `<wa-callout>` fires. This inert child suppresses
            that callout while pushing no title, leaving the tab exactly
-           as it was — the old spot behavior. -->
+           as it was — the behavior for older spaces. -->
       <span slot="no-view"></span>
     </tonk-display>
 

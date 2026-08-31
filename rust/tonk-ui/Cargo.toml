@@ -89,6 +89,7 @@ features = [
     "Event",
     "HtmlButtonElement",
     "HtmlCollection",
+    "HtmlDialogElement",
     "HtmlFormElement",
     "HtmlHeadElement",
     "HtmlInputElement",

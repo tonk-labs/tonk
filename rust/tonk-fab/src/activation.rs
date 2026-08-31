@@ -246,7 +246,7 @@ fn ensure_banner(this: &HtmlElement, email: &str) {
 fn set_banner_copy(banner: &Element, email: &str) {
     if let Ok(Some(message)) = banner.query_selector("[data-activation-message]") {
         message.set_text_content(Some(&format!(
-            "{email} is not activated yet — nothing syncs until it is"
+            "{email} is waiting for email confirmation — nothing syncs until you confirm it"
         )));
     }
 }

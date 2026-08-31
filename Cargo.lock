@@ -5419,6 +5419,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tonk-common",
+ "tonk-fab",
  "tonk-host",
  "tonk-schema",
  "tonk-worker-api",

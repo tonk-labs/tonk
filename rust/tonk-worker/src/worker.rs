@@ -1866,7 +1866,7 @@ impl TonkServiceWorker {
                 // and a failure there (an unhydrated account, a closed
                 // page) must not strand seeds until the next link.
                 crate::router::rotation::rotate_from_onboarding(&tonk).await;
-                // Overlay locality stamps for the Hub's hollow-spot
+                // Overlay locality stamps for the Hub's hollow-card
                 // styling — device-local, re-stamped every boot.
                 crate::router::adopt::stamp_local_spaces(&tonk).await;
             });

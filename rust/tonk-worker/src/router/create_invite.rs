@@ -384,7 +384,7 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e}")))
 }
 
-/// Why a spot cannot produce a shareable invite.
+/// Why a space cannot produce a shareable invite.
 ///
 /// Both variants mean an invite that would fail its recipient: one that
 /// can never sync. [`Self::UnshareableRemote`] is terminal;
@@ -429,21 +429,21 @@ impl RemoteRefusal {
     /// The sentence shown to the user.
     pub(crate) fn detail(self) -> &'static str {
         match self {
-            Self::NotSynced => "This spot only exists on this device.",
+            Self::NotSynced => "This space only exists on this device.",
             Self::NeedsAccount => {
                 "Sharing needs an account, so the people you share with have somewhere to sync from."
             }
             Self::NeedsActivation => "Check your email and confirm your address, then share again.",
             Self::Suspended => "This account's sync service has been suspended.",
-            Self::UnshareableRemote => "This spot's sync server can't be shared.",
+            Self::UnshareableRemote => "This space's sync server can't be shared.",
         }
     }
 }
 
-/// Say WHY a spot has no upstream, given what this profile's account has
+/// Say WHY a space has no upstream, given what this profile's account has
 /// registered.
 ///
-/// `resolve_remote_url` sees only the repository, so every unsynced spot
+/// `resolve_remote_url` sees only the repository, so every unsynced space
 /// reads as [`RemoteRefusal::NotSynced`] — "attach a remote". That is
 /// the right answer only when there is a provider to attach to. A device
 /// has an account from first boot, so the interesting cases are the ones
@@ -672,6 +672,32 @@ where
     }
 }
 
+#[cfg(test)]
+mod refusal_copy_tests {
+    use super::RemoteRefusal;
+
+    #[test]
+    fn it_uses_space_in_user_facing_refusals() {
+        for detail in [
+            RemoteRefusal::NotSynced.detail(),
+            RemoteRefusal::NeedsAccount.detail(),
+            RemoteRefusal::NeedsActivation.detail(),
+            RemoteRefusal::Suspended.detail(),
+            RemoteRefusal::UnshareableRemote.detail(),
+        ] {
+            assert!(!detail.to_ascii_lowercase().contains("spot"), "{detail}");
+        }
+        assert_eq!(
+            RemoteRefusal::NotSynced.detail(),
+            "This space only exists on this device."
+        );
+        assert_eq!(
+            RemoteRefusal::UnshareableRemote.detail(),
+            "This space's sync server can't be shared."
+        );
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -776,7 +802,7 @@ mod tests {
         assert_eq!(invitations[0].inviter.0, root_entity);
     }
 
-    /// A spot created without a remote refuses, and says which case it was.
+    /// A space created without a remote refuses, and says which case it was.
     #[dialog_common::test]
     async fn it_refuses_a_repository_with_no_upstream() {
         use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};
@@ -814,11 +840,11 @@ mod tests {
         );
         assert_eq!(
             RemoteRefusal::NotSynced.detail(),
-            "This spot only exists on this device."
+            "This space only exists on this device."
         );
         assert_eq!(
             RemoteRefusal::UnshareableRemote.detail(),
-            "This spot's sync server can't be shared."
+            "This space's sync server can't be shared."
         );
     }
 

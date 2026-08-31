@@ -258,11 +258,16 @@ mod native {
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
             let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
             std::fs::create_dir_all(&caddy_data)?;
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(std::path::Path::parent)
+                .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
+            let test_server = format!("path:{}#tonk-ui-test-server", workspace.display());
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
                         "run",
-                        ".#tonk-ui-test-server",
+                        &test_server,
                         "--",
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),

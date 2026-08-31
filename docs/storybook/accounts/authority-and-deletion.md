@@ -176,6 +176,14 @@ authoritative for generation and ownership; the page refreshes after conflicts.
 completed and anything that did not. “Deletion failed” without current state is
 insufficient after a potentially committed request.
 
+Before dispatch, a cancelled deletion passkey explicitly says that nothing was
+deleted and invites a safe retry. After dispatch, a missing or failed response
+does not make that claim: settings says it could not confirm the result and
+requires a reload or fresh plan before retrying. Device revocation follows the
+same uncertainty rule. Exact diagnostics stay in the console rather than
+surfacing HTTP, invocation, delegation, credential, or DID details in the
+confirmation.
+
 **Accessibility, TTY, and machine output.** Confirmations need initial focus,
 focus trapping, Escape/Cancel, labels, error announcement, and disabled-state
 semantics. CLI device JSON and exit codes must not depend on TTY rendering.

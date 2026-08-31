@@ -70,7 +70,7 @@ pub use sync::{
 /// `name` alone. No `remote`: where a space syncs is resolved worker-side
 /// from the account's own registration, and a page that supplied one made
 /// every create look like a deliberate choice of this server — which wired
-/// spots created before anyone registered to a service that refuses to
+/// spaces created before anyone registered to a service that refuses to
 /// serve them. No `template` either: template seeding went with the
 /// template libraries, and a field the form does not carry fails to
 /// resolve and aborts the whole command.

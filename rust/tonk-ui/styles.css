@@ -2750,6 +2750,7 @@ tonk-code:focus-within {
     padding: 0;
     margin: 0;
     block-size: 100vh;
+    block-size: 100dvh;
     inline-size: 100%;
 }
 
@@ -2791,19 +2792,18 @@ tonk-code:focus-within {
      it has to actually hide what is behind it. A light-theme value
      hardcoded here read as nearly transparent against the dark theme,
      and the page showed through and collided with the rows. */
-  .tonk-dim {
-    position: fixed; inset: 0; z-index: 20;
-    background: var(--dim);
-    opacity: 0; transition: opacity .4s var(--ease);
-    pointer-events: none;
+  #tonk-register {
+    position: fixed; inset: 0; z-index: 21;
+    box-sizing: border-box;
+    inline-size: auto; max-inline-size: none;
+    block-size: auto; max-block-size: none;
+    margin: 0; padding: 0; overflow: auto;
+    border: 0; border-radius: 0;
+    background: transparent; box-shadow: none;
+    color: inherit;
   }
-  .tonk-dim.on { opacity: 1; pointer-events: auto; }
-
-  .tonk-cluster {
-    position: fixed; inset: 0; z-index: 21; overflow: auto;
-    transition: opacity .4s var(--ease);
-  }
-  .tonk-cluster[hidden] { display: none; }
+  #tonk-register[open] { display: block; }
+  #tonk-register::backdrop { background: var(--dim); }
 
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
@@ -2954,4 +2954,47 @@ tonk-code:focus-within {
     font-size: 13px; cursor: pointer;
     color: var(--ink);
     text-decoration: underline; text-underline-offset: 3px;
+  }
+
+  @media (max-width: 519px) {
+    .tonk-ceremony .m-head,
+    .tonk-ceremony .orow,
+    .tonk-ceremony .obtn {
+      min-height: 44px;
+      height: 44px;
+    }
+    .tonk-ceremony .orow {
+      align-items: center;
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+    .tonk-ceremony .orow .v,
+    .tonk-ceremony .orow .k {
+      align-items: center;
+      padding-bottom: 0;
+      margin-bottom: 0;
+    }
+    .tonk-ceremony .ed {
+      height: 44px;
+      font-size: 16px;
+      line-height: 44px;
+    }
+    .tonk-ceremony .ghost {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #tonk-register,
+    .tonk-ceremony .orow,
+    .tonk-ceremony .obtn {
+      transition: none;
+    }
+    .tonk-ceremony .cur,
+    .tonk-ceremony .obtn.wait,
+    .tonk-ceremony .flash {
+      animation: none;
+    }
   }

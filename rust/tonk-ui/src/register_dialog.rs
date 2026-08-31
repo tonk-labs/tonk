@@ -1,6 +1,6 @@
 //! The registration dialog, raised over whatever the user was reading.
 //!
-//! Sharing a spot needs an account, so the share control's refusal
+//! Sharing a space needs an account, so the share control's refusal
 //! (`needs-account`) asks for one here rather than sending the user to
 //! `/account` and losing what they were doing. This is the top page, so
 //! the ceremony can run in place: WebAuthn needs a `window` and a user
@@ -19,16 +19,17 @@
 //! neither is on offer. The answer is a fact, arrived at by a command,
 //! and this only draws it.
 
-use std::cell::Cell;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
-use web_sys::{Element, HtmlElement};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_sys::HtmlButtonElement;
+use web_sys::{Element, HtmlDialogElement, HtmlElement};
 
+use crate::user_error::{self, AccountAction};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_host::consumer::{self, Subscription};
 
@@ -36,6 +37,12 @@ thread_local! {
     /// The dialog is a singleton: a second refusal while it is up is
     /// already answered by the registration in progress.
     static OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The control that raised the singleton. Native modal focus is restored
+    /// explicitly because the host is removed, rather than merely closed.
+    static RETURN_FOCUS: RefCell<Option<ReturnFocus>> = const { RefCell::new(None) };
+    /// Set synchronously at the event boundary, before any WebAuthn or network
+    /// future can yield and admit a second click/Enter activation.
+    static ACTION_PENDING: Cell<bool> = const { Cell::new(false) };
     /// The live subscription to the answer row, held for as long as the
     /// dialog is up so the frames keep arriving, and dropped on close.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -61,8 +68,14 @@ thread_local! {
     static ANSWER: RefCell<Option<Answer>> = const { RefCell::new(None) };
 }
 
+enum ReturnFocus {
+    Direct(HtmlElement),
+    Guest(Option<Box<dyn FnOnce()>>),
+}
+
 /// The dialog's host id, and the parts the handlers address.
 const DIALOG_ID: &str = "tonk-register";
+const COMMITTED_EMAIL_ATTR: &str = "data-register-email";
 const EMAIL_INPUT: &str = "#tonk-register-email";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ACTION: &str = "#tonk-register-action";
@@ -88,36 +101,42 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
 const DIALOG_HTML: &str = r##"
-<div id="tonk-register-dim" class="tonk-dim"></div>
-<div id="tonk-register-cluster" class="tonk-cluster" role="dialog" aria-modal="true"
-     aria-labelledby="tonk-register-head">
-  <div class="ocol">
-    <div class="ostack" id="tonk-register-stack">
-      <div class="m-head mblk" id="tonk-register-head">link an account</div>
-      <div class="orow mblk" id="tonk-register-email-row">
-        <span class="k">email</span>
-        <span class="v"><input class="ed" id="tonk-register-email" type="email"
-              inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
-              aria-label="email" placeholder="you@example.com"><i class="cur"
-              aria-hidden="true"></i></span>
-      </div>
-      <!-- Unfolds once the address is committed and the lookup answers:
-           "create a passkey" for an address nobody has, "log in with your
-           passkey" for one that is taken. Which of the two is the whole
-           reason the address is checked before any ceremony runs. -->
-      <button class="obtn pre" id="tonk-register-action" hidden></button>
+<div class="ocol">
+  <div class="ostack" id="tonk-register-stack">
+    <div class="m-head mblk" id="tonk-register-head">link an account</div>
+    <div class="orow mblk" id="tonk-register-email-row">
+      <span class="k">email</span>
+      <span class="v"><input class="ed" id="tonk-register-email" type="email"
+            inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
+            aria-label="email" placeholder="you@example.com"><i class="cur"
+            aria-hidden="true"></i></span>
     </div>
-    <div class="oexp mblk">
-      <p id="tonk-register-status" aria-live="polite"></p>
-    </div>
-    <button class="ghost" id="tonk-register-dismiss">
-      <span aria-hidden="true">&#9666;</span> back to space</button>
+    <!-- Unfolds once the address is committed and the lookup answers:
+         "create a passkey" for an address nobody has, "log in with your
+         passkey" for one that is taken. Which of the two is the whole
+         reason the address is checked before any ceremony runs. -->
+    <button class="obtn pre" id="tonk-register-action" hidden></button>
   </div>
+  <div class="oexp mblk">
+    <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
+  </div>
+  <button class="ghost" id="tonk-register-dismiss">
+    <span aria-hidden="true">&#9666;</span> back to space</button>
 </div>
 "##;
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
+    open_with_return(None);
+}
+
+/// Raise the dialog for a sealed-guest request and invoke `restore` only after
+/// the native modal has closed and its top-page host has been removed.
+pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
+    open_with_return(Some(Box::new(restore)));
+}
+
+fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
     }
@@ -125,16 +144,34 @@ pub fn open() {
         OPEN.with(|open| open.set(false));
         return;
     };
-    let (Some(body), Ok(host)) = (document.body(), document.create_element("div")) else {
+    let return_focus = match guest_restore {
+        Some(restore) => Some(ReturnFocus::Guest(Some(restore))),
+        None => document
+            .active_element()
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+            .map(ReturnFocus::Direct),
+    };
+    RETURN_FOCUS.with(|held| *held.borrow_mut() = return_focus);
+    let (Some(body), Ok(host)) = (document.body(), document.create_element("dialog")) else {
         OPEN.with(|open| open.set(false));
+        RETURN_FOCUS.with(|held| *held.borrow_mut() = None);
         return;
     };
     host.set_id(DIALOG_ID);
-    host.set_class_name("tonk-ceremony");
+    host.set_class_name("tonk-ceremony tonk-cluster");
+    let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
+    let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
     on_click(&host, DISMISS, close);
+    let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        event.prevent_default();
+        close();
+    });
+    let _ = host.add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
+    cancel.forget();
+    contain_tab_focus(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
     watch_address(&host);
@@ -160,10 +197,10 @@ fn open_when_upgraded(host: &Element) {
     };
     let host = host.clone();
     let raise = Closure::<dyn FnMut()>::new(move || {
-        if let Ok(Some(dim)) = host.query_selector("#tonk-register-dim") {
-            // `add_1`, not `set_class_name`: the element already
-            // carries `tonk-dim`, which is what styles it at all.
-            let _ = dim.class_list().add_1("on");
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
+            && !dialog.open()
+        {
+            let _ = dialog.show_modal();
         }
         focus_address(&host);
     });
@@ -258,7 +295,8 @@ fn action_is_offered() -> bool {
     web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.query_selector(ACTION).ok().flatten())
-        .is_some_and(|action| !action.has_attribute("hidden"))
+        .and_then(|action| action.dyn_into::<HtmlButtonElement>().ok())
+        .is_some_and(|action| !action.has_attribute("hidden") && !action.disabled())
 }
 
 /// Clicking anywhere in a row seats the cursor in its editor.
@@ -370,6 +408,7 @@ pub fn close() {
     OPEN.with(|open| open.set(false));
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
+        finish_action();
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {
                 subscription.cancel();
@@ -384,14 +423,111 @@ pub fn close() {
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
+            && dialog.open()
+        {
+            dialog.close();
+        }
         host.remove();
     }
-    // Whatever was under it may now be about a different account than
-    // when it was raised. The settings panel decides which face to show
-    // from a read it does at boot, and nothing else asks it to look
-    // again.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::account::resettle();
+    let Some(return_focus) = RETURN_FOCUS.with(|held| held.borrow_mut().take()) else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        restore_focus(return_focus);
+        return;
+    };
+    // The native dialog performs its own close-focus settlement after the
+    // `cancel` listener returns. Restore on the next task so that settlement
+    // cannot overwrite either a top-page opener or a sealed guest's iframe.
+    let restore = Closure::once(move || restore_focus(return_focus));
+    let _ = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(restore.as_ref().unchecked_ref(), 0);
+    restore.forget();
+}
+
+fn restore_focus(return_focus: ReturnFocus) {
+    match return_focus {
+        ReturnFocus::Direct(opener)
+            if opener.is_connected() && !opener.matches(":disabled").unwrap_or(false) =>
+        {
+            let _ = opener.focus();
+        }
+        ReturnFocus::Guest(Some(restore)) => restore(),
+        _ => {}
+    }
+}
+
+/// Chrome can move focus to `BODY` when Tab crosses the end of a native
+/// modal. Guard only the two boundaries; ordinary movement and Escape stay
+/// under the platform dialog.
+fn contain_tab_focus(host: &Element) {
+    let dialog = host.clone();
+    let listener =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
+            if event.key() != "Tab" {
+                return;
+            }
+            let focusables = registration_focusables(&dialog);
+            let (Some(first), Some(last)) = (focusables.first(), focusables.last()) else {
+                return;
+            };
+            let active = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.active_element());
+            let target = if event.shift_key()
+                && active
+                    .as_ref()
+                    .is_some_and(|active| first.is_same_node(Some(active.as_ref())))
+            {
+                Some(last)
+            } else if !event.shift_key()
+                && active
+                    .as_ref()
+                    .is_some_and(|active| last.is_same_node(Some(active.as_ref())))
+            {
+                Some(first)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                event.prevent_default();
+                let _ = target.focus();
+            }
+        });
+    let _ = host.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
+fn registration_focusables(host: &Element) -> Vec<HtmlElement> {
+    let Ok(candidates) = host.query_selector_all("button,input,select,textarea,a[href],[tabindex]")
+    else {
+        return Vec::new();
+    };
+    let mut focusables = Vec::new();
+    for index in 0..candidates.length() {
+        let Some(element) = candidates
+            .item(index)
+            .and_then(|node| node.dyn_into::<Element>().ok())
+        else {
+            continue;
+        };
+        if element.closest("[hidden]").ok().flatten().is_some()
+            || element.matches(":disabled").unwrap_or(false)
+            || element
+                .get_attribute("tabindex")
+                .and_then(|value| value.parse::<i32>().ok())
+                .is_some_and(|tabindex| tabindex < 0)
+            || (element.tag_name() == "INPUT"
+                && element.get_attribute("type").as_deref() == Some("hidden"))
+        {
+            continue;
+        }
+        if let Ok(element) = element.dyn_into::<HtmlElement>() {
+            focusables.push(element);
+        }
+    }
+    focusables
 }
 
 /// Ask about the address as it is typed, so the dialog can offer
@@ -485,6 +621,10 @@ fn check_now() {
         if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
             tonk_common::log!("register: could not ask about the address: {error}");
             clear_state();
+            set_status(&user_error::diagnostic(
+                AccountAction::CheckEmail,
+                &error.to_string(),
+            ));
         }
     });
 }
@@ -522,6 +662,7 @@ fn await_activation(host: &Element) {
                 }
             });
         if js_sys::Reflect::set(host.as_ref(), &method.into(), delegate.as_ref()).is_err() {
+            activation_watch_failed("could not install the activation listener");
             return;
         }
         delegates.push(delegate);
@@ -529,14 +670,25 @@ fn await_activation(host: &Element) {
     DELEGATES.with(|held| held.borrow_mut().extend(delegates));
 
     let Ok(query) = js_sys::JSON::parse(&account_query_body()) else {
+        activation_watch_failed("could not prepare the activation query");
         return;
     };
     match consumer::subscribe(host, &query, Some(&ACCOUNT_TAG.into())) {
         Ok(subscription) => ANSWERS.with(|held| *held.borrow_mut() = Some(subscription)),
         Err(error) => {
-            tonk_common::log!("register: could not watch for activation: {error:?}");
+            activation_watch_failed(&format!("activation subscription failed: {error:?}"));
         }
     }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn activation_watch_failed(detail: &str) {
+    tonk_common::log!("register: {detail}");
+    set_status(&user_error::diagnostic(
+        AccountAction::WatchActivation,
+        detail,
+    ));
+    set_action(RETURN_TO_SPACE, true);
 }
 
 /// Whether a frame carries an activated account.
@@ -649,6 +801,7 @@ fn watch_answers(host: &Element) {
                 }
             });
         if js_sys::Reflect::set(host.as_ref(), &method.into(), delegate.as_ref()).is_err() {
+            registration_watch_failed("could not install the account-options listener");
             return;
         }
         delegates.push(delegate);
@@ -665,6 +818,7 @@ fn watch_answers(host: &Element) {
         tonk_host::ready::wait().await;
         let body = answer_query_body();
         let Ok(query) = js_sys::JSON::parse(&body) else {
+            registration_watch_failed("could not prepare the account-options query");
             return;
         };
         // The dialog may already be gone by the time the gate opens.
@@ -674,10 +828,21 @@ fn watch_answers(host: &Element) {
         match consumer::subscribe(&host, &query, Some(&ANSWER_TAG.into())) {
             Ok(subscription) => ANSWERS.with(|held| *held.borrow_mut() = Some(subscription)),
             Err(error) => {
-                tonk_common::log!("register: could not watch for the answer: {error:?}");
+                registration_watch_failed(&format!(
+                    "account-options subscription failed: {error:?}"
+                ));
             }
         }
     });
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn registration_watch_failed(detail: &str) {
+    tonk_common::log!("register: {detail}");
+    set_status(&user_error::diagnostic(
+        AccountAction::LoadRegistration,
+        detail,
+    ));
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -755,22 +920,24 @@ fn show_answer(answer: &Answer) {
         finish_ceremony();
         return;
     }
+    // A lookup replay can land while WebAuthn or the share handoff is still
+    // pending. It may refresh the host's state, but it must not re-enable the
+    // action the user already accepted.
+    if ACTION_PENDING.with(Cell::get) {
+        return;
+    }
     set_status(status_for(&answer.state));
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
     // nobody has asked about could be either branch, and guessing wrong
     // runs a creation ceremony against an account that already exists.
-    let Some(action) = host.query_selector(ACTION).ok().flatten() else {
-        return;
-    };
     match action_label(&answer.state) {
-        Some(label) => {
-            action.set_text_content(Some(label));
-            unfold(&action);
-        }
+        Some(label) => set_action(label, true),
         None => {
-            let _ = action.set_attribute("hidden", "");
+            if let Ok(Some(action)) = host.query_selector(ACTION) {
+                let _ = action.set_attribute("hidden", "");
+            }
         }
     }
 }
@@ -885,6 +1052,9 @@ fn claim(description: &str, email: &str) -> serde_json::Value {
 /// interrupted.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn submit() {
+    if !begin_action() {
+        return;
+    }
     // The action row means different things at different steps, and its
     // label is which one — the same word the person just read.
     let label = web_sys::window()
@@ -895,6 +1065,7 @@ fn submit() {
     match label.trim() {
         COPY_LINK => copy_the_share_link(),
         RETURN_TO_SPACE => close(),
+        "" => finish_action(),
         _ => run_signup_ceremony(),
     }
 }
@@ -914,6 +1085,7 @@ const RETURN_TO_SPACE: &str = "return to space";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn copy_the_share_link() {
     let Some(space) = pending_share() else {
+        finish_action();
         return;
     };
     set_action("copying link…", false);
@@ -921,21 +1093,27 @@ fn copy_the_share_link() {
         let claim = enable_sync_claim(&space, js_sys::Date::now());
         if let Err(error) = crate::api::transact_profile(claim).await {
             tonk_common::log!("register: could not finish the share: {error}");
-            set_status("Could not create the link. Share the spot again.");
+            set_status("Could not create the link. Share the space again.");
             set_action(COPY_LINK, true);
             return;
         }
         // The link arrives as a fact on the space's own branch, so this
         // waits for the row rather than for a response body.
         match await_invite_link(&space).await {
-            Some(link) => {
-                write_to_clipboard(&link).await;
-                set_status("You can use the copied link to invite someone into a space.");
-                set_action(RETURN_TO_SPACE, true);
-                focus_action();
-            }
+            Some(link) => match write_to_clipboard(&link).await {
+                Ok(()) => {
+                    set_status("You can use the copied link to invite someone into a space.");
+                    set_action(RETURN_TO_SPACE, true);
+                    focus_action();
+                }
+                Err(error) => {
+                    tonk_common::log!("register: could not copy the invite link: {error}");
+                    set_status(&user_error::diagnostic(AccountAction::CopyInvite, &error));
+                    set_action(COPY_LINK, true);
+                }
+            },
             None => {
-                set_status("The link is taking longer than expected. Share the spot again.");
+                set_status("The link is taking longer than expected. Share the space again.");
                 set_action(COPY_LINK, true);
             }
         }
@@ -1002,13 +1180,16 @@ async fn wait_ms(ms: i32) {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
-/// Put `text` on the clipboard, best effort.
+/// Put `text` on the clipboard.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn write_to_clipboard(text: &str) {
+async fn write_to_clipboard(text: &str) -> Result<(), String> {
     let Some(clipboard) = web_sys::window().map(|window| window.navigator().clipboard()) else {
-        return;
+        return Err("the clipboard is unavailable".to_owned());
     };
-    let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(text)).await;
+    wasm_bindgen_futures::JsFuture::from(clipboard.write_text(text))
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("clipboard write failed: {error:?}"))
 }
 
 /// Run the signup ceremony for the typed address.
@@ -1025,6 +1206,7 @@ async fn write_to_clipboard(text: &str) {
 pub(crate) fn run_signup_ceremony() {
     let Some(email) = address().filter(|email| is_plausible(email)) else {
         set_status("Enter the address you want to use.");
+        finish_action();
         return;
     };
     // Which ceremony is the answer's to choose, not this function's.
@@ -1044,6 +1226,9 @@ pub(crate) fn run_signup_ceremony() {
 
     // The address is answered; settle its row so it reads as a record
     // and the step in front of you is the only one taking input.
+    if let Some(host) = host_element() {
+        let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
+    }
     settle_named_row(EMAIL_ROW, "email", &email);
     // While the platform holds the ceremony, the action row says so
     // rather than looking clickable. It blinks rather than spinning:
@@ -1059,7 +1244,14 @@ pub(crate) fn run_signup_ceremony() {
         match outcome {
             Err(error) => {
                 tonk_common::log!("register: the ceremony did not complete: {error}");
-                set_status(&error);
+                set_status(&user_error::diagnostic(
+                    if existing {
+                        AccountAction::LogIn
+                    } else {
+                        AccountAction::CreateAccount
+                    },
+                    &error,
+                ));
                 // Back to something clickable: a control left mid-flight
                 // refuses every later attempt.
                 set_action(
@@ -1200,10 +1392,47 @@ fn set_action(label: &str, ready: bool) {
     action.set_text_content(Some(label));
     if ready {
         let _ = action.class_list().remove_1("wait");
+        finish_action();
     } else {
         let _ = action.class_list().add_1("wait");
+        ACTION_PENDING.with(|pending| pending.set(true));
+        if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
+            button.set_disabled(true);
+            let _ = button.set_attribute("aria-busy", "true");
+        }
     }
     unfold(&action);
+}
+
+/// Claim the currently offered action before its handler can yield.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn begin_action() -> bool {
+    if ACTION_PENDING.with(|pending| pending.replace(true)) {
+        return false;
+    }
+    let Some(action) = host_element()
+        .and_then(|host| host.query_selector(ACTION).ok().flatten())
+        .and_then(|action| action.dyn_into::<HtmlButtonElement>().ok())
+    else {
+        ACTION_PENDING.with(|pending| pending.set(false));
+        return false;
+    };
+    action.set_disabled(true);
+    let _ = action.set_attribute("aria-busy", "true");
+    true
+}
+
+/// Offer the next attempt after a retryable outcome.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn finish_action() {
+    ACTION_PENDING.with(|pending| pending.set(false));
+    if let Some(action) = host_element()
+        .and_then(|host| host.query_selector(ACTION).ok().flatten())
+        .and_then(|action| action.dyn_into::<HtmlButtonElement>().ok())
+    {
+        action.set_disabled(false);
+        let _ = action.remove_attribute("aria-busy");
+    }
 }
 
 /// Put the cursor on the offered step.
@@ -1337,12 +1566,19 @@ fn offer_the_link(name: &str) {
     wasm_bindgen_futures::spawn_local({
         let name = name.to_owned();
         async move {
-            if let Err(error) = crate::api::transact_profile(profile_rename_claim(&name)).await {
-                tonk_common::log!("register: could not record the display name: {error}");
-            }
+            let status = match crate::api::transact_profile(profile_rename_claim(&name)).await {
+                Ok(()) => "Your account is ready.".to_owned(),
+                Err(error) => {
+                    tonk_common::log!("register: could not record the display name: {error}");
+                    user_error::diagnostic(
+                        AccountAction::SaveInitialDisplayName,
+                        &error.to_string(),
+                    )
+                }
+            };
             match pending_share() {
                 Some(_) => {
-                    set_status("Your account is ready.");
+                    set_status(&status);
                     set_action(COPY_LINK, true);
                 }
                 None => {
@@ -1350,7 +1586,7 @@ fn offer_the_link(name: &str) {
                     // but there is still a way out to offer: hiding the
                     // action left the ceremony finished and standing,
                     // with only the back arrow to leave by.
-                    set_status("Your account is ready.");
+                    set_status(&status);
                     set_action(RETURN_TO_SPACE, true);
                     focus_action();
                 }
@@ -1401,7 +1637,7 @@ pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
+                        "description": "Attach a sync remote to a space, and share it.",
                         "with": {
                             "time": { "the": "dom.event/time-stamp", "as": "Float" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
@@ -1426,13 +1662,16 @@ pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
 
 /// What is typed in the address field.
 fn address() -> Option<String> {
-    let input = web_sys::window()?
-        .document()?
-        .query_selector(EMAIL_INPUT)
-        .ok()??;
-    js_sys::Reflect::get(input.as_ref(), &"value".into())
-        .ok()?
-        .as_string()
+    let document = web_sys::window()?.document()?;
+    let value = match document.query_selector(EMAIL_INPUT).ok().flatten() {
+        Some(input) => js_sys::Reflect::get(input.as_ref(), &"value".into())
+            .ok()?
+            .as_string(),
+        None => document
+            .get_element_by_id(DIALOG_ID)
+            .and_then(|host| host.get_attribute(COMMITTED_EMAIL_ATTR)),
+    };
+    value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
 }
@@ -1454,7 +1693,7 @@ pub struct Request {
     /// The refusal class that raised the dialog.
     #[serde(default)]
     pub reason: String,
-    /// The spot the interrupted click was sharing, so it can be
+    /// The space the interrupted click was sharing, so it can be
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
@@ -1483,7 +1722,7 @@ fn remember_space(space: &str) {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-/// The spot a finished registration should go on to share.
+/// The space a finished registration should go on to share.
 pub(crate) fn pending_share() -> Option<String> {
     web_sys::window()
         .and_then(|window| window.document())
@@ -1647,6 +1886,8 @@ mod tests {
         let claim = enable_sync_claim("did:key:z6Mk", 1234.0).to_string();
         assert!(claim.contains("xyz.tonk.enable-sync/space"));
         assert!(claim.contains("did:key:z6Mk"));
+        assert!(claim.contains("Attach a sync remote to a space, and share it."));
+        assert!(!claim.contains("spot"));
         assert!(
             claim.contains("xyz.tonk.enable-sync/share"),
             "the mint is what produces the link the click wanted",

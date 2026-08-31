@@ -26,7 +26,7 @@
 /// `tonk:site` concept resolves to nothing and the display lands in
 /// `no-model`. Unslotted, that renders the developer-facing "Model not
 /// found — concept: tonk:site" dump at a reader who simply does not have
-/// the spot yet. The pulse is right because the state is genuinely
+/// the space yet. The pulse is right because the state is genuinely
 /// transient now: the subscription stays registered in the worker's
 /// waiting room, so when the repo arrives the standing query delivers a
 /// real frame and the view renders in place — no reload, no retry.
@@ -72,7 +72,7 @@ mod tests {
     /// A repo this device has not replicated resolves `tonk:site` to
     /// nothing, so the display lands in `no-model`. Unslotted that is a
     /// "Model not found — concept: tonk:site" dump shown to someone who
-    /// just does not have the spot; slotted, it is a pulse that heals
+    /// just does not have the space; slotted, it is a pulse that heals
     /// itself when the waiting-room subscription delivers its first real
     /// frame.
     #[dialog_common::test]

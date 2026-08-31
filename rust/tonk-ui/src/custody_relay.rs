@@ -21,6 +21,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
 
+use crate::user_error::{self, AccountAction};
+
 thread_local! {
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// One card at a time: a second request arriving while the card is
@@ -163,7 +165,10 @@ fn show_consent() {
                 Ok(false) => set_card_text("Nothing was needed after all."),
                 Err(error) => {
                     tonk_common::log!("custody: encryption key not published: {error}");
-                    set_card_text("The passkey check did not complete. Reload and try again.");
+                    set_card_text(&user_error::diagnostic(
+                        AccountAction::FinishAccountBackup,
+                        &error,
+                    ));
                 }
             }
             remove_card_after(4000);

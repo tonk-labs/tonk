@@ -500,7 +500,7 @@ enum AccountCommand {
         json: bool,
     },
 
-    /// Pull the account so devices, spots, and names read current facts
+    /// Pull the account so devices, spaces, and names read current facts
     ///
     /// Read commands answer instantly from what this device already
     /// knows; this is the one that fetches what other devices changed.
@@ -1175,7 +1175,16 @@ fn uses_active_space(command: &Command) -> bool {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) if error.to_string().to_ascii_lowercase().contains("spot") => {
+            eprintln!(
+                "error: a retired space command or option was supplied; use `tonk space --help`"
+            );
+            std::process::exit(ExitCode::ParseError.into_raw());
+        }
+        Err(error) => error.exit(),
+    };
     let Some(command) = cli.command else {
         print!("{CLI_INDEX}");
         return;
@@ -1185,7 +1194,9 @@ async fn main() {
         ("TONK_SPOTS_STATE", "TONK_SPACES_STATE"),
     ] {
         if std::env::var_os(retired).is_some() {
-            eprintln!("error: {retired} was removed; use {replacement}");
+            eprintln!(
+                "error: a retired space environment variable is set; unset it and use {replacement}"
+            );
             std::process::exit(ExitCode::ParseError.into_raw());
         }
     }
@@ -4441,6 +4452,19 @@ mod account_spaces_parser_tests {
         );
         assert!(!help.contains("arbitrary entity"), "{help}");
         assert!(!help.contains("tonk assert"), "{help}");
+    }
+
+    #[test]
+    fn account_help_uses_space_terminology() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("account")
+            .expect("account command")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("devices, spaces, and names"), "{help}");
+        assert!(!help.contains("spot"), "{help}");
     }
 
     #[test]

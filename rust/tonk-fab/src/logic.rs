@@ -136,7 +136,7 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
 /// A drop persists the nearest one: the vertical half of the viewport picks
 /// top vs bottom, the horizontal half picks left vs right.
 ///
-/// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
+/// The resting position is expressed as two CSS classes on `<tonk-fab>` — a vertical
 /// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
 /// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
@@ -1090,7 +1090,7 @@ pub enum ShareState {
     /// A mint is in flight. The clipboard write is already pending on a
     /// promise this state is waiting to resolve.
     Copying,
-    /// The mint was refused because the spot has no shareable sync remote.
+    /// The mint was refused because the space has no shareable sync remote.
     /// The prompt offering to attach one is up; unlike `Copied`/`Failed` this
     /// does not revert on a timer, because the user is being asked a question.
     Blocked,
@@ -1353,21 +1353,20 @@ mod member_roster {
 
 /// The subscribe body for the profile's space list.
 ///
-/// Reads the PROFILE branch's replica records by raw attribute. `name` is
-/// deliberately absent: each row renders the space's OWN repo name via
-/// `<ui-space-name>`, since the profile-side replica name goes stale.
-/// Directory mode (`this` unbound), so every replica record returns as a row.
+/// Reads the PROFILE branch's account-level space directory by raw attribute.
+/// Directory mode (`this` unbound), so every convergent space entry returns as
+/// a row. `name` is optional for vintage entries that predate the mirror.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "subject": { "the": "xyz.tonk.replica/subject", "as": "Entity", "cardinality": "one" },
-            "kind":    { "the": "xyz.tonk.replica/kind",    "as": "Entity", "cardinality": "one" },
-            "status":  { "the": "xyz.tonk.replica/status",  "as": "Entity", "cardinality": "one" }
+            "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
+            "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
+            "status":  { "the": "xyz.tonk.space/status",  "as": "Entity", "cardinality": "one" }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
             "subject": { "?": { "name": "subject" } },
-            "kind":    { "?": { "name": "kind" } },
+            "name":    { "?": { "name": "name" } },
             "status":  { "?": { "name": "status" } }
         }
     })
@@ -1394,30 +1393,37 @@ mod space_list {
     use super::*;
 
     #[test]
-    fn it_queries_the_profile_space_list_by_raw_attribute() {
+    fn it_queries_the_account_space_directory_by_raw_attribute() {
         let body = space_list_query_body();
-        assert!(body.contains("xyz.tonk.replica/subject"));
-        assert!(body.contains("xyz.tonk.replica/kind"));
-        assert!(body.contains("xyz.tonk.replica/status"));
-        // Directory mode over every replica record.
+        assert!(body.contains("xyz.tonk.space/subject"));
+        assert!(body.contains("xyz.tonk.space/name"));
+        assert!(body.contains("xyz.tonk.space/status"));
+        assert!(
+            !body.contains("xyz.tonk.replica/"),
+            "the account directory replaced per-device replica rows: {body}"
+        );
+        // Directory mode over every account space entry.
         assert!(body.contains("\"this\":{\"?\""));
-        // No concept named — nothing seeded is consulted.
-        assert!(!body.contains("tonk:space"));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["predicate"]["with"]["name"]["optional"], true,
+            "a vintage directory entry without a name must remain listable"
+        );
     }
 
     #[test]
-    fn a_reset_keeps_one_row_per_replica_entity() {
+    fn a_reset_keeps_one_row_per_directory_entity() {
         let mut rows = vec![("stale".to_owned(), "stale")];
 
         reset_keyed_rows(
             &mut rows,
             [
-                ("replica:space".to_owned(), "first"),
-                ("replica:space".to_owned(), "latest"),
+                ("directory:space".to_owned(), "first"),
+                ("directory:space".to_owned(), "latest"),
             ],
         );
 
-        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
+        assert_eq!(rows, vec![("directory:space".to_owned(), "latest")]);
     }
 }
 
@@ -1560,7 +1566,7 @@ mod create_space {
     ///
     /// `remote` is gone for a second reason: the page supplying one made
     /// every create look like a deliberate choice of this server, so a
-    /// spot created before anyone registered was wired to a service that
+    /// space created before anyone registered was wired to a service that
     /// refuses to serve it. The worker resolves it from the account.
     #[test]
     fn it_declares_only_the_field_the_form_carries() {
@@ -1624,7 +1630,7 @@ mod profile_rename {
         // "…dataset/rename" also matches "…dataset/rename-repository", so a
         // marker silently pointed at the repo-rename attribute would still
         // pass. That collision is not hypothetical — both commands once
-        // derived `dataset/rename` and every spot rename also renamed the
+        // derived `dataset/rename` and every space rename also renamed the
         // profile, because decoding matches on which attributes are present
         // and never on their values. `dialog-reactor`'s
         // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
@@ -1724,7 +1730,7 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
+                        "description": "Attach a sync remote to a space, and share it.",
                         "with": with
                     }
                 },
@@ -1796,9 +1802,9 @@ mod invite_link {
 ///
 /// An INLINE predicate over the raw `xyz.tonk.share/*` attributes, for the
 /// same reason [`invite_link_query_body`] is inline: rules and views are
-/// frozen at whatever `core.yaml` seeded a spot with, so reading raw
-/// attributes depends on nothing seeded and works on spots that predate this
-/// feature. `this` binds to the spot's subject DID, the entity the worker
+/// frozen at whatever `core.yaml` seeded a space with, so reading raw
+/// attributes depends on nothing seeded and works on spaces that predate this
+/// feature. `this` binds to the space's subject DID, the entity the worker
 /// keys the refusal by.
 /// Whether this profile's account is registered and served.
 ///
@@ -1970,6 +1976,10 @@ mod enable_sync_claim {
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
+        assert_eq!(
+            app["predicate"]["concept"]["description"],
+            "Attach a sync remote to a space, and share it."
+        );
 
         // The `with` declaration is what the worker actually matches on: a
         // typo here compiles and passes every assertion on `parameters`
