@@ -13,17 +13,6 @@
 // document they were editing. A construction-time flag makes that
 // impossible rather than merely unlikely.
 
-// The NAMED export, not the default: the package is CJS, and its default
-// does not survive the bundler's interop — `default(...)` throws
-// "not a function or its return value is not iterable", which takes the
-// whole plugin set down and leaves the editor blank.
-import {
-  ActionKind,
-  autocomplete,
-  closeAutocomplete,
-  openAutocomplete,
-  type AutocompleteAction,
-} from "prosemirror-autocomplete";
 import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
 import type { EditorState } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
@@ -140,6 +129,9 @@ type MarkedNode = {
 export function headingSwitcher(options: SwitcherOptions): Plugin[] {
   let active = 0;
   let shown: Suggestion[] = [];
+  // The query the panel currently reflects, so an update that changed
+  // something else (a selection move, a remote patch) does not re-rank.
+  let last: string | null = null;
 
   const suggest = (filter: string) => {
     shown = suggestions(options.candidates(), filter);
@@ -154,36 +146,6 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
     if (row.create) options.onCreate(row.title);
     else options.onOpen(row);
     return true;
-  };
-
-  const reducer = (action: AutocompleteAction): boolean => {
-    switch (action.kind) {
-      case ActionKind.open:
-      case ActionKind.filter:
-        suggest(action.filter ?? "");
-        return true;
-      case ActionKind.close:
-        shown = [];
-        active = 0;
-        options.onSuggest(null, 0);
-        return true;
-      case ActionKind.up:
-        if (shown.length === 0) return false;
-        active = (active - 1 + shown.length) % shown.length;
-        options.onSuggest(shown, active);
-        return true;
-      case ActionKind.down:
-        if (shown.length === 0) return false;
-        active = (active + 1) % shown.length;
-        options.onSuggest(shown, active);
-        return true;
-      case ActionKind.enter:
-        // Enter always has a visible target: the highlighted row, which is
-        // either a notebook to open or the explicit "create this" row.
-        return choose();
-      default:
-        return false;
-    }
   };
 
   // One plugin for both jobs, with an explicit key.
@@ -210,6 +172,33 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
 
   const driver = new Plugin({
     key: new PluginKey("headingSwitcher"),
+    props: {
+      // Only while the caret is in the heading and rows are showing —
+      // otherwise Enter and the arrows are the editor's, as usual.
+      handleKeyDown(view, event) {
+        if (!inHeading(view.state) || shown.length === 0) return false;
+        switch (event.key) {
+          case "ArrowDown":
+            active = (active + 1) % shown.length;
+            options.onSuggest(shown, active);
+            return true;
+          case "ArrowUp":
+            active = (active - 1 + shown.length) % shown.length;
+            options.onSuggest(shown, active);
+            return true;
+          case "Enter":
+            return choose();
+          case "Escape":
+            shown = [];
+            active = 0;
+            last = null;
+            options.onSuggest(null, 0);
+            return true;
+          default:
+            return false;
+        }
+      },
+    },
     view: (view) => {
       // Park once, on mount — but NOT synchronously.
       //
@@ -240,21 +229,33 @@ export function headingSwitcher(options: SwitcherOptions): Plugin[] {
           alive = false;
         },
         update(view: EditorView, previous: EditorState) {
+          // Drive the suggestions from the heading's own text on EVERY
+          // update, not from the autocomplete's filter tracking.
+          //
+          // That tracking is built around a trigger character: it opens on
+          // the char and follows the run of text after it. Ours has no
+          // trigger — being in the heading is the trigger — so it sees no
+          // run to follow and emits no `filter` as you type. Reading the
+          // heading directly is both simpler and exactly right, since the
+          // heading IS the query.
           const now = inHeading(view.state);
-          const before = inHeading(previous);
-          if (now && !before) {
-            openAutocomplete(
-              view,
-              "",
-              headingTitle(view.state.selection.$head.parent),
-            );
-          } else if (!now && before) {
-            closeAutocomplete(view);
+          if (!now) {
+            if (inHeading(previous)) {
+              shown = [];
+              active = 0;
+              last = null;
+              options.onSuggest(null, 0);
+            }
+            return;
           }
+          const query = headingTitle(view.state.selection.$head.parent);
+          if (query === last && inHeading(previous)) return;
+          last = query;
+          suggest(query);
         },
       };
     },
   });
 
-  return [...autocomplete({ reducer, triggers: [] }), driver];
+  return [driver];
 }
