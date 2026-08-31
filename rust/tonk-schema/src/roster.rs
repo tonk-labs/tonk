@@ -1,13 +1,19 @@
-//! The device-local roster of profiles this browser knows: one entity per
-//! profile storage name, with the attachment and email as stamps.
+//! The device-local list of profiles this browser can open: one entity per
+//! profile, carrying the storage handle to open it with.
 //!
-//! The switcher has to describe profiles it has not opened, and opening
-//! each one just to render a row would cost key-material load per profile
-//! per render. So each entry caches what a row needs and nothing more: the
-//! storage name to activate, a display label, and the attachment that
-//! decides between "Signed in" and "Local workspace". Identity fields keep
-//! their one home in the account space; the label is a cache of it,
-//! refreshed at the moments the worker already has the facts in hand.
+//! One field, because one is all that is original here. Everything a switcher
+//! row shows about a profile — its display name, the address it registered —
+//! already lives on that profile's own account branch and is read from there.
+//! Copies were kept here once and could only go stale: nothing invalidated
+//! them, so a name changed on another device lingered until that profile was
+//! next activated on this one.
+//!
+//! Nothing here says whether a profile is SIGNED IN, deliberately. That is a
+//! delegation that exists and verifies — the `account -> profile` device
+//! link, whose audience is the profile and whose issuer is an account that is
+//! itself active. Signing out retracts it, so the authority is gone rather
+//! than merely unrecorded, and the question is answered from the proof
+//! instead of from a stamp that can disagree with it.
 //!
 //! Facts rather than one serialized blob so concurrent writers merge per
 //! entity instead of racing a whole-roster read-modify-write.
@@ -19,47 +25,36 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use dialog_varsig::Did;
-use serde::Serialize;
 
-use crate::domain::roster::{Account, Email, Label, Name, Provider};
+use crate::domain::roster::Name;
 use crate::prelude::*;
 
-/// One profile this browser knows, keyed by its storage name.
+/// One profile this device can open, keyed by the profile's own DID.
 ///
-/// The entity is content-derived from the storage name, so a refresh
-/// from any moment (boot, link, rename, switch) converges on the same
-/// entity. `label` is cardinality-one: the latest refresh wins.
+/// The storage name is not part of the identity and does not need to be: a
+/// profile is opened by name (`Profile::open(name)`), so the name determines
+/// the DID and the pair would carry no more information than the DID alone.
+/// The name is a field here — what to open, not who this is.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RosterProfile {
-    /// The entry's entity. Derived from `name`.
+pub struct DeviceProfile {
+    /// The profile's DID.
     pub this: Entity,
     /// Storage name the profile opens under.
     pub name: Name,
-    /// Display label as of the last refresh.
-    pub label: Label,
 }
 
-/// Hash input for [`RosterProfile::this`]. Single-variant enum tags the
-/// CBOR encoding with the concept name so equal field data under a
-/// different concept hashes differently.
-#[derive(Debug, Clone, Serialize)]
-enum This<'a> {
-    RosterProfile { name: &'a str },
-}
-
-impl RosterProfile {
-    /// The entry for the profile stored under `name`, labelled `label`.
-    pub fn new(name: String, label: String) -> Self {
+impl DeviceProfile {
+    /// The entry for `profile`, opened under the storage name `name`.
+    pub fn new(profile: &Did, name: impl Into<String>) -> Self {
         Self {
-            this: Self::entity(&name),
-            name: Name(name),
-            label: Label(label),
+            this: profile.this(),
+            name: Name(name.into()),
         }
     }
 
-    /// The entity of the entry for the profile stored under `name`.
-    pub fn entity(name: &str) -> Entity {
-        Entity::of(&This::RosterProfile { name })
+    /// The entity of the entry for `profile`.
+    pub fn entity(profile: &Did) -> Entity {
+        profile.this()
     }
 
     /// The entry's entity.
@@ -68,88 +63,127 @@ impl RosterProfile {
     }
 }
 
-/// The account a roster profile is attached to, stamped onto its entity.
-/// Absent for a local workspace: never signed in, or signed out. Signing
-/// out retracts the stamp and keeps the entry, which is how a row is
-/// demoted without deleting anything.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RosterAccount {
-    /// The roster entry being stamped.
-    pub this: Entity,
-    /// The account root the profile is attached to.
-    pub account: Account,
-    /// The attached provider base URL.
-    pub provider: Provider,
-}
-
-impl RosterAccount {
-    /// Stamp the entry at `entry` as attached to `account` through `provider`.
-    pub fn new(entry: Entity, account: &Did, provider: String) -> Self {
-        Self {
-            this: entry,
-            account: Account(account.this()),
-            provider: Provider(provider),
-        }
-    }
-}
-
-/// The account email of a roster profile, stamped onto its entity.
-/// Captured best-effort at link time and carried until the summary proxy
-/// retires in favour of an account-space fact; may lag.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RosterEmail {
-    /// The roster entry being stamped.
-    pub this: Entity,
-    /// The account email.
-    pub email: Email,
-}
-
-impl RosterEmail {
-    /// Stamp the entry at `entry` with `email`.
-    pub fn new(entry: Entity, email: String) -> Self {
-        Self {
-            this: entry,
-            email: Email(email),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::Result;
+    use dialog_operator::helpers;
+    use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    use super::*;
+
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// An entry is found by the profile it names, and carries the handle to
+    /// open it with.
     #[dialog_common::test]
-    fn it_derives_the_same_entity_for_the_same_storage_name() {
-        let a = RosterProfile::new("tonk".into(), "Alice".into());
-        let b = RosterProfile::new("tonk".into(), "Renamed".into());
-        assert_eq!(
-            a.this, b.this,
-            "a refresh converges on the entry it refreshes"
-        );
-        assert_eq!(RosterProfile::entity("tonk"), a.this);
+    async fn it_finds_a_profile_entry_by_its_did() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let subject = did!("test:profile-one");
+
+        branch
+            .transaction()
+            .assert(DeviceProfile::new(&subject, "profile-1"))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let rows: Vec<DeviceProfile> = branch
+            .query()
+            .select(Query::<DeviceProfile> {
+                this: Term::from(subject.this()),
+                name: Term::var("name"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(rows.len(), 1, "one entry for one profile");
+        assert_eq!(rows[0].name.0, "profile-1");
+        Ok(())
     }
 
+    /// Two profiles are two entries, and a query with an open subject
+    /// returns both — the switcher's own read.
     #[dialog_common::test]
-    fn it_derives_different_entities_for_different_storage_names() {
-        let a = RosterProfile::new("tonk".into(), "Alice".into());
-        let b = RosterProfile::new("tonk-0a".into(), "Alice".into());
-        assert_ne!(a.this, b.this);
+    async fn it_lists_every_profile_this_device_can_open() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+
+        branch
+            .transaction()
+            .assert(DeviceProfile::new(&did!("test:profile-one"), "profile-1"))
+            .assert(DeviceProfile::new(&did!("test:profile-two"), "profile-2"))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let rows: Vec<DeviceProfile> = branch
+            .query()
+            .select(Query::<DeviceProfile> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let mut names: Vec<String> = rows.into_iter().map(|row| row.name.0).collect();
+        names.sort();
+        assert_eq!(names, vec!["profile-1", "profile-2"]);
+        Ok(())
     }
 
+    /// Re-recording a profile whose storage handle changed updates the entry
+    /// in place rather than adding a second one: the entity is the profile,
+    /// so `name` is cardinality-one on it.
     #[dialog_common::test]
-    fn it_stamps_the_entry_with_its_attachment() {
-        let entry = RosterProfile::entity("tonk");
-        let account = did!("key:zAccount");
-        let stamp = RosterAccount::new(entry.clone(), &account, "https://accounts.example".into());
-        assert_eq!(stamp.this, entry);
-        assert_eq!(stamp.account.0, account.this());
-        assert_eq!(stamp.provider.0, "https://accounts.example");
-        let email = RosterEmail::new(entry.clone(), "person@example.com".into());
-        assert_eq!(email.this, entry);
+    async fn it_keeps_one_entry_per_profile_when_the_handle_changes() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let subject = did!("test:profile-one");
+
+        branch
+            .transaction()
+            .assert(DeviceProfile::new(&subject, "profile-1"))
+            .commit()
+            .perform(&operator)
+            .await?;
+        branch
+            .transaction()
+            .assert(DeviceProfile::new(&subject, "profile-renamed"))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let rows: Vec<DeviceProfile> = branch
+            .query()
+            .select(Query::<DeviceProfile> {
+                this: Term::from(subject.this()),
+                name: Term::var("name"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(rows.len(), 1, "one profile is one entry");
+        assert_eq!(rows[0].name.0, "profile-renamed");
+        Ok(())
+    }
+
+    /// The entity is the profile's own DID, not a hash of anything here.
+    #[dialog_common::test]
+    fn it_keys_the_entry_on_the_profile_did() {
+        let subject = did!("test:profile-one");
+        let entry = DeviceProfile::new(&subject, "profile-1");
+        assert_eq!(*entry.this(), subject.this());
+        assert_eq!(DeviceProfile::entity(&subject), subject.this());
     }
 }

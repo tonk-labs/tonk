@@ -136,6 +136,7 @@ pub(crate) async fn enroll_customer(
         },
     )
     .await?;
+    retain_ledger(state, &receipt).await;
     // The same answer as a fact on profile main, so every device on this
     // account reads the registration state by query rather than by
     // probing the service itself.
@@ -260,6 +261,7 @@ pub async fn activated(
         .map(|record| record.email)
         .unwrap_or_default();
     record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref()).await?;
+    retain_ledger(&state, &receipt).await;
     // Anything held back while the account was unserved can run now.
     drain_pending(&state).await;
     Ok(Json(()))
@@ -315,6 +317,9 @@ pub async fn get_state(
             {
                 log!("account customer status not recorded: {error}");
             }
+            // The probe is also where a device that never enrolled
+            // first sees the ledger grant, so it retains here too.
+            retain_ledger(&state, &receipt).await;
             // This probe is what notices activation, so it is where
             // work deferred during the wait gets replayed.
             if receipt.status == CustomerStatus::Active {
@@ -432,12 +437,18 @@ pub(crate) async fn record_custody_cell(
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(tonk_schema::AccountCustody::new(custody, account, cell))
+        // A message sealed to the passkey's custody DID: only a fresh
+        // assertion of that passkey opens it. The account is a real
+        // sender here — this envelope carries its own secret — so it is
+        // one of the few places `sealed_by` earns its keep.
+        .assert(tonk_schema::SecretMessage::new(&custody, cell).sealed_by(&account))
         .commit()
         .perform(&state.operator)
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to record the custody cell: {error}"))
+            TonkWorkerError::Internal(format!(
+                "failed to record the sealed account secret: {error}"
+            ))
         })?;
     Ok(())
 }
@@ -636,6 +647,41 @@ async fn load_customer(
     }
 }
 
+/// Retain the read authority a receipt's ledger carries.
+///
+/// The service mints a `ledger -> account` `/use/get` chain and names
+/// it in the receipt. Retaining it is how it becomes usable: dialog
+/// stores a delegation content-addressed and decomposes issuer,
+/// audience, subject and command onto its entity, so the grant is a
+/// queryable fact on the account branch and reaches every other device
+/// through sync. Nothing else stores it -- a hex string in a blob
+/// beside the proof would be a second copy of an authority the proof
+/// already carries.
+///
+/// Best-effort, like the space retain it mirrors: the ledger is
+/// metering the account reads, not authority it needs to operate, so a
+/// failure here must not fail the enrollment that carried it.
+pub(crate) async fn retain_ledger(state: &crate::worker::TonkState, receipt: &Receipt) {
+    let Some(ledger) = &receipt.ledger else {
+        return;
+    };
+    let bytes = match hex::decode(&ledger.read_hex) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log!("ledger read grant is not hex: {error}");
+            return;
+        }
+    };
+    let chain = match dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()) {
+        Ok(chain) => chain,
+        Err(error) => {
+            log!("ledger read grant did not decode: {error}");
+            return;
+        }
+    };
+    super::account_state::retain_space_delegation(state, &chain).await;
+}
+
 /// Whether a provider actually serves this account — the precondition
 /// for wiring a space to a remote.
 ///
@@ -659,7 +705,7 @@ pub(crate) async fn is_active(state: &crate::worker::TonkState) -> bool {
 /// later request arrives on, and it reaches other devices through sync
 /// rather than being re-derived from each page's own location.
 pub(crate) async fn provider_address(state: &crate::worker::TonkState) -> Option<String> {
-    account_customer(state).await?.provider().map(str::to_owned)
+    account_registration(state).await.provider
 }
 
 /// How far this account got through registering with a provider.
@@ -693,69 +739,107 @@ pub(crate) enum Registration {
 
 /// Read how far this account got through registering.
 ///
-/// The provider address is the primary signal, because the service names
-/// it only once it actually serves the customer (see the access
-/// service's `enroll`, which deliberately answers none). So "has a
-/// provider" is "completed registration", and status only refines what
-/// an absent one means.
+/// Three independent facts answer it directly: suspension wins, then
+/// activation, then registration alone. No status string to interpret, and
+/// no "active but no address" case — activation carries the provider, so a
+/// row that says served always has somewhere to serve from.
 pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registration {
-    let Some(customer) = account_customer(state).await else {
-        return Registration::Unregistered;
-    };
-    if customer.status.0 == "Suspended" {
+    let facts = account_registration(state).await;
+    if facts.suspended {
         return Registration::Suspended;
     }
-    match customer.provider() {
-        Some(provider) => Registration::Served {
-            provider: provider.to_owned(),
-        },
-        // Active with no recorded address: the status write landed
-        // before the one carrying the provider, which happens when a
-        // space is created in the moment right after activation. The
-        // account is served — the status says so — and the caller
-        // resolves the address elsewhere, so this must not read as
-        // "awaiting activation" and leave the space local-only.
-        None if customer.status.0 == "Active" => Registration::Served {
-            provider: String::new(),
-        },
-        // Enrolled far enough to record an address, but not far enough
-        // to be served: the activation link is still unclicked.
-        None if !customer.email.0.is_empty() => Registration::AwaitingActivation {
-            email: customer.email.0.clone(),
-        },
-        None => Registration::Unregistered,
+    if let Some(provider) = facts.provider {
+        return Registration::Served { provider };
+    }
+    match facts.email {
+        Some(email) if !email.is_empty() => Registration::AwaitingActivation { email },
+        _ => Registration::Unregistered,
     }
 }
 
-/// This account's registration fact, absent when nothing recorded one.
-pub(crate) async fn account_customer(
-    state: &crate::worker::TonkState,
-) -> Option<tonk_schema::AccountCustomer> {
-    use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{AccountCustomer, prelude::DidExt as _};
+/// What the account's registration facts say, read in one pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AccountRegistrationFacts {
+    /// The address enrollment named, when the account registered.
+    pub email: Option<String>,
+    /// The provider serving the account, when it activated.
+    pub provider: Option<String>,
+    /// Whether the service withdrew.
+    pub suspended: bool,
+}
 
-    let account = super::identity::root_did(state).await.ok()?;
-    let branch = state
+/// This account's registration facts, all absent when nothing recorded any.
+pub(crate) async fn account_registration(
+    state: &crate::worker::TonkState,
+) -> AccountRegistrationFacts {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{AccountActive, AccountRegistered, AccountSuspended, prelude::DidExt as _};
+
+    let mut facts = AccountRegistrationFacts::default();
+    let Ok(account) = super::identity::root_did(state).await else {
+        return facts;
+    };
+    let Ok(branch) = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&state.operator)
         .await
-        .ok()?;
-    let rows: Vec<AccountCustomer> = branch
+    else {
+        return facts;
+    };
+    let this = account.this();
+
+    if let Ok(rows) = branch
         .handle()
         .query()
-        .select(Query::<AccountCustomer> {
-            this: Term::from(account.this()),
-            status: Term::var("status"),
+        .select(Query::<AccountRegistered> {
+            this: Term::from(this.clone()),
+            registered_at: Term::var("registered_at"),
             email: Term::var("email"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+    {
+        let rows: Vec<AccountRegistered> = rows;
+        facts.email = rows.into_iter().next().map(|row| row.email.0);
+    }
+    if let Ok(rows) = branch
+        .handle()
+        .query()
+        .select(Query::<AccountActive> {
+            this: Term::from(this.clone()),
+            activated_at: Term::var("activated_at"),
             provider: Term::var("provider"),
         })
         .perform(&state.operator)
         .try_vec()
         .await
-        .ok()?;
-    rows.into_iter().next()
+    {
+        let rows: Vec<AccountActive> = rows;
+        facts.provider = rows
+            .into_iter()
+            .next()
+            .map(|row| row.provider.0)
+            .filter(|address| !address.is_empty());
+    }
+    if let Ok(rows) = branch
+        .handle()
+        .query()
+        .select(Query::<AccountSuspended> {
+            this: Term::from(this),
+            suspended_at: Term::var("suspended_at"),
+            reason: Term::var("reason"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+    {
+        let rows: Vec<AccountSuspended> = rows;
+        facts.suspended = !rows.is_empty();
+    }
+    facts
 }
 
 /// Record the account's registration state as a fact on profile main,
@@ -770,7 +854,7 @@ pub(crate) async fn record_customer_status(
     email: &str,
     provider: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
-    use tonk_schema::{AccountCustomer, prelude::DidExt as _};
+    use tonk_schema::{AccountActive, AccountRegistered, AccountSuspended, prelude::DidExt as _};
 
     let account = super::identity::root_did(state).await?;
     // An absent address means "unchanged", not "no provider": a receipt
@@ -780,22 +864,35 @@ pub(crate) async fn record_customer_status(
         Some(provider) => Some(provider.to_owned()),
         None => provider_address(state).await,
     };
-    state
+    let at = Timestamp::now().to_unix();
+
+    // Three independent facts, each written by the act that proves it and
+    // never rewritten. Enrollment records the registration; activation adds
+    // its own row rather than overwriting one, so two devices learning the
+    // service's answer at once cannot race for a single status slot.
+    let mut transaction = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(AccountCustomer::new(
-            account.this(),
-            status.as_str(),
-            email.to_owned(),
-            provider,
-        ))
+        .assert(AccountRegistered::new(account.this(), email.to_owned(), at));
+    // Activation carries the provider, so it is written only once the
+    // service has named one: a row claiming to be served with no address
+    // to serve from would be the state this shape exists to prevent.
+    if status == CustomerStatus::Active
+        && let Some(provider) = provider
+    {
+        transaction = transaction.assert(AccountActive::new(account.this(), provider, at));
+    }
+    if status == CustomerStatus::Suspended {
+        transaction = transaction.assert(AccountSuspended::new(account.this(), String::new(), at));
+    }
+    transaction
         .commit()
         .perform(&state.operator)
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("commit account customer status: {error}"))
+            TonkWorkerError::Internal(format!("commit account registration facts: {error}"))
         })?;
 
     // Activation (or enrollment, or a suspension) is a new answer about

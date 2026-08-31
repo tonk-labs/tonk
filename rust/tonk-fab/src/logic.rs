@@ -1808,18 +1808,24 @@ mod invite_link {
 /// on connect is stale by then — the bar kept offering to log in to
 /// someone who just had.
 ///
-/// `provider` is required here (as it is on the concept), so an account
-/// that enrolled but has no provider yet does not resolve at all. That
-/// is the intent: "has a provider" means "finished registering", so the
-/// absence is the answer.
+/// Subscribes to the REGISTRATION fact: an account that enrolled has one,
+/// whatever happened after. Resolving at all is what tells the bar an
+/// account exists — the old query required a provider, so a just-enrolled
+/// account read as no account and the bar went on offering "log in to
+/// share" to someone who had just registered.
+///
+/// Whether that account is SERVED is a separate fact
+/// (`xyz.tonk.account/activated-at`), read by whoever needs it. There is no
+/// status string to compare against in either case.
 pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "status": {
-                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            "registered_at": {
+                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "cardinality": "one"
             },
-            "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            "email": {
+                "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one"
             }
         } },
         "terms": {
@@ -1834,7 +1840,34 @@ pub fn account_customer_query_body() -> String {
             // is not known here; there is one customer row per profile,
             // so whatever binds is it.
             "this": { "?": { "name": "account" } },
-            "status": { "?": { "name": "status" } },
+            "registered_at": { "?": { "name": "registered_at" } },
+            "email": { "?": { "name": "email" } }
+        }
+    })
+    .to_string()
+}
+
+/// Whether this account is SERVED: the activation fact, whose presence is
+/// the whole answer.
+///
+/// A separate subscription from the registration one because the two
+/// resolve independently — an enrolled account has a registration row and
+/// no activation row, and a query requiring both would resolve for neither
+/// (the join-status lesson). No status string is compared in either.
+pub fn account_active_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "activated_at": {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
+            },
+            "provider": {
+                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": { "?": { "name": "account" } },
+            "activated_at": { "?": { "name": "activated_at" } },
             "provider": { "?": { "name": "provider" } }
         }
     })
@@ -1984,8 +2017,8 @@ mod account_state_query {
             parsed["terms"]["this"].is_object(),
             "`this` must be bound, got {body}",
         );
-        assert!(body.contains("xyz.tonk.account/customer-status"));
-        assert!(body.contains("xyz.tonk.account/provider-address"));
+        assert!(body.contains("xyz.tonk.account/registered-at"));
+        assert!(body.contains("xyz.tonk.account/customer-email"));
     }
 }
 

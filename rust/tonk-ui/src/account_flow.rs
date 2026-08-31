@@ -1947,9 +1947,9 @@ mod tests {
             // asserts the same shape from the other side.
             serde_json::json!({
                 "predicate": { "with": {
-                    "status": {
-                        "the": "xyz.tonk.account/customer-status",
-                        "as": "Text", "cardinality": "one"
+                    "activated_at": {
+                        "the": "xyz.tonk.account/activated-at",
+                        "as": "UnsignedInteger", "cardinality": "one"
                     },
                     "provider": {
                         "the": "xyz.tonk.account/provider-address",
@@ -1958,7 +1958,7 @@ mod tests {
                 } },
                 "terms": {
                     "this": { "?": { "name": "account" } },
-                    "status": { "?": { "name": "status" } },
+                    "activated_at": { "?": { "name": "activated_at" } },
                     "provider": { "?": { "name": "provider" } }
                 }
             }),

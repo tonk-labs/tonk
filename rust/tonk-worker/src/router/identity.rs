@@ -43,7 +43,7 @@ pub(crate) struct LocalRoot {
     pub passkey: Option<PasskeyMetadata>,
     /// The account's X25519 recipient, when the ceremony that wrote this
     /// record held the secret. Published to the account space by
-    /// `seed_encryption_key`.
+    /// `seed_sealed_inbox`.
     pub encryption_key: Option<dialog_varsig::Did>,
 }
 
@@ -354,7 +354,7 @@ pub async fn save(
     if super::account_state::seed_passkey_facts(&state).await {
         tonk_common::log!("recorded this device's passkey creation facts in the account space");
     }
-    if super::account_state::seed_encryption_key(&state).await {
+    if super::account_state::seed_sealed_inbox(&state).await {
         tonk_common::log!("published the account's encryption key in the account space");
     }
     Ok(Json(status))

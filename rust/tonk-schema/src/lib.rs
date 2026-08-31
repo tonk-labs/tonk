@@ -65,12 +65,12 @@ pub use sync::*;
 
 pub mod account;
 pub use account::{
-    AccountCustomer, AccountDisplayName, AccountEncryptionKey, AccountPasskeyCreated, EmailStatus,
-    email_state,
+    AccountActive, AccountDisplayName, AccountPasskeyCreated, AccountRegistered,
+    AccountSealedInbox, AccountSuspended, EmailStatus, email_state,
 };
 
 pub mod custody;
-pub use custody::{AccountCustody, CustodiedSeed, SeedKind};
+pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
 pub mod device_link;
 pub mod replica;
@@ -114,7 +114,7 @@ mod identity;
 pub use identity::{ProfileIdentity, ProfileName};
 
 mod roster;
-pub use roster::{RosterAccount, RosterEmail, RosterProfile};
+pub use roster::DeviceProfile;
 
 mod petname;
 pub use petname::petname;

@@ -4934,23 +4934,39 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+        let principals: Vec<tonk_schema::SecretPrincipal> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            .select(Query::<tonk_schema::SecretPrincipal> {
+                this: Term::from(subject.this()),
                 kind: Term::var("kind"),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&tonk.operator)
             .try_vec()
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1, "one custodied space seed");
-        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        assert_eq!(principals.len(), 1, "one sealed space principal");
+        assert_eq!(
+            principals[0].kind.0.to_string(),
+            tonk_schema::SeedKind::SPACE
+        );
+
+        let rows: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the principal names a real message");
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
         let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
             crate::router::tests::test_root_seed(&tonk.profile_name),
         ));
@@ -6426,46 +6442,53 @@ mod tests {
         );
     }
 
-    /// The gate reads the customer's status, not merely whether an
-    /// account exists: `Registered` (enrolled, email unconfirmed) is as
-    /// unservable as no registration at all.
+    /// The gate reads what the account actually proved, not merely that
+    /// one exists: enrolled-but-unconfirmed is as unservable as no
+    /// registration at all.
+    ///
+    /// One account per state, because the facts are monotone — an
+    /// activation is never unmade by a later enrollment answer, which is
+    /// the race the three-fact shape exists to prevent. Reusing one
+    /// account across states would assert the opposite.
     #[dialog_common::test]
     async fn it_treats_an_enrolled_but_unconfirmed_customer_as_inactive() {
-        let (_app, state, _key) = fresh_repo("test-registered-inactive").await;
+        use tonk_account::customer::CustomerStatus;
 
-        let tonk = state.read().await;
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Registered,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Registered customer awaits email activation and is not servable",
-        );
+        let (_app, registered, _k1) = fresh_repo("test-registered-inactive").await;
+        {
+            let tonk = registered.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Registered customer awaits email activation and is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Suspended,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Suspended customer is not servable",
-        );
+        let (_app, suspended, _k2) = fresh_repo("test-suspended-inactive").await;
+        {
+            let tonk = suspended.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Suspended)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Suspended customer is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Active,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            crate::router::customer::is_active(&tonk).await,
-            "an Active customer is the one state the service serves",
-        );
+        let (_app, active, _k3) = fresh_repo("test-active-servable").await;
+        {
+            let tonk = active.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                crate::router::customer::is_active(&tonk).await,
+                "an Active customer is the one state the service serves",
+            );
+        }
     }
 
     /// The account's provider is read from the registration fact, so
@@ -6548,15 +6571,16 @@ mod tests {
         );
     }
 
-    /// An `Active` account whose provider write has not landed yet
-    /// still reads as served.
+    /// Activation carries its provider, so "active with no address"
+    /// cannot arise.
     ///
-    /// Activation writes the status and the address, and a space created
-    /// in the moment between them must not come up local-only. Reading
-    /// this as `AwaitingActivation` would tell an activated user to go
-    /// confirm an email they already confirmed.
+    /// The old shape wrote a status string and an address as separate
+    /// fields, so a space created between the two writes came up
+    /// local-only and the user was told to confirm an email they had
+    /// already confirmed. `tonk:account/active` carries both or neither:
+    /// there is no in-between to fall into.
     #[dialog_common::test]
-    async fn it_treats_an_active_account_without_a_recorded_provider_as_served() {
+    async fn it_records_no_activation_without_a_provider_to_serve_from() {
         use crate::router::customer::{
             Registration, is_active, record_customer_status, registration,
         };
@@ -6565,18 +6589,37 @@ mod tests {
         let (_app, state, _key) = fresh_repo("test-active-no-provider").await;
         let tonk = state.read().await;
 
+        // An activation answer that names no provider records the
+        // registration and withholds the activation, rather than
+        // claiming served with nowhere to serve from.
         record_customer_status(&tonk, CustomerStatus::Active, "who@example.test", None)
             .await
             .expect("the status records");
 
         assert!(
-            matches!(registration(&tonk).await, Registration::Served { .. }),
-            "an Active account is served whether or not its address landed yet",
+            matches!(
+                registration(&tonk).await,
+                Registration::AwaitingActivation { .. }
+            ),
+            "no provider means nothing was activated",
         );
+        assert!(!is_active(&tonk).await);
+
+        // The answer that names one activates.
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "who@example.test",
+            Some("https://service.example/ucan/"),
+        )
+        .await
+        .expect("the status records");
+
         assert!(
-            is_active(&tonk).await,
-            "the create gate must not withhold a remote from an activated account",
+            matches!(registration(&tonk).await, Registration::Served { .. }),
+            "an activation with a provider is served",
         );
+        assert!(is_active(&tonk).await);
     }
 
     /// Registration reads as one of four states, and the provider

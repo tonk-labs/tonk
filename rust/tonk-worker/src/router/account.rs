@@ -456,8 +456,16 @@ mod tests {
         };
         assert_eq!(before, after);
     }
+    /// The roster keeps its entry across link and unlink: it records which
+    /// profiles this device can open, which does not change when one signs
+    /// out.
+    ///
+    /// It carries no account state to assert on any more. Whether a profile
+    /// is signed in is the `account -> profile` delegation, not a roster
+    /// stamp that could disagree with it, so this pins only that the entry
+    /// survives and still names the handle to open.
     #[dialog_common::test]
-    async fn it_marks_the_profile_local_in_the_roster_after_unlink() {
+    async fn it_keeps_the_roster_entry_across_link_and_unlink() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
@@ -471,12 +479,10 @@ mod tests {
                 .read_roster(&tonk.storage, &tonk.operator)
                 .await
                 .unwrap();
-            let entry = roster
+            roster
                 .iter()
                 .find(|entry| entry.profile_name == tonk.profile_name)
                 .expect("link writes the profile's roster entry");
-            assert!(entry.root_did.is_some());
-            assert_eq!(entry.provider.as_deref(), Some(TEST_ACCOUNT_PROVIDER));
         }
 
         let _ = unlink(State(state.clone())).await.unwrap();
@@ -487,14 +493,10 @@ mod tests {
             .read_roster(&tonk.storage, &tonk.operator)
             .await
             .unwrap();
-        let entry = roster
+        roster
             .iter()
             .find(|entry| entry.profile_name == tonk.profile_name)
-            .expect("unlink keeps the roster entry");
-        assert!(
-            entry.root_did.is_none() && entry.provider.is_none() && entry.email.is_none(),
-            "a signed-out profile renders as a local workspace"
-        );
+            .expect("unlink keeps the roster entry: the profile is still openable");
     }
 
     #[dialog_common::test]

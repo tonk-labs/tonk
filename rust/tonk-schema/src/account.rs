@@ -4,8 +4,8 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::account::{
-    CustomerEmail, CustomerStatus, DisplayName, EncryptionKey, PasskeyCreatedAt, PasskeyCreatedOn,
-    ProviderAddress,
+    ActivatedAt, CustomerEmail, DisplayName, PasskeyCreatedAt, PasskeyCreatedOn, ProviderAddress,
+    RegisteredAt, SealedInbox, SuspendedAt, SuspensionReason,
 };
 
 /// The account-wide display name, keyed by the immutable account subject.
@@ -75,93 +75,132 @@ impl AccountPasskeyCreated {
     }
 }
 
-/// The account's registration with the access service, keyed by the
+/// The account enrolled an address with an access service, keyed by the
 /// immutable account subject.
 ///
-/// This is the account's registration state as a FACT, not as a cached
-/// HTTP answer. Every device on the account reads it with an ordinary
-/// query and converges on it through sync, so a device that never ran
-/// the enrollment — and never probed the service — still knows whether
-/// the account is servable.
+/// One of three INDEPENDENT facts — registration, activation, suspension —
+/// each written once by the act that proves it and never rewritten. They
+/// compose rather than replace: a suspended account is still a registered
+/// one, and an activated account keeps its registration.
 ///
-/// Written at two moments: when enrollment records `Registered`, and
-/// when activation is observed and promotes it to `Active`.
+/// This replaces a single cardinality-one `status` string, which had two
+/// faults. String variants are unvalidated: the old `is_active()` was a
+/// `== "Active"` match a typo defeats silently. And one slot written by
+/// both enrollment and activation is a race — dialog's merge picks a
+/// winner, so an account that IS activated could converge back to
+/// registered. Adding a fact only ever narrows, so concurrent writers
+/// converge instead of fighting.
+///
+/// A fact, not a cached HTTP answer: every device on the account reads it
+/// with an ordinary query and converges through sync, so a device that
+/// never ran the enrollment still knows where the account stands.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AccountCustomer {
+pub struct AccountRegistered {
     /// The immutable account subject, which is the customer DID.
     pub this: Entity,
-    /// One of `Registered`, `Active`, or `Suspended`.
-    pub status: CustomerStatus,
+    /// When enrollment recorded the address, unix seconds.
+    pub registered_at: RegisteredAt,
     /// The address enrollment named.
     pub email: CustomerEmail,
-    /// The provider serving this account: the UCAN access-service
-    /// endpoint its spaces attach their remotes to.
-    ///
-    /// Optional because the service names one only at activation, so
-    /// there is a real interval -- enrolled, email unconfirmed -- with
-    /// no address to record. A required field would make the row
-    /// unresolvable for exactly the account whose state a caller most
-    /// needs to read.
-    pub provider: Option<ProviderAddress>,
 }
 
-impl AccountCustomer {
-    /// Record the account's registration state.
-    pub fn new(account: Entity, status: &str, email: String, provider: Option<String>) -> Self {
+impl AccountRegistered {
+    /// Record that `account` enrolled `email` at `at`.
+    pub fn new(account: Entity, email: String, at: u64) -> Self {
         Self {
             this: account,
-            status: CustomerStatus(status.to_owned()),
+            registered_at: RegisteredAt(at),
             email: CustomerEmail(email),
-            provider: provider.map(ProviderAddress),
+        }
+    }
+}
+
+/// The account confirmed its address and is served.
+///
+/// Its PRESENCE is what makes an account active; nothing has to overwrite
+/// the registration to say so. Absence means not yet served, which is read
+/// from the row being missing rather than from a status field claiming it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountActive {
+    /// The immutable account subject.
+    pub this: Entity,
+    /// When activation was observed, unix seconds.
+    pub activated_at: ActivatedAt,
+    /// The access service serving this account: the UCAN endpoint its
+    /// spaces attach their remotes to. Known only at activation, which is
+    /// exactly when this fact is written — so unlike a status field it is
+    /// never absent on a row that claims to be served.
+    pub provider: ProviderAddress,
+}
+
+impl AccountActive {
+    /// Record that `account` activated at `at`, served by `provider`.
+    pub fn new(account: Entity, provider: String, at: u64) -> Self {
+        Self {
+            this: account,
+            activated_at: ActivatedAt(at),
+            provider: ProviderAddress(provider),
         }
     }
 
-    /// The provider serving this account, absent when registration
-    /// recorded none.
-    ///
-    /// An address recorded as empty reads as absent too: the field was
-    /// a required one carrying `""` before it became optional, and rows
-    /// written then are still on devices.
-    pub fn provider(&self) -> Option<&str> {
-        self.provider
-            .as_ref()
-            .map(|address| address.0.as_str())
-            .filter(|address| !address.is_empty())
-    }
-
-    /// Whether the access service will serve this account's subjects.
-    ///
-    /// Only `Active` is servable: `Registered` awaits email activation
-    /// and `Suspended` was withdrawn, and the provisioning gate refuses
-    /// both. An unrecognised value — a status written by a newer build —
-    /// reads as not servable, which fails closed.
-    pub fn is_active(&self) -> bool {
-        self.status.0 == "Active"
+    /// The provider serving this account.
+    pub fn provider(&self) -> &str {
+        &self.provider.0
     }
 }
 
-/// The account's public encryption key, keyed by the immutable account
-/// subject: the recipient every device seals a [`CustodiedSeed`] to.
+/// The service withdrew from serving this account.
 ///
-/// Written by the ceremony that creates the account secret and again at
-/// rotation. Any device holding the account space can read it and seal;
-/// only a ceremony, which derives the private half, can open.
-///
-/// [`CustodiedSeed`]: crate::CustodiedSeed
+/// Suspension wins outright: a suspended account keeps its registration and
+/// its activation, and this row is what says nothing is served.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AccountEncryptionKey {
+pub struct AccountSuspended {
+    /// The immutable account subject.
+    pub this: Entity,
+    /// When the withdrawal took effect, unix seconds.
+    pub suspended_at: SuspendedAt,
+    /// Why the service withdrew, in words a person can act on.
+    pub reason: SuspensionReason,
+}
+
+impl AccountSuspended {
+    /// Record that `account` was suspended at `at` for `reason`.
+    pub fn new(account: Entity, reason: String, at: u64) -> Self {
+        Self {
+            this: account,
+            suspended_at: SuspendedAt(at),
+            reason: SuspensionReason(reason),
+        }
+    }
+}
+
+/// Where anything sealed for this account is addressed, keyed by the
+/// immutable account subject.
+///
+/// A device that holds a space seed seals it to this address and
+/// publishes the result as a [`SecretMessage`]; only a live passkey
+/// ceremony derives the private half and can open one. So every device
+/// can deposit and none can read, which is what lets a seed reach a new
+/// device without any device holding the account's secret.
+///
+/// An address, not a store: nothing is kept here. Written by the
+/// ceremony that creates the account secret, and again at rotation.
+///
+/// [`SecretMessage`]: crate::SecretMessage
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountSealedInbox {
     /// The immutable account subject.
     pub this: Entity,
     /// The X25519 `did:key:z6LS…`.
-    pub key: EncryptionKey,
+    pub address: SealedInbox,
 }
 
-impl AccountEncryptionKey {
-    /// Publish `key` as the account's encryption key.
-    pub fn new(account: Entity, key: Entity) -> Self {
+impl AccountSealedInbox {
+    /// Publish `address` as where this account's sealed material goes.
+    pub fn new(account: Entity, address: Entity) -> Self {
         Self {
             this: account,
-            key: EncryptionKey(key),
+            address: SealedInbox(address),
         }
     }
 }
@@ -265,6 +304,183 @@ mod tests {
             "Cedar"
         );
         Ok(a_value)
+    }
+
+    /// The three registration facts are independent: each resolves on its
+    /// own, and an account carries whichever have happened.
+    #[dialog_common::test]
+    async fn it_reads_registration_activation_and_suspension_apart() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let account = did!("test:account").this();
+
+        // Enrolled and nothing more: registration resolves, activation
+        // does not. Absence is the whole signal for "not yet served".
+        branch
+            .transaction()
+            .assert(AccountRegistered::new(
+                account.clone(),
+                "person@example.com".into(),
+                100,
+            ))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let registered: Vec<AccountRegistered> = branch
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.clone()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(registered.len(), 1);
+        assert_eq!(registered[0].email.0, "person@example.com");
+
+        let active: Vec<AccountActive> = branch
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.clone()),
+                activated_at: Term::var("activated_at"),
+                provider: Term::var("provider"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(active.is_empty(), "an enrolled account is not yet served");
+
+        // Activation ADDS a row; it does not overwrite the registration.
+        branch
+            .transaction()
+            .assert(AccountActive::new(
+                account.clone(),
+                "https://service.example/ucan/".into(),
+                200,
+            ))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let active: Vec<AccountActive> = branch
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.clone()),
+                activated_at: Term::var("activated_at"),
+                provider: Term::var("provider"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].provider(), "https://service.example/ucan/");
+
+        let registered: Vec<AccountRegistered> = branch
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.clone()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            registered.len(),
+            1,
+            "an activated account keeps its registration"
+        );
+
+        // Suspension composes too: a suspended account is still both
+        // registered and activated, and this row is what says nothing is
+        // served.
+        branch
+            .transaction()
+            .assert(AccountSuspended::new(account.clone(), "unpaid".into(), 300))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let suspended: Vec<AccountSuspended> = branch
+            .query()
+            .select(Query::<AccountSuspended> {
+                this: Term::from(account.clone()),
+                suspended_at: Term::var("suspended_at"),
+                reason: Term::var("reason"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(suspended.len(), 1);
+        assert_eq!(suspended[0].reason.0, "unpaid");
+
+        let active: Vec<AccountActive> = branch
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account),
+                activated_at: Term::var("activated_at"),
+                provider: Term::var("provider"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(active.len(), 1, "suspension does not retract activation");
+        Ok(())
+    }
+
+    /// Two devices recording the same registration converge on one row
+    /// rather than racing: the old single `status` slot could be won by
+    /// either writer, so an activated account could fall back to
+    /// registered.
+    #[dialog_common::test]
+    async fn it_does_not_race_enrollment_against_activation() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let account = did!("test:account").this();
+
+        // Activation lands first, then a late re-enrollment: with one
+        // status slot the second write would demote the account.
+        branch
+            .transaction()
+            .assert(AccountActive::new(
+                account.clone(),
+                "https://service.example/ucan/".into(),
+                200,
+            ))
+            .commit()
+            .perform(&operator)
+            .await?;
+        branch
+            .transaction()
+            .assert(AccountRegistered::new(
+                account.clone(),
+                "person@example.com".into(),
+                100,
+            ))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let active: Vec<AccountActive> = branch
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account),
+                activated_at: Term::var("activated_at"),
+                provider: Term::var("provider"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            active.len(),
+            1,
+            "a late enrollment cannot unmake an activation"
+        );
+        Ok(())
     }
 
     #[dialog_common::test]

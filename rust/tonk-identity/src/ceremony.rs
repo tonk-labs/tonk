@@ -49,7 +49,7 @@ pub struct RootCeremony {
     pub passkey: Option<PasskeyCreationMetadata>,
     /// The account's X25519 recipient (`did:key:z6LS…`) when this
     /// ceremony held the secret, for the worker to publish as
-    /// `AccountEncryptionKey`.
+    /// `AccountSealedInbox`.
     pub encryption_key: Option<String>,
 }
 
@@ -283,7 +283,7 @@ pub struct AccountRequest {
     /// follows its creation.
     pub created_on: Option<String>,
     /// The account's X25519 recipient, published as
-    /// `AccountEncryptionKey`.
+    /// `AccountSealedInbox`.
     pub encryption_key: String,
 }
 

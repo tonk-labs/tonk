@@ -557,14 +557,16 @@ fn account_is_active(payload: &JsValue, is_delta: bool) -> bool {
     })
 }
 
-/// The account's registration row: status, and the provider its spaces
-/// sync to.
+/// The account's ACTIVATION row: when it activated, and the provider its
+/// spaces sync to. Its presence is what makes an account served — there is
+/// no status string to compare against.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn account_query_body() -> String {
     serde_json::json!({
         "predicate": { "with": {
-            "status": {
-                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            "activated_at": {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
             },
             "provider": {
                 "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
@@ -572,7 +574,7 @@ fn account_query_body() -> String {
         } },
         "terms": {
             "this": { "?": { "name": "account" } },
-            "status": { "?": { "name": "status" } },
+            "activated_at": { "?": { "name": "activated_at" } },
             "provider": { "?": { "name": "provider" } }
         }
     })

@@ -69,7 +69,7 @@ pub(crate) async fn ensure_recipient(
     }
     {
         let tonk = state.read().await;
-        if super::account_state::published_encryption_key(&tonk, &root.root_did)
+        if super::account_state::published_sealed_inbox(&tonk, &root.root_did)
             .await?
             .is_some()
         {
@@ -715,13 +715,14 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
-        let rows: Vec<tonk_schema::AccountCustody> = branch
+        let rows: Vec<tonk_schema::SecretMessage> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::AccountCustody> {
+            .select(Query::<tonk_schema::SecretMessage> {
                 this: Term::var("this"),
-                account: Term::var("account"),
-                cell: Term::var("cell"),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -730,7 +731,7 @@ mod tests {
 
         assert_eq!(rows.len(), 1, "one row per passkey");
         assert_eq!(
-            rows[0].cell.0, material.sealed,
+            rows[0].message.0, material.sealed,
             "the row carries the sealed envelope, not a reference to one"
         );
     }
@@ -799,16 +800,15 @@ mod tests {
         super::super::identity::forget_encryption_key(&tonk)
             .await
             .unwrap();
-        let published =
-            super::super::account_state::published_encryption_key(&tonk, &root.root_did)
-                .await
-                .unwrap()
-                .expect("the fixture published one");
+        let published = super::super::account_state::published_sealed_inbox(&tonk, &root.root_did)
+            .await
+            .unwrap()
+            .expect("the fixture published one");
         tonk.reactor
             .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .transaction()
-            .retract(tonk_schema::AccountEncryptionKey::new(
+            .retract(tonk_schema::AccountSealedInbox::new(
                 root.root_did.this(),
                 published.this(),
             ))

@@ -638,7 +638,7 @@ pub mod tests {
             .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .transaction()
-            .assert(tonk_schema::AccountEncryptionKey::new(
+            .assert(tonk_schema::AccountSealedInbox::new(
                 root_did.this(),
                 recipient.this(),
             ))

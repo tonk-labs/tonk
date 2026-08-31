@@ -195,7 +195,7 @@ impl AccountFixture {
             {
                 account
                     .transaction()
-                    .assert(tonk_schema::AccountEncryptionKey::new(
+                    .assert(tonk_schema::AccountSealedInbox::new(
                         root_did.this(),
                         recipient.this(),
                     ))

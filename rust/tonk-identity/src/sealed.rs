@@ -243,7 +243,7 @@ impl<'a> AccountSecretKey<'a> {
     }
 
     /// The recipient this account is sealed to: what a ceremony
-    /// publishes as the account's `AccountEncryptionKey` fact.
+    /// publishes as the account's `AccountSealedInbox` fact.
     pub fn recipient(&self) -> RecipientKey {
         self.0.encryption_key().recipient()
     }

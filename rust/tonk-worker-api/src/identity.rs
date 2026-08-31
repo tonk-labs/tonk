@@ -61,7 +61,7 @@ pub struct SaveRootRequest {
     pub passkey: Option<PasskeyMetadata>,
     /// The account's X25519 recipient (`did:key:z6LS…`) when the
     /// ceremony held the secret, for the worker to publish as
-    /// `AccountEncryptionKey`.
+    /// `AccountSealedInbox`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
 }

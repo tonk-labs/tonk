@@ -18,7 +18,13 @@ use futures_util::StreamExt as _;
 use crate::domain::device::{CreatedAt, Reason, Title};
 
 /// The reason recorded on a link minted for a device.
-pub const DEVICE_LINK: &str = "device-link";
+pub const DEVICE_LINK: &str = "case:device-link";
+
+/// The stored [`Reason`] for a device link. The URI is a constant, so
+/// the parse cannot fail.
+pub fn device_link_reason() -> Reason {
+    Reason(DEVICE_LINK.parse().expect("a constant reason URI parses"))
+}
 
 /// A device authorization: the label and creation time of an
 /// `account -> profile` delegation.
@@ -60,7 +66,7 @@ impl DeviceLink {
             this: entity,
             created_at: CreatedAt(created_at),
             title: Title(title.into()),
-            reason: Reason(DEVICE_LINK.to_string()),
+            reason: device_link_reason(),
         }
     }
 }

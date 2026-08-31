@@ -208,9 +208,7 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     // account's own sync — the address enrollment recorded, and the
     // passkey metadata the root save wrote — so asking a service for
     // them was asking for a second copy of what this branch holds.
-    let email = super::customer::account_customer(state)
-        .await
-        .map(|customer| customer.email.0);
+    let email = super::customer::account_registration(state).await.email;
     let passkey = super::account_state::passkey_facts(state).await;
     Ok(merge_summary(email, passkey, None))
 }
