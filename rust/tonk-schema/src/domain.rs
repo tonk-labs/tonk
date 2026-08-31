@@ -300,6 +300,21 @@ pub mod command {
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
 
+    /// The notebook title typed into the index's heading switcher.
+    ///
+    /// Its own attribute (`…detail/created-title`), NOT the
+    /// `detail/title` a retitle carries: decode does not consider concept
+    /// identity, so two transients of the same shape both decode from one
+    /// event — every rename would also create a notebook.
+    pub mod notebook {
+        use super::Attribute;
+
+        /// The title a create carries.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct CreatedTitle(pub String);
+    }
+
     /// The address read from the registration form's submit event:
     /// `event.currentTarget.elements.email.value` (the `<wa-input
     /// name="email">` inside `<form onsubmit=account/register>`).

@@ -127,6 +127,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
     {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
+        registry.register(Box::new(super::repository::CreateNotebookHandler::new()));
         registry.register(Box::new(super::repository::RemoveSpaceHandler::new()));
         registry.register(Box::new(super::repository::InviteHandler::new()));
         registry.register(Box::new(super::repository::EnableSyncHandler::new()));

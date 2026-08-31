@@ -576,15 +576,6 @@ rule!:
         at: ?block/key
 
 rule!:
-  description: Create a notebook from the switcher.
-  assert!: notebook/named
-  when:
-    - assert: notebook/create
-      where:
-        this: ?this
-        title: ?title
-
-rule!:
   description: Retitle a notebook from its heading.
   assert!: notebook/named
   when:

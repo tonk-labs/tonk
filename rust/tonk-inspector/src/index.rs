@@ -168,11 +168,15 @@ impl TonkNotebookIndexElement {
         }
     }
 
-    /// Go to a notebook.
+    /// Go to a notebook, as a route change rather than a page load.
+    ///
+    /// Through `tonk_host::navigate_to`, not `location.href`: it pushes
+    /// history and fires `popstate` so `<tonk-site>` re-resolves, and in a
+    /// guest it forwards to the parent — the guest's document is
+    /// `about:srcdoc` at an opaque origin, where a real navigation would
+    /// load the whole app inside the iframe.
     fn navigate(href: &str) {
-        if let Some(window) = web_sys::window() {
-            let _ = window.location().set_href(href);
-        }
+        tonk_host::navigate_to(href);
     }
 }
 
@@ -217,9 +221,6 @@ impl CustomElement for TonkNotebookIndexElement {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         let host = this.clone();
-        // The title we are waiting to see a row for, after a create.
-        let pending: std::rc::Rc<std::cell::RefCell<Option<String>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
 
         // Suggestions: draw the panel.
         let drawing = host.clone();
@@ -248,10 +249,11 @@ impl CustomElement for TonkNotebookIndexElement {
         let _ = host.add_event_listener_with_callback("switch", on_switch.as_ref().unchecked_ref());
         on_switch.forget();
 
-        // Creating one. The command writes the notebook; the row for it
-        // arrives on a later render, and the observer below navigates then.
+        // Creating one. The worker's `CreateNotebook` handler writes the
+        // notebook AND performs the redirect: it is the only place that
+        // knows the entity the write derives, and the page cannot learn it
+        // from a transient that is swept before any subscription sees it.
         let creating = host.clone();
-        let awaiting = pending.clone();
         let on_create = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
             let Some(title) = js_sys::Reflect::get(&event.detail(), &"title".into())
                 .ok()
@@ -259,11 +261,6 @@ impl CustomElement for TonkNotebookIndexElement {
             else {
                 return;
             };
-            // Remember what we asked for. The notebook does not exist yet:
-            // the command commits, the directory re-renders, and the row
-            // carrying its entity appears only then — so navigation waits
-            // for the row rather than guessing an entity here.
-            *awaiting.borrow_mut() = Some(title.trim().to_owned());
             let detail = js_sys::Object::new();
             let _ = js_sys::Reflect::set(&detail, &"created-title".into(), &title.into());
             let init = web_sys::CustomEventInit::new();
@@ -280,22 +277,8 @@ impl CustomElement for TonkNotebookIndexElement {
         // The rows arrive from a `<tonk-display>` render that may land after
         // this callback, so republish whenever the child list changes.
         let observing = host.clone();
-        let watching = pending.clone();
         let on_mutate = Closure::<dyn FnMut(js_sys::Array)>::new(move |_: js_sys::Array| {
             TonkNotebookIndexElement::publish(&observing);
-            // The notebook we just asked for may have arrived. Go to it the
-            // moment its row exists, which is also the moment it is safe to:
-            // before that there is no entity to navigate to.
-            let wanted = watching.borrow().clone();
-            if let Some(title) = wanted {
-                let hit = TonkNotebookIndexElement::candidates(&observing)
-                    .into_iter()
-                    .find(|c| c.title.eq_ignore_ascii_case(&title));
-                if let Some(candidate) = hit {
-                    *watching.borrow_mut() = None;
-                    TonkNotebookIndexElement::navigate(&candidate.href);
-                }
-            }
         });
         if let Ok(observer) = web_sys::MutationObserver::new(on_mutate.as_ref().unchecked_ref()) {
             let options = web_sys::MutationObserverInit::new();

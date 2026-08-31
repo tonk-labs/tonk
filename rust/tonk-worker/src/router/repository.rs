@@ -1768,6 +1768,141 @@ async fn run_rename_repository(
     Ok(())
 }
 
+/// Post-commit handler for the [`CreateNotebook`] command.
+///
+/// The index's heading switcher fires this when the author names a
+/// notebook that does not exist. The handler writes it and then drops the
+/// author into it, both halves here because neither can happen in the
+/// page: the notebook's entity is derived when the fact is written, so the
+/// element that fired the command never learns it, and a service worker
+/// has no `window` to navigate with — the redirect goes back as a
+/// `navigate` message to the originating client, like the create-space and
+/// join redirects.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct CreateNotebookHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl CreateNotebookHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::CreateNotebook::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNotebookHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::CreateNotebook::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::CreateNotebook::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = decoded else { return };
+            let title = command.title.0;
+            // The repository the command fired in. Read from the origin
+            // rather than carried on the command: the notebook belongs to
+            // the space whose page the author was on, and a command that
+            // NAMED its target could be committed against any branch.
+            let repo = env.origin().repo.clone();
+            if title.trim().is_empty() || repo.trim().is_empty() {
+                log!("CreateNotebook: blank title or origin repo, skipping");
+                return;
+            }
+            log!("command CreateNotebook title={title} repo={repo}");
+
+            match create_notebook_inner(&env, &repo, &title).await {
+                Ok(entity) => {
+                    // Drop the author into the notebook they just named.
+                    let href = format!("/space/{repo}/notebook/{entity}");
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
+                Err(error) => log!("CreateNotebook '{title}' failed: {error}"),
+            }
+        })
+    }
+}
+
+/// Write the notebook and return its entity.
+///
+/// Through notation rather than a typed assert: the notebook concept lives
+/// in the YAML library, not in `tonk-schema`, so the shape stays in one
+/// place. `notebook/named` is the title-only concept — a notebook with no
+/// blocks yet cannot satisfy `notebook`, which requires one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_notebook_inner(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    title: &str,
+) -> Result<String, RepositoryError> {
+    let tonk = env.state().read().await;
+    // The title is data, and goes in as a quoted scalar so a colon or a
+    // quote in a notebook's name cannot change the document's shape.
+    let document = format!(
+        "notebook/named!:\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let response = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook create failed: {e}")))?;
+
+    if response.commits.claims == 0 {
+        return Err(RepositoryError::Internal(
+            "notebook create wrote nothing".to_owned(),
+        ));
+    }
+
+    // Read the entity back by title.
+    //
+    // The commit summary reports entities keyed by VARIABLE, and an
+    // anchor-less head has no variable — so a write whose identity derives
+    // from its body reports none at all. Querying for the title we just
+    // wrote is what recovers it, and the derivation is deterministic, so
+    // this finds exactly the notebook the write created.
+    let lookup = format!(
+        "notebook/named:\n  this: ?this\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let found = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, lookup, false)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook lookup failed: {e}")))?;
+
+    found
+        .matches_after
+        .first()
+        .and_then(|block| block.results.first())
+        .map(|result| result.this.clone())
+        .ok_or_else(|| {
+            RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
+        })
+}
+
 /// Post-commit handler for the [`RemoveSpace`] command.
 ///
 /// Fired when the user confirms a Hub row's delete overlay. Removal is
@@ -5776,15 +5911,31 @@ block/insert!:
         );
     }
 
-    /// The switcher's create row writes a notebook the index can list.
+    /// The create handler writes a titled notebook and reports its entity.
+    ///
+    /// The entity is what makes the redirect possible: the page cannot
+    /// learn it (the command is transient and swept before any
+    /// subscription sees it), so the handler that writes the notebook is
+    /// the one that navigates to it.
     #[dialog_common::test]
-    async fn it_creates_a_notebook_from_the_switcher() {
+    async fn it_creates_a_notebook_and_reports_its_entity() {
         let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
         let repo = key.as_str();
         seed(&state, repo, CORE).await;
         seed(&state, repo, NOTEBOOK).await;
 
-        seed(&state, repo, "notebook/create!:\n  title: \"Groceries\"\n").await;
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(&env, repo, "Groceries")
+            .await
+            .expect("the create writes a notebook");
+        assert!(!entity.is_empty(), "and reports the entity to navigate to");
 
         let named = rows(
             &state,
@@ -5792,13 +5943,56 @@ block/insert!:
             "notebook/named:\n  this: ?this\n  title: ?title\n",
         )
         .await;
-        let titles: Vec<&str> = named
+        let titled: Vec<&str> = named
             .iter()
             .filter_map(|row| row.get("title")?.as_str())
             .collect();
         assert!(
-            titles.contains(&"Groceries"),
-            "the create row writes a titled notebook: {named:#?}"
+            titled.contains(&"Groceries"),
+            "the notebook is readable by title: {named:#?}"
+        );
+        assert!(
+            named
+                .iter()
+                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity.as_str())),
+            "and the reported entity is the one written: {entity} not in {named:#?}"
+        );
+    }
+
+    /// A title with a colon or a quote must not reshape the notation.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_whose_title_carries_yaml_syntax() {
+        let (_app, state, key) = fresh_repo("test-notebook-title-syntax").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let awkward = r#"Notes: "on" quoting"#;
+        super::create_notebook_inner(&env, repo, awkward)
+            .await
+            .expect("an awkward title still writes");
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titled: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titled.contains(&awkward),
+            "the title survives verbatim: {named:#?}"
         );
     }
 
