@@ -6,7 +6,7 @@ use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 use crate::EmailError;
 
-/// A Resend client that sends plain-text messages.
+/// A Resend client that sends text and HTML messages.
 pub struct Resend {
     /// Resend API key, sent as a bearer token.
     api_key: String,
@@ -20,7 +20,10 @@ struct SendRequest<'a> {
     from: &'a str,
     to: [&'a str; 1],
     subject: &'a str,
-    text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    html: Option<&'a str>,
 }
 
 impl Resend {
@@ -32,11 +35,33 @@ impl Resend {
 
     /// Send a plain-text message.
     pub async fn send(&self, to: &str, subject: &str, text: &str) -> Result<(), EmailError> {
+        self.send_message(to, subject, Some(text), None).await
+    }
+
+    /// Send an HTML message with a plain-text fallback.
+    pub async fn send_html(
+        &self,
+        to: &str,
+        subject: &str,
+        text: &str,
+        html: &str,
+    ) -> Result<(), EmailError> {
+        self.send_message(to, subject, Some(text), Some(html)).await
+    }
+
+    async fn send_message(
+        &self,
+        to: &str,
+        subject: &str,
+        text: Option<&str>,
+        html: Option<&str>,
+    ) -> Result<(), EmailError> {
         let body = SendRequest {
             from: &self.from,
             to: [to],
             subject,
             text,
+            html,
         };
         let body_json =
             serde_json::to_string(&body).map_err(|err| EmailError::Send(err.to_string()))?;
