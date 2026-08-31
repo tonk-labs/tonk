@@ -188,8 +188,8 @@ impl CustomElement for TonkNotebookIndexElement {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        // The editor and the panel. Appended rather than replacing the
-        // children, because the rows `<tonk-display>` renders are this
+        // The editor and the panel, INSERTED BEFORE the rows rather than
+        // replacing them: the rows `<tonk-display>` renders are this
         // element's content and the switcher's data both.
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             return;
@@ -205,17 +205,26 @@ impl CustomElement for TonkNotebookIndexElement {
         {
             return;
         }
+        let mut prose_node: Option<web_sys::Node> = None;
         if let Ok(prose) = document.create_element("tonk-prose") {
             let _ = prose.set_attribute("class", "notebook-switcher__input");
             let _ = prose.set_attribute("switcher", "");
             let _ = prose.set_attribute("auto-focus", "");
             let _ = prose.set_attribute("value", EMPTY);
-            let _ = this.append_child(&prose);
+            // FIRST, not appended. `<tonk-display>` renders the rows into
+            // this element, and those come before anything appended after
+            // them — so an appended editor sits below a block of hidden
+            // rows that still occupy their wrapper's height.
+            let first = this.first_child();
+            let _ = this.insert_before(&prose, first.as_ref());
+            prose_node = Some(prose.clone().into());
         }
         if let Ok(panel) = document.create_element("div") {
             let _ = panel.set_attribute("class", "notebook-switcher__panel");
             let _ = panel.set_attribute("hidden", "");
-            let _ = this.append_child(&panel);
+            // Right after the editor, above the rows.
+            let after = prose_node.and_then(|node| node.next_sibling());
+            let _ = this.insert_before(&panel, after.as_ref());
         }
     }
 
