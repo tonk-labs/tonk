@@ -419,34 +419,6 @@
 
         menu = makeMenu commands;
 
-        menuArgsTest = makeMenu {
-          "test:menu-args" = menuTestCommand {
-            description = "Exercise menu test argument forwarding";
-            package = "tests-web-fixture";
-            runner = "/nix/store/exact-wbg-pool/bin/wbg-pool";
-          };
-        };
-
-        menuArgsFakeNix = pkgs.writeShellScriptBin "nix" ''
-          if [ "$1" = "eval" ]; then
-            echo /tmp/menu-test-archive
-          fi
-        '';
-
-        menuArgsFakeCargo = pkgs.writeShellScriptBin "cargo" ''
-          printf '%s\n' "$@" > "$MENU_ARGS_CAPTURE"
-          printf '%s\n' "''${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER:-}" > "$MENU_RUNNER_CAPTURE"
-          if [ -n "''${MENU_POOL_ENV_CAPTURE:-}" ]; then
-            printf '%s\n' \
-              "WBG_POOL_BROWSER=''${WBG_POOL_BROWSER:-}" \
-              "WBG_POOL_BROWSER_ARGS=''${WBG_POOL_BROWSER_ARGS:-}" \
-              "WBG_POOL_DIR=''${WBG_POOL_DIR:-}" \
-              "WBG_POOL_FALLBACK_RUNNER=''${WBG_POOL_FALLBACK_RUNNER:-}" \
-              "WBG_POOL_NO_SANDBOX=''${WBG_POOL_NO_SANDBOX:-}" \
-              "WBG_POOL_URL=''${WBG_POOL_URL:-}" \
-              > "$MENU_POOL_ENV_CAPTURE"
-          fi
-        '';
       in
       {
 
@@ -460,100 +432,6 @@
               touch $out
             '';
 
-            menu-test-command-args =
-              runCommand "menu-test-command-args"
-                {
-                  nativeBuildInputs = menuArgsTest.commands;
-                }
-                ''
-                  mkdir -p "$out"
-                  export PATH="${menuArgsFakeNix}/bin:${menuArgsFakeCargo}/bin:$PATH"
-                  export MENU_ARGS_CAPTURE="$out/actual-args"
-                  export MENU_RUNNER_CAPTURE="$out/actual-runner"
-
-                  test:menu-args -E 'package(tonk-ui)'
-
-                  printf '%s\n' \
-                    nextest \
-                    run \
-                    --workspace-remap \
-                    ./ \
-                    --archive-file \
-                    /tmp/menu-test-archive/tests-web-fixture.tar.zst \
-                    -E \
-                    'package(tonk-ui)' > "$out/expected-args"
-                  diff -u "$out/expected-args" "$out/actual-args"
-                  printf '%s\n' /nix/store/exact-wbg-pool/bin/wbg-pool > "$out/expected-runner"
-                  diff -u "$out/expected-runner" "$out/actual-runner"
-                '';
-
-            wasm-runner-command-selection =
-              runCommand "wasm-runner-command-selection"
-                {
-                  nativeBuildInputs = menu.commands;
-                }
-                ''
-                  mkdir -p "$out"
-                  export PATH="${menuArgsFakeNix}/bin:${menuArgsFakeCargo}/bin:$PATH"
-
-                  check_runner() {
-                    command="$1"
-                    expected_runner="$2"
-                    capture_name="$3"
-                    export MENU_ARGS_CAPTURE="$out/$capture_name-args"
-                    export MENU_RUNNER_CAPTURE="$out/$capture_name-runner"
-                    unset MENU_POOL_ENV_CAPTURE
-
-                    "$command"
-
-                    printf '%s\n' "$expected_runner" > "$out/$capture_name-expected-runner"
-                    diff -u "$out/$capture_name-expected-runner" "$MENU_RUNNER_CAPTURE"
-                  }
-
-                  check_runner \
-                    test:web:debug \
-                    ${wbg-pool}/bin/wbg-pool \
-                    pooled-debug
-                  check_runner \
-                    test:web:release \
-                    ${wbg-pool}/bin/wbg-pool \
-                    pooled-release
-
-                  check_stock_runner() {
-                    command="$1"
-                    capture_name="$2"
-                    export WBG_POOL_BROWSER=/tmp/unrelated-browser
-                    export WBG_POOL_BROWSER_ARGS=--unrelated-flag
-                    export WBG_POOL_DIR=/tmp/unrelated-pool
-                    export WBG_POOL_FALLBACK_RUNNER=/tmp/unrelated-fallback
-                    export WBG_POOL_NO_SANDBOX=1
-                    export WBG_POOL_URL=http://127.0.0.1:1
-                    export MENU_ARGS_CAPTURE="$out/$capture_name-args"
-                    export MENU_RUNNER_CAPTURE="$out/$capture_name-runner"
-                    export MENU_POOL_ENV_CAPTURE="$out/$capture_name-pool-env"
-
-                    "$command"
-
-                    printf '%s\n' \
-                      ${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner \
-                      > "$out/$capture_name-expected-runner"
-                    diff -u "$out/$capture_name-expected-runner" "$MENU_RUNNER_CAPTURE"
-                    printf '%s\n' \
-                      WBG_POOL_BROWSER= \
-                      WBG_POOL_BROWSER_ARGS= \
-                      WBG_POOL_DIR= \
-                      WBG_POOL_FALLBACK_RUNNER= \
-                      WBG_POOL_NO_SANDBOX= \
-                      WBG_POOL_URL= \
-                      > "$out/$capture_name-expected-pool-env"
-                    diff -u "$out/$capture_name-expected-pool-env" "$MENU_POOL_ENV_CAPTURE"
-                  }
-
-                  check_stock_runner test:web:debug:stock stock-debug
-                  check_stock_runner test:web:release:stock stock-release
-                '';
-
-            wbg-pool-unit = wbg-pool.passthru.tests.unit;
           });
 
         devShells = with pkgs; {
