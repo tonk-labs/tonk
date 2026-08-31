@@ -1519,12 +1519,17 @@ impl Cell {
                     .flatten()
                     .is_none()
                 {
+                    // The same control the inspector uses: a filled pill
+                    // that half-overlaps the cell's bottom-right corner. A
+                    // bare `<button>` here read as a stray glyph rather
+                    // than as the deliberate act it is.
                     cell_result.set_inner_html(
                         "<div class=\"notebook-cell-held\">\
-                           <button type=\"button\" class=\"evaluate-play is-visible\" \
-                             title=\"Run this cell (it writes)\">\
+                           <wa-button type=\"button\" class=\"evaluate-play is-visible\" \
+                             variant=\"neutral\" appearance=\"filled\" size=\"small\" pill \
+                             title=\"Run this cell — it writes (Cmd/Ctrl+Enter)\">\
                              <wa-icon name=\"bolt\" variant=\"solid\"></wa-icon>\
-                           </button>\
+                           </wa-button>\
                          </div>",
                     );
                     if let Some(play) = cell_result.query_selector(".evaluate-play").ok().flatten()
@@ -1591,6 +1596,39 @@ impl Cell {
         let _ = editor
             .add_event_listener_with_callback("diagnostics", closure.as_ref().unchecked_ref());
         notebook.closures.borrow_mut().push(closure);
+
+        // Cmd/Ctrl+Enter (and Shift+Enter) commit the cell, without
+        // reaching for the zap.
+        //
+        // `<tonk-code>` already binds both and fires `run`; the inspector
+        // listens for it and the notebook did not, so the keystroke did
+        // nothing here. This is the zap's exact effect — a committing
+        // evaluate — so a cell that writes runs deliberately either way.
+        let run_editor = editor.clone();
+        let run_slot = self.result.clone();
+        let run_with = format!("{}@{}", notebook.branch, notebook.repo);
+        let on_run = Closure::wrap(Box::new(move |event: Event| {
+            event.prevent_default();
+            event.stop_propagation();
+            let Some(body) = reflect_string(run_editor.as_ref(), "value") else {
+                return;
+            };
+            let slot = run_slot.clone();
+            let consumer = run_editor.clone();
+            let with = run_with.clone();
+            spawn_local(async move {
+                match evaluate(&consumer, &body, true).await {
+                    Ok(response) => {
+                        slot.set_inner_html(&render_result(None, Some(&response), &with))
+                    }
+                    Err(message) => {
+                        slot.set_inner_html(&render_result(Some(&message), None, &with))
+                    }
+                }
+            });
+        }) as Box<dyn FnMut(Event)>);
+        let _ = editor.add_event_listener_with_callback("run", on_run.as_ref().unchecked_ref());
+        notebook.closures.borrow_mut().push(on_run);
     }
 }
 

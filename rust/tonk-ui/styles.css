@@ -2352,6 +2352,31 @@ tonk-code:focus-within {
     pointer-events: auto;
 }
 
+/* The "no view for this model" notice.
+ *
+ * A full callout is right on a page, where landing on the raw default is a
+ * surprise worth explaining. In a notebook's CELL OUTPUT it is noise: you
+ * ran a query to see data, and the default rendering IS the data — so the
+ * notice explains something nobody asked about while taking more room than
+ * the result it labels.
+ *
+ * Everywhere else it collapses to a thin bar: the same information, read at
+ * a glance, without a paragraph-sized box around one sentence. */
+[data-tonk-display-default-notice] {
+  --wa-callout-padding: var(--wa-space-2xs, 0.25rem) var(--wa-space-xs, 0.5rem);
+  font-size: var(--wa-font-size-xs, 0.75rem);
+  line-height: 1.3;
+  margin-block-end: var(--wa-space-2xs, 0.25rem);
+}
+[data-tonk-display-default-notice]::part(icon) {
+  font-size: var(--wa-font-size-xs, 0.75rem);
+}
+/* Cell output: drop it entirely. */
+.evaluate-result [data-tonk-display-default-notice],
+.evaluate-results [data-tonk-display-default-notice] {
+  display: none;
+}
+
 /* Result-view switcher — a `<wa-tab-group>` with the tab strip
    on the inline-end side. The active-tab indicator and the
    selected tab itself follow the page foreground (black in
