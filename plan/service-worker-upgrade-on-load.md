@@ -12,8 +12,8 @@
 - A first-ever install still waits for control and continues in the same document. Only replacement of a controller that existed at the beginning of this load causes the alignment reload.
 - A warm replacement reloads at most once per boot sequence, guarded by `sessionStorage` key `tonk:sw-upgrade-reload`. A stable load clears the guard. The reload happens before `mount_root()` creates `#tonk-root`, so neither UI chrome nor `/api/*` activity from the stale document becomes visible.
 - Keep the existing inline `#tonk-boot` overlay visible throughout update detection and controller replacement. An `updatefound` transition changes only its status text to `updating…`; no new modal, toast, or app-level loading view is introduced.
-- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure and loss of the existing controller are explicit boot failures: the strict gate leaves the root unmounted and terminalizes the boot shell without automatic reload or cleanup. An incoming worker that stops progressing without producing an error remains a silent stall handled by the bounded boot watchdog.
-- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of normal upgrade handling. The last-resort boot watchdog remains available for silent stalls; known readiness errors stop it through the terminal hook above.
+- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure and loss of the existing controller are explicit boot failures: the strict gate leaves the root unmounted and terminalizes the boot shell without automatic reload or cleanup. An incoming worker that stops progressing without producing an error remains a silent stall handled by one plain watchdog reload followed by a terminal safe-state message.
+- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of normal upgrade handling or automatic stall recovery. Known readiness errors stop the watchdog through the terminal hook above; a second silent stall terminalizes without cleanup. Only an explicit deployment-withdrawal kill switch may unregister, and it targets the current page's registration rather than enumerating every origin scope.
 - Keep offline navigation cache-first. The new worker's install already refreshes the `/` shell cache, so the one post-replacement reload aligns the new controller with the fresh shell without changing fetch policy.
 - The first rollout has an unavoidable bootstrap boundary: a document cached before this change does not contain the explicit update call. Its current worker will stale-refresh `/` in the background, and the next ordinary navigation will run the new bootstrap. Document this one-time extra revisit; no new artifact can retroactively execute inside an already-cached old document. Once the new bootstrap is cached, later deployments update on the first warm load.
 - Add no Cargo, JavaScript, or Nix dependency, and do not change a lock file.
@@ -220,3 +220,37 @@ registration even though the failure was already known and actionable.
   links passed.
 - Not run locally: Cargo/browser builds under shared-target disk pressure;
   fresh CI remains the compiled and whole-browser boundary.
+
+## Non-destructive silent-stall follow-up — 2026-08-31
+
+Cross-stack review found that the watchdog's second recovery step still deleted
+every CacheStorage entry and unregistered every service-worker scope on the
+origin. A silent lack of boot progress cannot justify deleting unrelated or
+offline-capable local state.
+
+- TDD RED: `node --test rust/tonk-ui/tests/boot-terminal.test.mjs` ran 2/3; the
+  second silent stall deleted two caches, unregistered one worker, reloaded,
+  retained retry state `2`, and left the shell on “recovering…”.
+- GREEN: the same command passed 3/3 after the watchdog was bounded to one plain
+  reload and the second stall entered the shared terminal state with no cache,
+  registration, or reload effect.
+- TDD RED: `node --test rust/tonk-ui/tests/boot-script.test.mjs` ran 7/8 because
+  the withdrawal path enumerated every registration and bypassed the shared
+  terminal presentation owner.
+- First GREEN: the same command passed 8/8 after the explicit withdrawal kill
+  switch targeted only `getRegistration()` and kept its specific guidance.
+- Second TDD RED: the focused boot-script command ran 8/9 because generic
+  activation failures were still presented later as raw exception text.
+- Second GREEN: the same command passed 9/9 after the eager activation owner
+  selected the specific old-browser guidance or generic local-data-safe copy,
+  while the later update-prompt consumer stopped overwriting it.
+- GREEN: `node --test rust/tonk-ui/tests/*.test.mjs` passed 45/45 across boot,
+  claim/update, cache, failure-page, revocation, and retiring-worker contracts.
+- GREEN: `cargo fmt --all -- --check`, `nixfmt --check flake.nix`, both changed
+  Node test syntax checks, an isolated parse of both inline module scripts, and
+  `git diff --check` passed.
+- GREEN: Storybook regenerated and passed `build.py --check` with 26 screens,
+  78 journeys, 115 verification items, and 6 triage findings; all 173 local
+  links passed.
+- Not run locally: Cargo and real-browser checks under shared-target disk
+  pressure; fresh CI remains the compiled and browser integration boundary.
