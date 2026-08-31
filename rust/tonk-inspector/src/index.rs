@@ -210,6 +210,11 @@ impl CustomElement for TonkNotebookIndexElement {
             let _ = prose.set_attribute("class", "notebook-switcher__input");
             let _ = prose.set_attribute("switcher", "");
             let _ = prose.set_attribute("auto-focus", "");
+            // The marker is hidden at rest (a Typora-style editor reveals
+            // `# ` only under the caret), and an empty heading draws as an
+            // empty box - so without this the page says nothing about what
+            // it wants.
+            let _ = prose.set_attribute("placeholder", "Name a notebook to open or create it...");
             let _ = prose.set_attribute("value", EMPTY);
             // FIRST, not appended. `<tonk-display>` renders the rows into
             // this element, and those come before anything appended after
