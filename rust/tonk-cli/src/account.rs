@@ -492,15 +492,26 @@ async fn account_from_callback(
     }
     // An unversioned page may carry no attachment, a delegation-CID
     // placeholder, or even a real attachment paired with the fresh ceremony
-    // grant rather than the provider's reused generation. Treat every legacy
-    // payload as a hint and recover by exact grant authority; bare attachment
-    // text never selects provider state.
+    // grant rather than the provider's reused generation. Prefer exact grant
+    // recovery. Only a provider that explicitly does not know that command
+    // may retain the historical callback generation for compatibility; the
+    // callback grant itself has already been signature- and audience-checked.
     let registration = if authorization.schema_version.is_none() {
-        recover_callback_attachment(profile, &provider_url, &chain)
+        match recover_callback_attachment(profile, &provider_url, &chain)
             .await
             .context(
                 "this device was not linked and no local account access was installed; refresh the approval page, then run `tonk account login` again",
-            )?
+            )? {
+            CallbackAttachmentRecovery::Exact(registration) => registration,
+            CallbackAttachmentRecovery::Unsupported => legacy_callback_registration(
+                authorization.attachment_id.trim(),
+                &expected_cid,
+                &grant_bytes,
+            )
+            .context(
+                "this device was not linked and no local account access was installed; refresh the approval page and run `tonk account login` again",
+            )?,
+        }
     } else {
         CallbackRegistration {
             attachment_id: authorization.attachment_id.trim().to_string(),
@@ -548,6 +559,40 @@ struct CallbackRegistration {
     delegation_hex: String,
 }
 
+enum CallbackAttachmentRecovery {
+    Exact(CallbackRegistration),
+    Unsupported,
+}
+
+fn legacy_callback_registration(
+    attachment_id: &str,
+    delegation_cid: &str,
+    delegation_bytes: &[u8],
+) -> Result<CallbackRegistration> {
+    if attachment_id.len() != 64 || !attachment_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!(
+            "the legacy account provider does not support attachment recovery and the callback did not include a valid 32-byte attachment identifier"
+        );
+    }
+    Ok(CallbackRegistration {
+        attachment_id: attachment_id.to_owned(),
+        delegation_cid: delegation_cid.to_owned(),
+        delegation_hex: hex::encode(delegation_bytes),
+    })
+}
+
+fn attachment_recovery_is_unsupported(status: reqwest::StatusCode, detail: &str) -> bool {
+    const PREFIX: &str = "Authorization failed: Configuration error: Unknown command: ";
+    if status != reqwest::StatusCode::FORBIDDEN {
+        return false;
+    }
+    let Some(encoded) = detail.trim().strip_prefix(PREFIX) else {
+        return false;
+    };
+    serde_json::from_str::<Vec<String>>(encoded)
+        .is_ok_and(|command| command == ["account", "device", "attachment"])
+}
+
 /// Recover a legacy callback's omitted attachment using the callback grant
 /// itself as authority. The provider authenticates the exact proof CID; the
 /// returned row is then compared to that same generation before any write.
@@ -555,7 +600,7 @@ async fn recover_callback_attachment(
     profile: &Profile,
     provider_url: &str,
     chain: &DelegationChain,
-) -> Result<CallbackRegistration> {
+) -> Result<CallbackAttachmentRecovery> {
     let body = tonk_identity::request::build_device_invocation(
         profile.signer().signer().clone(),
         chain,
@@ -578,6 +623,9 @@ async fn recover_callback_attachment(
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().await.unwrap_or_default();
+        if attachment_recovery_is_unsupported(status, &detail) {
+            return Ok(CallbackAttachmentRecovery::Unsupported);
+        }
         bail!("account provider refused attachment recovery ({status}): {detail}");
     }
     let registration: CallbackRegistration = response
@@ -590,7 +638,7 @@ async fn recover_callback_attachment(
     {
         bail!("account provider returned an incomplete attachment generation");
     }
-    Ok(registration)
+    Ok(CallbackAttachmentRecovery::Exact(registration))
 }
 
 async fn recorded_account_grant(
@@ -1835,6 +1883,100 @@ mod tests {
             error.to_string().contains("subject-open"),
             "the error must say what shape was required, got {error}"
         );
+    }
+
+    /// Preserve the validated callback generation for an older provider only
+    /// when its authorization boundary identifies the new command as unknown.
+    #[dialog_common::test]
+    async fn it_falls_back_only_when_a_legacy_provider_lacks_attachment_recovery() {
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use dialog_credentials::Ed25519Signer;
+        use dialog_effects::storage::Directory;
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/unsupported/devices/attachment",
+                post(|| async {
+                    (
+                        StatusCode::FORBIDDEN,
+                        "Authorization failed: Configuration error: Unknown command: [\"account\", \"device\", \"attachment\"]",
+                    )
+                }),
+            )
+            .route(
+                "/denied/devices/attachment",
+                post(|| async { (StatusCode::FORBIDDEN, "attachment grant was revoked") }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
+        let profile = Profile::open(format!(
+            "legacy-provider-fallback-test-{}",
+            rand::random::<u64>()
+        ))
+        .at(Directory::At(
+            temp.path().join("profiles").to_string_lossy().into(),
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
+        let account = Ed25519Signer::generate().await.unwrap();
+        let authorized = tonk_identity::ceremony::authorize_device(
+            account,
+            profile.did(),
+            &format!("{endpoint}/ucan/"),
+        )
+        .await
+        .unwrap();
+        let attachment_id = "07".repeat(32);
+        let options = |service_url: String| LinkOptions {
+            service_url,
+            device_name: "legacy provider".to_owned(),
+            open_browser: false,
+            store: None,
+            announce: None,
+            via: None,
+        };
+        let callback = |service_url: String| CallbackAuthorization {
+            schema_version: None,
+            delegation_hex: authorized.delegation_hex.clone(),
+            delegation_cid: String::new(),
+            descriptor_hex: authorized.descriptor_hex.clone(),
+            credential_id: authorized.root_did.clone(),
+            attachment_id: attachment_id.clone(),
+            service_url,
+        };
+
+        let unsupported_url = format!("{endpoint}/unsupported");
+        let recovered = account_from_callback(
+            &profile,
+            &options(unsupported_url.clone()),
+            callback(unsupported_url),
+        )
+        .await
+        .expect("a valid legacy callback should survive an explicitly unsupported command");
+        assert_eq!(recovered.attachment_id, attachment_id);
+
+        let denied_url = format!("{endpoint}/denied");
+        let denied =
+            account_from_callback(&profile, &options(denied_url.clone()), callback(denied_url))
+                .await
+                .expect_err("an authorization failure must not be treated as legacy compatibility");
+        let denied = format!("{denied:#}");
+        assert!(
+            denied.contains("refused attachment recovery")
+                && denied.contains("attachment grant was revoked"),
+            "unexpected recovery refusal: {denied}"
+        );
+        server.abort();
     }
 
     /// A legacy callback can omit the attachment id, but recovery still has
