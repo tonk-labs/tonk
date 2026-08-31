@@ -374,6 +374,12 @@ fn mount(
             let _ = prose.set_attribute("placeholder", "Name a notebook to open or create it...");
         } else {
             let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
+            // A notebook page is somewhere you came to WRITE, so it opens
+            // ready to: focused, caret at the end of the document. Arriving
+            // from the switcher, naming a notebook and carrying on typing
+            // is then one motion rather than two.
+            let _ = prose.set_attribute("auto-focus", "");
+            let _ = prose.set_attribute("caret", "end");
         }
 
         // Attach the provider now, but hold the EDITOR back until

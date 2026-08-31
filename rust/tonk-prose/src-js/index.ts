@@ -67,6 +67,7 @@ const OBSERVED = [
   "placeholder",
   "auto-focus",
   "switcher",
+  "caret",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -348,6 +349,11 @@ class TonkProseElement extends HTMLElement {
           // A cross-origin parent can refuse; the element focus below
           // still works once the user clicks in.
         }
+        // `caret="end"` opens ready to continue writing rather than to
+        // overwrite: the caret lands after what is already there. Arriving
+        // from the switcher, naming a notebook and carrying on typing is
+        // then one motion.
+        if (this.getAttribute("caret") === "end") editor.caretToEnd();
         editor.focus();
       }, 0);
     }

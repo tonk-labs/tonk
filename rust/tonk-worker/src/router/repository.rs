@@ -1916,6 +1916,15 @@ async fn create_notebook_inner(
     // empty first block is also just what a new document is: somewhere to
     // start typing.
     let mut blocks = draft_blocks(body);
+    // At least one block, or the notebook does not satisfy `tonk:notebook`
+    // (which requires one) and the page reports a missing attribute
+    // instead of rendering.
+    //
+    // Only one, though: an empty trailing block would be invisible anyway.
+    // `project` drops empty blocks, and markdown collapses trailing blank
+    // lines, so a document ending in one parses back without it. Landing
+    // ready to type is the CARET's job (`caret="end"`), not an extra
+    // block's.
     if blocks.is_empty() {
         blocks.push(String::new());
     }
@@ -6157,6 +6166,28 @@ block/insert!:
         assert!(
             placed > 0,
             "the notebook resolves as `tonk:notebook`, so the page renders"
+        );
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.iter().any(|s| s.starts_with("# Counter")),
+            "the heading is kept: {blocks:#?}"
+        );
+        assert_eq!(
+            sources.len(),
+            1,
+            "and it is the ONLY block: an empty second one would be dropped \
+             by `project` and collapsed by markdown, so the caret does that \
+             job instead: {blocks:#?}"
         );
     }
 

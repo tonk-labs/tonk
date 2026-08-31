@@ -3,7 +3,7 @@
 // element connect — nothing here may be imported *statically* from
 // the shell (types excepted).
 
-import { EditorState, Plugin, TextSelection } from "prosemirror-state";
+import { EditorState, Plugin, Selection, TextSelection } from "prosemirror-state";
 import { Slice } from "prosemirror-model";
 import type { Node } from "prosemirror-model";
 import { EditorView } from "prosemirror-view";
@@ -245,6 +245,15 @@ export function createEditor(
 
     focus(): void {
       view.focus();
+    },
+
+    caretToEnd(): void {
+      // `Selection.atEnd` finds the last valid text position, which is
+      // not the same as the document's size: the end of a doc whose last
+      // node is a code block or a list sits inside that node, and a raw
+      // `doc.content.size` would be an invalid position there.
+      const { doc, tr } = view.state;
+      view.dispatch(tr.setSelection(Selection.atEnd(doc)).scrollIntoView());
     },
 
     destroy(): void {

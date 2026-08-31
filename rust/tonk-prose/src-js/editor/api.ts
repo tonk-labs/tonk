@@ -54,6 +54,8 @@ export interface ProseEditor {
   setPlaceholder(text: string): void;
   /** Move keyboard focus into the document. */
   focus(): void;
+  /** Put the caret at the end of the document. */
+  caretToEnd(): void;
   /** Tear down the view and release resources. */
   destroy(): void;
   /** The underlying ProseMirror view. Power-user escape hatch. */
