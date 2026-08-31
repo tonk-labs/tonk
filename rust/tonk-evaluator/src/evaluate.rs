@@ -1342,14 +1342,13 @@ attribute!: &foo/title
         Ok(())
     }
 
-    /// A raw domain write (`io.test.person!:`) types its values by the
-    /// branch-declared attribute, exactly as a concept head does. A
-    /// bare integer literal infers signed; stored that way into an
-    /// unsigned-declared attribute it is invisible to every typed
-    /// read — the concept never matches and the fix looks like data
-    /// loss.
+    /// Integer spelling picks the value type on a raw domain write:
+    /// bare `41` is unsigned, `+41` signed, `41.0` float — no schema
+    /// consulted. The unsigned spelling is what a concept declaring
+    /// the attribute as unsigned reads, so the raw write and the
+    /// typed read agree without the domain head imposing anything.
     #[dialog_common::test]
-    async fn it_types_a_domain_write_by_the_declared_attribute() -> anyhow::Result<()> {
+    async fn it_types_a_domain_write_by_its_spelling() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
@@ -1414,8 +1413,68 @@ attribute!: &foo/title
         assert_eq!(
             claims[0].is,
             Value::UnsignedInt(41),
-            "the bare literal conforms to the declared unsigned type",
+            "the bare spelling is unsigned, which is what the declared reader expects",
         );
+        Ok(())
+    }
+
+    /// Raw domains are open-ended: every spelling lands with its own
+    /// type, side by side, no declaration anywhere — and a blank in a
+    /// domain query matches values of every type.
+    #[dialog_common::test]
+    async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let doc = r#"io.test.raw!:
+  this: test:raw
+  bare: 41
+  signed: +41
+  negative: -7
+  float: 41.5
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+
+        let entity: dialog_artifacts::Entity = "test:raw".parse()?;
+        let mut by_field = std::collections::BTreeMap::new();
+        for field in ["bare", "signed", "negative", "float"] {
+            let the: dialog_artifacts::Attribute = format!("io.test.raw/{field}").parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                    Term::<dialog_artifacts::Entity>::from(entity.clone()),
+                    Term::<dialog_query::Any>::var("v"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), 1, "{field}: one fact");
+            by_field.insert(field, claims[0].is.clone());
+        }
+        assert_eq!(by_field["bare"], Value::UnsignedInt(41));
+        assert_eq!(by_field["signed"], Value::SignedInt(41));
+        assert_eq!(by_field["negative"], Value::SignedInt(-7));
+        assert_eq!(by_field["float"], Value::Float(41.5));
         Ok(())
     }
 

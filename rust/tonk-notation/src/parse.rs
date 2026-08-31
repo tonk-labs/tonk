@@ -1025,10 +1025,14 @@ fn parse_typed_scalar(text: &str) -> Option<Scalar> {
         "false" | "False" | "FALSE" => return Some(Scalar::Boolean(false)),
         _ => {}
     }
-    if let Ok(i) = text.parse::<i128>() {
-        return Some(Scalar::Integer(i));
-    }
-    if let Ok(u) = text.parse::<u128>() {
+    // Integer spelling picks the type: a leading sign (`+41`, `-7`)
+    // is a signed integer, bare digits (`41`) are unsigned, and a
+    // decimal point (`41.0`) is a float.
+    if text.starts_with('+') || text.starts_with('-') {
+        if let Ok(i) = text.parse::<i128>() {
+            return Some(Scalar::Integer(i));
+        }
+    } else if let Ok(u) = text.parse::<u128>() {
         return Some(Scalar::UnsignedInteger(u));
     }
     if let Ok(f) = text.parse::<f64>() {
@@ -1087,6 +1091,10 @@ fn scalar_from_saphyr(scalar: &SaphyrScalar<'_>) -> Scalar {
     match scalar {
         SaphyrScalar::Null => Scalar::Null,
         SaphyrScalar::Boolean(b) => Scalar::Boolean(*b),
+        // The sign spelling is lost on this path (saphyr already
+        // typed the scalar), so the value decides: non-negative reads
+        // as unsigned, matching the bare spelling it must have had.
+        SaphyrScalar::Integer(i) if *i >= 0 => Scalar::UnsignedInteger(*i as u128),
         SaphyrScalar::Integer(i) => Scalar::Integer(i128::from(*i)),
         SaphyrScalar::FloatingPoint(f) => Scalar::Float(**f),
         SaphyrScalar::String(s) => Scalar::String(s.as_ref().to_owned()),
@@ -1708,6 +1716,45 @@ attribute!: &person-name
         assert!(!parsed.diagnostics.is_empty());
     }
 
+    /// Integer spelling picks the type: bare digits are unsigned, a
+    /// leading sign is signed, a decimal point is a float.
+    #[dialog_common::test]
+    fn it_types_integers_by_their_spelling() {
+        let syntax = parse_clean(
+            r#"
+person:
+  this: ?p
+  bare: 41
+  plus: +41
+  minus: -7
+  real: 41.5
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let get = |name: &str| {
+            q.fields
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.value.clone())
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        assert!(matches!(
+            get("bare"),
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
+        ));
+        assert!(matches!(
+            get("plus"),
+            FieldValue::Literal(Scalar::Integer(41))
+        ));
+        assert!(matches!(
+            get("minus"),
+            FieldValue::Literal(Scalar::Integer(-7))
+        ));
+        assert!(matches!(get("real"), FieldValue::Literal(Scalar::Float(f)) if f == 41.5));
+    }
+
     #[dialog_common::test]
     fn it_parses_integer_field_value() {
         let syntax = parse_clean(
@@ -1723,7 +1770,7 @@ person:
         let age = q.fields.iter().find(|f| f.name == "age").unwrap();
         assert!(matches!(
             &age.value,
-            FieldValue::Literal(Scalar::Integer(28))
+            FieldValue::Literal(Scalar::UnsignedInteger(28))
         ));
     }
 
@@ -1766,7 +1813,7 @@ person:
         let age = q.fields.iter().find(|f| f.name == "age").unwrap();
         assert!(matches!(
             &age.value,
-            FieldValue::Literal(Scalar::Integer(29))
+            FieldValue::Literal(Scalar::UnsignedInteger(29))
         ));
     }
 

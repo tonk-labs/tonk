@@ -204,6 +204,19 @@ pub(crate) fn field_value_to_term(
 ///
 /// A `None` `expected` (untyped slots — `this`, claim attributes,
 /// formula operands) keeps the parsed scalar's natural mapping.
+/// The declared attribute with its value type stripped: a domain head
+/// takes a declaration's identity and cardinality, but never its type
+/// — raw domains are open-ended and mixed-type attributes are legal.
+pub(crate) fn untyped_descriptor(
+    descriptor: &dialog_query::AttributeDescriptor,
+) -> dialog_query::AttributeDescriptor {
+    let mut json = serde_json::to_value(descriptor).expect("a descriptor serializes");
+    if let Some(map) = json.as_object_mut() {
+        map.remove("as");
+    }
+    serde_json::from_value(json).expect("a descriptor without `as` deserializes")
+}
+
 pub(crate) fn scalar_to_value(
     scalar: &Scalar,
     expected: Option<Type>,
@@ -214,6 +227,12 @@ pub(crate) fn scalar_to_value(
         && *i >= 0
     {
         return Ok(Value::UnsignedInt(*i as u128));
+    }
+    // ...and a bare (unsigned-spelled) literal fills a signed field.
+    if let (Scalar::UnsignedInteger(u), Some(Type::SignedInt)) = (scalar, expected)
+        && *u <= i128::MAX as u128
+    {
+        return Ok(Value::SignedInt(*u as i128));
     }
 
     let value = match scalar {

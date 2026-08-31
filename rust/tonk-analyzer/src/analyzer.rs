@@ -2317,9 +2317,9 @@ person!:
 
     /// A claim head (`squash.bug:`) has no schema, so its fields
     /// carry no declared type. With `expected = None`, any literal
-    /// is accepted — a bare integer stays a `SignedInt` and never
-    /// raises `TypeMismatch`. Guards the "no type specified accepts
-    /// any type" rule.
+    /// is accepted, typed by its spelling — bare `3` is unsigned —
+    /// and never raises `TypeMismatch`. Guards the "no type
+    /// specified accepts any type" rule.
     #[dialog_common::test]
     async fn it_accepts_any_literal_for_untyped_claim_field() {
         let syntax = must_parse(
@@ -2337,8 +2337,8 @@ xyz.tonk.person!:
         };
         let term = application.parameters().get("age").cloned();
         assert!(
-            matches!(term, Some(Term::Constant(Value::SignedInt(3)))),
-            "an untyped claim field must accept the integer as-is, got {term:?}"
+            matches!(term, Some(Term::Constant(Value::UnsignedInt(3)))),
+            "a bare integer on an untyped claim field is unsigned by spelling, got {term:?}"
         );
     }
 

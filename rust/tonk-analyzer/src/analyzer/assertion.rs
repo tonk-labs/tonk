@@ -12,7 +12,8 @@ use tonk_notation::{
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{
-    collection_entry_terms, field_value_to_term, is_meta_field, validate_claim_attribute,
+    collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
+    validate_claim_attribute,
 };
 use super::scope::Scope;
 use crate::analyzer::Working;
@@ -363,30 +364,25 @@ pub(crate) fn build_assertion_application(
                     continue;
                 }
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
-                // A branch-declared `<domain>/<field>` attribute
-                // governs the synthesized descriptor: its
-                // cardinality decides accumulate-vs-replace and its
-                // value type constrains the slot — including the
-                // LITERALS being written. A bare `41` infers signed;
-                // written into an unsigned-declared attribute it
-                // would be invisible to every typed read (dialog
-                // values are strictly typed), so the declared type
-                // drives the lowering, exactly as on a concept head.
-                let declared = scope.attribute_by_id(&format!("{domain}/{}", field.name));
-                let expected = declared
-                    .as_ref()
-                    .and_then(|declared| declared.descriptor.content_type());
+                // Domain heads are OPEN-ENDED: no schema is imposed.
+                // A literal keeps the type its spelling gives it
+                // (`41` unsigned, `+41` signed, `41.0` float) and a
+                // mixed-type attribute is legal. A branch-declared
+                // `<domain>/<field>` attribute still lends its
+                // CARDINALITY (accumulate-vs-replace), but never its
+                // value type — the typed contract is what concepts
+                // are for.
                 let term = field_value_to_term(
                     &field.name,
                     &field.value,
                     field.value_range,
                     scope,
                     analysis,
-                    expected,
+                    None,
                 )?;
                 parameters.insert(field.name.clone(), term);
-                if let Some(declared) = declared {
-                    attributes.insert(field.name.clone(), declared.descriptor);
+                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                    attributes.insert(field.name.clone(), untyped_descriptor(&declared.descriptor));
                 }
             }
             Ok(AssertionPlan {

@@ -51,7 +51,13 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
         }
         Some(Type::SignedInt) => {
             raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
-            Ok(raw.to_string())
+            // Spell the signedness: bare digits parse as unsigned, so
+            // a non-negative signed value carries an explicit `+`.
+            if raw.starts_with('+') || raw.starts_with('-') {
+                Ok(raw.to_string())
+            } else {
+                Ok(format!("+{raw}"))
+            }
         }
         Some(Type::Float) => {
             raw.parse::<f64>().map_err(|_| bad("Float"))?;

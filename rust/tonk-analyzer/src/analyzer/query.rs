@@ -10,7 +10,8 @@ use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{
-    collection_entry_terms, field_value_to_term, is_meta_field, validate_claim_attribute,
+    collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
+    validate_claim_attribute,
 };
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
@@ -150,27 +151,24 @@ pub(crate) fn build_query_application(
             parameters.insert("this".into(), this_term_for_query(&this));
             for field in &body_fields {
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
-                // Declared attributes govern the read side too: a
-                // cardinality-many field must enumerate every value,
-                // not select a winner — and a literal constant must
-                // be typed by the declared attribute, or a bare `41`
-                // (inferred signed) could never match the unsigned
-                // value a declared write stored.
-                let declared = scope.attribute_by_id(&format!("{domain}/{}", field.name));
-                let expected = declared
-                    .as_ref()
-                    .and_then(|declared| declared.descriptor.content_type());
+                // Domain queries are OPEN-ENDED: a blank or variable
+                // matches every value of the attribute regardless of
+                // type, and a literal matches by its spelled type
+                // (`41` unsigned, `+41` signed). A declared attribute
+                // lends only its CARDINALITY (a many-attribute must
+                // enumerate every value, not select a winner) — never
+                // a value type.
                 let term = field_value_to_term(
                     &field.name,
                     &field.value,
                     field.value_range,
                     scope,
                     analysis,
-                    expected,
+                    None,
                 )?;
                 parameters.insert(field.name.clone(), term);
-                if let Some(declared) = declared {
-                    attributes.insert(field.name.clone(), declared.descriptor);
+                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                    attributes.insert(field.name.clone(), untyped_descriptor(&declared.descriptor));
                 }
             }
             Ok(Application::Domain {
