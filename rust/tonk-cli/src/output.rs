@@ -160,7 +160,29 @@ fn render_one(out: &mut String, label: &str, result: &QueryResult) {
     let _ = writeln!(out, "{label}:");
     let _ = writeln!(out, "  this: {this}", this = result.this);
     for (field, value) in &result.fields {
-        let _ = writeln!(out, "  {field}: {rendered}", rendered = render_value(value));
+        if field.ends_with("/key") {
+            continue;
+        }
+        // A collection entry rides the wire as the value plus a
+        // sibling `<field>/key`; print it back in the entry form
+        // (`show: {ui: "..."}`), so the output re-evaluates to the
+        // same fact.
+        match result
+            .fields
+            .get(&format!("{field}/key"))
+            .and_then(|key| key.as_str())
+        {
+            Some(key) => {
+                let _ = writeln!(
+                    out,
+                    "  {field}: {{{key}: {value}}}",
+                    value = render_value(value)
+                );
+            }
+            None => {
+                let _ = writeln!(out, "  {field}: {rendered}", rendered = render_value(value));
+            }
+        }
     }
 }
 
@@ -392,6 +414,26 @@ mod tests {
 #[cfg(test)]
 mod value_spelling_tests {
     use super::*;
+
+    #[test]
+    fn it_prints_collection_entries_in_the_entry_form() {
+        let mut result = QueryResult {
+            this: "concept:zX".into(),
+            fields: Default::default(),
+        };
+        result
+            .fields
+            .insert("show".into(), serde_json::json!("<tonk-inspector />\n"));
+        result
+            .fields
+            .insert("show/key".into(), serde_json::json!("ui"));
+        let mut out = String::new();
+        render_one(&mut out, "view!", &result);
+        assert_eq!(
+            out, "view!:\n  this: concept:zX\n  show: {ui: \"<tonk-inspector />\\n\"}\n",
+            "the key nests back; the sibling /key field does not leak",
+        );
+    }
 
     #[test]
     fn it_renders_number_spellings() {

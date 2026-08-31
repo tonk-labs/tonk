@@ -245,8 +245,26 @@ fn render_rule_record(result: &QueryResult) -> String {
 fn render_notation_record(label: &str, result: &QueryResult) -> String {
     let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()));
     for (name, value) in &result.fields {
-        if name != "this" {
-            body.push_str(&render_notation_field_at(1, name, value));
+        if name == "this" || name.ends_with("/key") {
+            continue;
+        }
+        // A collection entry rides the wire as the value plus a
+        // sibling `<field>/key`; notation nests them back into the
+        // entry form (`show:` → `ui: <template>`), so the record
+        // reads as what you would evaluate to get it.
+        let key = result
+            .fields
+            .get(&format!("{name}/key"))
+            .and_then(|key| key.as_str());
+        match key {
+            Some(key) => {
+                let entry = Value::Object(serde_json::Map::from_iter([(
+                    key.to_owned(),
+                    value.clone(),
+                )]));
+                body.push_str(&render_notation_field_at(1, name, &entry));
+            }
+            None => body.push_str(&render_notation_field_at(1, name, value)),
         }
     }
     format!(
