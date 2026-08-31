@@ -79,12 +79,15 @@ impl StoredSafePhaseV2 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 enum StoredConflictCodeV2 {
-    RecoveryMismatch,
-    LocalRootMismatch,
-    ProviderMismatch,
-    AttachmentMismatch,
+    #[serde(rename = "recoveryMismatch")]
+    Recovery,
+    #[serde(rename = "localRootMismatch")]
+    LocalRoot,
+    #[serde(rename = "providerMismatch")]
+    Provider,
+    #[serde(rename = "attachmentMismatch")]
+    Attachment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,7 +215,7 @@ struct RecoveryTombstoneV1 {
     deny_unknown_fields
 )]
 enum StoredRecoveryRecord {
-    Bundle(StoredRecoveryBundleV1),
+    Bundle(Box<StoredRecoveryBundleV1>),
     Tombstone(RecoveryTombstoneV1),
 }
 
@@ -648,7 +651,7 @@ impl ValidatedRecoveryBundle {
         .await
         .map_err(|_| RecoveryValidationError::Artifact("recovery_manifest"))?;
 
-        let record_bytes = encode_recovery(&StoredRecoveryRecord::Bundle(stored.clone()))
+        let record_bytes = encode_recovery(&StoredRecoveryRecord::Bundle(Box::new(stored.clone())))
             .map_err(|_| RecoveryValidationError::Invalid("recovery_record"))?;
         let recovery_hash = blake3::hash(&record_bytes).to_hex().to_string();
         Ok(Self {
@@ -804,7 +807,7 @@ fn decode_bounded_recovery(
     if total > MAX_DECODED_RECOVERY_BYTES {
         return Err(RecoveryValidationError::TooLarge("decoded_total"));
     }
-    let encoded = serde_json::to_vec(&StoredRecoveryRecord::Bundle(stored.clone()))
+    let encoded = serde_json::to_vec(&StoredRecoveryRecord::Bundle(Box::new(stored.clone())))
         .map_err(|_| RecoveryValidationError::Invalid("recovery_record"))?;
     if encoded.len() > MAX_RECOVERY_RECORD_BYTES {
         return Err(RecoveryValidationError::TooLarge("recovery_record"));
@@ -2032,7 +2035,7 @@ mod tests {
             Err(StoredSetupError::UnsupportedCheckpointPhase)
         ));
 
-        let recovery = StoredRecoveryRecord::Bundle(bundle());
+        let recovery = StoredRecoveryRecord::Bundle(Box::new(bundle()));
         let bytes = encode_recovery(&recovery).unwrap();
         assert!(decode_recovery(&bytes).unwrap() == recovery);
         let future = br#"{
@@ -2266,7 +2269,7 @@ mod tests {
             configuration_hash: hash("22"),
             phase: StoredPhaseV2::Conflict {
                 last_safe_phase: StoredSafePhaseV2::RootSaved,
-                code: StoredConflictCodeV2::ProviderMismatch,
+                code: StoredConflictCodeV2::Provider,
             },
             armed_at: Some(1_754_380_801),
             staged_at: Some(1_754_380_802),
@@ -2277,6 +2280,11 @@ mod tests {
             accepted_descriptor_hash: None,
             last_transition_at: 1_754_380_900,
         };
+        assert!(
+            serde_json::to_string(&partial)
+                .unwrap()
+                .contains("\"code\":\"providerMismatch\"")
+        );
         assert!(ValidatedCheckpoint::new(partial).is_err());
 
         let armed = reduce(
@@ -2294,7 +2302,7 @@ mod tests {
                 armed.clone(),
                 ReducerCommand::Conflict {
                     mutation: mutation(&armed, 1_754_380_802),
-                    code: StoredConflictCodeV2::ProviderMismatch,
+                    code: StoredConflictCodeV2::Provider,
                 },
             ),
             Err(ReductionError::InvalidTransition)
