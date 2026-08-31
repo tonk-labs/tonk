@@ -30,6 +30,8 @@ pub mod register_dialog;
 /// API client for interacting with the Tonk service worker.
 pub mod api;
 
+mod worker_client;
+
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod callback_url {
     //! Browser-to-loopback callback URL construction.
