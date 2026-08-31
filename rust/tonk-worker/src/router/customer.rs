@@ -8,6 +8,7 @@
 //! deployment serving this page — so endpoints derive from the request
 //! origin and the service DID comes from `/.well-known/tonk`.
 
+use async_trait::async_trait;
 use axum::{
     Json,
     extract::{Extension, State},
@@ -159,11 +160,7 @@ pub(crate) async fn enroll_customer(
     // deriving an address from whichever origin it happened to reach.
     // An older service that answers no remote leaves whatever was
     // recorded before in place.
-    if let Err(error) =
-        record_customer_status(state, receipt.status, &email, receipt.provider.as_deref()).await
-    {
-        log!("account customer status not recorded: {error}");
-    }
+    record_customer_status(state, receipt.status, &email, receipt.provider.as_deref()).await?;
     Ok(receipt)
 }
 
@@ -476,22 +473,25 @@ pub(crate) async fn persist_custody_setup(
     sealed_hex: &str,
     invocation_hex: &str,
 ) -> Result<(), TonkWorkerError> {
+    let _mutation = acquire_pending_mutation(state).await?;
     record_custody_cell(state, custody, sealed_hex).await?;
-    let mut queue = load_pending(state).await?;
-    queue.push_all([
-        PendingWork::Provision {
-            consumer: custody.to_owned(),
-            consent_hex: consent_hex.to_owned(),
-            consumer_kind: Some("custody".to_owned()),
-        },
-        PendingWork::PublishCustody {
-            custody: custody.to_owned(),
-            sealed_hex: sealed_hex.to_owned(),
-            invocation_hex: invocation_hex.to_owned(),
-        },
-    ]);
-    save_pending(state, &queue).await?;
-    drain_pending(state).await;
+    append_pending_locked(
+        state,
+        [
+            PendingWork::Provision {
+                consumer: custody.to_owned(),
+                consent_hex: consent_hex.to_owned(),
+                consumer_kind: Some("custody".to_owned()),
+            },
+            PendingWork::PublishCustody {
+                custody: custody.to_owned(),
+                sealed_hex: sealed_hex.to_owned(),
+                invocation_hex: invocation_hex.to_owned(),
+            },
+        ],
+    )
+    .await?;
+    drain_pending_locked(state).await;
     Ok(())
 }
 
@@ -680,7 +680,7 @@ pub(crate) async fn observe_customer(
     expected_root: &str,
     expected_email: &str,
 ) -> Result<CustomerObservation, TonkWorkerError> {
-    let bytes = match state
+    let local = match state
         .profile
         .credential()
         .site(CUSTOMER_CREDENTIAL_SITE)
@@ -688,28 +688,41 @@ pub(crate) async fn observe_customer(
         .perform(&state.operator)
         .await
     {
-        Ok(bytes) if bytes.is_empty() => return Ok(CustomerObservation::Missing),
-        Ok(bytes) => bytes,
-        Err(error) if crate::credential::is_missing(&error) => {
-            return Ok(CustomerObservation::Missing);
-        }
+        Ok(bytes) if bytes.is_empty() => None,
+        Ok(bytes) => match serde_json::from_slice::<CustomerRecord>(&bytes) {
+            Ok(record) => Some(record),
+            Err(_) => return Ok(CustomerObservation::Mismatch),
+        },
+        Err(error) if crate::credential::is_missing(&error) => None,
         Err(error) => {
             return Err(TonkWorkerError::Internal(format!(
                 "failed to load the customer record: {error}"
             )));
         }
     };
-    let record: CustomerRecord = match serde_json::from_slice(&bytes) {
-        Ok(record) => record,
-        Err(_) => return Ok(CustomerObservation::Mismatch),
-    };
-    Ok(
-        if record.customer == expected_root && record.email == expected_email {
-            CustomerObservation::Exact
-        } else {
-            CustomerObservation::Mismatch
-        },
-    )
+    let projected = load_account_customer(state).await?;
+    match (local, projected) {
+        (None, None) => Ok(CustomerObservation::Missing),
+        (Some(local), Some(projected))
+            if local.customer == expected_root
+                && local.email == expected_email
+                && projected.email.0 == expected_email
+                && projected.status.0 == local.status.as_str() =>
+        {
+            // `load_account_customer` queries this exact root, so a row
+            // reaching here also proves the authoritative subject.
+            Ok(CustomerObservation::Exact)
+        }
+        // One projection can survive a crash between the two writes. Replay
+        // the idempotent enrollment so both become durable before advancing.
+        (None, Some(projected)) if projected.email.0 == expected_email => {
+            Ok(CustomerObservation::Missing)
+        }
+        (Some(local), None) if local.customer == expected_root && local.email == expected_email => {
+            Ok(CustomerObservation::Missing)
+        }
+        _ => Ok(CustomerObservation::Mismatch),
+    }
 }
 
 /// Whether a provider actually serves this account — the precondition
@@ -807,17 +820,23 @@ pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registrati
 pub(crate) async fn account_customer(
     state: &crate::worker::TonkState,
 ) -> Option<tonk_schema::AccountCustomer> {
+    load_account_customer(state).await.ok().flatten()
+}
+
+async fn load_account_customer(
+    state: &crate::worker::TonkState,
+) -> Result<Option<tonk_schema::AccountCustomer>, TonkWorkerError> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{AccountCustomer, prelude::DidExt as _};
 
-    let account = super::identity::root_did(state).await.ok()?;
+    let account = super::identity::root_did(state).await?;
     let branch = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&state.operator)
         .await
-        .ok()?;
+        .map_err(|error| TonkWorkerError::Internal(format!("acquire account branch: {error}")))?;
     let rows: Vec<AccountCustomer> = branch
         .handle()
         .query()
@@ -830,8 +849,8 @@ pub(crate) async fn account_customer(
         .perform(&state.operator)
         .try_vec()
         .await
-        .ok()?;
-    rows.into_iter().next()
+        .map_err(|error| TonkWorkerError::Internal(format!("query account customer: {error}")))?;
+    Ok(rows.into_iter().next())
 }
 
 /// Record the account's registration state as a fact on profile main,
@@ -964,6 +983,60 @@ async fn save_pending(
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save pending work: {error}")))
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+trait PendingQueueStore {
+    async fn load_queue(&self) -> Result<PendingQueue, TonkWorkerError>;
+    async fn save_queue(&self, queue: &PendingQueue) -> Result<(), TonkWorkerError>;
+}
+
+struct WorkerPendingQueueStore<'a>(&'a crate::worker::TonkState);
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl PendingQueueStore for WorkerPendingQueueStore<'_> {
+    async fn load_queue(&self) -> Result<PendingQueue, TonkWorkerError> {
+        load_pending(self.0).await
+    }
+
+    async fn save_queue(&self, queue: &PendingQueue) -> Result<(), TonkWorkerError> {
+        save_pending(self.0, queue).await
+    }
+}
+
+async fn append_to_pending_store(
+    store: &impl PendingQueueStore,
+    work: impl IntoIterator<Item = PendingWork>,
+) -> Result<(), TonkWorkerError> {
+    let mut queue = store.load_queue().await?;
+    queue.push_all(work);
+    store.save_queue(&queue).await
+}
+
+struct PendingMutationGuard {
+    _cross_worker: super::browser_lock::CrossWorkerGuard,
+    _local: tokio::sync::OwnedMutexGuard<()>,
+}
+
+async fn acquire_pending_mutation(
+    state: &crate::worker::TonkState,
+) -> Result<PendingMutationGuard, TonkWorkerError> {
+    let profile_hash = blake3::hash(state.profile.did().as_ref().as_bytes());
+    let lock_name = format!("tonk-pending-effects-v1:{profile_hash}");
+    let cross_worker = super::browser_lock::acquire(&lock_name)
+        .await
+        .map_err(|()| {
+            TonkWorkerError::Internal(
+                "pending effects require cross-worker serialization; reload and retry".to_string(),
+            )
+        })?;
+    let local = state.pending_work_lock.clone().lock_owned().await;
+    Ok(PendingMutationGuard {
+        _cross_worker: cross_worker,
+        _local: local,
+    })
+}
+
 /// Record `work` for replay once the account confirms its email, then
 /// try to drain immediately — an already-active customer must not wait
 /// for the next status probe.
@@ -971,11 +1044,17 @@ pub(crate) async fn defer(
     state: &crate::worker::TonkState,
     work: PendingWork,
 ) -> Result<(), TonkWorkerError> {
-    let mut queue = load_pending(state).await?;
-    queue.push(work);
-    save_pending(state, &queue).await?;
-    drain_pending(state).await;
+    let _mutation = acquire_pending_mutation(state).await?;
+    append_pending_locked(state, [work]).await?;
+    drain_pending_locked(state).await;
     Ok(())
+}
+
+async fn append_pending_locked(
+    state: &crate::worker::TonkState,
+    work: impl IntoIterator<Item = PendingWork>,
+) -> Result<(), TonkWorkerError> {
+    append_to_pending_store(&WorkerPendingQueueStore(state), work).await
 }
 
 /// Replay queued work in the order it was recorded, stopping at the
@@ -987,6 +1066,14 @@ pub(crate) async fn defer(
 /// design — a drain that cannot run leaves the queue exactly as it was,
 /// and the next probe tries again.
 pub(crate) async fn drain_pending(state: &crate::worker::TonkState) {
+    let _mutation = match acquire_pending_mutation(state).await {
+        Ok(guard) => guard,
+        Err(error) => return log!("pending work lock unavailable: {error}"),
+    };
+    drain_pending_locked(state).await;
+}
+
+async fn drain_pending_locked(state: &crate::worker::TonkState) {
     let mut queue = match load_pending(state).await {
         Ok(queue) => queue,
         Err(error) => return log!("pending work unreadable: {error}"),
@@ -1018,10 +1105,10 @@ pub(crate) async fn drain_pending(state: &crate::worker::TonkState) {
 
 /// Perform one queued entry.
 ///
-/// A custody publish needs the PRF-derived custody key, which only a
-/// page holding a fresh passkey assertion has, so the worker cannot run
-/// one and reports it as still waiting. That halts the drain by design:
-/// the publish must not be overtaken by entries recorded after it.
+/// A custody publish uses the bounded pre-signed invocation captured while
+/// the page held the PRF-derived custody key. That lets the worker replay it
+/// later without reopening the key. A failed provision or publish still
+/// halts the drain so no later entry can overtake the custody pair.
 async fn run_pending(
     state: &crate::worker::TonkState,
     work: &PendingWork,
@@ -1143,4 +1230,80 @@ pub(crate) async fn clear_customer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear the customer record: {error}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use tonk_account::pending::{PendingQueue, PendingWork};
+
+    use super::{PendingQueueStore, append_to_pending_store};
+
+    #[derive(Default)]
+    struct MemoryPendingQueueStore(Mutex<PendingQueue>);
+
+    #[async_trait]
+    impl PendingQueueStore for MemoryPendingQueueStore {
+        async fn load_queue(&self) -> Result<PendingQueue, crate::TonkWorkerError> {
+            let queue = self.0.lock().unwrap().clone();
+            tokio::task::yield_now().await;
+            Ok(queue)
+        }
+
+        async fn save_queue(&self, queue: &PendingQueue) -> Result<(), crate::TonkWorkerError> {
+            tokio::task::yield_now().await;
+            *self.0.lock().unwrap() = queue.clone();
+            Ok(())
+        }
+    }
+
+    fn custody_batch(label: &str) -> [PendingWork; 2] {
+        [
+            PendingWork::Provision {
+                consumer: format!("invalid-custody-{label}"),
+                consent_hex: format!("aa{label}"),
+                consumer_kind: Some("custody".to_string()),
+            },
+            PendingWork::PublishCustody {
+                custody: format!("invalid-custody-{label}"),
+                sealed_hex: format!("bb{label}"),
+                invocation_hex: format!("cc{label}"),
+            },
+        ]
+    }
+
+    #[dialog_common::test]
+    async fn concurrent_custody_appends_never_lose_or_cross_the_ordered_pair() {
+        let store = Arc::new(MemoryPendingQueueStore::default());
+        let mutation_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let first = custody_batch("01");
+        let second = custody_batch("02");
+
+        let (left, right) = tokio::join!(
+            async {
+                let _guard = mutation_lock.lock().await;
+                append_to_pending_store(store.as_ref(), first.clone()).await
+            },
+            async {
+                let _guard = mutation_lock.lock().await;
+                append_to_pending_store(store.as_ref(), second.clone()).await
+            },
+        );
+        left.unwrap();
+        right.unwrap();
+
+        let queue = store.load_queue().await.unwrap();
+        let entries = queue.entries();
+        let first_then_second = first.into_iter().chain(second.clone()).collect::<Vec<_>>();
+        let second_then_first = second
+            .into_iter()
+            .chain(custody_batch("01"))
+            .collect::<Vec<_>>();
+        assert!(
+            entries == first_then_second || entries == second_then_first,
+            "both ordered Provision+Publish pairs must survive either lock acquisition order"
+        );
+    }
 }

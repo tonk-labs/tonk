@@ -24,7 +24,7 @@ Still deliberately absent from this lower commit: credential-site reads/writes, 
 
 The next stacked slice starts from the reviewed foundation follow-up `89f9627b3` and wires Tasks 1–4 through the worker boundary without invoking the new flow from `tonk-ui` yet. It adds the pre-submit provider fingerprint and proof-bound status invocation, dedicated credential sites, profile-scoped Web Lock plus per-worker serialization, live-`ClientId`/token/revision fencing, a re-resolved canonical-configuration fence on every protected recovery validation, the bounded `/api/account/setup` route, recovery-before-root staging, status-first exact provider replay, exact local observations, ordered custody work, and complete-before-tombstone cleanup. Test-only store and provider ports cover unauthorized stage attempts, configuration drift, recovery/checkpoint loss, provider response loss, unknown provider outcomes, and tombstone-write loss without exposing protected payloads through `Debug` or logs.
 
-Deliberately deferred to the UI/WebAuthn slice: passing the worker-minted ceremony context into identity, producing the final root-signed manifest from the real browser ceremony, same-credential assertion/resume invocation, top-document owner/attempt-token orchestration, recovery copy, browser Web Lock races, service-worker critical-section composition, and Storybook. The production route is therefore wired and compile-checked but remains unreachable from existing UI entrypoints in this slice.
+Deliberately deferred to the UI/WebAuthn slice: passing the worker-minted ceremony context into identity, producing the final root-signed manifest from the real browser ceremony, performing the browser same-credential assertion and invoking the worker's phase-specific replacement command, top-document owner/attempt-token orchestration, recovery copy, browser Web Lock races, service-worker critical-section composition, and Storybook. The production route is therefore wired and compile-checked but remains unreachable from existing UI entrypoints in this slice.
 
 Focused evidence after the final parent integration:
 
@@ -34,6 +34,31 @@ Focused evidence after the final parent integration:
 - `CARGO_INCREMENTAL=0 cargo test -p tonk-worker-api account_setup::tests --no-fail-fast`: 4 passed, 30 filtered.
 - `CARGO_INCREMENTAL=0 cargo test -p tonk-worker router::route_table:: --no-fail-fast`: 2 passed, 105 filtered.
 - `CARGO_INCREMENTAL=0 cargo clippy -p tonk-account -p tonk-identity -p tonk-worker --all-targets -- -D warnings` and `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target wasm32-unknown-unknown`: passed.
+
+## Independent production-saga review remediation (2026-08-31)
+
+The first production wiring commit was held for independent review rather than published. The review found nine recovery gaps, all addressed in this stacked follow-up before UI invocation:
+
+- `Inspect` and `Begin` now classify the checkpoint and recovery site together. A surviving bundle or tombstone behind a missing checkpoint is corrupt and cannot authorize another ceremony; phase/record combinations impossible for the current checkpoint also fail closed.
+- Replacement create and publish invocations carry a worker-authored immutable receipt-time reference. Canonical scope, exact semantic arguments, signature, and the original expiry window are validated against that stored reference; current expiry remains the recoverable `NeedsRefresh` state.
+- Enrollment advances only after both the device-local `CustomerRecord` and the exact profile-main `AccountCustomer` projection are durable. Projection failures propagate and idempotently replay without moving past `Attached`.
+- Every pending-work mutation holds one profile-scoped browser Web Lock and the matching per-worker mutex across load/append-or-drain/save. The ordered custody `[Provision, PublishCustody]` pair is appended in one serialized queue write, and a concurrency contract test permits either lock-acquisition order but no lost or crossed pair.
+- Repeated `Begin` by the exact live owner and `Acquire` after a dead pre-arm owner return the original worker-selected non-secret ceremony. A different live client still receives only the redacted in-progress view.
+- Provider status remains authoritative and transport-unknown. After exact status `Absent`, an account-create HTTP 409 is classified as the typed terminal provider conflict rather than retried forever; upstream bodies never enter the public response.
+- The coordinator rejects a request whose origin is not exactly the worker-global service origin before configuration resolution or any provider fetch. All setup context is derived from that trusted origin.
+- `NeedsPasskey` uses a tagged, phase-minimal protected input. `RootSaved` may receive only the fields needed to refresh create; `CustomerEnrolled` receives only operation/credential/root/custody/sealed fields for the custody publish invocation. Provider-accepted and later phases never disclose create-resume material merely because the already-consumed create invocation expired.
+- Test clocks plus in-memory store/provider/effect ports now execute the production `handle_locked` and `reconcile_with_provider` seams, including lost-checkpoint, configuration/origin, ownership/takeover, provider-conflict, projection-failure, phase-specific-expiry, and completion/tombstone paths.
+
+This remediation remains deliberately production-uninvoked from `tonk-ui`: the UI/WebAuthn adapter, copy, browser journey tests, service-worker critical-section composition, and Storybook behavior changes remain Tasks 5–7. Native queue tests prove the shared mutation seam and Wasm compilation proves its Web Lock adapter; a two-live-worker browser race remains browser-only evidence for Task 6.
+
+Focused review-remediation evidence:
+
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib router::account_setup::tests -- --nocapture`: 28 passed, 91 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib router::customer::tests::concurrent_custody_appends_never_lose_or_cross_the_ordered_pair -- --exact --nocapture`: 1 passed, 118 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker-api --lib account_setup::tests -- --nocapture`: 4 passed, 30 filtered.
+- An earlier complete native `tonk-worker --lib` sweep in this remediation passed 111 of 119 inside the restricted sandbox; all eight failures stopped at loopback setup with `Operation not permitted`. The unchanged failing families then passed with loopback access: `router::account_state::tests` 11 passed and `router::http::tests` 3 passed. The final phase-minimal protected-response refinement was rerun through the 28 saga and 4 wire tests above.
+- `CARGO_INCREMENTAL=0 cargo clippy -p tonk-account -p tonk-worker-api -p tonk-identity -p tonk-worker --all-targets -- -D warnings`: passed. `AccountSetupResponse::Protected` is boxed to keep the wire JSON unchanged while satisfying the all-target enum-size lint.
+- `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target wasm32-unknown-unknown`: passed, including the shared Web Lock adapter.
 
 **Constraints:**
 
@@ -98,6 +123,7 @@ pub enum AccountSetupRequest {
     Stage(Box<AccountSetupStage>),
     Continue(AccountSetupMutation),
     ReplaceInvocation(AccountSetupInvocation),
+    ReplacePublishInvocation(AccountSetupInvocation),
     Cancel(AccountSetupMutation),
 }
 ```
@@ -143,8 +169,11 @@ normalized_email, worker-selected provider, credential_id, expected_root_did,
 expected_device_did, device_name,
 delegation_cid, delegation_hex, passkey metadata, encryption recipient,
 canonical descriptor_hex, create_fingerprint, original create invocation,
+optional replacement create invocation plus immutable receipt reference,
 account-signed customer deposits, custody DID and consent,
-passkey-sealed envelope, bounded publish invocation, recovery_manifest_hex
+passkey-sealed envelope, bounded publish invocation,
+optional replacement publish invocation plus immutable receipt reference,
+recovery_manifest_hex
 ```
 
 `RecoveryTombstoneV1 { version, operation_id, completed_at, recovery_hash }` replaces the recovery bundle only after the `Complete` checkpoint is durable. Inspection retries an interrupted tombstone write; code never relies on a delete/retract API.
@@ -296,10 +325,10 @@ Loading applies overall-body, per-string, per-hex/blob, deposit-count, and decod
 
 - [x] RED: script provider `Accepted`, `Absent`, `Mismatch`, timeout, malformed body, and lost response after commit. Require status before create on every resume; Accepted advances with the canonical descriptor, Absent submits the exact stored invocation, Mismatch writes nothing, and unknown outcomes remain retryable without WebAuthn.
 - [x] GREEN: implement the status invocation/HTTP adapter and strict response/fingerprint/descriptor checks. Exact create replay accepts either initial 201 or reused 200 but verifies the returned fingerprint and descriptor.
-- [ ] RED/GREEN: when Absent and the stored invocation is expired, return `NeedsPasskey` with owner-authorized sealed recovery input. `ReplaceInvocation` accepts only a fresh invocation whose decoded semantic facts reproduce the stored fingerprint.
-- [ ] RED: inject failure after provider acceptance, provider-phase checkpoint, provider record save, account-state initialization, enrollment response, customer record, custody cell, ordered queue save, drain, and completion save. Recreate the worker between failures; require monotonic convergence and no duplicate account/device/custody ordering.
+- [x] RED/GREEN: when Absent and the stored invocation is expired, return `NeedsPasskey` with owner-authorized sealed recovery input. `ReplaceInvocation` accepts only a fresh invocation whose decoded semantic facts reproduce the stored fingerprint. The same phase-specific contract now refreshes an expired custody publish authorization through `ReplacePublishInvocation` without exposing create material after provider acceptance.
+- [ ] RED: inject failure after provider acceptance, provider-phase checkpoint, provider record save, account-state initialization, enrollment response, customer record, custody cell, ordered queue save, drain, and completion save. Recreate the worker between failures; require monotonic convergence and no duplicate account/device/custody ordering. The production-seam matrix now covers provider 409, customer projection failure, custody completion, and tombstone loss; the remaining exhaustive crash-point/browser restart matrix stays open.
 - [x] GREEN: reconcile exact provider link/customer/custody effects before replaying. Treat enrollment and pending work as at-least-once idempotent operations; never let `PublishCustody` overtake `Provision`.
-- [ ] RED/GREEN: make malformed pending work recoverable from the still-retained bundle, and prove a drained queue followed by checkpoint loss can safely reappend/replay the exact pair.
+- [ ] RED/GREEN: make malformed pending work recoverable from the still-retained bundle, and prove a drained queue followed by checkpoint loss can safely reappend/replay the exact pair. Concurrent append loss/crossing is now covered under the shared mutation seam; the drained-queue/checkpoint-loss browser restart case remains open.
 - [x] Save `Complete` before overwriting the recovery bundle with `RecoveryTombstoneV1`. A failed tombstone write leaves credential-store-protected sealed/bounded material and is retried on later inspection; do not assume delete/retract support.
 - [ ] Run `CARGO_INCREMENTAL=0 cargo test -p tonk-account pending::tests` and focused native/wasm worker saga filters; expect success.
 

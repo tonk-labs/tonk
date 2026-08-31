@@ -350,6 +350,25 @@ pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Operator<DefaultSpace>;
 
+fn worker_service_origin() -> Option<url::Url> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast as _;
+
+        let origin = js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .ok()?
+            .location()
+            .origin();
+        if origin.is_empty() {
+            return None;
+        }
+        return format!("{origin}/").parse().ok();
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    None
+}
+
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
@@ -372,6 +391,10 @@ pub struct TonkState {
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
     pub profile_name: String,
+    /// Exact origin captured from the service-worker global, never from an
+    /// intercepted request. Security-sensitive same-origin setup flows derive
+    /// deployment configuration only from this value.
+    pub service_origin: Option<url::Url>,
     /// Reactive layer: cached repository/branch handles and the
     /// query subscriptions registered against them. Routes that
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
@@ -402,6 +425,10 @@ pub struct TonkState {
     /// production pairs it with a profile-scoped Web Lock; native tests use
     /// this deterministic mutex directly.
     pub account_setup_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Per-worker half of the pending-effect queue serialization fence. Every
+    /// load/append/drain/save mutation also holds the matching profile-scoped
+    /// browser Web Lock so old and new workers cannot lose each other's work.
+    pub pending_work_lock: Arc<tokio::sync::Mutex<()>>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -1741,6 +1768,7 @@ pub(crate) async fn boot_state(
         storage,
         session_expires_at: session.expires_at,
         profile_name,
+        service_origin: worker_service_origin(),
         reactor,
         view_bindings: Default::default(),
         bridges: Default::default(),
@@ -1748,6 +1776,7 @@ pub(crate) async fn boot_state(
         sync_queue: Default::default(),
         clients: Default::default(),
         account_setup_lock: Default::default(),
+        pending_work_lock: Default::default(),
         account_keys: Default::default(),
         registry,
     };

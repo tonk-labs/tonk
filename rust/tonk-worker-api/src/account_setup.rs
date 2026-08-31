@@ -211,6 +211,9 @@ pub enum AccountSetupRequest {
     Continue(AccountSetupMutation),
     /// Replace an expired create invocation after a same-credential assertion.
     ReplaceInvocation(AccountSetupInvocation),
+    /// Replace an expired custody publish invocation after asserting the same
+    /// staged credential and reopening the same sealed account secret.
+    ReplacePublishInvocation(AccountSetupInvocation),
     /// Cancel a lease before it is armed.
     Cancel(AccountSetupMutation),
 }
@@ -352,34 +355,55 @@ pub struct AccountSetupLease {
 }
 
 /// Minimum protected input for asserting the exact staged credential and
-/// rebuilding only the original semantic account creation.
+/// rebuilding only the authorization consumed by the current durable phase.
 ///
 /// This type is owner-authenticated and intentionally does not implement
 /// [`Debug`]. It must never be returned by unauthenticated inspection.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccountSetupResumeInput {
-    /// Operation whose expired invocation is being replaced.
-    pub operation_id: String,
-    /// Exact staged WebAuthn credential identifier.
-    pub credential_id: String,
-    /// Root DID the reopened envelope must reproduce.
-    pub expected_root_did: String,
-    /// Normalized provider account email bound into the fingerprint.
-    pub normalized_email: String,
-    /// Exact device DID receiving the stable delegation.
-    pub device_did: String,
-    /// Exact device label bound into the fingerprint.
-    pub device_name: String,
-    /// Stable root-to-device delegation bytes.
-    pub delegation_hex: String,
-    /// Original canonical signed descriptor bytes.
-    pub descriptor_hex: String,
-    /// Passkey creation metadata bound into the fingerprint, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub passkey: Option<crate::PasskeyMetadata>,
-    /// Passkey-sealed account-secret envelope.
-    pub sealed_hex: String,
+#[serde(
+    tag = "refresh",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AccountSetupResumeInput {
+    /// Rebuild the root-signed provider account-creation invocation.
+    Create {
+        /// Operation whose expired invocation is being replaced.
+        operation_id: String,
+        /// Exact staged WebAuthn credential identifier.
+        credential_id: String,
+        /// Root DID the reopened envelope must reproduce.
+        expected_root_did: String,
+        /// Normalized provider account email bound into the fingerprint.
+        normalized_email: String,
+        /// Exact device DID receiving the stable delegation.
+        device_did: String,
+        /// Exact device label bound into the fingerprint.
+        device_name: String,
+        /// Stable root-to-device delegation bytes.
+        delegation_hex: String,
+        /// Original canonical signed descriptor bytes.
+        descriptor_hex: String,
+        /// Passkey creation metadata bound into the fingerprint, when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passkey: Option<crate::PasskeyMetadata>,
+        /// Passkey-sealed account-secret envelope used to recover the root.
+        sealed_hex: String,
+    },
+    /// Rebuild the custody-signed secret-cell publish invocation.
+    Publish {
+        /// Operation whose expired invocation is being replaced.
+        operation_id: String,
+        /// Exact staged WebAuthn credential identifier.
+        credential_id: String,
+        /// Root DID the reopened envelope must reproduce before custody use.
+        expected_root_did: String,
+        /// Exact custody DID whose signer the reopened secret must reproduce.
+        custody_did: String,
+        /// Passkey-sealed account-secret envelope used to derive custody.
+        sealed_hex: String,
+    },
 }
 
 /// Owner-authenticated response carrying protected recovery material.
@@ -421,7 +445,7 @@ pub enum AccountSetupResponse {
     /// Redacted current status.
     View(AccountSetupView),
     /// Owner-authenticated protected response, never returned by public status.
-    Protected(AccountSetupProtectedResponse),
+    Protected(Box<AccountSetupProtectedResponse>),
 }
 
 #[cfg(test)]
@@ -543,6 +567,10 @@ mod tests {
                 mutation: mutation.clone(),
                 invocation_hex: "deadbeef".to_string(),
             }),
+            AccountSetupRequest::ReplacePublishInvocation(AccountSetupInvocation {
+                mutation: mutation.clone(),
+                invocation_hex: "feedface".to_string(),
+            }),
             AccountSetupRequest::Cancel(mutation),
         ];
         let expected_commands = [
@@ -553,6 +581,7 @@ mod tests {
             "stage",
             "continue",
             "replaceInvocation",
+            "replacePublishInvocation",
             "cancel",
         ];
 
@@ -728,24 +757,30 @@ mod tests {
         };
         let protected = AccountSetupProtectedResponse::NeedsPasskey {
             view,
-            resume: AccountSetupResumeInput {
+            resume: AccountSetupResumeInput::Publish {
                 operation_id: "setup-1".to_string(),
                 credential_id: "aabb".to_string(),
                 expected_root_did: "did:key:root".to_string(),
-                normalized_email: "person@example.com".to_string(),
-                device_did: "did:key:device".to_string(),
-                device_name: "Jack's laptop".to_string(),
-                delegation_hex: "ccdd".to_string(),
-                descriptor_hex: "eeff".to_string(),
-                passkey: None,
                 sealed_hex: "8899".to_string(),
+                custody_did: "did:key:custody".to_string(),
             },
         };
-        let value = serde_json::to_value(AccountSetupResponse::Protected(protected)).unwrap();
+        let value =
+            serde_json::to_value(AccountSetupResponse::Protected(Box::new(protected))).unwrap();
         assert_eq!(value["outcome"], "protected");
         assert_eq!(value["protectedOutcome"], "needsPasskey");
         assert_eq!(value["resume"]["credentialId"], "aabb");
         assert_eq!(value["resume"]["sealedHex"], "8899");
+        assert_eq!(value["resume"]["custodyDid"], "did:key:custody");
+        assert_eq!(value["resume"]["refresh"], "publish");
+        assert!(value["resume"].get("normalizedEmail").is_none());
+        assert!(value["resume"].get("delegationHex").is_none());
+        assert!(value["resume"].get("descriptorHex").is_none());
+        let decoded: AccountSetupResponse = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(decoded, AccountSetupResponse::Protected(_)));
+        let mut cross_phase = value;
+        cross_phase["resume"]["normalizedEmail"] = "must-not-cross-phases".into();
+        assert!(serde_json::from_value::<AccountSetupResponse>(cross_phase).is_err());
 
         let public = serde_json::to_string(&AccountSetupResponse::View(AccountSetupView {
             worker_protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,

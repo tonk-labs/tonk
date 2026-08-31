@@ -1765,6 +1765,7 @@ mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.clone(),
+            service_origin: None,
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
@@ -1772,6 +1773,7 @@ mod tests {
             commands: crate::router::command_registry(),
             clients: Default::default(),
             account_setup_lock: Default::default(),
+            pending_work_lock: Default::default(),
             account_keys: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),

@@ -211,6 +211,8 @@ struct StoredRecoveryBundleV1 {
     /// Fresh exact-semantic replay invocation. The immutable original remains
     /// manifest-bound; replacing it would invalidate the anti-mix signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    replacement_invocation_created_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     replacement_invocation_hex: Option<String>,
     #[serde(default)]
     deposits_hex: Vec<String>,
@@ -218,6 +220,12 @@ struct StoredRecoveryBundleV1 {
     consent_hex: String,
     sealed_hex: String,
     publish_invocation_hex: String,
+    /// Fresh exact-semantic custody publish authorization. The immutable
+    /// manifest-bound original remains retained for anti-mix validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replacement_publish_invocation_created_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replacement_publish_invocation_hex: Option<String>,
     recovery_manifest_hex: String,
 }
 
@@ -517,6 +525,7 @@ struct ValidatedRecoveryBundle {
     delegation: DelegationChain,
     descriptor: AccountRepositoryDescriptorV1,
     create_invocation: InvocationChain<AnySignature>,
+    publish_invocation: InvocationChain<AnySignature>,
     recovery_hash: String,
     #[cfg(test)]
     create_expires_at: u64,
@@ -577,12 +586,20 @@ impl ValidatedRecoveryBundle {
             CREATE_EXPIRY_MIN_OFFSET,
             CREATE_EXPIRY_MAX_OFFSET,
         )?;
-        let replacement_invocation = match decoded.replacement_invocation.as_deref() {
-            Some(bytes) => Some(
-                validate_replacement_invocation(bytes, &stored, &root_did, passkey, trust.now)
+        let replacement_invocation = match (
+            stored.replacement_invocation_created_at,
+            decoded.replacement_invocation.as_deref(),
+        ) {
+            (Some(created_at), Some(bytes)) if created_at > 0 => Some(
+                validate_replacement_invocation(bytes, &stored, &root_did, passkey, created_at)
                     .await?,
             ),
-            None => None,
+            (None, None) => None,
+            _ => {
+                return Err(RecoveryValidationError::Invalid(
+                    "replacement_invocation_reference",
+                ));
+            }
         };
 
         let fingerprint = AccountCreationFingerprint::from_hex(&stored.create_fingerprint)
@@ -645,6 +662,26 @@ impl ValidatedRecoveryBundle {
             PUBLISH_EXPIRY_MIN_OFFSET,
             PUBLISH_EXPIRY_MAX_OFFSET,
         )?;
+        let replacement_publish_invocation = match (
+            stored.replacement_publish_invocation_created_at,
+            decoded.replacement_publish_invocation.as_deref(),
+        ) {
+            (Some(created_at), Some(bytes)) if created_at > 0 => Some(
+                validate_replacement_publish_invocation(
+                    bytes,
+                    &custody_did,
+                    &decoded.sealed,
+                    created_at,
+                )
+                .await?,
+            ),
+            (None, None) => None,
+            _ => {
+                return Err(RecoveryValidationError::Invalid(
+                    "replacement_publish_invocation_reference",
+                ));
+            }
+        };
 
         let service_did = trust.service_did.as_ref().map(ToString::to_string);
         AccountSetupRecoveryManifestV1::validate(
@@ -682,17 +719,22 @@ impl ValidatedRecoveryBundle {
             .as_ref()
             .and_then(|chain| chain.invocation.expiration())
             .map_or(create_expires_at, |expiration| expiration.to_unix());
+        let effective_publish_expires_at = replacement_publish_invocation
+            .as_ref()
+            .and_then(|chain| chain.invocation.expiration())
+            .map_or(publish_expires_at, |expiration| expiration.to_unix());
         Ok(Self {
             stored,
             root_did,
             delegation,
             descriptor,
             create_invocation: replacement_invocation.unwrap_or(create_invocation),
+            publish_invocation: replacement_publish_invocation.unwrap_or(publish_invocation),
             recovery_hash,
             #[cfg(test)]
             create_expires_at,
             create_freshness: freshness(effective_expires_at, trust.now),
-            publish_freshness: freshness(publish_expires_at, trust.now),
+            publish_freshness: freshness(effective_publish_expires_at, trust.now),
         })
     }
 
@@ -735,6 +777,13 @@ impl ValidatedRecoveryBundle {
             .to_bytes()
             .map_err(|_| RecoveryValidationError::Artifact("create"))
     }
+
+    fn publish_invocation_hex(&self) -> Result<String, RecoveryValidationError> {
+        self.publish_invocation
+            .to_bytes()
+            .map(hex::encode)
+            .map_err(|_| RecoveryValidationError::Artifact("publish"))
+    }
 }
 
 struct DecodedRecovery {
@@ -746,6 +795,7 @@ struct DecodedRecovery {
     consent: Vec<u8>,
     sealed: Vec<u8>,
     publish_invocation: Vec<u8>,
+    replacement_publish_invocation: Option<Vec<u8>>,
     manifest: Vec<u8>,
 }
 
@@ -875,6 +925,13 @@ enum RecoveryLoad {
     Unsupported,
 }
 
+enum SetupLoad {
+    Missing,
+    Ready(Box<ValidatedCheckpoint>),
+    Corrupt,
+    Unsupported(Option<u16>),
+}
+
 async fn load_recovery(store: &impl SetupStore) -> Result<RecoveryLoad, SetupStoreError> {
     let Some(bytes) = store.load_recovery().await? else {
         return Ok(RecoveryLoad::Missing);
@@ -888,6 +945,60 @@ async fn load_recovery(store: &impl SetupStore) -> Result<RecoveryLoad, SetupSto
         ) => RecoveryLoad::Unsupported,
         Err(_) => RecoveryLoad::Corrupt,
     })
+}
+
+async fn load_setup(store: &impl SetupStore) -> Result<SetupLoad, SetupStoreError> {
+    match load_checkpoint(store).await? {
+        CheckpointLoad::Missing => match load_recovery(store).await? {
+            RecoveryLoad::Missing => Ok(SetupLoad::Missing),
+            RecoveryLoad::Unsupported => Ok(SetupLoad::Unsupported(None)),
+            RecoveryLoad::Bundle(_) | RecoveryLoad::Tombstone(_) | RecoveryLoad::Corrupt => {
+                Ok(SetupLoad::Corrupt)
+            }
+        },
+        CheckpointLoad::Ready(checkpoint) => match load_recovery(store).await? {
+            RecoveryLoad::Unsupported => Ok(SetupLoad::Unsupported(None)),
+            RecoveryLoad::Corrupt => Ok(SetupLoad::Corrupt),
+            recovery if recovery_shape_matches(&checkpoint, &recovery) => {
+                Ok(SetupLoad::Ready(checkpoint))
+            }
+            RecoveryLoad::Missing | RecoveryLoad::Bundle(_) | RecoveryLoad::Tombstone(_) => {
+                Ok(SetupLoad::Corrupt)
+            }
+        },
+        CheckpointLoad::Corrupt => Ok(SetupLoad::Corrupt),
+        CheckpointLoad::Unsupported(version) => Ok(SetupLoad::Unsupported(version)),
+    }
+}
+
+fn recovery_shape_matches(checkpoint: &ValidatedCheckpoint, recovery: &RecoveryLoad) -> bool {
+    let stored = checkpoint.as_stored();
+    match (&stored.phase, recovery) {
+        (
+            StoredPhaseV2::Leased
+            | StoredPhaseV2::Cancelled
+            | StoredPhaseV2::InterruptedBeforeRecovery,
+            RecoveryLoad::Missing,
+        )
+        | (StoredPhaseV2::Armed, RecoveryLoad::Missing | RecoveryLoad::Bundle(_))
+        | (
+            StoredPhaseV2::RecoveryStaged
+            | StoredPhaseV2::RootSaved
+            | StoredPhaseV2::ProviderAccepted
+            | StoredPhaseV2::Attached
+            | StoredPhaseV2::CustomerEnrolled
+            | StoredPhaseV2::CustodyQueued
+            | StoredPhaseV2::Conflict { .. },
+            RecoveryLoad::Bundle(_),
+        )
+        | (StoredPhaseV2::Complete, RecoveryLoad::Bundle(_)) => true,
+        (StoredPhaseV2::Complete, RecoveryLoad::Tombstone(tombstone)) => {
+            tombstone.operation_id == stored.operation_id
+                && Some(tombstone.recovery_hash.as_str()) == stored.recovery_hash.as_deref()
+        }
+        (_, RecoveryLoad::Corrupt | RecoveryLoad::Unsupported) => false,
+        _ => false,
+    }
 }
 
 async fn save_recovery(
@@ -930,19 +1041,17 @@ struct ProviderCapabilityVersions {
     account_setup_recovery: u16,
 }
 
-async fn resolve_setup_context(
-    origin: &crate::axum::RequestOrigin,
-) -> Result<CanonicalSetupContext, ()> {
-    let config_url = origin.url().join(".well-known/tonk").map_err(|_| ())?;
+async fn resolve_setup_context(origin: &Url) -> Result<CanonicalSetupContext, ()> {
+    let config_url = origin.join(".well-known/tonk").map_err(|_| ())?;
     let response = super::http::get(&config_url).await.map_err(|_| ())?;
     if response.body.len() > MAX_PROVIDER_RESPONSE_BYTES {
         return Err(());
     }
     let config: tonk_worker_api::DeploymentConfig =
         serde_json::from_slice(&response.body).map_err(|_| ())?;
-    let service_origin = canonical_base_url(origin.url().clone())?;
+    let service_origin = canonical_base_url(origin.clone())?;
     let provider = canonical_base_url(config.account_service_url)?;
-    let remote = canonical_base_url(origin.url().join("ucan/").map_err(|_| ())?)?;
+    let remote = canonical_base_url(origin.join("ucan/").map_err(|_| ())?)?;
     let service_did = config
         .service_did
         .map(|value| value.parse::<Did>().map_err(|_| ()))
@@ -955,6 +1064,27 @@ async fn resolve_setup_context(
         service_did,
         configuration_hash,
     })
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+trait SetupContextSource {
+    async fn resolve(&self, origin: &Url) -> Result<CanonicalSetupContext, ()>;
+    async fn supports_recovery(&self, context: &CanonicalSetupContext) -> bool;
+}
+
+struct HttpSetupContextSource;
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl SetupContextSource for HttpSetupContextSource {
+    async fn resolve(&self, origin: &Url) -> Result<CanonicalSetupContext, ()> {
+        resolve_setup_context(origin).await
+    }
+
+    async fn supports_recovery(&self, context: &CanonicalSetupContext) -> bool {
+        provider_supports_recovery(context).await
+    }
 }
 
 fn canonical_base_url(mut url: Url) -> Result<Url, ()> {
@@ -1035,63 +1165,6 @@ fn now_seconds() -> u64 {
         .as_secs()
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-struct CrossWorkerSetupGuard(Option<tokio::sync::oneshot::Sender<()>>);
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-struct CrossWorkerSetupGuard;
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl Drop for CrossWorkerSetupGuard {
-    fn drop(&mut self) {
-        if let Some(release) = self.0.take() {
-            let _ = release.send(());
-        }
-    }
-}
-
-/// Acquire the profile-scoped browser Web Lock. There is intentionally no
-/// fallback to the per-worker mutex: without this lock two coexisting worker
-/// generations cannot prove exclusive ownership before WebAuthn is armed.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn acquire_cross_worker_setup_lock(lock_name: &str) -> Result<CrossWorkerSetupGuard, ()> {
-    use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
-    use wasm_bindgen_futures::{JsFuture, future_to_promise, spawn_local};
-
-    let global = js_sys::global();
-    let navigator =
-        js_sys::Reflect::get(&global, &JsValue::from_str("navigator")).map_err(|_| ())?;
-    let locks = js_sys::Reflect::get(&navigator, &JsValue::from_str("locks")).map_err(|_| ())?;
-    let request: js_sys::Function = js_sys::Reflect::get(&locks, &JsValue::from_str("request"))
-        .map_err(|_| ())?
-        .dyn_into()
-        .map_err(|_| ())?;
-    let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let callback = Closure::once_into_js(move |_lock: JsValue| -> js_sys::Promise {
-        let _ = acquired_tx.send(());
-        future_to_promise(async move {
-            let _ = release_rx.await;
-            Ok(JsValue::UNDEFINED)
-        })
-    });
-    let request_promise: js_sys::Promise = request
-        .call2(&locks, &JsValue::from_str(lock_name), &callback)
-        .map_err(|_| ())?
-        .dyn_into()
-        .map_err(|_| ())?;
-    spawn_local(async move {
-        let _ = JsFuture::from(request_promise).await;
-    });
-    acquired_rx.await.map_err(|_| ())?;
-    Ok(CrossWorkerSetupGuard(Some(release_tx)))
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn acquire_cross_worker_setup_lock(_lock_name: &str) -> Result<CrossWorkerSetupGuard, ()> {
-    Ok(CrossWorkerSetupGuard)
-}
-
 async fn mark_request_client_live(state: &crate::worker::TonkState, client: &crate::ClientId) {
     let mut clients = state.clients.write().await;
     clients.entry(client.clone()).or_default().seen_live = true;
@@ -1146,13 +1219,22 @@ enum ProviderSetupStatus {
 enum ProviderPortError {
     Retry,
     Invalid,
+    Conflict,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 trait AccountSetupProvider {
-    async fn status(&self, invocation: &[u8]) -> Result<ProviderSetupStatus, ProviderPortError>;
-    async fn create(&self, invocation: &[u8]) -> Result<ProviderAcceptance, ProviderPortError>;
+    async fn status(
+        &self,
+        context: &CanonicalSetupContext,
+        invocation: &[u8],
+    ) -> Result<ProviderSetupStatus, ProviderPortError>;
+    async fn create(
+        &self,
+        context: &CanonicalSetupContext,
+        invocation: &[u8],
+    ) -> Result<ProviderAcceptance, ProviderPortError>;
 }
 
 #[derive(PartialEq, Eq)]
@@ -1168,27 +1250,33 @@ enum ProviderResolution {
 /// result permits an exact replay of a still-fresh invocation.
 async fn resolve_provider_acceptance(
     provider: &impl AccountSetupProvider,
+    context: &CanonicalSetupContext,
     status_invocation: &[u8],
     create_invocation: &[u8],
     freshness: RecoveryFreshness,
 ) -> ProviderResolution {
-    match provider.status(status_invocation).await {
+    match provider.status(context, status_invocation).await {
         Ok(ProviderSetupStatus::Accepted(accepted)) => ProviderResolution::Accepted(accepted),
         Ok(ProviderSetupStatus::Mismatch) => ProviderResolution::Mismatch,
         Ok(ProviderSetupStatus::Absent) if freshness == RecoveryFreshness::NeedsRefresh => {
             ProviderResolution::NeedsPasskey
         }
-        Ok(ProviderSetupStatus::Absent) => match provider.create(create_invocation).await {
-            Ok(accepted) => ProviderResolution::Accepted(accepted),
-            Err(ProviderPortError::Retry | ProviderPortError::Invalid) => ProviderResolution::Retry,
-        },
-        Err(ProviderPortError::Retry | ProviderPortError::Invalid) => ProviderResolution::Retry,
+        Ok(ProviderSetupStatus::Absent) => {
+            match provider.create(context, create_invocation).await {
+                Ok(accepted) => ProviderResolution::Accepted(accepted),
+                Err(ProviderPortError::Conflict) => ProviderResolution::Mismatch,
+                Err(ProviderPortError::Retry | ProviderPortError::Invalid) => {
+                    ProviderResolution::Retry
+                }
+            }
+        }
+        Err(
+            ProviderPortError::Retry | ProviderPortError::Invalid | ProviderPortError::Conflict,
+        ) => ProviderResolution::Retry,
     }
 }
 
-struct HttpAccountSetupProvider<'a> {
-    context: &'a CanonicalSetupContext,
-}
+struct HttpAccountSetupProvider;
 
 #[derive(Deserialize)]
 #[serde(
@@ -1216,12 +1304,24 @@ struct ProviderCreateBody {
     reused: bool,
 }
 
+fn classify_provider_create_error(error: &super::http::HttpError) -> ProviderPortError {
+    match error {
+        super::http::HttpError::Upstream(failure) if failure.status == 409 => {
+            ProviderPortError::Conflict
+        }
+        _ => ProviderPortError::Retry,
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl AccountSetupProvider for HttpAccountSetupProvider<'_> {
-    async fn status(&self, invocation: &[u8]) -> Result<ProviderSetupStatus, ProviderPortError> {
-        let endpoint = self
-            .context
+impl AccountSetupProvider for HttpAccountSetupProvider {
+    async fn status(
+        &self,
+        context: &CanonicalSetupContext,
+        invocation: &[u8],
+    ) -> Result<ProviderSetupStatus, ProviderPortError> {
+        let endpoint = context
             .provider
             .join("accounts/setup-status")
             .map_err(|_| ProviderPortError::Invalid)?;
@@ -1246,15 +1346,19 @@ impl AccountSetupProvider for HttpAccountSetupProvider<'_> {
         }
     }
 
-    async fn create(&self, invocation: &[u8]) -> Result<ProviderAcceptance, ProviderPortError> {
-        let endpoint = self
-            .context
+    async fn create(
+        &self,
+        context: &CanonicalSetupContext,
+        invocation: &[u8],
+    ) -> Result<ProviderAcceptance, ProviderPortError> {
+        let endpoint = context
             .provider
             .join("accounts")
             .map_err(|_| ProviderPortError::Invalid)?;
-        let response = super::http::post_cbor(&endpoint, invocation)
-            .await
-            .map_err(|_| ProviderPortError::Retry)?;
+        let response = match super::http::post_cbor(&endpoint, invocation).await {
+            Ok(response) => response,
+            Err(error) => return Err(classify_provider_create_error(&error)),
+        };
         if !matches!(response.status, 200 | 201)
             || response.body.len() > MAX_PROVIDER_RESPONSE_BYTES
         {
@@ -1297,6 +1401,164 @@ async fn client_is_live(state: &crate::worker::TonkState, client: &str) -> bool 
         .await
         .get(&crate::ClientId(client.to_owned()))
         .is_some_and(|entry| entry.seen_live)
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+trait SetupEffects {
+    fn device_did(&self) -> Did;
+    fn now_seconds(&self) -> u64;
+    async fn client_is_live(&self, client: &str) -> bool;
+    async fn observe_root(
+        &self,
+        expected_root_did: &str,
+        request: &SaveRootRequest,
+    ) -> Result<super::identity::LocalRootObservation, ()>;
+    async fn persist_root(&self, request: SaveRootRequest) -> Result<(), ()>;
+    async fn build_status_invocation(
+        &self,
+        delegation: &DelegationChain,
+        create_fingerprint: &str,
+    ) -> Result<Vec<u8>, ()>;
+    async fn observe_attachment(
+        &self,
+        root_did: &Did,
+        provider: &str,
+        descriptor: &[u8],
+    ) -> Result<super::account::AttachmentObservation, ()>;
+    async fn persist_attachment(&self, request: &AccountLinkRequest) -> Result<(), ()>;
+    async fn ensure_account_state(&self) -> bool;
+    async fn observe_customer(
+        &self,
+        expected_root: &str,
+        expected_email: &str,
+    ) -> Result<super::customer::CustomerObservation, ()>;
+    async fn enroll_customer(
+        &self,
+        origin: &Url,
+        email: String,
+        deposits: &[String],
+    ) -> Result<(), ()>;
+    async fn persist_custody_setup(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        invocation_hex: &str,
+    ) -> Result<(), ()>;
+}
+
+struct WorkerSetupEffects<'a> {
+    state: &'a crate::worker::TonkState,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl SetupEffects for WorkerSetupEffects<'_> {
+    fn device_did(&self) -> Did {
+        self.state.profile.did()
+    }
+
+    fn now_seconds(&self) -> u64 {
+        now_seconds()
+    }
+
+    async fn client_is_live(&self, client: &str) -> bool {
+        client_is_live(self.state, client).await
+    }
+
+    async fn observe_root(
+        &self,
+        expected_root_did: &str,
+        request: &SaveRootRequest,
+    ) -> Result<super::identity::LocalRootObservation, ()> {
+        super::identity::observe_root(self.state, expected_root_did, request)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn persist_root(&self, request: SaveRootRequest) -> Result<(), ()> {
+        super::identity::persist_root(self.state, request)
+            .await
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    async fn build_status_invocation(
+        &self,
+        delegation: &DelegationChain,
+        create_fingerprint: &str,
+    ) -> Result<Vec<u8>, ()> {
+        tonk_identity::request::build_account_setup_status_invocation(
+            self.state.profile.signer().signer().clone(),
+            delegation,
+            create_fingerprint,
+        )
+        .await
+        .map_err(|_| ())
+    }
+
+    async fn observe_attachment(
+        &self,
+        root_did: &Did,
+        provider: &str,
+        descriptor: &[u8],
+    ) -> Result<super::account::AttachmentObservation, ()> {
+        super::account::observe_attachment(self.state, root_did, provider, descriptor)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn persist_attachment(&self, request: &AccountLinkRequest) -> Result<(), ()> {
+        super::account::persist_link(self.state, request)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn ensure_account_state(&self) -> bool {
+        super::account_state::ensure_account_state(self.state).await
+            == tonk_account::AccountStateStatus::Ready
+    }
+
+    async fn observe_customer(
+        &self,
+        expected_root: &str,
+        expected_email: &str,
+    ) -> Result<super::customer::CustomerObservation, ()> {
+        super::customer::observe_customer(self.state, expected_root, expected_email)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn enroll_customer(
+        &self,
+        origin: &Url,
+        email: String,
+        deposits: &[String],
+    ) -> Result<(), ()> {
+        super::customer::enroll_customer(self.state, origin, Some(email), deposits)
+            .await
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    async fn persist_custody_setup(
+        &self,
+        custody: &str,
+        consent_hex: &str,
+        sealed_hex: &str,
+        invocation_hex: &str,
+    ) -> Result<(), ()> {
+        super::customer::persist_custody_setup(
+            self.state,
+            custody,
+            consent_hex,
+            sealed_hex,
+            invocation_hex,
+        )
+        .await
+        .map_err(|_| ())
+    }
 }
 
 fn decode_bounded_recovery(
@@ -1366,6 +1628,17 @@ fn decode_bounded_recovery(
         &stored.publish_invocation_hex,
         MAX_INVOCATION_BYTES,
     )?;
+    let replacement_publish_invocation = stored
+        .replacement_publish_invocation_hex
+        .as_deref()
+        .map(|value| {
+            decode_hex_field(
+                "replacement_publish_invocation",
+                value,
+                MAX_INVOCATION_BYTES,
+            )
+        })
+        .transpose()?;
     let manifest = decode_hex_field(
         "recovery_manifest",
         &stored.recovery_manifest_hex,
@@ -1379,6 +1652,7 @@ fn decode_bounded_recovery(
         consent.len(),
         sealed.len(),
         publish_invocation.len(),
+        replacement_publish_invocation.as_ref().map_or(0, Vec::len),
         manifest.len(),
     ]
     .into_iter()
@@ -1402,6 +1676,7 @@ fn decode_bounded_recovery(
         consent,
         sealed,
         publish_invocation,
+        replacement_publish_invocation,
         manifest,
     })
 }
@@ -1411,7 +1686,10 @@ fn recovery_hash(stored: &StoredRecoveryBundleV1) -> Result<String, RecoveryVali
     // manifest and immutable recovery identity. Hash the original bundle so a
     // freshness repair cannot detach the checkpoint or tombstone from it.
     let mut original = stored.clone();
+    original.replacement_invocation_created_at = None;
     original.replacement_invocation_hex = None;
+    original.replacement_publish_invocation_created_at = None;
+    original.replacement_publish_invocation_hex = None;
     let record_bytes = encode_recovery(&StoredRecoveryRecord::Bundle(Box::new(original)))
         .map_err(|_| RecoveryValidationError::Invalid("recovery_record"))?;
     Ok(blake3::hash(&record_bytes).to_hex().to_string())
@@ -1595,7 +1873,7 @@ async fn validate_replacement_invocation(
     stored: &StoredRecoveryBundleV1,
     root: &Did,
     passkey: &PasskeyMetadata,
-    now: u64,
+    created_at: u64,
 ) -> Result<InvocationChain<AnySignature>, RecoveryValidationError> {
     let chain = parse_canonical_self_invocation(
         bytes,
@@ -1609,16 +1887,16 @@ async fn validate_replacement_invocation(
         .expiration()
         .ok_or(RecoveryValidationError::Artifact("replacement_expiration"))?
         .to_unix();
-    let min = now
+    let min = created_at
         .checked_add(CREATE_EXPIRY_MIN_OFFSET)
         .ok_or(RecoveryValidationError::Timestamp)?;
-    let max = now
+    let max = created_at
         .checked_add(CREATE_EXPIRY_MAX_OFFSET)
         .ok_or(RecoveryValidationError::Timestamp)?;
     if expires_at < min || expires_at > max {
         return Err(RecoveryValidationError::Artifact("replacement_expiration"));
     }
-    verify_invocation_exact_at(&chain, now, "replacement_invocation").await?;
+    verify_invocation_exact_at(&chain, created_at, "replacement_invocation").await?;
     Ok(chain)
 }
 
@@ -1732,6 +2010,50 @@ async fn validate_publish_invocation(
     ceremony_created_at: u64,
 ) -> Result<InvocationChain<AnySignature>, RecoveryValidationError> {
     let chain = parse_canonical_self_invocation(bytes, custody, &["memory", "publish"], "publish")?;
+    validate_publish_arguments(&chain, sealed)?;
+    verify_invocation_at(&chain, ceremony_created_at, "publish").await?;
+    Ok(chain)
+}
+
+async fn validate_replacement_publish_invocation(
+    bytes: &[u8],
+    custody: &Did,
+    sealed: &[u8],
+    created_at: u64,
+) -> Result<InvocationChain<AnySignature>, RecoveryValidationError> {
+    let chain = parse_canonical_self_invocation(
+        bytes,
+        custody,
+        &["memory", "publish"],
+        "replacement_publish_invocation",
+    )?;
+    validate_publish_arguments(&chain, sealed)?;
+    let expires_at = chain
+        .invocation
+        .expiration()
+        .ok_or(RecoveryValidationError::Artifact(
+            "replacement_publish_expiration",
+        ))?
+        .to_unix();
+    let min = created_at
+        .checked_add(PUBLISH_EXPIRY_MIN_OFFSET)
+        .ok_or(RecoveryValidationError::Timestamp)?;
+    let max = created_at
+        .checked_add(PUBLISH_EXPIRY_MAX_OFFSET)
+        .ok_or(RecoveryValidationError::Timestamp)?;
+    if expires_at < min || expires_at > max {
+        return Err(RecoveryValidationError::Artifact(
+            "replacement_publish_expiration",
+        ));
+    }
+    verify_invocation_exact_at(&chain, created_at, "replacement_publish_invocation").await?;
+    Ok(chain)
+}
+
+fn validate_publish_arguments(
+    chain: &InvocationChain<AnySignature>,
+    sealed: &[u8],
+) -> Result<(), RecoveryValidationError> {
     let arguments = chain.arguments();
     let checksum = match arguments.get("checksum") {
         Some(Promised::Bytes(bytes)) => Checksum::try_from(bytes.clone())
@@ -1746,8 +2068,7 @@ async fn validate_publish_invocation(
     {
         return Err(RecoveryValidationError::Artifact("publish_arguments"));
     }
-    verify_invocation_at(&chain, ceremony_created_at, "publish").await?;
-    Ok(chain)
+    Ok(())
 }
 
 fn parse_canonical_self_invocation(
@@ -2516,13 +2837,19 @@ fn retry_view(checkpoint: &ValidatedCheckpoint) -> AccountSetupView {
     view
 }
 
+#[derive(Clone, Copy)]
+enum PasskeyRefresh {
+    Create,
+    Publish,
+}
+
 fn needs_passkey_response(
     recovery: &ValidatedRecoveryBundle,
     view: AccountSetupView,
+    refresh: PasskeyRefresh,
 ) -> AccountSetupResponse {
-    AccountSetupResponse::Protected(AccountSetupProtectedResponse::NeedsPasskey {
-        view,
-        resume: AccountSetupResumeInput {
+    let resume = match refresh {
+        PasskeyRefresh::Create => AccountSetupResumeInput::Create {
             operation_id: recovery.stored.operation_id.clone(),
             credential_id: recovery.stored.credential_id.clone(),
             expected_root_did: recovery.stored.root_did.clone(),
@@ -2534,7 +2861,18 @@ fn needs_passkey_response(
             passkey: recovery.stored.passkey.clone(),
             sealed_hex: recovery.stored.sealed_hex.clone(),
         },
-    })
+        PasskeyRefresh::Publish => AccountSetupResumeInput::Publish {
+            operation_id: recovery.stored.operation_id.clone(),
+            credential_id: recovery.stored.credential_id.clone(),
+            expected_root_did: recovery.stored.root_did.clone(),
+            custody_did: recovery.stored.custody_did.clone(),
+            sealed_hex: recovery.stored.sealed_hex.clone(),
+        },
+    };
+    AccountSetupResponse::Protected(Box::new(AccountSetupProtectedResponse::NeedsPasskey {
+        view,
+        resume,
+    }))
 }
 
 fn owns_checkpoint(
@@ -2603,12 +2941,15 @@ fn stored_recovery_from_wire(
         descriptor_hex: recovery.descriptor_hex,
         create_fingerprint: recovery.create_fingerprint,
         invocation_hex: recovery.invocation_hex,
+        replacement_invocation_created_at: None,
         replacement_invocation_hex: None,
         deposits_hex: recovery.deposits_hex,
         custody_did: recovery.custody_did,
         consent_hex: recovery.consent_hex,
         sealed_hex: recovery.sealed_hex,
         publish_invocation_hex: recovery.publish_invocation_hex,
+        replacement_publish_invocation_created_at: None,
+        replacement_publish_invocation_hex: None,
         recovery_manifest_hex: recovery.recovery_manifest_hex,
     }
 }
@@ -2857,7 +3198,7 @@ async fn repair_completion_tombstone(
 }
 
 async fn reconcile_with_provider(
-    state: &crate::worker::TonkState,
+    effects: &impl SetupEffects,
     store: &impl SetupStore,
     provider: &impl AccountSetupProvider,
     context: &CanonicalSetupContext,
@@ -2866,13 +3207,13 @@ async fn reconcile_with_provider(
     client_id: &str,
 ) -> Result<AccountSetupResponse, SetupStoreError> {
     loop {
-        let now = now_seconds();
+        let now = effects.now_seconds();
         if checkpoint.as_stored().phase == StoredPhaseV2::Complete {
             return match repair_completion_tombstone(
                 store,
                 &checkpoint,
                 context,
-                state.profile.did(),
+                effects.device_did(),
                 now,
             )
             .await?
@@ -2933,7 +3274,7 @@ async fn reconcile_with_provider(
             bundle,
             &checkpoint,
             context,
-            state.profile.did(),
+            effects.device_did(),
             now,
         )
         .await
@@ -2958,15 +3299,13 @@ async fn reconcile_with_provider(
                     passkey: recovery.stored.passkey.clone(),
                     encryption_key: recovery.stored.encryption_key.clone(),
                 };
-                match super::identity::observe_root(state, &recovery.stored.root_did, &request)
+                match effects
+                    .observe_root(&recovery.stored.root_did, &request)
                     .await
                     .map_err(|_| SetupStoreError::Read)?
                 {
                     super::identity::LocalRootObservation::Missing => {
-                        if super::identity::persist_root(state, request.clone())
-                            .await
-                            .is_err()
-                        {
+                        if effects.persist_root(request.clone()).await.is_err() {
                             return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
                         }
                     }
@@ -2981,7 +3320,8 @@ async fn reconcile_with_provider(
                         .await;
                     }
                 }
-                if super::identity::observe_root(state, &recovery.stored.root_did, &request)
+                if effects
+                    .observe_root(&recovery.stored.root_did, &request)
                     .await
                     .ok()
                     != Some(super::identity::LocalRootObservation::Exact)
@@ -3002,22 +3342,22 @@ async fn reconcile_with_provider(
                 .await?;
             }
             StoredPhaseV2::RootSaved => {
-                let status_invocation =
-                    match tonk_identity::request::build_account_setup_status_invocation(
-                        state.profile.signer().signer().clone(),
+                let status_invocation = match effects
+                    .build_status_invocation(
                         recovery.delegation(),
                         &recovery.stored.create_fingerprint,
                     )
                     .await
-                    {
-                        Ok(invocation) => invocation,
-                        Err(_) => return Ok(AccountSetupResponse::View(retry_view(&checkpoint))),
-                    };
+                {
+                    Ok(invocation) => invocation,
+                    Err(_) => return Ok(AccountSetupResponse::View(retry_view(&checkpoint))),
+                };
                 let create_invocation = recovery
                     .create_invocation_bytes()
                     .map_err(|_| SetupStoreError::Read)?;
                 let accepted = match resolve_provider_acceptance(
                     provider,
+                    context,
                     &status_invocation,
                     &create_invocation,
                     recovery.create_freshness(),
@@ -3035,7 +3375,7 @@ async fn reconcile_with_provider(
                         .await;
                     }
                     ProviderResolution::NeedsPasskey => {
-                        if !client_is_live(state, client_id).await {
+                        if !effects.client_is_live(client_id).await {
                             return Ok(AccountSetupResponse::View(checkpoint_view(
                                 &checkpoint,
                                 false,
@@ -3044,7 +3384,11 @@ async fn reconcile_with_provider(
                         let mut view = checkpoint_view(&checkpoint, true);
                         view.disposition = AccountSetupDisposition::NeedsPasskey;
                         view.next_action = AccountSetupNextAction::ResumeWithPasskey;
-                        return Ok(needs_passkey_response(&recovery, view));
+                        return Ok(needs_passkey_response(
+                            &recovery,
+                            view,
+                            PasskeyRefresh::Create,
+                        ));
                     }
                     ProviderResolution::Retry => {
                         return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
@@ -3076,14 +3420,14 @@ async fn reconcile_with_provider(
                 .await?;
             }
             StoredPhaseV2::ProviderAccepted => {
-                match super::account::observe_attachment(
-                    state,
-                    recovery.root_did(),
-                    context.provider.as_str(),
-                    recovery.descriptor_bytes(),
-                )
-                .await
-                .map_err(|_| SetupStoreError::Read)?
+                match effects
+                    .observe_attachment(
+                        recovery.root_did(),
+                        context.provider.as_str(),
+                        recovery.descriptor_bytes(),
+                    )
+                    .await
+                    .map_err(|_| SetupStoreError::Read)?
                 {
                     super::account::AttachmentObservation::Missing => {
                         let link = AccountLinkRequest {
@@ -3094,7 +3438,7 @@ async fn reconcile_with_provider(
                             descriptor_hex: recovery.stored.descriptor_hex.clone(),
                             initialize_name: true,
                         };
-                        if super::account::persist_link(state, &link).await.is_err() {
+                        if effects.persist_attachment(&link).await.is_err() {
                             return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
                         }
                     }
@@ -3109,17 +3453,16 @@ async fn reconcile_with_provider(
                         .await;
                     }
                 }
-                if super::account::observe_attachment(
-                    state,
-                    recovery.root_did(),
-                    context.provider.as_str(),
-                    recovery.descriptor_bytes(),
-                )
-                .await
-                .ok()
+                if effects
+                    .observe_attachment(
+                        recovery.root_did(),
+                        context.provider.as_str(),
+                        recovery.descriptor_bytes(),
+                    )
+                    .await
+                    .ok()
                     != Some(super::account::AttachmentObservation::Exact)
-                    || super::account_state::ensure_account_state(state).await
-                        != tonk_account::AccountStateStatus::Ready
+                    || !effects.ensure_account_state().await
                 {
                     return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
                 }
@@ -3137,23 +3480,20 @@ async fn reconcile_with_provider(
                 .await?;
             }
             StoredPhaseV2::Attached => {
-                match super::customer::observe_customer(
-                    state,
-                    &recovery.stored.root_did,
-                    &recovery.stored.normalized_email,
-                )
-                .await
-                .map_err(|_| SetupStoreError::Read)?
+                match effects
+                    .observe_customer(&recovery.stored.root_did, &recovery.stored.normalized_email)
+                    .await
+                    .map_err(|_| SetupStoreError::Read)?
                 {
                     super::customer::CustomerObservation::Missing => {
-                        if super::customer::enroll_customer(
-                            state,
-                            &context.service_origin,
-                            Some(recovery.stored.normalized_email.clone()),
-                            &recovery.stored.deposits_hex,
-                        )
-                        .await
-                        .is_err()
+                        if effects
+                            .enroll_customer(
+                                &context.service_origin,
+                                recovery.stored.normalized_email.clone(),
+                                &recovery.stored.deposits_hex,
+                            )
+                            .await
+                            .is_err()
                         {
                             return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
                         }
@@ -3169,13 +3509,10 @@ async fn reconcile_with_provider(
                         .await;
                     }
                 }
-                if super::customer::observe_customer(
-                    state,
-                    &recovery.stored.root_did,
-                    &recovery.stored.normalized_email,
-                )
-                .await
-                .ok()
+                if effects
+                    .observe_customer(&recovery.stored.root_did, &recovery.stored.normalized_email)
+                    .await
+                    .ok()
                     != Some(super::customer::CustomerObservation::Exact)
                 {
                     return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
@@ -3195,17 +3532,33 @@ async fn reconcile_with_provider(
             }
             StoredPhaseV2::CustomerEnrolled => {
                 if recovery.publish_freshness() == RecoveryFreshness::NeedsRefresh {
-                    return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+                    if !effects.client_is_live(client_id).await {
+                        return Ok(AccountSetupResponse::View(checkpoint_view(
+                            &checkpoint,
+                            false,
+                        )));
+                    }
+                    let mut view = checkpoint_view(&checkpoint, true);
+                    view.disposition = AccountSetupDisposition::NeedsPasskey;
+                    view.next_action = AccountSetupNextAction::ResumeWithPasskey;
+                    return Ok(needs_passkey_response(
+                        &recovery,
+                        view,
+                        PasskeyRefresh::Publish,
+                    ));
                 }
-                if super::customer::persist_custody_setup(
-                    state,
-                    &recovery.stored.custody_did,
-                    &recovery.stored.consent_hex,
-                    &recovery.stored.sealed_hex,
-                    &recovery.stored.publish_invocation_hex,
-                )
-                .await
-                .is_err()
+                let publish_invocation_hex = recovery
+                    .publish_invocation_hex()
+                    .map_err(|_| SetupStoreError::Read)?;
+                if effects
+                    .persist_custody_setup(
+                        &recovery.stored.custody_did,
+                        &recovery.stored.consent_hex,
+                        &recovery.stored.sealed_hex,
+                        &publish_invocation_hex,
+                    )
+                    .await
+                    .is_err()
                 {
                     return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
                 }
@@ -3271,39 +3624,40 @@ async fn reconcile_with_provider(
 }
 
 async fn inspect_response(
-    state: &crate::worker::TonkState,
+    effects: &impl SetupEffects,
     store: &impl SetupStore,
-    origin: &crate::axum::RequestOrigin,
+    contexts: &impl SetupContextSource,
+    trusted_origin: &Url,
     owner_token: Option<&str>,
     client_id: &str,
 ) -> Result<AccountSetupResponse, SetupStoreError> {
-    let checkpoint = match load_checkpoint(store).await? {
-        CheckpointLoad::Missing => return Ok(AccountSetupResponse::View(missing_view())),
-        CheckpointLoad::Corrupt => {
+    let checkpoint = match load_setup(store).await? {
+        SetupLoad::Missing => return Ok(AccountSetupResponse::View(missing_view())),
+        SetupLoad::Corrupt => {
             return Ok(AccountSetupResponse::View(closed_view(
                 AccountSetupDisposition::Corrupt,
                 AccountSetupNextAction::None,
                 None,
             )));
         }
-        CheckpointLoad::Unsupported(version) => {
+        SetupLoad::Unsupported(version) => {
             return Ok(AccountSetupResponse::View(closed_view(
                 AccountSetupDisposition::Unsupported,
                 AccountSetupNextAction::None,
                 version,
             )));
         }
-        CheckpointLoad::Ready(checkpoint) => *checkpoint,
+        SetupLoad::Ready(checkpoint) => *checkpoint,
     };
     if checkpoint.as_stored().phase == StoredPhaseV2::Complete
-        && let Ok(context) = resolve_setup_context(origin).await
+        && let Ok(context) = contexts.resolve(trusted_origin).await
     {
         match repair_completion_tombstone(
             store,
             &checkpoint,
             &context,
-            state.profile.did(),
-            now_seconds(),
+            effects.device_did(),
+            effects.now_seconds(),
         )
         .await?
         {
@@ -3325,32 +3679,42 @@ async fn inspect_response(
         }
     }
     let owns = owns_checkpoint(&checkpoint, owner_token, client_id)
-        && client_is_live(state, client_id).await;
+        && effects.client_is_live(client_id).await;
     if owns
         && matches!(
             checkpoint.as_stored().phase,
-            StoredPhaseV2::RootSaved
-                | StoredPhaseV2::ProviderAccepted
-                | StoredPhaseV2::Attached
-                | StoredPhaseV2::CustomerEnrolled
-                | StoredPhaseV2::CustodyQueued
+            StoredPhaseV2::RootSaved | StoredPhaseV2::CustomerEnrolled
         )
-        && let Ok(context) = resolve_setup_context(origin).await
+        && let Ok(context) = contexts.resolve(trusted_origin).await
         && let Ok(RecoveryLoad::Bundle(bundle)) = load_recovery(store).await
         && let Ok(recovery) = validate_recovery_for_checkpoint(
             *bundle,
             &checkpoint,
             &context,
-            state.profile.did(),
-            now_seconds(),
+            effects.device_did(),
+            effects.now_seconds(),
         )
         .await
-        && recovery.create_freshness() == RecoveryFreshness::NeedsRefresh
     {
-        let mut view = checkpoint_view(&checkpoint, true);
-        view.disposition = AccountSetupDisposition::NeedsPasskey;
-        view.next_action = AccountSetupNextAction::ResumeWithPasskey;
-        return Ok(needs_passkey_response(&recovery, view));
+        let refresh = match checkpoint.as_stored().phase {
+            StoredPhaseV2::RootSaved
+                if recovery.create_freshness() == RecoveryFreshness::NeedsRefresh =>
+            {
+                Some(PasskeyRefresh::Create)
+            }
+            StoredPhaseV2::CustomerEnrolled
+                if recovery.publish_freshness() == RecoveryFreshness::NeedsRefresh =>
+            {
+                Some(PasskeyRefresh::Publish)
+            }
+            _ => None,
+        };
+        if let Some(refresh) = refresh {
+            let mut view = checkpoint_view(&checkpoint, true);
+            view.disposition = AccountSetupDisposition::NeedsPasskey;
+            view.next_action = AccountSetupNextAction::ResumeWithPasskey;
+            return Ok(needs_passkey_response(&recovery, view, refresh));
+        }
     }
     Ok(AccountSetupResponse::View(checkpoint_view(
         &checkpoint,
@@ -3358,13 +3722,33 @@ async fn inspect_response(
     )))
 }
 
+#[derive(Clone, Copy)]
+struct SetupRequestScope<'a> {
+    trusted_origin: &'a Url,
+    request_origin: &'a Url,
+    client_id: &'a str,
+}
+
 async fn handle_locked(
-    state: &crate::worker::TonkState,
-    origin: &crate::axum::RequestOrigin,
-    client_id: &str,
+    effects: &impl SetupEffects,
+    store: &impl SetupStore,
+    contexts: &impl SetupContextSource,
+    provider: &impl AccountSetupProvider,
+    scope: SetupRequestScope<'_>,
     request: AccountSetupRequest,
 ) -> Result<AccountSetupResponse, SetupStoreError> {
-    let store = CredentialSetupStore { state };
+    let SetupRequestScope {
+        trusted_origin,
+        request_origin,
+        client_id,
+    } = scope;
+    if request_origin != trusted_origin {
+        return Ok(AccountSetupResponse::View(closed_view(
+            AccountSetupDisposition::UpdateRequired,
+            AccountSetupNextAction::Reload,
+            None,
+        )));
+    }
     match request {
         AccountSetupRequest::Handshake(handshake) => {
             if handshake.protocol_version != ACCOUNT_SETUP_PROTOCOL_VERSION {
@@ -3374,14 +3758,14 @@ async fn handle_locked(
                     None,
                 )));
             }
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(closed_view(
                     AccountSetupDisposition::UpdateRequired,
                     AccountSetupNextAction::Reload,
                     None,
                 )));
             };
-            if !provider_supports_recovery(&context).await {
+            if !contexts.supports_recovery(&context).await {
                 return Ok(AccountSetupResponse::View(closed_view(
                     AccountSetupDisposition::UpdateRequired,
                     AccountSetupNextAction::Reload,
@@ -3397,9 +3781,10 @@ async fn handle_locked(
         }
         AccountSetupRequest::Inspect(inspect) => {
             inspect_response(
-                state,
-                &store,
-                origin,
+                effects,
+                store,
+                contexts,
+                trusted_origin,
                 inspect.owner_token.as_deref(),
                 client_id,
             )
@@ -3413,39 +3798,45 @@ async fn handle_locked(
                     None,
                 )));
             }
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(closed_view(
                     AccountSetupDisposition::UpdateRequired,
                     AccountSetupNextAction::Reload,
                     None,
                 )));
             };
-            if !provider_supports_recovery(&context).await {
-                return Ok(AccountSetupResponse::View(closed_view(
-                    AccountSetupDisposition::UpdateRequired,
-                    AccountSetupNextAction::Reload,
-                    None,
-                )));
-            }
-            match load_checkpoint(&store).await? {
-                CheckpointLoad::Ready(existing)
-                    if !matches!(
+            match load_setup(store).await? {
+                SetupLoad::Ready(existing)
+                    if matches!(
                         existing.as_stored().phase,
                         StoredPhaseV2::Cancelled | StoredPhaseV2::InterruptedBeforeRecovery
-                    ) =>
-                {
-                    return Ok(AccountSetupResponse::View(checkpoint_view(
-                        &existing, false,
-                    )));
+                    ) => {}
+                SetupLoad::Ready(existing) => {
+                    if existing.as_stored().configuration_hash != context.configuration_hash {
+                        return Ok(AccountSetupResponse::View(closed_view(
+                            AccountSetupDisposition::UpdateRequired,
+                            AccountSetupNextAction::Reload,
+                            None,
+                        )));
+                    }
+                    let owns = owns_checkpoint(&existing, Some(&begin.owner_token), client_id)
+                        && effects.client_is_live(client_id).await;
+                    if existing.as_stored().phase == StoredPhaseV2::Leased && owns {
+                        return Ok(AccountSetupResponse::Lease(AccountSetupLease {
+                            view: checkpoint_view(&existing, true),
+                            ceremony: context.ceremony(),
+                        }));
+                    }
+                    return Ok(AccountSetupResponse::View(checkpoint_view(&existing, owns)));
                 }
-                CheckpointLoad::Corrupt => {
+                SetupLoad::Corrupt => {
                     return Ok(AccountSetupResponse::View(closed_view(
                         AccountSetupDisposition::Corrupt,
                         AccountSetupNextAction::None,
                         None,
                     )));
                 }
-                CheckpointLoad::Unsupported(version) => {
+                SetupLoad::Unsupported(version) => {
                     return Ok(AccountSetupResponse::View(closed_view(
                         AccountSetupDisposition::Unsupported,
                         AccountSetupNextAction::None,
@@ -3453,6 +3844,17 @@ async fn handle_locked(
                     )));
                 }
                 _ => {}
+            }
+            // A saved lease already passed the capability gate. Repeating a
+            // lost Begin response needs only the exact owner/client/config
+            // fences above; a transient capability outage must not hide the
+            // worker-selected ceremony from that same owner.
+            if !contexts.supports_recovery(&context).await {
+                return Ok(AccountSetupResponse::View(closed_view(
+                    AccountSetupDisposition::UpdateRequired,
+                    AccountSetupNextAction::Reload,
+                    None,
+                )));
             }
             let operation_id = hex::encode(rand::random::<[u8; 32]>());
             let owner_hash = match token_hash(
@@ -3469,7 +3871,7 @@ async fn handle_locked(
                     )));
                 }
             };
-            let now = now_seconds().max(1);
+            let now = effects.now_seconds().max(1);
             let checkpoint = ValidatedCheckpoint::new(StoredCheckpointV2 {
                 version: CHECKPOINT_VERSION,
                 operation_id,
@@ -3488,25 +3890,26 @@ async fn handle_locked(
                 last_transition_at: now,
             })
             .map_err(|_| SetupStoreError::Write)?;
-            save_checkpoint(&store, &checkpoint).await?;
+            save_checkpoint(store, &checkpoint).await?;
             Ok(AccountSetupResponse::Lease(AccountSetupLease {
                 view: checkpoint_view(&checkpoint, true),
                 ceremony: context.ceremony(),
             }))
         }
         AccountSetupRequest::Arm(arm) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let checkpoint = *checkpoint;
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(closed_view(
                     AccountSetupDisposition::UpdateRequired,
                     AccountSetupNextAction::Reload,
                     None,
                 )));
             };
-            if !provider_supports_recovery(&context).await {
+            if !contexts.supports_recovery(&context).await {
                 return Ok(AccountSetupResponse::View(closed_view(
                     AccountSetupDisposition::UpdateRequired,
                     AccountSetupNextAction::Reload,
@@ -3514,7 +3917,7 @@ async fn handle_locked(
                 )));
             }
             let Ok(mutation) =
-                mutation_context(&arm.mutation, &checkpoint, client_id, now_seconds())
+                mutation_context(&arm.mutation, &checkpoint, client_id, effects.now_seconds())
             else {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
                     &checkpoint,
@@ -3547,21 +3950,29 @@ async fn handle_locked(
                     )));
                 }
             };
-            let checkpoint = persist_reduction(&store, reduction).await?;
+            let checkpoint = persist_reduction(store, reduction).await?;
             Ok(AccountSetupResponse::View(checkpoint_view(
                 &checkpoint,
                 true,
             )))
         }
         AccountSetupRequest::Stage(stage) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let checkpoint = *checkpoint;
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
-            let now = now_seconds();
+            if checkpoint.as_stored().configuration_hash != context.configuration_hash {
+                return Ok(AccountSetupResponse::View(closed_view(
+                    AccountSetupDisposition::UpdateRequired,
+                    AccountSetupNextAction::Reload,
+                    None,
+                )));
+            }
+            let now = effects.now_seconds();
             let Ok(mutation) = mutation_context(&stage.mutation, &checkpoint, client_id, now)
             else {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
@@ -3584,14 +3995,14 @@ async fn handle_locked(
             // The load-bearing ordering: protected recovery first, same-path
             // readback/validation second, checkpoint phase third, root last.
             let readback = match persist_staged_recovery(
-                &store,
+                store,
                 stored,
                 StagePersistenceContext {
                     checkpoint: &checkpoint,
                     mutation: &mutation,
                     attempt_hash: &attempt_hash,
                     setup: &context,
-                    device_did: state.profile.did(),
+                    device_did: effects.device_did(),
                     now,
                 },
             )
@@ -3621,31 +4032,29 @@ async fn handle_locked(
                 },
             )
             .map_err(|_| SetupStoreError::Write)?;
-            let checkpoint = persist_reduction(&store, reduction).await?;
+            let checkpoint = persist_reduction(store, reduction).await?;
             let owner_hash = checkpoint
                 .as_stored()
                 .owner_hash
                 .clone()
                 .ok_or(SetupStoreError::Read)?;
             reconcile_with_provider(
-                state,
-                &store,
-                &HttpAccountSetupProvider { context: &context },
-                &context,
-                checkpoint,
-                owner_hash,
-                client_id,
+                effects, store, provider, &context, checkpoint, owner_hash, client_id,
             )
             .await
         }
         AccountSetupRequest::Continue(mutation_wire) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let checkpoint = *checkpoint;
-            let Ok(mutation) =
-                mutation_context(&mutation_wire, &checkpoint, client_id, now_seconds())
-            else {
+            let Ok(mutation) = mutation_context(
+                &mutation_wire,
+                &checkpoint,
+                client_id,
+                effects.now_seconds(),
+            ) else {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
                     &checkpoint,
                     false,
@@ -3657,13 +4066,13 @@ async fn handle_locked(
                     false,
                 )));
             }
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
             reconcile_with_provider(
-                state,
-                &store,
-                &HttpAccountSetupProvider { context: &context },
+                effects,
+                store,
+                provider,
                 &context,
                 checkpoint,
                 mutation.owner_hash,
@@ -3672,12 +4081,13 @@ async fn handle_locked(
             .await
         }
         AccountSetupRequest::ReplaceInvocation(replacement) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let checkpoint = *checkpoint;
-            let Ok(mutation) =
-                mutation_context(&replacement.mutation, &checkpoint, client_id, now_seconds())
+            let now = effects.now_seconds();
+            let Ok(mutation) = mutation_context(&replacement.mutation, &checkpoint, client_id, now)
             else {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
                     &checkpoint,
@@ -3690,19 +4100,26 @@ async fn handle_locked(
                     false,
                 )));
             }
-            let Ok(context) = resolve_setup_context(origin).await else {
+            if checkpoint.as_stored().phase != StoredPhaseV2::RootSaved {
+                return Ok(AccountSetupResponse::View(checkpoint_view(
+                    &checkpoint,
+                    true,
+                )));
+            }
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
-            let RecoveryLoad::Bundle(mut bundle) = load_recovery(&store).await? else {
+            let RecoveryLoad::Bundle(mut bundle) = load_recovery(store).await? else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
+            bundle.replacement_invocation_created_at = Some(now);
             bundle.replacement_invocation_hex = Some(replacement.invocation_hex);
             let validated = match validate_recovery_for_checkpoint(
                 *bundle,
                 &checkpoint,
                 &context,
-                state.profile.did(),
-                now_seconds(),
+                effects.device_did(),
+                now,
             )
             .await
             {
@@ -3710,14 +4127,76 @@ async fn handle_locked(
                 Err(_) => return Ok(AccountSetupResponse::View(retry_view(&checkpoint))),
             };
             save_recovery(
-                &store,
+                store,
                 &StoredRecoveryRecord::Bundle(Box::new(validated.stored.clone())),
             )
             .await?;
             reconcile_with_provider(
-                state,
-                &store,
-                &HttpAccountSetupProvider { context: &context },
+                effects,
+                store,
+                provider,
+                &context,
+                checkpoint,
+                mutation.owner_hash,
+                client_id,
+            )
+            .await
+        }
+        AccountSetupRequest::ReplacePublishInvocation(replacement) => {
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
+            };
+            let checkpoint = *checkpoint;
+            let now = effects.now_seconds();
+            let Ok(mutation) = mutation_context(&replacement.mutation, &checkpoint, client_id, now)
+            else {
+                return Ok(AccountSetupResponse::View(checkpoint_view(
+                    &checkpoint,
+                    false,
+                )));
+            };
+            if authenticate(&checkpoint, &mutation).is_err() {
+                return Ok(AccountSetupResponse::View(checkpoint_view(
+                    &checkpoint,
+                    false,
+                )));
+            }
+            if checkpoint.as_stored().phase != StoredPhaseV2::CustomerEnrolled {
+                return Ok(AccountSetupResponse::View(checkpoint_view(
+                    &checkpoint,
+                    true,
+                )));
+            }
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
+                return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+            };
+            let RecoveryLoad::Bundle(mut bundle) = load_recovery(store).await? else {
+                return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
+            };
+            bundle.replacement_publish_invocation_created_at = Some(now);
+            bundle.replacement_publish_invocation_hex = Some(replacement.invocation_hex);
+            let validated = match validate_recovery_for_checkpoint(
+                *bundle,
+                &checkpoint,
+                &context,
+                effects.device_did(),
+                now,
+            )
+            .await
+            {
+                Ok(validated) => validated,
+                Err(_) => return Ok(AccountSetupResponse::View(retry_view(&checkpoint))),
+            };
+            save_recovery(
+                store,
+                &StoredRecoveryRecord::Bundle(Box::new(validated.stored.clone())),
+            )
+            .await?;
+            reconcile_with_provider(
+                effects,
+                store,
+                provider,
                 &context,
                 checkpoint,
                 mutation.owner_hash,
@@ -3726,11 +4205,13 @@ async fn handle_locked(
             .await
         }
         AccountSetupRequest::Cancel(cancel) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let checkpoint = *checkpoint;
-            let Ok(mutation) = mutation_context(&cancel, &checkpoint, client_id, now_seconds())
+            let Ok(mutation) =
+                mutation_context(&cancel, &checkpoint, client_id, effects.now_seconds())
             else {
                 return Ok(AccountSetupResponse::View(checkpoint_view(
                     &checkpoint,
@@ -3747,7 +4228,7 @@ async fn handle_locked(
                 }
             };
             let too_late = reduction.next_action == PrivateNextAction::CancelTooLate;
-            let checkpoint = persist_reduction(&store, reduction).await?;
+            let checkpoint = persist_reduction(store, reduction).await?;
             let mut view = checkpoint_view(&checkpoint, true);
             if too_late {
                 view.disposition = AccountSetupDisposition::CancelTooLate;
@@ -3756,27 +4237,35 @@ async fn handle_locked(
             Ok(AccountSetupResponse::View(view))
         }
         AccountSetupRequest::Acquire(acquire) => {
-            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await? else {
-                return inspect_response(state, &store, origin, None, client_id).await;
+            let CheckpointLoad::Ready(checkpoint) = load_checkpoint(store).await? else {
+                return inspect_response(effects, store, contexts, trusted_origin, None, client_id)
+                    .await;
             };
             let mut checkpoint = *checkpoint;
-            let Ok(context) = resolve_setup_context(origin).await else {
+            let Ok(context) = contexts.resolve(trusted_origin).await else {
                 return Ok(AccountSetupResponse::View(retry_view(&checkpoint)));
             };
-            let now = now_seconds();
+            if checkpoint.as_stored().configuration_hash != context.configuration_hash {
+                return Ok(AccountSetupResponse::View(closed_view(
+                    AccountSetupDisposition::UpdateRequired,
+                    AccountSetupNextAction::Reload,
+                    None,
+                )));
+            }
+            let now = effects.now_seconds();
             let mut acquire_revision = acquire.expected_revision;
             if let Some(bound) = checkpoint.as_stored().bound_client_id.clone() {
-                if client_is_live(state, &bound).await {
+                if effects.client_is_live(&bound).await {
                     return Ok(AccountSetupResponse::View(checkpoint_view(
                         &checkpoint,
                         false,
                     )));
                 }
                 let observation = match recovery_observation(
-                    &store,
+                    store,
                     &checkpoint,
                     &context,
-                    state.profile.did(),
+                    effects.device_did(),
                     now,
                 )
                 .await
@@ -3807,7 +4296,7 @@ async fn handle_locked(
                         )));
                     }
                 };
-                checkpoint = persist_reduction(&store, reduction).await?;
+                checkpoint = persist_reduction(store, reduction).await?;
                 acquire_revision = checkpoint.as_stored().revision;
                 if matches!(
                     checkpoint.as_stored().phase,
@@ -3820,7 +4309,7 @@ async fn handle_locked(
                 }
             }
             let observation =
-                recovery_observation(&store, &checkpoint, &context, state.profile.did(), now)
+                recovery_observation(store, &checkpoint, &context, effects.device_did(), now)
                     .await
                     .map_err(|_| SetupStoreError::Read)?;
             let Ok(owner_hash) = token_hash(
@@ -3852,7 +4341,13 @@ async fn handle_locked(
                     )));
                 }
             };
-            let checkpoint = persist_reduction(&store, reduction).await?;
+            let checkpoint = persist_reduction(store, reduction).await?;
+            if checkpoint.as_stored().phase == StoredPhaseV2::Leased {
+                return Ok(AccountSetupResponse::Lease(AccountSetupLease {
+                    view: checkpoint_view(&checkpoint, true),
+                    ceremony: context.ceremony(),
+                }));
+            }
             Ok(AccountSetupResponse::View(checkpoint_view(
                 &checkpoint,
                 true,
@@ -3903,7 +4398,7 @@ pub(super) async fn handle(
             )
         )
     };
-    let _cross_worker = match acquire_cross_worker_setup_lock(&lock_name).await {
+    let _cross_worker = match super::browser_lock::acquire(&lock_name).await {
         Ok(guard) => guard,
         Err(()) => {
             return Ok(AccountSetupJson(AccountSetupResponse::View(closed_view(
@@ -3917,14 +4412,30 @@ pub(super) async fn handle(
     let _local_guard = local.lock().await;
     let state = state.read().await;
     mark_request_client_live(&state, &client).await;
-    let response = handle_locked(&state, &origin, &client.0, request)
-        .await
-        .map_err(|error| {
-            crate::TonkWorkerError::Internal(match error {
-                SetupStoreError::Read => "account setup credential read failed".into(),
-                SetupStoreError::Write => "account setup credential write failed".into(),
-            })
-        })?;
+    let trusted_origin = state.service_origin.clone().ok_or_else(|| {
+        crate::TonkWorkerError::Router("account setup requires the worker origin".into())
+    })?;
+    let effects = WorkerSetupEffects { state: &state };
+    let store = CredentialSetupStore { state: &state };
+    let response = handle_locked(
+        &effects,
+        &store,
+        &HttpSetupContextSource,
+        &HttpAccountSetupProvider,
+        SetupRequestScope {
+            trusted_origin: &trusted_origin,
+            request_origin: origin.url(),
+            client_id: &client.0,
+        },
+        request,
+    )
+    .await
+    .map_err(|error| {
+        crate::TonkWorkerError::Internal(match error {
+            SetupStoreError::Read => "account setup credential read failed".into(),
+            SetupStoreError::Write => "account setup credential write failed".into(),
+        })
+    })?;
     Ok(AccountSetupJson(response))
 }
 
@@ -3936,16 +4447,18 @@ mod tests {
         CompletionTombstoneOutcome, DurableAction, MAX_RECOVERY_RECORD_BYTES, MutationContext,
         PUBLISH_EXPIRY_MAX_OFFSET, PUBLISH_EXPIRY_MIN_OFFSET, PrivateNextAction,
         ProviderAcceptance, ProviderPortError, ProviderResolution, ProviderSetupStatus,
-        RecoveryEvidence, RecoveryFreshness, RecoveryObservation, RecoveryTrustContext,
-        RecoveryValidationError, ReducerCommand, ReductionError, SetupStore, SetupStoreError,
-        StagePersistenceContext, StagePersistenceError, StoredCheckpointV2, StoredConflictCodeV2,
-        StoredPhaseV2, StoredRecoveryBundleV1, StoredRecoveryRecord, StoredSafePhaseV2,
-        StoredSetupError, ValidatedCheckpoint, ValidatedRecoveryBundle, VerifiedEvidence,
-        decode_bounded_recovery, decode_checkpoint, decode_recovery, domain_hash,
-        encode_checkpoint, encode_recovery, load_checkpoint, persist_reduction,
-        persist_staged_recovery, recovery_observation, reduce, repair_completion_tombstone,
-        resolve_provider_acceptance, supports_provider_capabilities, validate_original_expiration,
-        validate_stage_timestamps,
+        RecoveryEvidence, RecoveryFreshness, RecoveryObservation, RecoveryTombstoneV1,
+        RecoveryTrustContext, RecoveryValidationError, ReducerCommand, ReductionError,
+        SetupContextSource, SetupEffects, SetupLoad, SetupRequestScope, SetupStore,
+        SetupStoreError, StagePersistenceContext, StagePersistenceError, StoredCheckpointV2,
+        StoredConflictCodeV2, StoredPhaseV2, StoredRecoveryBundleV1, StoredRecoveryRecord,
+        StoredSafePhaseV2, StoredSetupError, ValidatedCheckpoint, ValidatedRecoveryBundle,
+        VerifiedEvidence, classify_provider_create_error, decode_bounded_recovery,
+        decode_checkpoint, decode_recovery, domain_hash, encode_checkpoint, encode_recovery,
+        handle_locked, load_checkpoint, load_setup, persist_reduction, persist_staged_recovery,
+        reconcile_with_provider, recovery_observation, reduce, repair_completion_tombstone,
+        resolve_provider_acceptance, supports_provider_capabilities, token_hash,
+        validate_original_expiration, validate_stage_timestamps,
     };
     use async_trait::async_trait;
     use dialog_credentials::Ed25519Signer;
@@ -3958,12 +4471,17 @@ mod tests {
         DEFERRED_PUBLISH_TTL_SECONDS, build_publish_invocation, mint_custody_consent,
     };
     use tonk_identity::envelope::{AccountSecret, KekMethod, custody_kek, custody_signer};
-    use tonk_worker_api::PasskeyMetadata;
+    use tonk_worker_api::{
+        ACCOUNT_SETUP_PROTOCOL_VERSION, AccountLinkRequest, AccountSetupAcquire, AccountSetupBegin,
+        AccountSetupDisposition, AccountSetupInspect, AccountSetupInvocation, AccountSetupMutation,
+        AccountSetupProtectedResponse, AccountSetupRequest, AccountSetupResponse,
+        AccountSetupResumeInput, PasskeyMetadata, SaveRootRequest,
+    };
 
-    use std::collections::VecDeque;
+    use std::collections::{BTreeSet, VecDeque};
     use std::sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     };
 
     struct ScriptedProvider {
@@ -3994,6 +4512,7 @@ mod tests {
     impl AccountSetupProvider for ScriptedProvider {
         async fn status(
             &self,
+            _context: &CanonicalSetupContext,
             invocation: &[u8],
         ) -> Result<ProviderSetupStatus, ProviderPortError> {
             self.calls
@@ -4007,7 +4526,11 @@ mod tests {
                 .expect("scripted status result")
         }
 
-        async fn create(&self, invocation: &[u8]) -> Result<ProviderAcceptance, ProviderPortError> {
+        async fn create(
+            &self,
+            _context: &CanonicalSetupContext,
+            invocation: &[u8],
+        ) -> Result<ProviderAcceptance, ProviderPortError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -4080,6 +4603,169 @@ mod tests {
         }
     }
 
+    struct FixedContextSource {
+        context: CanonicalSetupContext,
+        resolves: AtomicUsize,
+        supports: AtomicBool,
+    }
+
+    impl FixedContextSource {
+        fn new(context: CanonicalSetupContext) -> Self {
+            Self {
+                context,
+                resolves: AtomicUsize::new(0),
+                supports: AtomicBool::new(true),
+            }
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    impl SetupContextSource for FixedContextSource {
+        async fn resolve(&self, _origin: &url::Url) -> Result<CanonicalSetupContext, ()> {
+            self.resolves.fetch_add(1, Ordering::SeqCst);
+            Ok(self.context.clone())
+        }
+
+        async fn supports_recovery(&self, _context: &CanonicalSetupContext) -> bool {
+            self.supports.load(Ordering::SeqCst)
+        }
+    }
+
+    struct TestEffects {
+        device_did: dialog_varsig::Did,
+        now: AtomicU64,
+        live_clients: Mutex<BTreeSet<String>>,
+        root: Mutex<super::super::identity::LocalRootObservation>,
+        attachment: Mutex<super::super::account::AttachmentObservation>,
+        customer: Mutex<super::super::customer::CustomerObservation>,
+        account_state_ready: AtomicBool,
+        fail_root_persist: AtomicBool,
+        fail_attachment_persist: AtomicBool,
+        fail_enroll: AtomicBool,
+        fail_custody: AtomicBool,
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    impl TestEffects {
+        fn new(device_did: dialog_varsig::Did) -> Self {
+            Self {
+                device_did,
+                now: AtomicU64::new(Timestamp::now().to_unix()),
+                live_clients: Mutex::new(BTreeSet::new()),
+                root: Mutex::new(super::super::identity::LocalRootObservation::Missing),
+                attachment: Mutex::new(super::super::account::AttachmentObservation::Missing),
+                customer: Mutex::new(super::super::customer::CustomerObservation::Missing),
+                account_state_ready: AtomicBool::new(true),
+                fail_root_persist: AtomicBool::new(false),
+                fail_attachment_persist: AtomicBool::new(false),
+                fail_enroll: AtomicBool::new(false),
+                fail_custody: AtomicBool::new(false),
+                events: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    impl SetupEffects for TestEffects {
+        fn device_did(&self) -> dialog_varsig::Did {
+            self.device_did.clone()
+        }
+
+        fn now_seconds(&self) -> u64 {
+            self.now.load(Ordering::SeqCst)
+        }
+
+        async fn client_is_live(&self, client: &str) -> bool {
+            self.live_clients.lock().unwrap().contains(client)
+        }
+
+        async fn observe_root(
+            &self,
+            _expected_root_did: &str,
+            _request: &SaveRootRequest,
+        ) -> Result<super::super::identity::LocalRootObservation, ()> {
+            Ok(*self.root.lock().unwrap())
+        }
+
+        async fn persist_root(&self, _request: SaveRootRequest) -> Result<(), ()> {
+            self.events.lock().unwrap().push("root");
+            if self.fail_root_persist.load(Ordering::SeqCst) {
+                return Err(());
+            }
+            *self.root.lock().unwrap() = super::super::identity::LocalRootObservation::Exact;
+            Ok(())
+        }
+
+        async fn build_status_invocation(
+            &self,
+            _delegation: &dialog_ucan_core::DelegationChain,
+            _create_fingerprint: &str,
+        ) -> Result<Vec<u8>, ()> {
+            Ok(b"status-invocation".to_vec())
+        }
+
+        async fn observe_attachment(
+            &self,
+            _root_did: &dialog_varsig::Did,
+            _provider: &str,
+            _descriptor: &[u8],
+        ) -> Result<super::super::account::AttachmentObservation, ()> {
+            Ok(*self.attachment.lock().unwrap())
+        }
+
+        async fn persist_attachment(&self, _request: &AccountLinkRequest) -> Result<(), ()> {
+            self.events.lock().unwrap().push("attachment");
+            if self.fail_attachment_persist.load(Ordering::SeqCst) {
+                return Err(());
+            }
+            *self.attachment.lock().unwrap() = super::super::account::AttachmentObservation::Exact;
+            Ok(())
+        }
+
+        async fn ensure_account_state(&self) -> bool {
+            self.account_state_ready.load(Ordering::SeqCst)
+        }
+
+        async fn observe_customer(
+            &self,
+            _expected_root: &str,
+            _expected_email: &str,
+        ) -> Result<super::super::customer::CustomerObservation, ()> {
+            Ok(*self.customer.lock().unwrap())
+        }
+
+        async fn enroll_customer(
+            &self,
+            _origin: &url::Url,
+            _email: String,
+            _deposits: &[String],
+        ) -> Result<(), ()> {
+            self.events.lock().unwrap().push("customer");
+            if self.fail_enroll.load(Ordering::SeqCst) {
+                return Err(());
+            }
+            *self.customer.lock().unwrap() = super::super::customer::CustomerObservation::Exact;
+            Ok(())
+        }
+
+        async fn persist_custody_setup(
+            &self,
+            _custody: &str,
+            _consent_hex: &str,
+            _sealed_hex: &str,
+            _invocation_hex: &str,
+        ) -> Result<(), ()> {
+            self.events.lock().unwrap().push("custody");
+            if self.fail_custody.load(Ordering::SeqCst) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     fn hash(byte: &str) -> String {
         byte.repeat(32)
     }
@@ -4089,6 +4775,24 @@ mod tests {
             account_id: 7,
             descriptor_hex: "aabb".to_string(),
             create_fingerprint: hash("44"),
+        }
+    }
+
+    fn provider_context() -> CanonicalSetupContext {
+        CanonicalSetupContext {
+            service_origin: "https://app.example/".parse().unwrap(),
+            provider: "https://accounts.example/".parse().unwrap(),
+            remote: "https://app.example/ucan/".parse().unwrap(),
+            service_did: None,
+            configuration_hash: hash("22"),
+        }
+    }
+
+    fn request_scope<'a>(origin: &'a url::Url, client_id: &'a str) -> SetupRequestScope<'a> {
+        SetupRequestScope {
+            trusted_origin: origin,
+            request_origin: origin,
+            client_id,
         }
     }
 
@@ -4111,13 +4815,193 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_refuses_cross_origin_requests_before_loading_deployment_configuration() {
+        let trusted_origin: url::Url = "https://app.example/".parse().unwrap();
+        let request_origin: url::Url = "https://evil.example/".parse().unwrap();
+        let contexts = FixedContextSource::new(provider_context());
+        let effects = TestEffects::new(signer(60).await.did());
+        let store = MemorySetupStore::default();
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+
+        let response = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            SetupRequestScope {
+                trusted_origin: &trusted_origin,
+                request_origin: &request_origin,
+                client_id: "client-1",
+            },
+            AccountSetupRequest::Handshake(tonk_worker_api::AccountSetupHandshake {
+                protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            response,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::UpdateRequired
+        ));
+        assert_eq!(contexts.resolves.load(Ordering::SeqCst), 0);
+    }
+
+    #[dialog_common::test]
+    async fn it_recovers_a_lost_begin_response_only_for_the_exact_owner_and_client() {
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+        let contexts = FixedContextSource::new(provider_context());
+        let effects = TestEffects::new(signer(61).await.did());
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let store = MemorySetupStore::default();
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let owner_token = "owner".repeat(8);
+
+        let first = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Begin(AccountSetupBegin {
+                protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,
+                owner_token: owner_token.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let AccountSetupResponse::Lease(first) = first else {
+            panic!("first begin must establish a lease");
+        };
+        contexts.supports.store(false, Ordering::SeqCst);
+
+        let repeated = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Begin(AccountSetupBegin {
+                protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,
+                owner_token,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            repeated,
+            AccountSetupResponse::Lease(lease)
+                if lease.view.operation_id == first.view.operation_id
+                    && lease.view.revision == first.view.revision
+                    && lease.ceremony == first.ceremony
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_the_ceremony_only_after_a_dead_pre_arm_owner_is_acquired() {
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+        let contexts = FixedContextSource::new(provider_context());
+        let effects = TestEffects::new(signer(62).await.did());
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let store = MemorySetupStore::default();
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+
+        let AccountSetupResponse::Lease(first) = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Begin(AccountSetupBegin {
+                protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,
+                owner_token: "owner".repeat(8),
+            }),
+        )
+        .await
+        .unwrap() else {
+            panic!("begin must establish a lease");
+        };
+        let operation_id = first.view.operation_id.clone().unwrap();
+        let revision = first.view.revision.unwrap();
+
+        let denied = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-2"),
+            AccountSetupRequest::Acquire(AccountSetupAcquire {
+                operation_id: operation_id.clone(),
+                owner_token: "new-owner".repeat(4),
+                expected_revision: revision,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            denied,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::InProgressElsewhere
+        ));
+
+        effects.live_clients.lock().unwrap().remove("client-1");
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-2".to_string());
+        let acquired = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-2"),
+            AccountSetupRequest::Acquire(AccountSetupAcquire {
+                operation_id,
+                owner_token: "new-owner".repeat(4),
+                expected_revision: revision,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            acquired,
+            AccountSetupResponse::Lease(lease)
+                if lease.ceremony == provider_context().ceremony()
+                    && lease.view.revision == Some(revision + 2)
+        ));
+    }
+
+    #[dialog_common::test]
     async fn it_queries_status_before_exact_replay_and_recovers_a_lost_create_response() {
         let accepted = provider_acceptance();
+        let context = provider_context();
         let first_create =
             ScriptedProvider::new([Ok(ProviderSetupStatus::Absent)], [Ok(accepted.clone())]);
         assert!(matches!(
             resolve_provider_acceptance(
                 &first_create,
+                &context,
                 b"first-status",
                 b"exact-stored-create",
                 RecoveryFreshness::Usable,
@@ -4146,6 +5030,7 @@ mod tests {
         assert!(matches!(
             resolve_provider_acceptance(
                 &provider,
+                &context,
                 status_invocation,
                 create_invocation,
                 RecoveryFreshness::Usable,
@@ -4156,6 +5041,7 @@ mod tests {
         assert!(matches!(
             resolve_provider_acceptance(
                 &provider,
+                &context,
                 status_invocation,
                 create_invocation,
                 RecoveryFreshness::Usable,
@@ -4175,6 +5061,27 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_never_turns_unknown_provider_outcomes_into_absent_or_create() {
+        assert_eq!(
+            classify_provider_create_error(&super::super::http::HttpError::Upstream(
+                super::super::http::UpstreamFailure {
+                    status: 409,
+                    code: Some("AccountConflict".to_string()),
+                    message: "sensitive provider detail".to_string(),
+                },
+            )),
+            ProviderPortError::Conflict
+        );
+        assert_eq!(
+            classify_provider_create_error(&super::super::http::HttpError::Upstream(
+                super::super::http::UpstreamFailure {
+                    status: 500,
+                    code: None,
+                    message: "transient".to_string(),
+                },
+            )),
+            ProviderPortError::Retry
+        );
+        let context = provider_context();
         let cases = [
             (Err(ProviderPortError::Retry), ProviderResolution::Retry),
             (Err(ProviderPortError::Invalid), ProviderResolution::Retry),
@@ -4187,6 +5094,7 @@ mod tests {
             let provider = ScriptedProvider::new([status], []);
             let result = resolve_provider_acceptance(
                 &provider,
+                &context,
                 b"status",
                 b"create",
                 RecoveryFreshness::Usable,
@@ -4200,6 +5108,7 @@ mod tests {
         assert!(matches!(
             resolve_provider_acceptance(
                 &provider,
+                &context,
                 b"status",
                 b"expired-create",
                 RecoveryFreshness::NeedsRefresh,
@@ -4208,6 +5117,29 @@ mod tests {
             ProviderResolution::NeedsPasskey
         ));
         assert_eq!(provider.calls(), vec![("status", b"status".to_vec())]);
+
+        let provider = ScriptedProvider::new(
+            [Ok(ProviderSetupStatus::Absent)],
+            [Err(ProviderPortError::Conflict)],
+        );
+        assert!(matches!(
+            resolve_provider_acceptance(
+                &provider,
+                &context,
+                b"status",
+                b"create",
+                RecoveryFreshness::Usable,
+            )
+            .await,
+            ProviderResolution::Mismatch
+        ));
+        assert_eq!(
+            provider.calls(),
+            vec![
+                ("status", b"status".to_vec()),
+                ("create", b"create".to_vec())
+            ]
+        );
     }
 
     fn leased() -> ValidatedCheckpoint {
@@ -4263,12 +5195,15 @@ mod tests {
             descriptor_hex: "eeff".to_string(),
             create_fingerprint: hash("33"),
             invocation_hex: "2233".to_string(),
+            replacement_invocation_created_at: None,
             replacement_invocation_hex: None,
             deposits_hex: vec!["4455".to_string()],
             custody_did: "did:key:custody".to_string(),
             consent_hex: "6677".to_string(),
             sealed_hex: "8899".to_string(),
             publish_invocation_hex: "aabb".to_string(),
+            replacement_publish_invocation_created_at: None,
+            replacement_publish_invocation_hex: None,
             recovery_manifest_hex: "bbcc".to_string(),
         }
     }
@@ -4421,12 +5356,15 @@ mod tests {
             descriptor_hex,
             create_fingerprint: create_fingerprint.to_hex(),
             invocation_hex: account.invocation_hex,
+            replacement_invocation_created_at: None,
             replacement_invocation_hex: None,
             deposits_hex,
             custody_did,
             consent_hex: hex::encode(consent_bytes),
             sealed_hex: hex::encode(sealed),
             publish_invocation_hex: hex::encode(publish_invocation),
+            replacement_publish_invocation_created_at: None,
+            replacement_publish_invocation_hex: None,
             recovery_manifest_hex: hex::encode(manifest.bytes()),
         };
         let trust = RecoveryTrustContext {
@@ -4439,6 +5377,24 @@ mod tests {
             now: staged_at + 1,
         };
         (bundle, trust)
+    }
+
+    async fn fresh_publish_invocation(
+        seed: u8,
+        bundle: &StoredRecoveryBundleV1,
+        created_at: u64,
+    ) -> String {
+        let custody = custody_signer(&[seed.wrapping_add(2); 32]).await.unwrap();
+        assert_eq!(custody.did().to_string(), bundle.custody_did);
+        let sealed = hex::decode(&bundle.sealed_hex).unwrap();
+        let expiration = Timestamp::new(
+            UNIX_EPOCH + Duration::from_secs(created_at + DEFERRED_PUBLISH_TTL_SECONDS),
+        )
+        .unwrap();
+        let invocation = build_publish_invocation(custody, &sealed, None, expiration)
+            .await
+            .unwrap();
+        hex::encode(invocation)
     }
 
     async fn completed_recovery_fixture(
@@ -4486,6 +5442,392 @@ mod tests {
         *store.recovery.lock().unwrap() =
             Some(encode_recovery(&StoredRecoveryRecord::Bundle(Box::new(bundle))).unwrap());
         (store, checkpoint, context, trust.device_did)
+    }
+
+    async fn active_recovery_fixture(
+        seed: u8,
+        phase: StoredPhaseV2,
+    ) -> (
+        MemorySetupStore,
+        ValidatedCheckpoint,
+        CanonicalSetupContext,
+        dialog_varsig::Did,
+    ) {
+        let (store, completed, context, device_did) = completed_recovery_fixture(seed).await;
+        let mut stored = completed.into_stored();
+        stored.revision = 7;
+        stored.owner_hash = Some(hash("11"));
+        stored.bound_client_id = Some("client-1".to_string());
+        stored.phase = phase;
+        if matches!(
+            stored.phase,
+            StoredPhaseV2::RecoveryStaged | StoredPhaseV2::RootSaved
+        ) {
+            stored.accepted_descriptor_hash = None;
+        }
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        (store, checkpoint, context, device_did)
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_advance_when_the_customer_projection_write_fails() {
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(65, StoredPhaseV2::Attached).await;
+        let effects = TestEffects::new(device_did);
+        effects.now.store(
+            checkpoint.as_stored().last_transition_at + 1,
+            Ordering::SeqCst,
+        );
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        effects.fail_enroll.store(true, Ordering::SeqCst);
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+
+        let response = reconcile_with_provider(
+            &effects,
+            &store,
+            &provider,
+            &context,
+            checkpoint,
+            hash("11"),
+            "client-1",
+        )
+        .await
+        .unwrap();
+        let AccountSetupResponse::View(view) = response else {
+            panic!("projection failure must return a redacted view");
+        };
+        assert_eq!(view.disposition, AccountSetupDisposition::RetryLater);
+        let CheckpointLoad::Ready(still_attached) = load_checkpoint(&store).await.unwrap() else {
+            panic!("checkpoint must survive a projection failure");
+        };
+        assert_eq!(still_attached.as_stored().phase, StoredPhaseV2::Attached);
+
+        effects.fail_enroll.store(false, Ordering::SeqCst);
+        let response = reconcile_with_provider(
+            &effects,
+            &store,
+            &provider,
+            &context,
+            *still_attached,
+            hash("11"),
+            "client-1",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            response,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Complete
+        ));
+        assert_eq!(
+            effects.events.lock().unwrap().as_slice(),
+            ["customer", "customer", "custody"]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_persists_a_terminal_conflict_when_absent_create_returns_http_409() {
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(68, StoredPhaseV2::RootSaved).await;
+        let effects = TestEffects::new(device_did);
+        effects.now.store(
+            checkpoint.as_stored().last_transition_at + 1,
+            Ordering::SeqCst,
+        );
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let provider = ScriptedProvider::new(
+            [Ok(ProviderSetupStatus::Absent)],
+            [Err(ProviderPortError::Conflict)],
+        );
+
+        let response = reconcile_with_provider(
+            &effects,
+            &store,
+            &provider,
+            &context,
+            checkpoint,
+            hash("11"),
+            "client-1",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            response,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Conflict
+                    && view.conflict_code
+                        == Some(tonk_worker_api::AccountSetupConflictCode::ProviderMismatch)
+        ));
+        let CheckpointLoad::Ready(checkpoint) = load_checkpoint(&store).await.unwrap() else {
+            panic!("terminal conflict must be durable");
+        };
+        assert!(matches!(
+            checkpoint.as_stored().phase,
+            StoredPhaseV2::Conflict {
+                code: StoredConflictCodeV2::Provider,
+                ..
+            }
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_never_requests_an_expired_create_artifact_after_provider_acceptance() {
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(66, StoredPhaseV2::ProviderAccepted).await;
+        let owner_token = "owner-token".repeat(4);
+        let mut stored = checkpoint.into_stored();
+        stored.owner_hash = Some(
+            token_hash(
+                b"tonk-account-setup-owner-v1",
+                &stored.operation_id,
+                &owner_token,
+            )
+            .unwrap(),
+        );
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        let StoredRecoveryRecord::Bundle(bundle) = store.recovery_record() else {
+            panic!("fixture must retain protected recovery");
+        };
+        let effects = TestEffects::new(device_did);
+        effects.now.store(
+            bundle.ceremony_created_at + CREATE_EXPIRY_MAX_OFFSET + 1,
+            Ordering::SeqCst,
+        );
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let contexts = FixedContextSource::new(context);
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+
+        let inspected = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Inspect(AccountSetupInspect {
+                owner_token: Some(owner_token.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            inspected,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Ready
+        ));
+
+        let continued = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Continue(AccountSetupMutation {
+                operation_id: checkpoint.as_stored().operation_id.clone(),
+                owner_token,
+                expected_revision: checkpoint.as_stored().revision,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            continued,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Complete
+        ));
+    }
+
+    #[dialog_common::test]
+    async fn it_resumes_an_expired_publish_with_only_the_same_custody_artifact() {
+        let seed = 67;
+        let (store, checkpoint, context, device_did) =
+            active_recovery_fixture(seed, StoredPhaseV2::CustomerEnrolled).await;
+        let owner_token = "owner-token".repeat(4);
+        let mut stored = checkpoint.into_stored();
+        stored.owner_hash = Some(
+            token_hash(
+                b"tonk-account-setup-owner-v1",
+                &stored.operation_id,
+                &owner_token,
+            )
+            .unwrap(),
+        );
+        let checkpoint = ValidatedCheckpoint::new(stored).unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        let StoredRecoveryRecord::Bundle(bundle) = store.recovery_record() else {
+            panic!("fixture must retain protected recovery");
+        };
+        let refresh_time = bundle.ceremony_created_at + DEFERRED_PUBLISH_TTL_SECONDS + 1;
+        let replacement = fresh_publish_invocation(seed, &bundle, refresh_time).await;
+        let effects = TestEffects::new(device_did);
+        effects.now.store(refresh_time, Ordering::SeqCst);
+        effects
+            .live_clients
+            .lock()
+            .unwrap()
+            .insert("client-1".to_string());
+        let contexts = FixedContextSource::new(context);
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+
+        let inspected = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::Inspect(AccountSetupInspect {
+                owner_token: Some(owner_token.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            inspected,
+            AccountSetupResponse::Protected(boxed)
+                if matches!(
+                    boxed.as_ref(),
+                    AccountSetupProtectedResponse::NeedsPasskey {
+                        resume: AccountSetupResumeInput::Publish { .. },
+                        ..
+                    }
+                )
+        ));
+
+        let resumed = handle_locked(
+            &effects,
+            &store,
+            &contexts,
+            &provider,
+            request_scope(&origin, "client-1"),
+            AccountSetupRequest::ReplacePublishInvocation(AccountSetupInvocation {
+                mutation: AccountSetupMutation {
+                    operation_id: checkpoint.as_stored().operation_id.clone(),
+                    owner_token,
+                    expected_revision: checkpoint.as_stored().revision,
+                },
+                invocation_hex: replacement,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            resumed,
+            AccountSetupResponse::View(view)
+                if view.disposition == AccountSetupDisposition::Complete
+        ));
+        assert_eq!(effects.events.lock().unwrap().as_slice(), ["custody"]);
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_closed_when_recovery_survives_a_lost_checkpoint() {
+        let store = MemorySetupStore::default();
+        *store.recovery.lock().unwrap() = Some(
+            encode_recovery(&StoredRecoveryRecord::Tombstone(RecoveryTombstoneV1 {
+                version: 1,
+                operation_id: "orphaned-operation".to_string(),
+                completed_at: 1_000,
+                recovery_hash: hash("44"),
+            }))
+            .unwrap(),
+        );
+        assert!(matches!(
+            load_setup(&store).await.unwrap(),
+            SetupLoad::Corrupt
+        ));
+
+        let origin: url::Url = "https://app.example/".parse().unwrap();
+        let contexts = FixedContextSource::new(provider_context());
+        let effects = TestEffects::new(signer(69).await.did());
+        let provider = ScriptedProvider::new(
+            std::iter::empty::<Result<ProviderSetupStatus, ProviderPortError>>(),
+            std::iter::empty::<Result<ProviderAcceptance, ProviderPortError>>(),
+        );
+        for request in [
+            AccountSetupRequest::Inspect(AccountSetupInspect { owner_token: None }),
+            AccountSetupRequest::Begin(AccountSetupBegin {
+                protocol_version: ACCOUNT_SETUP_PROTOCOL_VERSION,
+                owner_token: "new-owner".repeat(4),
+            }),
+        ] {
+            let response = handle_locked(
+                &effects,
+                &store,
+                &contexts,
+                &provider,
+                request_scope(&origin, "client-1"),
+                request,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                response,
+                AccountSetupResponse::View(view)
+                    if view.disposition == AccountSetupDisposition::Corrupt
+            ));
+        }
+        assert!(store.checkpoint.lock().unwrap().is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_recovery_records_that_are_impossible_for_the_checkpoint_phase() {
+        let store = MemorySetupStore::default();
+        let checkpoint = ValidatedCheckpoint::new(StoredCheckpointV2 {
+            version: 2,
+            operation_id: "cancelled-operation".to_string(),
+            revision: 2,
+            owner_hash: None,
+            bound_client_id: None,
+            configuration_hash: hash("22"),
+            phase: StoredPhaseV2::Cancelled,
+            armed_at: None,
+            staged_at: None,
+            attempt_hash: None,
+            root_did: None,
+            create_fingerprint: None,
+            recovery_hash: None,
+            accepted_descriptor_hash: None,
+            last_transition_at: 1_000,
+        })
+        .unwrap();
+        *store.checkpoint.lock().unwrap() = Some(encode_checkpoint(&checkpoint).unwrap());
+        *store.recovery.lock().unwrap() = Some(
+            encode_recovery(&StoredRecoveryRecord::Tombstone(RecoveryTombstoneV1 {
+                version: 1,
+                operation_id: "cancelled-operation".to_string(),
+                completed_at: 1_000,
+                recovery_hash: hash("44"),
+            }))
+            .unwrap(),
+        );
+
+        assert!(matches!(
+            load_setup(&store).await.unwrap(),
+            SetupLoad::Corrupt
+        ));
     }
 
     async fn armed_recovery_fixture(
@@ -5187,6 +6529,58 @@ mod tests {
         assert_eq!(validated.publish_freshness(), RecoveryFreshness::Usable);
         assert_eq!(validated.root_did().to_string(), bundle.root_did);
         assert_eq!(validated.evidence().staged_at, bundle.staged_at);
+    }
+
+    #[dialog_common::test]
+    async fn it_validates_a_stored_replacement_against_its_immutable_reference_time() {
+        let (mut bundle, mut trust) = valid_recovery(63).await;
+        bundle.replacement_invocation_created_at = Some(bundle.ceremony_created_at);
+        bundle.replacement_invocation_hex = Some(bundle.invocation_hex.clone());
+        trust.now = bundle.ceremony_created_at + 120;
+
+        let validated = ValidatedRecoveryBundle::new(bundle.clone(), &trust)
+            .await
+            .expect("time advancing must not make a canonical stored replacement corrupt");
+
+        assert_eq!(validated.create_freshness(), RecoveryFreshness::Usable);
+
+        trust.now = validated.create_expires_at() + 1;
+        let expired = ValidatedRecoveryBundle::new(bundle, &trust)
+            .await
+            .expect("current expiry is a recoverable state, not stored corruption");
+        assert_eq!(expired.create_freshness(), RecoveryFreshness::NeedsRefresh);
+    }
+
+    #[dialog_common::test]
+    async fn it_refreshes_an_expired_publish_without_reclassifying_it_as_corrupt() {
+        let seed = 64;
+        let (mut bundle, mut trust) = valid_recovery(seed).await;
+        let original_expiration = bundle.ceremony_created_at + DEFERRED_PUBLISH_TTL_SECONDS;
+        trust.now = original_expiration + 1;
+
+        let expired = ValidatedRecoveryBundle::new(bundle.clone(), &trust)
+            .await
+            .expect("current expiry is recoverable, not corrupt storage");
+        assert_eq!(expired.publish_freshness(), RecoveryFreshness::NeedsRefresh);
+
+        let replacement_created_at = trust.now;
+        bundle.replacement_publish_invocation_created_at = Some(replacement_created_at);
+        bundle.replacement_publish_invocation_hex =
+            Some(fresh_publish_invocation(seed, &bundle, replacement_created_at).await);
+        trust.now += 120;
+        let refreshed = ValidatedRecoveryBundle::new(bundle.clone(), &trust)
+            .await
+            .expect("elapsed time must not invalidate the immutable refresh reference");
+        assert_eq!(refreshed.publish_freshness(), RecoveryFreshness::Usable);
+
+        trust.now = replacement_created_at + DEFERRED_PUBLISH_TTL_SECONDS + 1;
+        let expired_again = ValidatedRecoveryBundle::new(bundle, &trust)
+            .await
+            .expect("a second expiry remains refreshable");
+        assert_eq!(
+            expired_again.publish_freshness(),
+            RecoveryFreshness::NeedsRefresh
+        );
     }
 
     #[dialog_common::test]

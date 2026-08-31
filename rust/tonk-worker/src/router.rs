@@ -114,6 +114,8 @@ pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod blob;
 
+mod browser_lock;
+
 mod migration;
 
 mod navigate;
@@ -562,6 +564,7 @@ pub mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name,
+            service_origin: None,
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
@@ -569,6 +572,7 @@ pub mod tests {
             commands: super::command_registry(),
             clients: Default::default(),
             account_setup_lock: Default::default(),
+            pending_work_lock: Default::default(),
             account_keys: Default::default(),
             registry,
         }
