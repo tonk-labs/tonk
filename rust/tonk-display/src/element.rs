@@ -227,6 +227,13 @@ struct Inner {
     /// view flow is skipped — resolving it would re-enter the same view
     /// forever — and entity frames render as the notation dump instead.
     self_render: bool,
+    /// At least one view frame arrived for the current downstream run.
+    /// Gates the late-data fallback re-run in `handle_entity_frame`: an
+    /// entity frame that lands BEFORE the first view frame must not
+    /// mount the fallback (the real view is still on its way), while
+    /// one that lands after the chain settled on nothing must (a
+    /// mismatching entity healed; the absence callout would latch).
+    view_settled: bool,
 }
 
 impl Inner {
@@ -257,6 +264,7 @@ impl Inner {
             default_slide: false,
             directory: false,
             self_render: false,
+            view_settled: false,
         }
     }
 
@@ -982,6 +990,7 @@ async fn start_downstream(
         s.entity_sub = Some(entity_sub);
         s.directory = directory;
         s.self_render = self_render;
+        s.view_settled = false;
         // The explicit facet (if any) and the model entity, retained
         // for the facet pick on each view frame and the `tonk:_`
         // default fallback.
@@ -1214,6 +1223,7 @@ fn effective_facet(s: &Inner) -> String {
 /// right away.
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
+    s.view_settled = true;
 
     // One flat row per `show` entry; the fold merges them into
     // `show: {facet: template}` on the model entity's conclusion.
@@ -1866,6 +1876,18 @@ fn handle_entity_frame(
     if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
         drop(s);
         mount_notation_fallback(host, state, &first);
+        dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
+        return;
+    }
+    // Data arrived with NOTHING mounted and the view chain already
+    // settled: it ran against an empty frame (the entity didn't match
+    // the concept yet — a mismatch since healed, or a late-seeded
+    // instance) and concluded there was nothing to show. Re-run the
+    // fallback with data in hand so the notation (or the default)
+    // mounts and a latched absence callout clears.
+    if s.view_settled && !s.default_slide && s.slides.is_empty() && s.notation_source.is_none() {
+        drop(s);
+        spawn_default_view(host, state);
         dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
         return;
     }
@@ -4007,6 +4029,43 @@ mod tests {
             assert!(
                 display.query_selector("tonk-view").unwrap().is_none(),
                 "the stale template is unmounted",
+            );
+        }
+
+        // An entity that starts matching its concept AFTER the view
+        // chain settled (the healed-mismatch case) re-runs the
+        // fallback: the notation mounts and the latched absence
+        // clears, live — no reload.
+        #[dialog_common::test]
+        async fn it_recovers_when_the_entity_matches_late() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup, then the `tonk:_`
+                // default query the empty view frame triggers (a
+                // miss), then the re-run once data lands (also a
+                // miss — notation is the terminal fallback).
+                vec![name_row("did:key:zModel"), rows(&[]), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // No view anywhere, and no data yet: nothing mounts.
+            host.push_frame("view", &rows(&[]));
+            sleep(50).await;
+            assert!(
+                display.query_selector("tonk-notation").unwrap().is_none(),
+                "nothing to show before the entity matches",
+            );
+
+            // The entity starts matching (the mismatch healed).
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "late-matching data mounts the notation fallback in place",
             );
         }
 
