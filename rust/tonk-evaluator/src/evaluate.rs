@@ -1099,8 +1099,20 @@ fn render_resolver_block(
     QueryMatchBlock { label, results }
 }
 
+/// Lower a typed [`Value`] into the JSON a match block carries.
+///
+/// Numbers keep their notation SPELLING: a JSON number cannot tell a
+/// non-negative signed integer from an unsigned one, so a signed
+/// integer rides as an explicitly signed string (`"+41"`, `"-7"`) and
+/// the notation printers emit it bare. Unsigned integers stay bare
+/// JSON numbers; floats stay JSON floats (serde_json prints the
+/// `.0`).
 fn value_to_json(value: &Value) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+    match value {
+        Value::SignedInt(i) if *i >= 0 => serde_json::Value::String(format!("+{i}")),
+        Value::SignedInt(i) => serde_json::Value::String(i.to_string()),
+        other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 #[cfg(test)]
@@ -1340,6 +1352,24 @@ attribute!: &foo/title
             "a cardinality-many attribute accumulates through a domain head; stored: {edges:?}"
         );
         Ok(())
+    }
+
+    /// Match JSON spells signed integers explicitly, so notation
+    /// printers can tell +41 from 41 (JSON numbers cannot).
+    #[dialog_common::test]
+    fn it_spells_signed_values_in_match_json() {
+        assert_eq!(
+            value_to_json(&Value::SignedInt(41)),
+            serde_json::json!("+41")
+        );
+        assert_eq!(
+            value_to_json(&Value::SignedInt(-7)),
+            serde_json::json!("-7")
+        );
+        assert_eq!(
+            value_to_json(&Value::UnsignedInt(41)),
+            serde_json::json!(41)
+        );
     }
 
     /// Integer spelling picks the value type on a raw domain write:

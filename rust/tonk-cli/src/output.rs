@@ -176,11 +176,24 @@ fn render_value(value: &serde_json::Value) -> String {
         serde_json::Value::Null => "~".into(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
+        // A signed integer rides the wire as an explicitly signed
+        // string (JSON numbers can't tell +41 from 41); it prints
+        // bare, as the author spells it.
+        serde_json::Value::String(s) if is_signed_literal(s) => s.clone(),
         serde_json::Value::String(s) => quote_string(s),
         // Arrays / objects shouldn't normally appear here —
         // dialog attribute values are scalars — but fall back to
         // JSON if they do, so the output is at least lossless.
         other => other.to_string(),
+    }
+}
+
+/// `+41` / `-7`: an explicitly signed integer literal — the wire
+/// spelling of a SignedInteger value.
+fn is_signed_literal(s: &str) -> bool {
+    match s.strip_prefix(['+', '-']) {
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
     }
 }
 
@@ -373,5 +386,25 @@ mod tests {
             assert!(!out.contains("\"matches_after\""));
             assert!(out.contains("\"commits\""));
         }
+    }
+}
+
+#[cfg(test)]
+mod value_spelling_tests {
+    use super::*;
+
+    #[test]
+    fn it_renders_number_spellings() {
+        // Bare digits are unsigned; the wire spells signed integers
+        // as explicitly signed strings, printed bare; floats keep
+        // their decimal point.
+        assert_eq!(render_value(&serde_json::json!(41u64)), "41");
+        assert_eq!(render_value(&serde_json::json!("+41")), "+41");
+        assert_eq!(render_value(&serde_json::json!("-7")), "-7");
+        assert_eq!(render_value(&serde_json::json!(41.5)), "41.5");
+        assert_eq!(render_value(&serde_json::json!(41.0)), "41.0");
+        // Ordinary strings still quote — including number-adjacent text.
+        assert_eq!(render_value(&serde_json::json!("41a")), "\"41a\"");
+        assert_eq!(render_value(&serde_json::json!("+")), "\"+\"");
     }
 }
