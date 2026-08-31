@@ -150,19 +150,26 @@ pub(crate) fn build_query_application(
             parameters.insert("this".into(), this_term_for_query(&this));
             for field in &body_fields {
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
+                // Declared attributes govern the read side too: a
+                // cardinality-many field must enumerate every value,
+                // not select a winner — and a literal constant must
+                // be typed by the declared attribute, or a bare `41`
+                // (inferred signed) could never match the unsigned
+                // value a declared write stored.
+                let declared = scope.attribute_by_id(&format!("{domain}/{}", field.name));
+                let expected = declared
+                    .as_ref()
+                    .and_then(|declared| declared.descriptor.content_type());
                 let term = field_value_to_term(
                     &field.name,
                     &field.value,
                     field.value_range,
                     scope,
                     analysis,
-                    None,
+                    expected,
                 )?;
                 parameters.insert(field.name.clone(), term);
-                // Declared attributes govern the read side too: a
-                // cardinality-many field must enumerate every value,
-                // not select a winner.
-                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                if let Some(declared) = declared {
                     attributes.insert(field.name.clone(), declared.descriptor);
                 }
             }

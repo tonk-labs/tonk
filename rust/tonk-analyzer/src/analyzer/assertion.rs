@@ -363,20 +363,29 @@ pub(crate) fn build_assertion_application(
                     continue;
                 }
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
+                // A branch-declared `<domain>/<field>` attribute
+                // governs the synthesized descriptor: its
+                // cardinality decides accumulate-vs-replace and its
+                // value type constrains the slot — including the
+                // LITERALS being written. A bare `41` infers signed;
+                // written into an unsigned-declared attribute it
+                // would be invisible to every typed read (dialog
+                // values are strictly typed), so the declared type
+                // drives the lowering, exactly as on a concept head.
+                let declared = scope.attribute_by_id(&format!("{domain}/{}", field.name));
+                let expected = declared
+                    .as_ref()
+                    .and_then(|declared| declared.descriptor.content_type());
                 let term = field_value_to_term(
                     &field.name,
                     &field.value,
                     field.value_range,
                     scope,
                     analysis,
-                    None,
+                    expected,
                 )?;
                 parameters.insert(field.name.clone(), term);
-                // A branch-declared `<domain>/<field>` attribute
-                // governs the synthesized descriptor: its
-                // cardinality decides accumulate-vs-replace and its
-                // value type constrains the slot.
-                if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
+                if let Some(declared) = declared {
                     attributes.insert(field.name.clone(), declared.descriptor);
                 }
             }

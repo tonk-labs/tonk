@@ -1342,6 +1342,83 @@ attribute!: &foo/title
         Ok(())
     }
 
+    /// A raw domain write (`io.test.person!:`) types its values by the
+    /// branch-declared attribute, exactly as a concept head does. A
+    /// bare integer literal infers signed; stored that way into an
+    /// unsigned-declared attribute it is invisible to every typed
+    /// read — the concept never matches and the fix looks like data
+    /// loss.
+    #[dialog_common::test]
+    async fn it_types_a_domain_write_by_the_declared_attribute() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            r#"concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name"
+      the: io.test.person/name
+      as: text
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: unsigned-integer
+"#,
+            // The raw domain write carries a bare literal for the
+            // unsigned-declared attribute.
+            r#"io.test.person!:
+  this: test:1
+  name: "Gozala"
+  age: 41
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        // The stored value carries the DECLARED type, so the concept's
+        // typed read matches it.
+        let entity: dialog_artifacts::Entity = "test:1".parse()?;
+        let the: dialog_artifacts::Attribute = "io.test.person/age".parse()?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::new(
+                Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                Term::<dialog_artifacts::Entity>::from(entity),
+                Term::<dialog_query::Any>::var("age"),
+                Term::blank(),
+                None,
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(claims.len(), 1, "one age fact");
+        assert_eq!(
+            claims[0].is,
+            Value::UnsignedInt(41),
+            "the bare literal conforms to the declared unsigned type",
+        );
+        Ok(())
+    }
+
     /// A keyed-collection field, end to end through notation: the
     /// concept declares `block` as every position-named entry of a
     /// domain, an assertion writes one entry under a literal key,
