@@ -2093,8 +2093,9 @@ pub(crate) async fn run_account_ceremony(
 
     // Neither of these can land before the emailed link is clicked: the
     // service provisions nothing, and serves nothing, for a customer
-    // that has not confirmed its email. Both queue instead, and replay
-    // on activation.
+    // that has not confirmed its email. Keep the direct provision call for
+    // pages still controlled by an older worker; the queue request below is
+    // the durable, ordered provision-and-publish handoff in current workers.
     if let Err(error) =
         crate::api::provision_custody(&created.custody_did, &created.consent_hex).await
     {
@@ -2102,6 +2103,7 @@ pub(crate) async fn run_account_ceremony(
     }
     if let Err(error) = crate::api::queue_custody_publish(
         &created.custody_did,
+        &created.consent_hex,
         &created.sealed_hex,
         &created.publish_invocation_hex,
     )
@@ -2200,6 +2202,7 @@ async fn complete_remote(
         }
         if let Err(error) = crate::api::queue_custody_publish(
             &custody.custody_did,
+            &custody.consent_hex,
             &custody.sealed_hex,
             &custody.publish_invocation_hex,
         )
@@ -2641,6 +2644,7 @@ fn bind(host: &HtmlElement) {
                 // the provisioning deposit lands.
                 if let Err(error) = crate::api::queue_custody_publish(
                     &enrolled.custody_did,
+                    &enrolled.consent_hex,
                     &enrolled.sealed_hex,
                     enrolled.publish_invocation_hex.as_deref().unwrap_or(""),
                 )
