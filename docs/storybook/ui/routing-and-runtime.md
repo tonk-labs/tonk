@@ -150,13 +150,65 @@ boundary: activation does not claim an older page, an explicit cold-start claim
 does take control, and an update-aware page claims its activated successor
 before exactly one guarded reload.
 
+The load-time alignment also has a write barrier for the overlap window. The
+artifact build writes the same lowercase build id into `index.html`, the
+service worker, and `version.json`. A small document script publishes the HTML
+value before the Rust/Wasm loader can mount. The live `version.json` request is
+only update discovery: its result cannot replace the immutable provenance of
+the already-loaded document.
+
+Every top-document `/api` request carries that page build through the same
+request context used by the host, including account, profile,
+site-registration, and background-sync mutations. Current sealed guests inherit
+the immutable build in their ready context. Their trusted portal relay removes
+any guest-supplied build value, browser-normalizes the target, and stamps the
+host value only on `/api` and `/api/...`; durable blob upload and language-server
+POSTs therefore have the same barrier, while provider and deployment-control
+requests cannot receive the worker-only header from the relay.
+
+A worker from another valid build keeps ordinary GET/HEAD requests, exact
+query/subscription POSTs, and an evaluate POST with one canonical
+`transact=false` parameter available, but refuses every other POST and every
+PUT/PATCH/DELETE with a typed `409 stale-build`. Both host and direct UI
+transports inspect the exact response header before any caller consumes the
+typed body, then dispatch the static shell's existing update-ready prompt.
+Reload is the next action and no local data is cleared. `GET
+/api/migrate/repo-vs-profile` is an explicit write exception because it commits
+a backfill. Some other GET handlers perform worker-owned, idempotent
+reconciliation such as a lazy mount or view binding; they remain
+overlap-compatible because they do not interpret stale page input. Future
+GET/HEAD routes whose page input authorizes a mutation must be declared in the
+same contract. Unknown non-read routes default to writes rather than relying on
+route suffixes.
+
+An actually missing build header remains compatible for a genuinely
+pre-protocol or development page. That is an explicit rollout exception, not a
+proof that builds match: an old page can still mutate through a newer worker by
+omitting the header, and a direct browser navigation to the committing migration
+cannot carry a custom header. The header is compatibility provenance, not
+authentication or a security boundary. Current generated documents and their
+sealed guests do stamp it. A present empty, malformed, non-text, or duplicate
+header on a write instead fails closed with typed `400 invalid-build-header`;
+it cannot masquerade as missing and does not raise an update prompt. Mismatched
+or malformed metadata never tears down reads or live subscriptions, so a stale
+page remains responsive enough to show the update and preserve local
+continuity. The exact route-effect inventory and header parser are covered at
+the worker boundary; artifact, request-construction, portal-relay, and response
+tests cover the individual transports. The real-browser two-generation matrix,
+including nested sealed guests and the deliberate pre-protocol exception, in
+`UI-03` remains an open verification item.
+
 An explicit readiness rejection is a terminal boot result, not an unobserved
 stall. Before returning without an application root, the UI asks the static
 shell to show “Tonk couldn’t start. Check your connection, then reload. Your
 local data is safe.” The first terminal result wins, clears the watchdog's
 per-tab retry counter, and disables later automatic recovery. It does not
 reload, delete CacheStorage, or unregister workers. Silent boots that stop
-making progress without an error retain the bounded watchdog ladder.
+making progress without an error receive at most one plain automatic reload;
+a second silent stall terminalizes with the same safe-state guidance and leaves
+every cache and registration intact. The explicit deployment-withdrawal kill
+switch is separate: it retains its specific withdrawal guidance and unregisters
+only the current page's registration, never every scope on the origin.
 
 ### Remain in flight
 
@@ -256,6 +308,8 @@ avoid recording credential/passkey inputs.
   already used, or returns non-JSON error.
 - Service worker is installed but does not yet control the first page.
 - New service worker activates while old Wasm or guest assets are loading.
+- An old page sends a matching, mismatched, missing, malformed, or duplicate
+  build header while reading, subscribing, dry-running, migrating, or writing.
 - Offline first visit versus offline returning visit with a coherent cache.
 - Deployment config names the wrong account/access origin or service DID.
 - Custom element connects twice or disconnects while an async task is pending.
@@ -275,8 +329,9 @@ avoid recording credential/passkey inputs.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
 - Run explicit readiness rejection and silent-stall recovery in a real browser;
-  the source-level watchdog regression proves the former cannot fall through
-  into automatic cache deletion or worker unregistration.
+  the source-level watchdog regressions prove the former terminalizes
+  immediately and a second silent stall cannot delete any cache or unregister
+  any worker.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
 - Verify the inspector against a configured upstream in a real browser,

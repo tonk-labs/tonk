@@ -23,12 +23,43 @@ fn window_handle() -> Result<Window, ErrorDetail> {
 }
 
 /// Append the request-context headers (`X-Tonk-Path`/`X-Tonk-Hash`/
-/// `X-Tonk-Session`) so the SW can tie the request to its originating document.
-/// Best-effort: a failed append never blocks the request.
-fn append_context_headers(headers: &Headers) {
+/// `X-Tonk-Session`/`X-Tonk-Build`) so the SW can tie the request to its
+/// originating document and build. A present value that cannot become a legal
+/// HTTP header fails the request instead of silently dropping its provenance.
+fn append_context_headers(headers: &Headers) -> Result<(), ErrorDetail> {
     for (name, value) in crate::bridge::context_headers() {
-        let _ = headers.append(name, &value);
+        headers.append(name, &value).map_err(|e| {
+            ErrorDetail::new(ErrorKind::Network, format!("context header {name}: {e:?}"))
+        })?;
     }
+    Ok(())
+}
+
+/// Construct the shared context headers for a worker request.
+///
+/// Kept crate-visible for the host's subscription keepalive, which is the one
+/// worker mutation that does not otherwise use these HTTP helpers.
+pub(crate) fn request_context_headers() -> Result<Headers, ErrorDetail> {
+    let headers = Headers::new()
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    append_context_headers(&headers)?;
+    Ok(headers)
+}
+
+fn site_headers(path: &str) -> Result<Headers, ErrorDetail> {
+    let headers = request_context_headers()?;
+    headers
+        .append("accept", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    headers
+        .append("content-type", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
+    // The route being registered is authoritative even when window.location
+    // still names the previous client-side route.
+    headers
+        .set("x-tonk-path", path)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("x-tonk-path: {e:?}")))?;
+    Ok(headers)
 }
 
 /// GET JSON from a bare host-relative `url` and return the response body text.
@@ -40,12 +71,10 @@ pub async fn get_json(url: &str) -> Result<String, ErrorDetail> {
     ready::wait().await;
     let init = RequestInit::new();
     init.set_method("GET");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    let headers = request_context_headers()?;
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    append_context_headers(&headers);
     init.set_headers(&headers);
 
     let win = window_handle()?;
@@ -69,15 +98,13 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
     ready::wait().await;
     let init = RequestInit::new();
     init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    let headers = request_context_headers()?;
     headers
         .append("content-type", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
@@ -94,10 +121,28 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
     response_text(resp_value).await
 }
 
-async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
+/// Convert one fetch result and observe worker control metadata before any
+/// caller reads, streams, or discards its typed body.
+pub(crate) fn worker_response(resp_value: JsValue) -> Result<Response, ErrorDetail> {
     let resp: Response = resp_value
         .dyn_into()
         .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let marked_stale = resp.status() == 409
+        && resp
+            .headers()
+            .get(tonk_worker_api::ERROR_KIND_HEADER)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(tonk_worker_api::STALE_BUILD_ERROR_KIND);
+    if marked_stale {
+        announce_update();
+    }
+    Ok(resp)
+}
+
+async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -114,6 +159,19 @@ async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
         ));
     }
     Ok(body_text)
+}
+
+/// Raise the boot script's "update ready" prompt.
+///
+/// Dispatched as an event rather than called directly because the
+/// prompt lives in `index.html`'s boot script — deliberately outside
+/// the app wasm, since the app wasm is one of the things that can be
+/// the stale half.
+pub fn announce_update() {
+    let Some(win) = window() else { return };
+    if let Ok(event) = web_sys::Event::new("tonk-update-available") {
+        let _ = win.dispatch_event(&event);
+    }
 }
 
 /// `POST /api/site` to register this document's site and read back the assigned
@@ -146,16 +204,7 @@ pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorD
         .and_then(|s| s.as_string())
         .unwrap_or_else(|| "{}".to_owned());
     init.set_body(&JsValue::from_str(&body));
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
-    headers
-        .append("accept", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    let _ = headers.append("content-type", "application/json");
-    // The authoritative path comes from the caller (the route), not the context
-    // headers' `window.location` read — see the doc comment. Carried as a header
-    // for the legacy `/api/site` and in the body for the per-branch endpoint.
-    let _ = headers.append("x-tonk-path", path);
+    let headers = site_headers(path)?;
     init.set_headers(&headers);
 
     // Fetch the relative URL as a STRING, not a `Request`. A `Request` resolves
@@ -170,9 +219,7 @@ pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorD
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -229,15 +276,13 @@ pub(crate) async fn frame_stream(
 
     let init = RequestInit::new();
     init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers::new: {e:?}")))?;
+    let headers = request_context_headers()?;
     headers
         .append("accept", "text/event-stream")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
     headers
         .append("content-type", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
-    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
     init.set_signal(Some(&abort.signal()));
@@ -252,9 +297,7 @@ pub(crate) async fn frame_stream(
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return a Response"))?;
+    let resp = worker_response(resp_value)?;
     if !resp.ok() {
         return Err(ErrorDetail::http(
             resp.status(),
@@ -374,15 +417,13 @@ pub(crate) async fn post_text(
     ready::wait().await;
     let init = RequestInit::new();
     init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    let headers = request_context_headers()?;
     headers
         .append("content-type", content_type)
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
@@ -396,9 +437,7 @@ pub(crate) async fn post_text(
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let resp = worker_response(resp_value)?;
     let text = JsFuture::from(
         resp.text()
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
@@ -415,4 +454,129 @@ pub(crate) async fn post_text(
         ));
     }
     Ok(body_text)
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod request_header_tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+    use js_sys::Reflect;
+    use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_stamps_site_registration_with_the_page_build() {
+        let window = web_sys::window().expect("browser window");
+        let previous = Reflect::get(&window, &JsValue::from_str("tonkBuild")).unwrap();
+        Reflect::set(
+            &window,
+            &JsValue::from_str("tonkBuild"),
+            &JsValue::from_str("0123456789abcdef"),
+        )
+        .unwrap();
+
+        let headers = site_headers("/join").unwrap();
+        let path = headers.get("x-tonk-path").unwrap();
+        let build = headers.get("x-tonk-build").unwrap();
+        if previous.is_undefined() {
+            Reflect::delete_property(&window, &JsValue::from_str("tonkBuild")).unwrap();
+        } else {
+            Reflect::set(&window, &JsValue::from_str("tonkBuild"), &previous).unwrap();
+        }
+        assert_eq!(path.as_deref(), Some("/join"));
+        assert_eq!(
+            build.as_deref(),
+            Some("0123456789abcdef"),
+            "site registration mutates navigation facts and must be stamped"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_stamps_the_context_headers_used_by_sync_keepalive() {
+        let window = web_sys::window().expect("browser window");
+        let previous = Reflect::get(&window, &JsValue::from_str("tonkBuild")).unwrap();
+        Reflect::set(
+            &window,
+            &JsValue::from_str("tonkBuild"),
+            &JsValue::from_str("fedcba9876543210"),
+        )
+        .unwrap();
+
+        let headers = request_context_headers().unwrap();
+        let build = headers.get("x-tonk-build").unwrap();
+        if previous.is_undefined() {
+            Reflect::delete_property(&window, &JsValue::from_str("tonkBuild")).unwrap();
+        } else {
+            Reflect::set(&window, &JsValue::from_str("tonkBuild"), &previous).unwrap();
+        }
+        assert_eq!(
+            build.as_deref(),
+            Some("fedcba9876543210"),
+            "the keepalive's shared header builder must carry the page build"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_announces_a_marked_stale_response_without_reading_the_error_kind_from_its_body() {
+        let headers = Headers::new().unwrap();
+        headers.set("x-tonk-error-kind", "stale-build").unwrap();
+        let init = web_sys::ResponseInit::new();
+        init.set_status(409);
+        init.set_headers(&headers);
+        let response = Response::new_with_opt_str_and_init(
+            Some(r#"{"error":{"kind":"body-shape-may-change"}}"#),
+            &init,
+        )
+        .unwrap();
+
+        let announcements = Rc::new(Cell::new(0));
+        let observed = announcements.clone();
+        let listener = Closure::<dyn FnMut()>::new(move || observed.set(observed.get() + 1));
+        let window = web_sys::window().unwrap();
+        window
+            .add_event_listener_with_callback(
+                "tonk-update-available",
+                listener.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+
+        let observed_response = worker_response(response.into()).unwrap();
+        assert!(
+            !observed_response.body_used(),
+            "observing the control header must leave the typed body untouched for the caller",
+        );
+        let text = JsFuture::from(observed_response.text().unwrap())
+            .await
+            .unwrap()
+            .as_string();
+        assert_eq!(
+            text.as_deref(),
+            Some(r#"{"error":{"kind":"body-shape-may-change"}}"#),
+        );
+
+        let unmarked = web_sys::ResponseInit::new();
+        unmarked.set_status(409);
+        let body_only = Response::new_with_opt_str_and_init(
+            Some(r#"{"error":{"kind":"stale-build"}}"#),
+            &unmarked,
+        )
+        .unwrap();
+        let _ = response_text(body_only.into()).await;
+
+        window
+            .remove_event_listener_with_callback(
+                "tonk-update-available",
+                listener.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+        assert_eq!(
+            announcements.get(),
+            1,
+            "the machine-readable response header, never a body substring, owns the prompt"
+        );
+    }
 }

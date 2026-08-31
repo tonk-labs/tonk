@@ -50,7 +50,11 @@ function bootHarness() {
       serviceWorker: {
         controller: {},
         async getRegistration() {
-          return null;
+          return {
+            async unregister() {
+              effects.unregisters += 1;
+            },
+          };
         },
         async getRegistrations() {
           return [
@@ -136,6 +140,30 @@ test("the first terminal failure keeps its specific recovery message", async () 
       effects: { cacheDeletes: 0, reloads: 0, unregisters: 0 },
       failed: true,
       message: specific,
+      retryState: null,
+    },
+  );
+});
+
+test("a second silent stall preserves every cache and registration", async () => {
+  const { context, effects, session, status } = bootHarness();
+  const message =
+    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+
+  context.tonkBootRecover("no boot progress after one reload");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    {
+      effects,
+      failed: status.attributes.has("data-failed"),
+      message: status.textContent,
+      retryState: session.get("tonk:boot-retries") ?? null,
+    },
+    {
+      effects: { cacheDeletes: 0, reloads: 0, unregisters: 0 },
+      failed: true,
+      message,
       retryState: null,
     },
   );

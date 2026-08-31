@@ -133,3 +133,131 @@ fn it_pins_a_sorted_deduplicated_table() {
     sorted.dedup();
     assert_eq!(ROUTES, sorted.as_slice(), "keep ROUTES sorted and unique");
 }
+
+/// Concrete instances of every route/method pair whose handler changes
+/// durable or worker-owned state. Keeping examples here makes a route-table
+/// review also review the stale-page write barrier. Unknown non-read methods
+/// are tested separately because they must fail safe without appearing here.
+const STATE_CHANGING_ROUTES: &[(&str, &str)] = &[
+    ("DELETE", "/api/account"),
+    ("GET", "/api/migrate/repo-vs-profile"),
+    ("HEAD", "/api/migrate/repo-vs-profile"),
+    ("POST", "/api/account/attach"),
+    ("POST", "/api/account/delete"),
+    ("POST", "/api/account/devices/register"),
+    ("POST", "/api/account/devices/revoke"),
+    ("POST", "/api/account/display-name"),
+    ("POST", "/api/account/spaces/delete"),
+    ("POST", "/api/custody/provision"),
+    ("POST", "/api/custody/queue"),
+    ("POST", "/api/customer/activated"),
+    ("POST", "/api/identity/root"),
+    ("POST", "/api/language-server"),
+    ("POST", "/api/profile/branch/main/evaluate"),
+    ("POST", "/api/profile/branch/main/site"),
+    ("POST", "/api/profile/branch/main/transact"),
+    ("POST", "/api/profile/join"),
+    ("POST", "/api/profiles/activate"),
+    ("POST", "/api/profiles/add"),
+    ("POST", "/api/repository/space/branch/main/blob"),
+    (
+        "POST",
+        "/api/repository/space/branch/main/claim/assert/entity/ns/name",
+    ),
+    (
+        "POST",
+        "/api/repository/space/branch/main/claim/retract/entity/ns/name",
+    ),
+    ("POST", "/api/repository/space/branch/main/evaluate"),
+    ("POST", "/api/repository/space/branch/main/import"),
+    ("POST", "/api/repository/space/branch/main/site"),
+    ("POST", "/api/repository/space/branch/main/sync"),
+    ("POST", "/api/repository/space/branch/main/sync/pull"),
+    ("POST", "/api/repository/space/branch/main/sync/push"),
+    ("POST", "/api/repository/space/branch/main/transact"),
+    ("POST", "/api/repository/space/invite"),
+    ("POST", "/api/repository/space/invites/invite/revoke"),
+    ("POST", "/api/repository/space/remote"),
+    ("POST", "/api/site"),
+    ("POST", "/api/sync"),
+    ("PUT", "/api/repository/space"),
+];
+
+#[dialog_common::test]
+fn it_classifies_every_declared_state_changing_route() {
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::http::Method;
+
+    for &(method, uri) in STATE_CHANGING_ROUTES {
+        let request = Request::builder()
+            .method(Method::from_bytes(method.as_bytes()).expect("valid test method"))
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        assert!(
+            super::is_mutating(&request),
+            "{method} {uri} changes state and must be gated"
+        );
+    }
+}
+
+#[dialog_common::test]
+fn it_preserves_only_explicit_read_like_posts() {
+    use axum::body::Body;
+    use axum::extract::Request;
+
+    for uri in [
+        "/api/profile/branch/main/query",
+        "/api/repository/space/branch/main/query",
+        "/api/profile/branch/main/evaluate?transact=false",
+        "/api/repository/space/branch/main/evaluate?transact=false",
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        assert!(
+            !super::is_mutating(&request),
+            "POST {uri} is an explicit read-like operation"
+        );
+    }
+
+    for uri in [
+        "/api/profile/branch/main/evaluate",
+        "/api/profile/branch/main/evaluate?transact=true",
+        "/api/profile/branch/main/evaluate?transact=false&transact=false",
+        "/api/profile/branch/main/evaluate?transact=maybe",
+        "/api/profile/branch/main/evaluate?transact=0",
+        "/api/profile/branch/main/evaluate?transact=no",
+        "/api/profile/branch/main/evaluate?transact=False",
+        "/api/profile/branch//query",
+        "/api/repository//branch/main/query",
+        "/api/repository/space/branch//evaluate?transact=false",
+        "/api/not-a-declared-route",
+        "/api/repository/space/branch/main/query/near-miss",
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        assert!(
+            super::is_mutating(&request),
+            "POST {uri} is not an unambiguous read exception"
+        );
+    }
+
+    for method in ["PUT", "PATCH", "DELETE"] {
+        let request = Request::builder()
+            .method(method)
+            .uri("/api/not-a-declared-route")
+            .body(Body::empty())
+            .unwrap();
+        assert!(
+            super::is_mutating(&request),
+            "unknown {method} requests must fail safe"
+        );
+    }
+}

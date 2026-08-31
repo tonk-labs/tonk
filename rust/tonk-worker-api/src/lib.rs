@@ -12,6 +12,18 @@
 //! module paths it used to define them, so its handler code is
 //! unchanged.
 
+/// Response header carrying a machine-readable worker error kind when a
+/// client must react without consuming the structured response body.
+pub const ERROR_KIND_HEADER: &str = "x-tonk-error-kind";
+
+/// [`ERROR_KIND_HEADER`] value for a write refused across a page/worker build
+/// boundary.
+pub const STALE_BUILD_ERROR_KIND: &str = "stale-build";
+
+/// Request header carrying the immutable worker generation the calling page
+/// was emitted against.
+pub const PAGE_BUILD_HEADER: &str = "x-tonk-build";
+
 mod account;
 mod claim;
 mod conclusion;

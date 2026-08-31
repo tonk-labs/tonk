@@ -180,30 +180,34 @@ mod tests {
     fn install_delayed_worker(script_path: &std::path::Path) -> Result<()> {
         let script = std::fs::read_to_string(script_path)
             .with_context(|| format!("read {}", script_path.display()))?;
-        let markers = script
+        let build_ids = script
             .lines()
-            .filter_map(|line| line.strip_prefix("// worker-wasm-hash: "))
+            .filter_map(|line| {
+                line.strip_prefix("const BUILD_ID = \"")
+                    .and_then(|value| value.strip_suffix("\";"))
+            })
             .collect::<Vec<_>>();
-        ensure!(
-            markers.len() == 1,
-            "expected exactly one worker hash marker"
-        );
-        let old_hash = markers[0];
+        ensure!(build_ids.len() == 1, "expected exactly one worker build id");
+        let old_hash = build_ids[0];
         ensure!(
             old_hash.len() == 16
                 && old_hash
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-            "worker hash marker is malformed: {old_hash:?}"
+            "worker build id is malformed: {old_hash:?}"
         );
         let new_hash = if old_hash == "0000000000000000" {
             "1111111111111111"
         } else {
             "0000000000000000"
         };
-        let old_marker = format!("// worker-wasm-hash: {old_hash}");
-        ensure!(script.matches(&old_marker).count() == 1);
-        let script = script.replacen(&old_marker, &format!("// worker-wasm-hash: {new_hash}"), 1);
+        let old_declaration = format!("const BUILD_ID = \"{old_hash}\";");
+        ensure!(script.matches(&old_declaration).count() == 1);
+        let script = script.replacen(
+            &old_declaration,
+            &format!("const BUILD_ID = \"{new_hash}\";"),
+            1,
+        );
 
         let install_start = "event.waitUntil((async () => {";
         ensure!(script.matches(install_start).count() == 1);

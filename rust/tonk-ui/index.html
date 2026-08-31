@@ -3,6 +3,24 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Rewritten alongside service_worker.js at post-build. This is the
+             worker API generation this DOCUMENT was emitted against; unlike
+             /version.json it never changes during the document's lifetime. -->
+        <meta name="tonk-worker-build" content="dev" />
+        <script>
+            (() => {
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]',
+                )?.content;
+                // `dev` deliberately remains unstamped: the worker uses the
+                // same placeholder but the production wire format is exactly
+                // 16 lowercase hex characters. The post-build step replaces
+                // the meta value before anything can be deployed.
+                if (/^[0-9a-f]{16}$/.test(build || "")) {
+                    globalThis.tonkBuild = build;
+                }
+            })();
+        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -257,6 +275,42 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
+            const WITHDRAWN_BOOT_FAILURE =
+                "This Tonk version was withdrawn. Reload to try the current version.";
+            const OLD_BROWSER_BOOT_FAILURE =
+                "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.";
+            const GENERIC_BOOT_FAILURE =
+                "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+            const presentBootFailure = (message) => {
+                if (typeof self.tonkBootTerminal === "function") {
+                    self.tonkBootTerminal(message);
+                    return;
+                }
+                const status = document.querySelector("[data-boot-status]");
+                if (status) {
+                    status.setAttribute("data-failed", "");
+                    status.textContent = message;
+                }
+            };
+
+            // Whether the currently deployed build has been revoked. Ambiguous
+            // answers fail open: a network problem must not discard a healthy
+            // worker.
+            const isRevoked = async () => {
+                try {
+                    const [flagResponse, versionResponse] = await Promise.all([
+                        fetch("/kill-switch.json", { cache: "no-store" }),
+                        fetch("/version.json", { cache: "no-store" }),
+                    ]);
+                    if (!flagResponse.ok || !versionResponse.ok) return false;
+                    const { revoked } = JSON.parse(await flagResponse.text());
+                    const { build } = JSON.parse(await versionResponse.text());
+                    return Array.isArray(revoked) && revoked.includes(build);
+                } catch {
+                    return false;
+                }
+            };
+
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
 
             // Begin registration and update detection eagerly, while the UI
@@ -267,6 +321,14 @@
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
+                }
+
+                if (await isRevoked()) {
+                    const registration =
+                        await navigator.serviceWorker.getRegistration();
+                    await registration?.unregister().catch(() => {});
+                    presentBootFailure(WITHDRAWN_BOOT_FAILURE);
+                    throw new Error("This Tonk build has been revoked");
                 }
 
                 const priorController = navigator.serviceWorker.controller;
@@ -471,9 +533,16 @@
             // Observe rejection immediately so the eager promise cannot create
             // a transient `unhandledrejection` before Rust reaches its strict
             // await. The original promise remains rejected for that await.
-            serviceWorkerActivation.catch((error) =>
-                console.error("service-worker activation failed", error),
-            );
+            serviceWorkerActivation.catch((error) => {
+                console.error("service-worker activation failed", error);
+                const detail = String(error?.message || error);
+                if (/revoked/i.test(detail)) return;
+                presentBootFailure(
+                    /module|type/i.test(detail)
+                        ? OLD_BROWSER_BOOT_FAILURE
+                        : GENERIC_BOOT_FAILURE,
+                );
+            });
             self.serviceWorkerActivates = () => serviceWorkerActivation;
 
             // Register a one-shot background sync under `tag` so a
@@ -531,16 +600,13 @@
          30 quiet seconds with the app unmounted or uncontrolled trigger
          recovery.
 
-         The recovery ladder is bounded per tab (sessionStorage): first a
-         plain reload; then a reload after clearing CacheStorage and
-         unregistering the workers — the two poison sources boots have
-         actually wedged on; then give up honestly and leave the shell's
-         failure line for the person. A detected wasm load failure
-         (boot-progress.mjs onFailure) jumps straight onto the ladder via
-         tonkBootRecover instead of waiting out the stall window. A known
-         readiness rejection instead enters an idempotent terminal state:
-         it cancels this automatic ladder, clears its retry counter, and
-         leaves a safe-state/next-action message for a deliberate reload. -->
+         Recovery is bounded per tab (sessionStorage): the first silent stall
+         gets one plain reload. A second stall gives up honestly and leaves the
+         shell's failure line for the person; automatic recovery never deletes
+         caches or unregisters workers. A detected wasm load failure
+         (boot-progress.mjs onFailure) enters the same path immediately instead
+         of waiting out the stall window. A known readiness rejection enters
+         the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
                 if (!("serviceWorker" in navigator)) return;
@@ -588,17 +654,13 @@
                     if (terminal) return;
                     clearInterval(timer);
                     const n = attempts();
-                    if (n >= 2) {
+                    if (n >= 1) {
                         console.error(
                             `boot: still stuck after ${n} recoveries (${why}); giving up`,
                         );
-                        const status =
-                            document.querySelector("[data-boot-status]");
-                        if (status) {
-                            status.setAttribute("data-failed", "");
-                            status.textContent =
-                                "failed to load — check your connection and reload";
-                        }
+                        self.tonkBootTerminal(
+                            "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+                        );
                         return;
                     }
                     try {
@@ -608,24 +670,7 @@
                     const status =
                         document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "recovering…";
-                    const reload = () => location.reload();
-                    if (n === 0) return reload();
-                    Promise.allSettled([
-                        caches
-                            .keys()
-                            .then((keys) =>
-                                Promise.all(
-                                    keys.map((key) => caches.delete(key)),
-                                ),
-                            ),
-                        navigator.serviceWorker
-                            .getRegistrations()
-                            .then((regs) =>
-                                Promise.all(
-                                    regs.map((reg) => reg.unregister()),
-                                ),
-                            ),
-                    ]).then(reload, reload);
+                    location.reload();
                 };
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (message) => {
@@ -691,6 +736,12 @@
             data-target-path="__tonk"
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+        <!-- Cache policy for Cloudflare Workers Assets. `immutable` on the
+       content-hashed bundles, `no-store` on the service-worker chain and
+       the version/kill-switch probes. Milestone 1 of
+       `plan/offline-support.md` called for this; it had never been wired,
+       so everything was served `max-age=0, must-revalidate`. -->
+        <link data-trunk rel="copy-file" href="./assets/_headers" />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
        injected only in debug builds by the UI shell (see ui.rs,
@@ -821,5 +872,176 @@
             </div>
         </div>
 
+        <script type="module">
+            let registration;
+            try {
+                // Reuse the exact eager registration/update promise consumed
+                // by the strict Rust pre-mount gate. A second register/update
+                // path here would race #800's load-time alignment protocol.
+                await self.serviceWorkerActivates();
+                registration =
+                    await navigator.serviceWorker.getRegistration();
+                if (!registration) {
+                    throw new Error("Service worker registration disappeared");
+                }
+            } catch (err) {
+                // The eager activation owner has already terminalized the
+                // boot shell with a safe, actionable message. Keep this later
+                // consumer from overwriting that message with raw error text.
+                console.error("Service worker activation failed:", err);
+                throw err;
+            }
+
+            // ---- "Update ready" affordance ---------------------------
+                //
+                // Until now there was no user-visible update signal at all —
+                // no toast, no version anywhere — so a user stuck on a stale
+                // build had no path forward but folklore (clear website
+                // data). This is deliberately built here, in the boot script,
+                // rather than in the app: the app's own wasm is one of the
+                // things that can be stale, and the affordance has to work
+                // exactly when the app doesn't.
+                let announced = false;
+                const announceUpdate = () => {
+                    if (announced) return;
+                    announced = true;
+
+                    const bar = document.createElement("div");
+                    bar.setAttribute("role", "status");
+                    bar.style.cssText = [
+                        "position:fixed", "inset-inline:0", "bottom:0",
+                        "z-index:2147483647", "display:flex", "gap:0.75rem",
+                        "align-items:center", "justify-content:center",
+                        "padding:0.75rem 1rem",
+                        "font:14px/1.4 system-ui, sans-serif",
+                        "background:Canvas", "color:CanvasText",
+                        "border-top:1px solid color-mix(in srgb, CanvasText 20%, transparent)",
+                    ].join(";");
+
+                    const label = document.createElement("span");
+                    label.textContent = "A new version of Tonk is ready.";
+
+                    const reload = document.createElement("button");
+                    reload.textContent = "Reload";
+                    reload.style.cssText = [
+                        "font:inherit", "padding:0.35rem 1rem",
+                        "border-radius:6px", "cursor:pointer",
+                        "border:1px solid color-mix(in srgb, CanvasText 30%, transparent)",
+                        "background:color-mix(in srgb, CanvasText 8%, Canvas)",
+                        "color:inherit",
+                    ].join(";");
+                    reload.addEventListener("click", () => {
+                        // Ask the waiting worker to take over before
+                        // reloading, so ONE reload converges instead of two.
+                        registration.waiting?.postMessage({ type: "claim" });
+                        location.reload();
+                    });
+
+                    const dismiss = document.createElement("button");
+                    dismiss.textContent = "Not now";
+                    dismiss.setAttribute("aria-label", "Dismiss update notice");
+                    dismiss.style.cssText = [
+                        "font:inherit", "padding:0.35rem 0.75rem",
+                        "border:0", "background:none", "cursor:pointer",
+                        "color:inherit", "opacity:0.7",
+                    ].join(";");
+                    dismiss.addEventListener("click", () => bar.remove());
+
+                    bar.append(label, reload, dismiss);
+                    document.body.appendChild(bar);
+                };
+
+                // The app raises this when the worker answers a `409`
+                // from the version handshake — it is talking to a
+                // worker from a different build, which only a reload
+                // can resolve.
+                window.addEventListener("tonk-update-available", () => {
+                    announceUpdate();
+                });
+
+                // ---- Update discovery ------------------------------------
+                //
+                // The browser only checks for a new worker on navigation (and
+                // at register time). This is a single-page app: it navigates
+                // with pushState, its tabs live for days, and a bfcache
+                // restore doesn't re-run this script — so the check can
+                // simply never happen. Safari is both the laziest checker and
+                // the engine where a stuck worker is hardest to clear, which
+                // is how a user ends up stranded on an old build with no
+                // recourse but clearing website data.
+                //
+                // So ask explicitly, at the moments an update is both likely
+                // and cheap to apply: coming back to the tab, regaining
+                // connectivity, and hourly for a tab left open.
+                const checkForUpdate = () => {
+                    registration.update().catch(() => {
+                        // Offline or throttled — the next trigger retries.
+                    });
+                };
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") checkForUpdate();
+                });
+                window.addEventListener("online", checkForUpdate);
+                setInterval(checkForUpdate, 60 * 60 * 1000);
+
+                // Deliberately NOT listening to `updatefound` to decide
+                // this. `registration` is shared across every tab on the
+                // origin, so that event fires in all of them — including
+                // tabs already running the new build, and including the
+                // install a *sibling tab's* reload just triggered. Two tabs
+                // then ping-pong: reload A, B prompts; reload B, A prompts;
+                // forever, with neither ever actually wrong.
+                //
+                // Gating it on `registration.waiting` does not fix that
+                // either: this worker calls `skipWaiting()`, so a successor
+                // goes `installing -> activating` and barely touches the
+                // `waiting` slot. The gate reads an almost-always-empty
+                // field and fires or not by luck.
+                //
+                // The honest question is a STATE, not an event: is the
+                // build this page loaded different from the build being
+                // served now? Each tab answers that for itself, no sibling
+                // can trigger it, and a reload makes it false — so the
+                // prompt appears exactly when reloading would change
+                // something, and stops once it would not.
+                const checkStale = async () => {
+                    try {
+                        const response = await fetch("/version.json", {
+                            cache: "no-store",
+                        });
+                        if (!response.ok) return;
+                        const { build } = await response.json();
+                        if (!build || !ourBuild) return;
+                        if (build !== ourBuild) announceUpdate();
+                    } catch {
+                        // Offline — nothing to report.
+                    }
+                };
+
+                // ---- Version probe ---------------------------------------
+                //
+                // `version.json` is written by the build (see
+                // `scripts/hash-guest.sh`) and served `no-store`. Polling it
+                // detects a new deploy WITHOUT depending on service-worker
+                // update machinery — which matters precisely because that
+                // machinery being wedged is the failure being solved. When it
+                // reports a build other than the one this worker is running,
+                // announce it; `<tonk-site>` renders the reload affordance.
+                const BUILD_PROBE_MS = 15 * 60 * 1000;
+                // The post-build step stamped this immutable value into the
+                // document and the early head script published it before the
+                // app loader. `/version.json` is discovery only: using its
+                // mutable answer as provenance lets a cached old document
+                // impersonate the currently deployed generation.
+                const ourBuild = globalThis.tonkBuild ?? null;
+                void checkStale();
+                setInterval(checkStale, BUILD_PROBE_MS);
+                // Also on focus: a tab returned to after a deploy is the
+                // likeliest moment for the prompt to matter.
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") checkStale();
+                });
+
+        </script>
     </body>
 </html>
