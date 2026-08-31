@@ -206,7 +206,7 @@ pub enum AccountSetupRequest {
     /// Fence one passkey creation attempt after rechecking provider support.
     Arm(AccountSetupArm),
     /// Durably stage the recoverable ceremony result.
-    Stage(AccountSetupStage),
+    Stage(Box<AccountSetupStage>),
     /// Reconcile and advance only verified post-stage effects.
     Continue(AccountSetupMutation),
     /// Replace an expired create invocation after a same-credential assertion.
@@ -533,11 +533,11 @@ mod tests {
                 mutation: mutation.clone(),
                 attempt_token: "attempt-token".to_string(),
             }),
-            AccountSetupRequest::Stage(AccountSetupStage {
+            AccountSetupRequest::Stage(Box::new(AccountSetupStage {
                 mutation: mutation.clone(),
                 attempt_token: "attempt-token".to_string(),
                 recovery,
-            }),
+            })),
             AccountSetupRequest::Continue(mutation.clone()),
             AccountSetupRequest::ReplaceInvocation(AccountSetupInvocation {
                 mutation: mutation.clone(),

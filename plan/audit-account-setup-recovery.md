@@ -80,7 +80,7 @@ pub enum AccountSetupRequest {
     Begin(AccountSetupBegin),
     Acquire(AccountSetupAcquire),
     Arm(AccountSetupArm),
-    Stage(AccountSetupStage),
+    Stage(Box<AccountSetupStage>),
     Continue(AccountSetupMutation),
     ReplaceInvocation(AccountSetupInvocation),
     Cancel(AccountSetupMutation),
