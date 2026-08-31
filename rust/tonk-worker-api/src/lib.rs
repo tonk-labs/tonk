@@ -13,6 +13,7 @@
 //! unchanged.
 
 mod account;
+mod account_setup;
 mod claim;
 mod conclusion;
 mod deployment;
@@ -33,6 +34,15 @@ pub use account::{
     AccountDevice, AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest,
     AccountSpaceDeletionRequest, AccountStatus, AccountSummary, HostedSpaceDeletionResult,
     RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+};
+pub use account_setup::{
+    ACCOUNT_SETUP_PROTOCOL_VERSION, ACCOUNT_SETUP_PROVIDER_RECOVERY_VERSION, AccountSetupAcquire,
+    AccountSetupArm, AccountSetupBegin, AccountSetupCapabilities, AccountSetupCeremonyContext,
+    AccountSetupConflictCode, AccountSetupDisposition, AccountSetupHandshake, AccountSetupInspect,
+    AccountSetupInvocation, AccountSetupLease, AccountSetupMutation, AccountSetupNextAction,
+    AccountSetupProgress, AccountSetupProtectedResponse, AccountSetupRecoveryBundle,
+    AccountSetupRequest, AccountSetupResponse, AccountSetupResumeInput, AccountSetupStage,
+    AccountSetupView,
 };
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};

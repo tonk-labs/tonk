@@ -18,6 +18,10 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 mod account;
 mod account_deletion;
+// This lower-stack module defines and tests the durable protocol before the
+// next PR wires effects and routes to it.
+#[allow(dead_code)]
+mod account_setup;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;

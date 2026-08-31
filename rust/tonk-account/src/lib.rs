@@ -18,9 +18,14 @@ pub mod pending;
 /// Provider-neutral account space backup artifacts.
 pub mod prefix;
 mod provider;
+/// Durable root-signed anti-mix proof for browser account setup recovery.
+pub mod recovery;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};
 pub use provider::{AccountProviderError, AccountProviderRecord};
+pub use recovery::{
+    AccountSetupRecoveryManifestInput, AccountSetupRecoveryManifestV1, RecoveryManifestError,
+};
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
