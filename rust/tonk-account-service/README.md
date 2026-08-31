@@ -63,7 +63,9 @@ permissive CORS headers).
   root-signed UCAN invocation container with command `["account", "create"]`
   and arguments `email`,
   `credentialId`, `deviceDid`, `deviceName`, `delegation` (the hex-encoded
-  `root → device` delegation), and `repositoryDescriptor`.
+  `root → device` delegation), and `repositoryDescriptor`. The durable device
+  grant must contain exactly one valid proof and be subject-open, command-open,
+  and unbounded (no not-before or expiration).
   A new account returns `201`; an exact retry of an already-committed creation
   returns `200`. Both return `{ "accountId": number, "descriptorHex": string,
   "createFingerprint": string, "reused": boolean }`, with `reused: false` for
@@ -72,13 +74,16 @@ permissive CORS headers).
 - `POST /accounts/setup-status`: recover after losing an account-creation
   response. Body: a device-signed UCAN invocation container with command
   `["account", "setup", "status"]`, argument `createFingerprint`, subject and
-  audience equal to the account root, and exactly one unexpired, subject-open,
-  command-open `root → device` proof. Returns one of
+  audience equal to the account root, and exactly one valid, subject-open,
+  command-open, unbounded `root → device` proof. Returns one of
   `{ "status": "absent" }`, `{ "status": "accepted", "accountId": number,
   "descriptorHex": string, "createFingerprint": string }`, or
   `{ "status": "mismatch" }`. The verified invocation root is the only root
   queried: the endpoint accepts no email or arbitrary root argument, and
-  `absent` is never available to an unauthenticated caller.
+  `absent` is never available to an unauthenticated caller. Unknown/deleted
+  accounts, missing or inactive first devices, and nonmatching device DIDs or
+  delegation CIDs all return that exact `absent` body; only the exact active
+  first-device proof may receive `accepted` or `mismatch`.
 - `POST /account/repository/establish`: root-authorized set-if-absent
   descriptor establishment for an existing account. Returns the exact stored
   winner as `{ "descriptorHex": string, "created": boolean }`.

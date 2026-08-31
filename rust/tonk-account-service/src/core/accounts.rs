@@ -62,7 +62,10 @@ pub struct CreateAccountOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum AccountSetupStatus {
-    /// The verified root has no provider account row.
+    /// No exact active first-device setup is visible to this proof.
+    ///
+    /// This deliberately covers an unknown/deleted account, a missing or
+    /// inactive first device, and a nonmatching device DID or delegation CID.
     Absent,
     /// The persisted account is the exact operation the caller fingerprinted.
     Accepted {
@@ -76,7 +79,8 @@ pub enum AccountSetupStatus {
         #[serde(rename = "createFingerprint")]
         create_fingerprint: String,
     },
-    /// The root exists, but its durable creation facts differ.
+    /// The exact active first device exists, but its durable creation facts
+    /// differ from the caller's fingerprint.
     Mismatch,
 }
 
@@ -264,7 +268,9 @@ async fn recover_exact_replay<S: Store>(
 /// device invocation.
 ///
 /// Authentication happens before this function. Its root argument must come
-/// from the verified invocation subject, never from a request field.
+/// from the verified invocation subject, never from a request field. Provider
+/// state is disclosed only to the exact active first-device grant; every other
+/// authenticated root-to-device proof receives [`AccountSetupStatus::Absent`].
 pub async fn account_setup_status<S: Store>(
     store: &S,
     root_did: &str,
@@ -282,17 +288,13 @@ pub async fn account_setup_status<S: Store>(
         .into_iter()
         .min_by_key(|device| device.id)
     else {
-        return Ok(AccountSetupStatus::Mismatch);
+        return Ok(AccountSetupStatus::Absent);
     };
     if first_device.status != DeviceStatus::Active {
-        return Err(CeremonyError::Forbidden(
-            "setup status requires the active first account device".to_string(),
-        ));
+        return Ok(AccountSetupStatus::Absent);
     }
     if first_device.device_did != device_did || first_device.delegation_cid != delegation_cid {
-        return Err(CeremonyError::Forbidden(
-            "setup proof does not match the first account device".to_string(),
-        ));
+        return Ok(AccountSetupStatus::Absent);
     }
     let Ok(stored_delegation_cid) = check_device_delegation(
         &first_device.delegation_hex,
@@ -479,6 +481,84 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_rejects_first_device_grants_that_cannot_survive_response_loss() {
+        use dialog_ucan_core::subject::Subject;
+        use dialog_ucan_core::time::timestamp::Timestamp;
+        use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+        use dialog_varsig::Principal as _;
+
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
+            .await
+            .unwrap();
+        let root_did = root.did().to_string();
+        let device_did = device.did().to_string();
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root,
+            "https://accounts.example/ucan/",
+        )
+        .await
+        .unwrap();
+        let descriptor_hex = hex::encode(descriptor.bytes());
+
+        let command_scoped = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root.clone()))
+            .audience(&device.did())
+            .subject(Subject::Any)
+            .command(vec!["account".into(), "setup".into(), "status".into()])
+            .try_build()
+            .await
+            .unwrap();
+        let expiring = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root.clone()))
+            .audience(&device.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        let not_before = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root))
+            .audience(&device.did())
+            .subject(Subject::Any)
+            .command(vec![])
+            .not_before(Timestamp::now())
+            .try_build()
+            .await
+            .unwrap();
+
+        for (label, grant, expected_message) in [
+            ("command-scoped", command_scoped, "command-open"),
+            ("expiring", expiring, "unbounded"),
+            ("not-before", not_before, "unbounded"),
+        ] {
+            let store = SqliteStore::in_memory().unwrap();
+            let request = CreateAccount {
+                email: format!("{label}@example.com"),
+                root_did: root_did.clone(),
+                credential_id: format!("credential-{label}"),
+                device_did: device_did.clone(),
+                device_name: "laptop".into(),
+                delegation_hex: hex::encode(DelegationChain::new(grant).to_bytes().unwrap()),
+                repository_descriptor_hex: descriptor_hex.clone(),
+                passkey: None,
+            };
+            let result = create_account(&store, &request, 1).await;
+            let Err(CeremonyError::Invalid(message)) = result else {
+                panic!("{label} first-device grant was accepted: {result:?}");
+            };
+            assert!(
+                message.contains(expected_message),
+                "wrong {label} refusal: {message}"
+            );
+            assert!(store.account_by_root(&root_did).await.unwrap().is_none());
+        }
+    }
+
+    #[dialog_common::test]
     async fn it_reuses_only_an_exact_account_creation() {
         let store = SqliteStore::in_memory().unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
@@ -542,7 +622,6 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_every_nonexact_creation_replay() {
         use dialog_ucan_core::subject::Subject;
-        use dialog_ucan_core::time::timestamp::Timestamp;
         use dialog_ucan_core::{DelegationBuilder, DelegationChain};
         use dialog_varsig::Principal as _;
 
@@ -631,7 +710,6 @@ mod tests {
             .audience(&device.did())
             .subject(Subject::Any)
             .command(vec![])
-            .expiration(Timestamp::five_minutes_from_now())
             .try_build()
             .await
             .unwrap();
@@ -658,6 +736,102 @@ mod tests {
         .unwrap();
 
         assert_eq!(status, AccountSetupStatus::Absent);
+    }
+
+    #[dialog_common::test]
+    async fn it_hides_every_nonmatching_first_device_state_as_absent() {
+        let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
+
+        let no_device = SqliteStore::in_memory().unwrap();
+        no_device
+            .create_account("no-device@example.com", &root_did, "credential", 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            account_setup_status(
+                &no_device,
+                &root_did,
+                &device_did,
+                "bafyMissingDelegation",
+                &"ab".repeat(32),
+            )
+            .await
+            .unwrap(),
+            AccountSetupStatus::Absent
+        );
+
+        let store = SqliteStore::in_memory().unwrap();
+        let created = create_account(
+            &store,
+            &CreateAccount {
+                email: "person@example.com".into(),
+                root_did: root_did.clone(),
+                credential_id: "credential".into(),
+                device_did: device_did.clone(),
+                device_name: "laptop".into(),
+                delegation_hex,
+                repository_descriptor_hex,
+                passkey: None,
+            },
+            1,
+        )
+        .await
+        .unwrap();
+        let first_device = store.devices(created.account_id).await.unwrap().remove(0);
+
+        for (label, presented_device, presented_cid) in [
+            (
+                "wrong DID",
+                "did:key:zWrongDevice",
+                first_device.delegation_cid.as_str(),
+            ),
+            ("wrong CID", device_did.as_str(), "bafyWrongDelegation"),
+        ] {
+            assert_eq!(
+                account_setup_status(
+                    &store,
+                    &root_did,
+                    presented_device,
+                    presented_cid,
+                    &created.create_fingerprint,
+                )
+                .await
+                .unwrap(),
+                AccountSetupStatus::Absent,
+                "{label} disclosed that the account exists"
+            );
+        }
+
+        assert_eq!(
+            account_setup_status(
+                &store,
+                &root_did,
+                &device_did,
+                &first_device.delegation_cid,
+                &"cd".repeat(32),
+            )
+            .await
+            .unwrap(),
+            AccountSetupStatus::Mismatch,
+            "only the exact active first device may learn mismatch"
+        );
+
+        store
+            .revoke_device(created.account_id, &device_did)
+            .await
+            .unwrap();
+        assert_eq!(
+            account_setup_status(
+                &store,
+                &root_did,
+                &device_did,
+                &first_device.delegation_cid,
+                &created.create_fingerprint,
+            )
+            .await
+            .unwrap(),
+            AccountSetupStatus::Absent
+        );
     }
 
     #[dialog_common::test]
@@ -705,7 +879,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_distinguishes_mismatched_setup_and_rejects_wrong_first_device() {
+    async fn it_distinguishes_mismatched_setup_and_hides_wrong_first_device() {
         let store = SqliteStore::in_memory().unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;
         let created = create_account(
@@ -738,7 +912,7 @@ mod tests {
             .unwrap(),
             AccountSetupStatus::Mismatch
         );
-        assert!(matches!(
+        assert_eq!(
             account_setup_status(
                 &store,
                 &root_did,
@@ -746,10 +920,11 @@ mod tests {
                 &first_device.delegation_cid,
                 &created.create_fingerprint,
             )
-            .await,
-            Err(CeremonyError::Forbidden(_))
-        ));
-        assert!(matches!(
+            .await
+            .unwrap(),
+            AccountSetupStatus::Absent
+        );
+        assert_eq!(
             account_setup_status(
                 &store,
                 &root_did,
@@ -757,9 +932,10 @@ mod tests {
                 "bafyWrongDelegation",
                 &created.create_fingerprint,
             )
-            .await,
-            Err(CeremonyError::Forbidden(_))
-        ));
+            .await
+            .unwrap(),
+            AccountSetupStatus::Absent
+        );
         assert!(matches!(
             account_setup_status(
                 &store,
@@ -776,7 +952,7 @@ mod tests {
             .revoke_device(created.account_id, &device_did)
             .await
             .unwrap();
-        assert!(matches!(
+        assert_eq!(
             account_setup_status(
                 &store,
                 &root_did,
@@ -784,9 +960,10 @@ mod tests {
                 &first_device.delegation_cid,
                 &created.create_fingerprint,
             )
-            .await,
-            Err(CeremonyError::Forbidden(_))
-        ));
+            .await
+            .unwrap(),
+            AccountSetupStatus::Absent
+        );
 
         // A legacy/incomplete account row cannot be called accepted merely
         // because the cryptographic proof and a caller-provided hash exist.

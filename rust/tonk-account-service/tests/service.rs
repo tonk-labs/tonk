@@ -283,8 +283,8 @@ async fn it_keeps_setup_status_private_and_structured() {
         "createFingerprint must be 32 bytes of lowercase hex"
     );
 
-    // Another valid device proof under this root is still not the account's
-    // first-device proof and cannot retrieve accepted setup details.
+    // Another valid device proof under this root is indistinguishable from an
+    // absent account; it cannot learn that a different first device exists.
     let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
         .await
         .unwrap();
@@ -299,15 +299,17 @@ async fn it_keeps_setup_status_private_and_structured() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 403);
+    assert_eq!(response.status(), 200);
+    let wrong_device: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(wrong_device, absent);
 
-    // Nor can the first device substitute a newly issued delegation CID.
+    // Nor can the first device substitute a newly issued stable delegation
+    // CID. The proof is canonical, but it is not the persisted first grant.
     let alternate = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(root.clone()))
         .audience(&device.did())
         .subject(Subject::Any)
         .command(vec![])
-        .expiration(Timestamp::five_minutes_from_now())
         .try_build()
         .await
         .unwrap();
@@ -318,7 +320,28 @@ async fn it_keeps_setup_status_private_and_structured() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 403);
+    assert_eq!(response.status(), 200);
+    let wrong_cid: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(wrong_cid, absent);
+
+    // Deletion removes the account and first-device row, but the caller still
+    // holds the original public proof. It receives the exact same wire result.
+    let response = client
+        .post(format!("{}/account/delete", server.endpoint))
+        .body(account_deletion(&device, &link, "private@example.com").await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let response = client
+        .post(format!("{}/accounts/setup-status", server.endpoint))
+        .body(account_setup_status_invocation(&device, &link, fingerprint).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let deleted: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(deleted, absent);
 
     // Direct root proof and a valid device invocation for another command are
     // both refused at the authentication boundary.

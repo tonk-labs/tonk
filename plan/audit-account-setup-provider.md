@@ -10,7 +10,9 @@
 - The shared `tonk-account::creation` input and algorithm are the single source of truth for provider and client fingerprints. Its wire form is exactly 64 lowercase hexadecimal characters; its version-1 test vector is pinned.
 - The random attachment ID and server-selected account/device creation time are excluded from equality and the fingerprint.
 - Every non-exact conflict retains the current conflict classification and must not expose SQLite/D1 driver text.
-- Setup status is signed by the device through one command-open, subject-open, unexpired `root -> device` proof. It may query only the invocation subject root, never a caller-supplied email or root.
+- Account creation, device registration, and setup status share one canonical stable-grant validator: exactly one valid `root -> device` proof, expected issuer/audience, subject-open, command-open, and no not-before or expiration.
+- Setup status additionally requires the invocation audience to equal its root subject. It may query only that subject root, never a caller-supplied email or root.
+- Missing/deleted accounts, missing or inactive first devices, and nonmatching device DIDs or delegation CIDs are deliberately indistinguishable as `Absent`; only the exact active first-device proof may receive `Accepted` or `Mismatch`.
 - Do not add a database migration or new dependency. If the live schema cannot support the contract, stop before changing it.
 - This provider-only PR changes no rendered UI or copy, so it does not add Storybook journeys; API documentation and executable HTTP coverage record the contract.
 
@@ -56,14 +58,21 @@
 
 **Interfaces:**
 - Consumes: command `['account', 'setup', 'status']` with required `createFingerprint` and exactly one attached root-to-device delegation.
-- Produces: `SetupCaller { root_did, device_did, delegation_cid, arguments }` only after invocation/delegation signatures, five-minute expiry, issuer/audience alignment, root issuer, subject-open shape, and command-open shape verify.
+- Produces: `SetupCaller { root_did, device_did, delegation_cid, arguments }` only after the invocation signature and five-minute expiry, audience/root-subject equality, and the shared stable-grant validator all succeed.
 - Produces: `{ "status": "absent" }`, `{ "status": "accepted", "accountId", "descriptorHex", "createFingerprint" }`, or `{ "status": "mismatch" }`.
 
 - [x] Add auth tests proving a valid root-to-device invocation succeeds without a store/account row, while missing proof, a proof from the wrong root, a proof delegated to a different device, subject-specific proof, and command-scoped proof fail. The focused positive test failed to compile before the helper existed.
 - [x] Implement the narrow verifier by extending the already verified invocation chain; it accepts no root/email argument and calls no `Store` method.
-- [x] Add setup-status core tests: valid unknown root returns `Absent`; exact persisted state and matching first-device proof returns `Accepted`; a wrong 32-byte fingerprint returns `Mismatch`; mismatched device DID/CID and inactive first device are rejected; malformed legacy descriptor/delegation state cannot be reported as accepted.
+- [x] Add setup-status core tests: valid unknown root returns `Absent`; exact persisted state and matching first-device proof returns `Accepted`; a wrong 32-byte fingerprint returns `Mismatch`; mismatched device DID/CID and inactive or missing first-device state return `Absent`; malformed legacy descriptor/delegation state cannot be reported as accepted.
 - [x] Implement status lookup by verified root, require the proof to name the stored earliest active device and delegation CID, reconstruct the same fingerprint, and return only the typed outcome.
 - [x] Run focused auth/status tests and adjacent auth/core suites; all focused filters pass.
+
+### Independent review follow-up
+
+- [x] RED/GREEN: reject command-scoped, expiring, and not-before first-device grants that account creation previously accepted, using the same validator for creation/device registration and setup authentication.
+- [x] RED/GREEN: collapse missing account/first-device, inactive first-device, wrong device DID, and wrong delegation CID to the exact `Absent` result while retaining `Mismatch` for an exact active first device with different creation facts.
+- [x] RED/GREEN: reject a setup invocation whose audience differs from its root subject.
+- [x] Re-run both affected packages, warning-denied all-target clippy, rustfmt/diff checks, and the account-service-only Cloudflare build; all pass before the follow-up commit.
 
 ### Task 3: Keep Cloudflare and native HTTP contracts identical
 
@@ -79,7 +88,7 @@
 - `OPTIONS /accounts/setup-status`: returns the service's existing CORS headers.
 
 - [x] Add an HTTP response-loss test that discards the first 201 body, replays the exact bytes, and requires 200 plus `reused: true`, the original ID/descriptor/fingerprint, and no duplicate device.
-- [x] Add HTTP tests for accepted, mismatch, and valid-proof absent status; unknown/missing proof, wrong device/delegation, wrong command, and malformed fingerprint produce structured 4xx errors without raw DB text or account details.
+- [x] Add HTTP tests for accepted, mismatch, and valid-proof absent status; wrong device/delegation and deleted accounts receive the same `200 Absent` body, while missing proof, wrong command, and malformed fingerprint produce structured 4xx errors without raw DB text or account details.
 - [x] Run the status HTTP test before routing; it failed with the expected 404. Exact replay had already failed at the core conflict boundary in the first RED run.
 - [x] Implement the Worker handler/routes, native helper route, response status selection, JSON serialization, and preflight registration from the same core/auth seams.
 - [x] Run the focused response-loss, privacy, and CORS HTTP filters; each passes. Native HTTP filters required loopback permission after the sandbox rejected binding before behavior ran.
@@ -95,9 +104,9 @@
 
 - [x] Update the README with exact request commands, response status codes/fields, proof requirements, and the no-account-existence-leak boundary.
 - [x] Run `cargo fmt --all -- --check` and `git diff --check`; both pass after rustfmt's mechanical layout changes.
-- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (49 unit plus 9 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
+- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (52 unit plus 9 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
 - [x] Run all-target warning-denied clippy for both `tonk-account` and `tonk-account-service --features helpers`; both pass.
-- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final source passes at `/nix/store/f89778xgprap6jl7qgmbqkm2rmh0r8hv-tonk-account-service-0.6.9` without building `tonk-ui`.
+- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final follow-up source passes at `/nix/store/xhi7wq04sghi5mcg23xnynbwfghjypna-tonk-account-service-0.6.9` without building `tonk-ui`.
 - [x] Re-read the final diff against every mismatch and privacy requirement, update this plan with fresh green evidence, and confirm no migration, lock-file change, UI source, or unrelated work entered the branch. That review found and fixed one malformed stored-delegation acceptance gap before commit.
 
 ## Focused TDD evidence
@@ -108,4 +117,7 @@
 - Auth helper RED: the positive setup-proof test did not compile before `authorize_setup_device` existed. GREEN proof-shape matrix passed 1 / 1 with 46 filtered.
 - Status core RED: the absent-status test did not compile before the status contract existed, and the accepted-status test initially returned `Mismatch`. A final mutation proved that merely decoding malformed stored delegation bytes could incorrectly return `Accepted`; that focused run failed 0 / 1 with 48 filtered, then passed unchanged after the stored bytes were revalidated to the authenticated root, device, and CID. The full negative matrix is green.
 - HTTP RED: the response-loss/status test reached the native route and received 404 before registration. GREEN response-loss, privacy/error, and CORS filters each passed 1 / 1. The final response-loss form computes the shared fingerprint before `POST /accounts`, discards the `201` body, and obtains `Accepted` before receiving any replay response.
+- Stable-grant review RED/GREEN: `it_rejects_first_device_grants_that_cannot_survive_response_loss` first accepted and inserted a command-scoped grant (0 passed / 1 failed / 49 filtered), then passed unchanged (1 / 1) after creation, device registration, and setup auth shared the exact-one-proof, valid-signature, issuer/audience, subject-open, command-open, unbounded validator. The same test covers expiring and not-before grants.
+- Status-privacy review RED/GREEN: `it_hides_every_nonmatching_first_device_state_as_absent` first returned `Mismatch` for a missing first device (0 passed / 1 failed / 50 filtered), then passed unchanged (1 / 1) after missing/inactive/wrong-device/wrong-CID states collapsed to `Absent`.
+- Audience review RED/GREEN: `it_rejects_setup_invocations_for_an_unrelated_audience` failed before the binding existed (0 passed / 1 failed / 51 filtered), then passed unchanged (1 / 1) once invocation audience had to equal root subject.
 - The first native HTTP attempt in the restricted sandbox failed to bind loopback with `PermissionDenied` before behavior; every unchanged HTTP filter passed with loopback permission.
