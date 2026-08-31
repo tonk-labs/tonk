@@ -360,7 +360,21 @@ fn mount(
         let Some(prose) = document.create_element("tonk-prose").ok() else {
             return;
         };
-        let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
+        // A DRAFT notebook's heading is a switcher: type a title and it
+        // suggests the notebooks that match, opens the one you pick, or
+        // creates the name you typed. A saved notebook's heading only
+        // renames - were the switcher live there, renaming onto an
+        // existing title would navigate the author out of the document
+        // they were editing.
+        let draft = this.has_attribute("draft");
+        if draft {
+            let _ = prose.set_attribute("switcher", "");
+            let _ = prose.set_attribute("auto-focus", "");
+            let _ = prose.set_attribute("value", "# ");
+            let _ = prose.set_attribute("placeholder", "Name a notebook to open or create it...");
+        } else {
+            let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
+        }
 
         // Attach the provider now, but hold the EDITOR back until
         // `<tonk-code>` is defined.
@@ -840,6 +854,18 @@ impl Notebook {
         // An explicit flag, not `blocks.is_empty()`: a genuinely empty
         // notebook has no blocks either, and must still accept its first.
         if !self.projected_once.get() {
+            return;
+        }
+
+        // A DRAFT has no notebook to write to yet.
+        //
+        // Its blocks would be created against no owner, so they would
+        // render nowhere and be re-minted on the next keystroke. The
+        // author's body text is not lost: naming the notebook creates it,
+        // the page navigates there, and what was typed is projected into
+        // the real one. Until then the draft is a document in the editor
+        // and nothing else.
+        if self.host.has_attribute("draft") {
             return;
         }
         let next = split(&document);

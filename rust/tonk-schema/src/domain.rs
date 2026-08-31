@@ -313,6 +313,12 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.detail")]
         pub struct CreatedTitle(pub String);
+
+        /// The draft's whole document, so the notebook that gets created
+        /// keeps what the author already wrote under the heading.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct CreatedBody(pub String);
     }
 
     /// The address read from the registration form's submit event:

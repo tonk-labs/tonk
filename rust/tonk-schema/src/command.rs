@@ -79,6 +79,8 @@ pub struct CreateNotebook {
     pub this: Entity,
     /// The title typed into the heading.
     pub title: crate::domain::command::notebook::CreatedTitle,
+    /// The draft's document, blocks and all.
+    pub body: crate::domain::command::notebook::CreatedBody,
 }
 
 /// Ask whether an address is already registered, so the form can route

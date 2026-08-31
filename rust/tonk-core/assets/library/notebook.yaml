@@ -256,11 +256,31 @@ concept!: &notebook/index-route
       cardinality: one
       as: text
 
+# The index IS a notebook — a DRAFT one.
+#
+# Not a search page that happens to contain an editor: the same
+# `<tonk-notebook>` you land in, opened on nothing. Its heading is the
+# switcher (type a title, get suggestions, Enter opens or creates), and the
+# body below it is the notebook's real body. Nothing changes shape under
+# the author when the draft becomes a notebook — that is the whole point,
+# and why this is the notebook element rather than a field beside a list.
+#
+# The nested display renders the notebook rows the switcher matches
+# against; they are its data and the no-script fallback both.
 view!:
   this: id:notebook/index/route/view
   model: tonk:notebook/index-route
   display: |
     <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
+      <tonk-notebook
+        draft
+        data-repo={repo}
+        onblockedit=block/edit
+        onplace=block/place
+        onremove=block/remove
+        ontitlechange=notebook/retitle
+        style="display: block;"
+      ></tonk-notebook>
       <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
     </tonk-notebook-index>
 

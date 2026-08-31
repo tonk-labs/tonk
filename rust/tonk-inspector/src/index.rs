@@ -21,11 +21,6 @@ use web_sys::{CustomEvent, Element, HtmlElement};
 
 use custom_elements::CustomElement;
 
-/// The document the index editor starts with: a heading and nothing else.
-/// The trailing space is what puts the caret after the `#` marker rather
-/// than on it.
-const EMPTY: &str = "# ";
-
 /// One notebook the switcher can offer.
 struct Candidate {
     title: String,
@@ -188,47 +183,30 @@ impl CustomElement for TonkNotebookIndexElement {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        // The editor and the panel, INSERTED BEFORE the rows rather than
-        // replacing them: the rows `<tonk-display>` renders are this
-        // element's content and the switcher's data both.
+        // Only the suggestion panel. The EDITOR is a real
+        // `<tonk-notebook draft>` mounted by the view, not something this
+        // element builds: the index is a notebook opened on nothing, so
+        // nothing changes shape under the author when the draft is named.
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             return;
         };
-        // Once. `inject_children` can run again (a re-render, a
-        // reconnect), and a second `<tonk-prose>` would mount a second
-        // editor over the same rows — two carets, two documents.
         if this
-            .query_selector(".notebook-switcher__input")
+            .query_selector(".notebook-switcher__panel")
             .ok()
             .flatten()
             .is_some()
         {
             return;
         }
-        let mut prose_node: Option<web_sys::Node> = None;
-        if let Ok(prose) = document.create_element("tonk-prose") {
-            let _ = prose.set_attribute("class", "notebook-switcher__input");
-            let _ = prose.set_attribute("switcher", "");
-            let _ = prose.set_attribute("auto-focus", "");
-            // The marker is hidden at rest (a Typora-style editor reveals
-            // `# ` only under the caret), and an empty heading draws as an
-            // empty box - so without this the page says nothing about what
-            // it wants.
-            let _ = prose.set_attribute("placeholder", "Name a notebook to open or create it...");
-            let _ = prose.set_attribute("value", EMPTY);
-            // FIRST, not appended. `<tonk-display>` renders the rows into
-            // this element, and those come before anything appended after
-            // them — so an appended editor sits below a block of hidden
-            // rows that still occupy their wrapper's height.
-            let first = this.first_child();
-            let _ = this.insert_before(&prose, first.as_ref());
-            prose_node = Some(prose.clone().into());
-        }
         if let Ok(panel) = document.create_element("div") {
             let _ = panel.set_attribute("class", "notebook-switcher__panel");
             let _ = panel.set_attribute("hidden", "");
-            // Right after the editor, above the rows.
-            let after = prose_node.and_then(|node| node.next_sibling());
+            // After the draft editor, above the rows it matches against.
+            let after = this
+                .query_selector("tonk-notebook")
+                .ok()
+                .flatten()
+                .and_then(|el| el.next_sibling());
             let _ = this.insert_before(&panel, after.as_ref());
         }
     }
@@ -275,8 +253,16 @@ impl CustomElement for TonkNotebookIndexElement {
             else {
                 return;
             };
+            // The draft's whole document rides along: its body is content
+            // the author typed, and a create that carried only the title
+            // would throw away everything written under the heading.
+            let document = js_sys::Reflect::get(&event.detail(), &"document".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
             let detail = js_sys::Object::new();
             let _ = js_sys::Reflect::set(&detail, &"created-title".into(), &title.into());
+            let _ = js_sys::Reflect::set(&detail, &"created-body".into(), &document.into());
             let init = web_sys::CustomEventInit::new();
             init.set_detail(&detail);
             init.set_bubbles(true);
@@ -303,19 +289,5 @@ impl CustomElement for TonkNotebookIndexElement {
         on_mutate.forget();
 
         Self::publish(&host);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-
-    use super::*;
-
-    /// The starting document parks the caret in a heading.
-    #[dialog_common::test]
-    fn it_starts_with_an_empty_heading() {
-        assert_eq!(EMPTY, "# ");
     }
 }

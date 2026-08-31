@@ -311,7 +311,12 @@ class TonkProseElement extends HTMLElement {
         ? {
             candidates: () => this.candidates,
             onOpen: (candidate) => this.#emit("switch", candidate),
-            onCreate: (title) => this.#emit("create", { title }),
+            // The whole document, not just the title: a draft's body is
+            // real content the author typed, and the notebook that gets
+            // created has to carry it or naming the document throws away
+            // everything written under the heading.
+            onCreate: (title) =>
+              this.#emit("create", { title, document: this.value }),
             onSuggest: (rows, active) => this.#emit("suggest", { rows, active }),
           }
         : undefined,

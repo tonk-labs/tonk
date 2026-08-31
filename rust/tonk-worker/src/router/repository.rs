@@ -1824,6 +1824,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
         Box::pin(async move {
             let Some(command) = decoded else { return };
             let title = command.title.0;
+            let body = command.body.0;
             // The repository the command fired in. Read from the origin
             // rather than carried on the command: the notebook belongs to
             // the space whose page the author was on, and a command that
@@ -1835,7 +1836,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
             }
             log!("command CreateNotebook title={title} repo={repo}");
 
-            match create_notebook_inner(&env, &repo, &title).await {
+            match create_notebook_inner(&env, &repo, &title, &body).await {
                 Ok(entity) => {
                     // Drop the author into the notebook they just named.
                     let href = format!("/space/{repo}/notebook/{entity}");
@@ -1858,6 +1859,7 @@ async fn create_notebook_inner(
     env: &crate::router::CommandEnv,
     repo: &str,
     title: &str,
+    body: &str,
 ) -> Result<String, RepositoryError> {
     let tonk = env.state().read().await;
     // The title is data, and goes in as a quoted scalar so a colon or a
@@ -1893,14 +1895,74 @@ async fn create_notebook_inner(
         .await
         .map_err(|e| RepositoryError::Internal(format!("notebook lookup failed: {e}")))?;
 
-    found
+    let entity = found
         .matches_after
         .first()
         .and_then(|block| block.results.first())
         .map(|result| result.this.clone())
         .ok_or_else(|| {
             RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
-        })
+        })?;
+
+    // Carry the draft's body over.
+    //
+    // Everything under the heading is content the author already typed, so
+    // the notebook they land in has to open with it — otherwise naming a
+    // draft silently discards the writing that prompted the name.
+    let blocks = draft_blocks(body);
+    if !blocks.is_empty() {
+        let mut document = String::new();
+        // Written back to front and chained forward by `next`, the shape
+        // the library's position rules expect (see `insert_notation`):
+        // a variable must be bound by an earlier assertion than the one
+        // naming it.
+        for (index, source) in blocks.iter().enumerate().rev() {
+            document.push_str("block/insert!:\n");
+            document.push_str(&format!("  this: ?b{index}\n"));
+            document.push_str(&format!("  notebook: {entity}\n"));
+            document.push_str(&format!("  source: {}\n", yaml_block_scalar(source)));
+            if index + 1 < blocks.len() {
+                document.push_str(&format!("  next: ?b{}\n", index + 1));
+            } else {
+                document.push_str("  next: case:none\n");
+            }
+            document.push_str("  prev: tonk:notebook/edge\n\n");
+        }
+        super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("draft body failed: {e}")))?;
+    }
+
+    Ok(entity)
+}
+
+/// The draft's blocks, minus the heading.
+///
+/// The heading became the notebook's title, so carrying it as a block too
+/// would open the new notebook with its name written twice. Blocks are
+/// separated by a blank line, which is what prosemirror-markdown emits
+/// between top-level blocks.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn draft_blocks(body: &str) -> Vec<String> {
+    body.split("\n\n")
+        .map(str::trim)
+        .filter(|chunk| !chunk.is_empty())
+        .skip_while(|chunk| chunk.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A source as a YAML block scalar, so markdown with newlines, colons and
+/// backticks survives without escaping.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn yaml_block_scalar(source: &str) -> String {
+    let mut out = String::from("|-\n");
+    for line in source.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
 }
 
 /// Post-commit handler for the [`RemoveSpace`] command.
@@ -5932,7 +5994,7 @@ block/insert!:
                 client: None,
             },
         );
-        let entity = super::create_notebook_inner(&env, repo, "Groceries")
+        let entity = super::create_notebook_inner(&env, repo, "Groceries", "")
             .await
             .expect("the create writes a notebook");
         assert!(!entity.is_empty(), "and reports the entity to navigate to");
@@ -5976,7 +6038,7 @@ block/insert!:
             },
         );
         let awkward = r#"Notes: "on" quoting"#;
-        super::create_notebook_inner(&env, repo, awkward)
+        super::create_notebook_inner(&env, repo, awkward, "")
             .await
             .expect("an awkward title still writes");
 
@@ -5993,6 +6055,59 @@ block/insert!:
         assert!(
             titled.contains(&awkward),
             "the title survives verbatim: {named:#?}"
+        );
+    }
+
+    /// Naming a draft keeps what was already written under the heading.
+    ///
+    /// The body is the reason the index is a real notebook rather than a
+    /// search box: the author types into it before the notebook exists,
+    /// and naming it must not throw that away.
+    #[dialog_common::test]
+    async fn it_carries_a_drafts_body_into_the_notebook() {
+        let (_app, state, key) = fresh_repo("test-notebook-draft-body").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(
+            &env,
+            repo,
+            "Groceries",
+            "# Groceries\n\nmilk and eggs\n\n```dialog-yaml\nconcept:\n```",
+        )
+        .await
+        .expect("the draft creates a notebook");
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.contains(&"milk and eggs"),
+            "the body's prose carries over: {blocks:#?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.contains("dialog-yaml")),
+            "and so does a fence: {blocks:#?}"
+        );
+        assert!(
+            !sources.iter().any(|s| s.starts_with("# Groceries")),
+            "but the heading does NOT, it became the title: {blocks:#?}"
         );
     }
 
