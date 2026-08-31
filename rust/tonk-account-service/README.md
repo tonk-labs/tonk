@@ -65,7 +65,8 @@ permissive CORS headers).
   `credentialId`, `deviceDid`, `deviceName`, `delegation` (the hex-encoded
   `root → device` delegation), and `repositoryDescriptor`. The durable device
   grant must contain exactly one valid proof and be subject-open, command-open,
-  and unbounded (no not-before or expiration).
+  policy-free (no predicate policy), and unbounded (no not-before or
+  expiration).
   A new account returns `201`; an exact retry of an already-committed creation
   returns `200`. Both return `{ "accountId": number, "descriptorHex": string,
   "createFingerprint": string, "reused": boolean }`, with `reused: false` for
@@ -75,7 +76,7 @@ permissive CORS headers).
   response. Body: a device-signed UCAN invocation container with command
   `["account", "setup", "status"]`, argument `createFingerprint`, subject and
   audience equal to the account root, and exactly one valid, subject-open,
-  command-open, unbounded `root → device` proof. Returns one of
+  command-open, policy-free, unbounded `root → device` proof. Returns one of
   `{ "status": "absent" }`, `{ "status": "accepted", "accountId": number,
   "descriptorHex": string, "createFingerprint": string }`, or
   `{ "status": "mismatch" }`. The verified invocation root is the only root

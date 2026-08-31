@@ -559,6 +559,109 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_never_persists_a_policy_scoped_grant_setup_status_would_reject() {
+        use std::collections::BTreeMap;
+        use std::str::FromStr as _;
+        use std::sync::Arc;
+
+        use dialog_ucan_core::delegation::policy::predicate::Predicate;
+        use dialog_ucan_core::delegation::policy::selector::select::Select;
+        use dialog_ucan_core::promise::Promised;
+        use dialog_ucan_core::subject::Subject;
+        use dialog_ucan_core::time::timestamp::Timestamp;
+        use dialog_ucan_core::{
+            DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain,
+        };
+        use dialog_varsig::Principal as _;
+
+        let root = dialog_credentials::Ed25519Signer::import(&ROOT_PRF)
+            .await
+            .unwrap();
+        let device = dialog_credentials::Ed25519Signer::import(&DEVICE_SEED)
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let device_did = device.did();
+        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
+            &root,
+            "https://accounts.example/ucan/",
+        )
+        .await
+        .unwrap();
+        let policy_scoped = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(root))
+            .audience(&device_did)
+            .subject(Subject::Any)
+            .command(vec![])
+            .policy(vec![Predicate::Like(
+                Select::from_str(".createFingerprint").unwrap(),
+                "impossible".into(),
+            )])
+            .try_build()
+            .await
+            .unwrap();
+
+        let proof_cid = policy_scoped.to_cid();
+        let setup_invocation = InvocationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(device))
+            .audience(&root_did)
+            .subject(&root_did)
+            .command(vec!["account".into(), "setup".into(), "status".into()])
+            .arguments(BTreeMap::from([(
+                "createFingerprint".into(),
+                Promised::String("ab".repeat(32)),
+            )]))
+            .proofs(vec![proof_cid])
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        let setup_container = InvocationChain::new(
+            setup_invocation,
+            [(proof_cid, Arc::new(policy_scoped.clone()))]
+                .into_iter()
+                .collect(),
+        )
+        .to_bytes()
+        .unwrap();
+        assert!(matches!(
+            crate::auth::authorize_setup_device(
+                &setup_container,
+                &["account", "setup", "status"]
+            )
+            .await,
+            Err(CeremonyError::Unauthorized(message)) if message.contains("policy")
+        ));
+
+        let store = SqliteStore::in_memory().unwrap();
+        let request = CreateAccount {
+            email: "policy-scoped@example.com".into(),
+            root_did: root_did.to_string(),
+            credential_id: "credential-policy-scoped".into(),
+            device_did: device_did.to_string(),
+            device_name: "laptop".into(),
+            delegation_hex: hex::encode(DelegationChain::new(policy_scoped).to_bytes().unwrap()),
+            repository_descriptor_hex: hex::encode(descriptor.bytes()),
+            passkey: None,
+        };
+        let result = create_account(&store, &request, 1).await;
+        let Err(CeremonyError::Invalid(message)) = result else {
+            panic!("policy-scoped first-device grant was accepted: {result:?}");
+        };
+        assert!(
+            message.contains("policy predicates"),
+            "wrong refusal: {message}"
+        );
+        assert!(
+            store
+                .account_by_root(root_did.as_ref())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[dialog_common::test]
     async fn it_reuses_only_an_exact_account_creation() {
         let store = SqliteStore::in_memory().unwrap();
         let (root_did, device_did, delegation_hex, repository_descriptor_hex) = fixture().await;

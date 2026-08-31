@@ -21,6 +21,8 @@ pub(crate) enum DeviceGrantError {
     SubjectScoped,
     /// The proof narrowed the commands available to the device.
     CommandScoped,
+    /// The proof conditioned the device grant on invocation arguments.
+    PolicyScoped,
     /// The durable device grant carried a not-before or expiration bound.
     TimeBounded,
     /// The proof signature did not verify under its issuer.
@@ -56,6 +58,9 @@ pub(crate) async fn validate_root_device_grant(
     if !proof.command().0.is_empty() {
         return Err(DeviceGrantError::CommandScoped);
     }
+    if !proof.policy().is_empty() {
+        return Err(DeviceGrantError::PolicyScoped);
+    }
     if proof.not_before().is_some() || proof.expiration().is_some() {
         return Err(DeviceGrantError::TimeBounded);
     }
@@ -73,6 +78,9 @@ fn creation_error(error: DeviceGrantError) -> CeremonyError {
         DeviceGrantError::WrongAudience => "delegation audience does not match the device",
         DeviceGrantError::SubjectScoped => "root to device delegation must be subject-open",
         DeviceGrantError::CommandScoped => "root to device delegation must be command-open",
+        DeviceGrantError::PolicyScoped => {
+            "root to device delegation must not contain policy predicates"
+        }
         DeviceGrantError::TimeBounded => "root to device delegation must be unbounded",
         DeviceGrantError::InvalidSignature(detail) => {
             return CeremonyError::Unauthorized(format!("bad delegation signature: {detail}"));
@@ -84,9 +92,9 @@ fn creation_error(error: DeviceGrantError) -> CeremonyError {
 /// Parse and check a hex-encoded `root → device` delegation chain.
 ///
 /// Requires exactly one proof, issued by `root_did` to `device_did`, with a
-/// valid signature and the subject-open, command-open, unbounded shape of a
-/// durable device grant. Returns the delegation's CID, stringified — the key
-/// `devices.delegation_cid` is stored under.
+/// valid signature and the subject-open, command-open, policy-free, unbounded
+/// shape of a durable device grant. Returns the delegation's CID, stringified
+/// — the key `devices.delegation_cid` is stored under.
 pub async fn check_device_delegation(
     delegation_hex: &str,
     root_did: &str,

@@ -10,7 +10,7 @@
 - The shared `tonk-account::creation` input and algorithm are the single source of truth for provider and client fingerprints. Its wire form is exactly 64 lowercase hexadecimal characters; its version-1 test vector is pinned.
 - The random attachment ID and server-selected account/device creation time are excluded from equality and the fingerprint.
 - Every non-exact conflict retains the current conflict classification and must not expose SQLite/D1 driver text.
-- Account creation, device registration, and setup status share one canonical stable-grant validator: exactly one valid `root -> device` proof, expected issuer/audience, subject-open, command-open, and no not-before or expiration.
+- Account creation, device registration, and setup status share one canonical stable-grant validator: exactly one valid `root -> device` proof, expected issuer/audience, subject-open, command-open, policy-free (an empty predicate list), and no not-before or expiration.
 - Setup status additionally requires the invocation audience to equal its root subject. It may query only that subject root, never a caller-supplied email or root.
 - Missing/deleted accounts, missing or inactive first devices, and nonmatching device DIDs or delegation CIDs are deliberately indistinguishable as `Absent`; only the exact active first-device proof may receive `Accepted` or `Mismatch`.
 - Do not add a database migration or new dependency. If the live schema cannot support the contract, stop before changing it.
@@ -74,6 +74,11 @@
 - [x] RED/GREEN: reject a setup invocation whose audience differs from its root subject.
 - [x] Re-run both affected packages, warning-denied all-target clippy, rustfmt/diff checks, and the account-service-only Cloudflare build; all pass before the follow-up commit.
 
+### Second independent review follow-up
+
+- [x] RED/GREEN: reject a non-empty predicate policy at the shared durable-grant boundary, so account creation/device registration cannot persist a grant that setup-status chain verification will later refuse after a lost response.
+- [x] Re-run both affected packages, warning-denied all-target clippy, rustfmt/diff checks, and the account-service-only Cloudflare build before the third commit; 35 unit plus 1 integration `tonk-account` tests, 53 unit plus 9 native HTTP account-service tests, both Clippy gates, and `/nix/store/4wdc713zip5rxyjg05cwsi7bwc8blsam-tonk-account-service-0.6.9` all pass.
+
 ### Task 3: Keep Cloudflare and native HTTP contracts identical
 
 **Files:**
@@ -104,9 +109,9 @@
 
 - [x] Update the README with exact request commands, response status codes/fields, proof requirements, and the no-account-existence-leak boundary.
 - [x] Run `cargo fmt --all -- --check` and `git diff --check`; both pass after rustfmt's mechanical layout changes.
-- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (52 unit plus 9 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
+- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (53 unit plus 9 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
 - [x] Run all-target warning-denied clippy for both `tonk-account` and `tonk-account-service --features helpers`; both pass.
-- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final follow-up source passes at `/nix/store/xhi7wq04sghi5mcg23xnynbwfghjypna-tonk-account-service-0.6.9` without building `tonk-ui`.
+- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final follow-up source passes at `/nix/store/4wdc713zip5rxyjg05cwsi7bwc8blsam-tonk-account-service-0.6.9` without building `tonk-ui`.
 - [x] Re-read the final diff against every mismatch and privacy requirement, update this plan with fresh green evidence, and confirm no migration, lock-file change, UI source, or unrelated work entered the branch. That review found and fixed one malformed stored-delegation acceptance gap before commit.
 
 ## Focused TDD evidence
@@ -120,4 +125,5 @@
 - Stable-grant review RED/GREEN: `it_rejects_first_device_grants_that_cannot_survive_response_loss` first accepted and inserted a command-scoped grant (0 passed / 1 failed / 49 filtered), then passed unchanged (1 / 1) after creation, device registration, and setup auth shared the exact-one-proof, valid-signature, issuer/audience, subject-open, command-open, unbounded validator. The same test covers expiring and not-before grants.
 - Status-privacy review RED/GREEN: `it_hides_every_nonmatching_first_device_state_as_absent` first returned `Mismatch` for a missing first device (0 passed / 1 failed / 50 filtered), then passed unchanged (1 / 1) after missing/inactive/wrong-device/wrong-CID states collapsed to `Absent`.
 - Audience review RED/GREEN: `it_rejects_setup_invocations_for_an_unrelated_audience` failed before the binding existed (0 passed / 1 failed / 51 filtered), then passed unchanged (1 / 1) once invocation audience had to equal root subject.
+- Predicate-policy review RED/GREEN: `it_never_persists_a_policy_scoped_grant_setup_status_would_reject` first proved setup authentication refused an impossible `createFingerprint` predicate while account creation still accepted and inserted that grant (0 passed / 1 failed / 52 filtered), then passed unchanged (1 / 1) after the shared validator required an empty predicate list and returned an actionable `PolicyScoped` error.
 - The first native HTTP attempt in the restricted sandbox failed to bind loopback with `PermissionDenied` before behavior; every unchanged HTTP filter passed with loopback permission.

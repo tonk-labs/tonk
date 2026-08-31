@@ -192,11 +192,11 @@ pub async fn authorize_root(
 /// Verify a narrowly scoped setup request through a root-to-device proof,
 /// without consulting account storage.
 ///
-/// This requires the same one-hop, subject-open, command-open, unbounded
-/// delegation Tonk persists for a device, and binds the invocation audience to
-/// its root subject. The verified invocation subject is the only root a caller
-/// can subsequently look up, so this helper cannot become an arbitrary root or
-/// email existence oracle.
+/// This requires the same one-hop, subject-open, command-open, policy-free,
+/// unbounded delegation Tonk persists for a device, and binds the invocation
+/// audience to its root subject. The verified invocation subject is the only
+/// root a caller can subsequently look up, so this helper cannot become an
+/// arbitrary root or email existence oracle.
 pub async fn authorize_setup_device(
     body: &[u8],
     expected_command: &[&str],
@@ -250,6 +250,9 @@ fn setup_grant_error(error: DeviceGrantError) -> CeremonyError {
         }
         DeviceGrantError::CommandScoped => {
             CeremonyError::Forbidden("setup proof must be command-open".to_string())
+        }
+        DeviceGrantError::PolicyScoped => {
+            CeremonyError::Forbidden("setup proof must not contain policy predicates".to_string())
         }
         DeviceGrantError::TimeBounded => {
             CeremonyError::Forbidden("setup proof must be unbounded".to_string())
