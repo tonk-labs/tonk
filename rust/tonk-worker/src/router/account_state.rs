@@ -882,7 +882,7 @@ async fn read_passkeys(
             })?;
         passkeys.extend(rows);
     }
-    passkeys.sort_by(|a, b| b.seconds().cmp(&a.seconds()));
+    passkeys.sort_by_key(|passkey| std::cmp::Reverse(passkey.seconds()));
     Ok(passkeys)
 }
 
@@ -1925,7 +1925,7 @@ mod tests {
             .did();
         super::super::customer::record_custody_cell(
             &state,
-            &custody.to_string(),
+            custody.as_ref(),
             &hex::encode([9u8; 16]),
             Some(tonk_worker_api::PasskeyMetadata {
                 created_at: 1_754_380_800,
@@ -1951,7 +1951,7 @@ mod tests {
             .did();
         super::super::customer::record_custody_cell(
             &state,
-            &other.to_string(),
+            other.as_ref(),
             &hex::encode([8u8; 16]),
             Some(tonk_worker_api::PasskeyMetadata {
                 created_at: 1_754_380_900,
