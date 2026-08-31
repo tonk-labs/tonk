@@ -218,12 +218,15 @@ fn set_default_notice(host: &Element) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    // Name the model so the viewer knows exactly which one lacks a view.
+    // Name the model AND the facet, so nested defaults read as what
+    // they are: a directory that found no `directory` view, holding
+    // cards that found no `ui` view — not the same message twice.
     let model = host.get_attribute("model").unwrap_or_default();
-    let text = if model.is_empty() {
-        "No view for this model; showing the default.".to_owned()
-    } else {
-        format!("No view for {model}; showing the default.")
+    let facet = host.get_attribute("data-view-facet").unwrap_or_default();
+    let text = match (model.is_empty(), facet.is_empty()) {
+        (true, _) => "No view for this model; showing the default.".to_owned(),
+        (false, true) => format!("No view for {model}; showing the default."),
+        (false, false) => format!("No `{facet}` view for {model}; showing the default."),
     };
     let label = document.create_text_node(&text);
     let _ = callout.append_child(&label);

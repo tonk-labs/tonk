@@ -996,6 +996,18 @@ async fn start_downstream(
         // default fallback.
         s.view_facet = view.clone();
         s.model_entity = Some(model_entity.clone());
+        // Advertise the effective facet so the default-view notice can
+        // say WHICH view was not found — a directory's default and its
+        // cards' defaults otherwise read as the same message twice.
+        let facet = view.clone().unwrap_or_else(|| {
+            if directory {
+                DIRECTORY_FACET
+            } else {
+                DETAIL_FACET
+            }
+            .to_owned()
+        });
+        let _ = host.set_attribute("data-view-facet", &facet);
         // Context handed to a `<tonk-portal>` if a view frame routes
         // here in portal mode: the subject's model entity (the
         // bridge's `context.model`) and its descriptor (so the bridge
@@ -3784,6 +3796,16 @@ mod tests {
                 Some("default-view"),
                 "rendering through the `_:_` fallback reports `default-view`",
             );
+            let notice = display
+                .query_selector("wa-callout[variant=warning]")
+                .unwrap()
+                .expect("the default notice renders")
+                .text_content()
+                .unwrap_or_default();
+            assert!(
+                notice.contains("`ui` view"),
+                "the notice names the facet that was not found: {notice}",
+            );
         }
 
         // The model subscription re-pushes on EVERY branch revision,
@@ -3997,6 +4019,16 @@ mod tests {
                 display.get_attribute("data-state").as_deref(),
                 Some("default-view"),
                 "rendering through the fallback dictionary reports default-view",
+            );
+            let notice = display
+                .query_selector("wa-callout[variant=warning]")
+                .unwrap()
+                .expect("the default notice renders")
+                .text_content()
+                .unwrap_or_default();
+            assert!(
+                notice.contains("`directory` view"),
+                "the directory default names its facet: {notice}",
             );
             // The default slide is stamped with the WILDCARD owner, not the
             // model — a per-instance card of the same model inside it must
