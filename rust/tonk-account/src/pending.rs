@@ -103,8 +103,20 @@ impl PendingQueue {
     /// already present without allowing later entries to overtake earlier
     /// ones. Callers serialize the queue once after this returns.
     pub fn push_all(&mut self, work: impl IntoIterator<Item = PendingWork>) {
-        for entry in work {
-            self.push(entry);
+        let batch = work.into_iter().collect::<Vec<_>>();
+        for (index, entry) in batch.iter().cloned().enumerate() {
+            if self.0.contains(&entry) {
+                continue;
+            }
+            let insert_at = batch[index + 1..]
+                .iter()
+                .filter_map(|later| self.0.iter().position(|queued| queued == later))
+                .min();
+            if let Some(insert_at) = insert_at {
+                self.0.insert(insert_at, entry);
+            } else {
+                self.0.push(entry);
+            }
         }
     }
 

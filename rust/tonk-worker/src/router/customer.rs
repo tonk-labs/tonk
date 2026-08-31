@@ -689,8 +689,10 @@ pub(crate) enum CustomerRecordProjection {
 
 #[derive(Clone)]
 pub(crate) struct AccountCustomerProjection {
+    pub(crate) customer: String,
     pub(crate) status: String,
     pub(crate) email: String,
+    pub(crate) provider: Option<String>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -744,12 +746,15 @@ impl CustomerProjectionPort for WorkerCustomerProjectionPort<'_> {
     async fn load_account_customer(
         &self,
     ) -> Result<Option<AccountCustomerProjection>, TonkWorkerError> {
-        Ok(load_account_customer(self.0)
-            .await?
-            .map(|record| AccountCustomerProjection {
+        Ok(load_account_customer(self.0).await?.map(|record| {
+            let provider = record.provider().map(str::to_owned);
+            AccountCustomerProjection {
+                customer: record.this.to_string(),
                 status: record.status.0,
                 email: record.email.0,
-            }))
+                provider,
+            }
+        }))
     }
 
     async fn save_customer_record(&self, record: &CustomerRecord) -> Result<(), TonkWorkerError> {
@@ -779,6 +784,30 @@ pub(crate) async fn persist_customer_projections(
         .await
 }
 
+fn valid_account_customer_projection(
+    projected: &AccountCustomerProjection,
+    expected_root: &str,
+    expected_email: &str,
+) -> bool {
+    if projected.customer != expected_root
+        || projected.email != expected_email
+        || CustomerStatus::parse(&projected.status).is_err()
+    {
+        return false;
+    }
+    projected.provider.as_deref().is_none_or(|provider| {
+        Url::parse(provider).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && !url.cannot_be_a_base()
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+    })
+}
+
 pub(crate) async fn observe_customer_projections(
     port: &impl CustomerProjectionPort,
     expected_root: &str,
@@ -792,15 +821,14 @@ pub(crate) async fn observe_customer_projections(
         (CustomerRecordProjection::Present(local), Some(projected))
             if local.customer == expected_root
                 && local.email == expected_email
-                && projected.email == expected_email
-                && projected.status == local.status.as_str() =>
+                && valid_account_customer_projection(&projected, expected_root, expected_email) =>
         {
             Ok(CustomerObservation::Exact)
         }
         // One projection can survive a crash between the two writes. Replay
         // the idempotent enrollment so both become durable before advancing.
         (CustomerRecordProjection::Missing, Some(projected))
-            if projected.email == expected_email =>
+            if valid_account_customer_projection(&projected, expected_root, expected_email) =>
         {
             Ok(CustomerObservation::Missing)
         }
@@ -1649,6 +1677,27 @@ mod tests {
         assert!(
             entries == first_then_second || entries == second_then_first,
             "both ordered Provision+Publish pairs must survive either lock acquisition order"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn production_append_repairs_a_partially_drained_custody_batch() {
+        let batch = custody_batch("01");
+        let store = MemoryPendingQueueStore(Mutex::new(PendingQueue(vec![batch[1].clone()])));
+        let scope = PendingMutationScope::new(
+            b"did:key:zAccountProfile",
+            Arc::new(tokio::sync::Mutex::new(())),
+        );
+
+        append_to_pending_store(&scope, &store, batch.clone())
+            .await
+            .unwrap();
+
+        let queue = store.load_queue().await.unwrap();
+        assert_eq!(
+            queue.entries(),
+            batch.as_slice(),
+            "a checkpoint-loss retry must restore Provision ahead of the surviving Publish"
         );
     }
 

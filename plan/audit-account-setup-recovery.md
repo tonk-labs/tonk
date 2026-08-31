@@ -125,6 +125,67 @@ Focused second-review evidence:
   wasm32-unknown-unknown`: passed in 1m 08s.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
 
+## Final production-saga review remediation (2026-08-31)
+
+The final independent review concentrated on checkpoint-loss and inter-write
+states at the production queue, recovery, and customer-projection seams. Four
+remaining recovery gaps were closed without changing the public wire schema:
+
+- Retrying the full custody batch after a partial drain now restores any
+  missing prerequisite before a surviving later batch entry. In particular,
+  `[PublishCustody]` plus a replayed `[Provision, PublishCustody]` converges to
+  the exact original order rather than appending Provision behind Publish.
+- A queued publish refresh uses a private, bounded replacement intent. The
+  worker first saves the fresh exact artifact plus the exact prior invocation,
+  then performs the production named-lock queue replacement, and only then
+  clears the intent. Failure of the first write leaves the queue untouched;
+  failure of the queue or final recovery write leaves enough validated state
+  for reload to idempotently repair either the previous or already-current
+  queue entry. Intent metadata is excluded from the immutable recovery hash,
+  is never sent on the public wire, and carries no new secret material.
+- Customer enrollment observation now compares immutable customer identity,
+  email, recognized lifecycle statuses, and a syntactically safe HTTP(S)
+  provider address. Independently advanced valid statuses are accepted as the
+  same enrollment, including the normal local `Registered` plus profile-main
+  `Active` state after activation; wrong subjects, unknown statuses, and unsafe
+  provider values remain mismatches.
+- A re-resolved configuration hash that differs after staging now returns the
+  same redacted `UpdateRequired`/`Reload` response used by Begin, Stage, and
+  Acquire. The fence runs before reconciliation or replacement persistence, so
+  the protected recovery bundle and queued checkpoint remain byte-for-byte
+  unchanged instead of becoming a terminal recovery conflict.
+
+Focused final-review evidence:
+
+- RED: the production partial-drain test observed `[PublishCustody, Provision]`
+  instead of the original `[Provision, PublishCustody]`; it now passes through
+  the production append wrapper.
+- RED: injected recovery-save failure previously advanced the pending queue;
+  injected queue replacement failure previously left the fresh recovery
+  receipt unable to reconcile on reload. Both exact crash-window tests now
+  converge while retaining the original receipt time and exact invocation
+  bytes.
+- RED: local `Registered` plus profile-main `Active` entered a terminal
+  mismatch, while a wrong projected customer was incorrectly classified
+  `Exact`; the production projection tests now advance the valid state and
+  reject invalid identity/provider data.
+- The configuration-drift test first exposed an invalid test clock as
+  `InProgressElsewhere`; after correcting that precondition it passes through
+  the production Continue fence and proves checkpoint and recovery bytes are
+  unchanged. The original conflict path was established by the review trace
+  from failed recovery validation to `persist_conflict`.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib
+  router::account_setup::tests -- --nocapture`: 37 passed, 93 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker --lib
+  router::customer::tests -- --nocapture`: 3 passed, 127 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-account pending::tests --
+  --nocapture`: 4 passed, 36 filtered.
+- `CARGO_INCREMENTAL=0 cargo clippy -p tonk-worker --all-targets -- -D
+  warnings`: passed after boxing the large repair-result variant identified by
+  the first lint run.
+- `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target
+  wasm32-unknown-unknown`: passed.
+
 **Constraints:**
 
 - Do not persist or log an account secret, PRF result, passkey-derived KEK, root private key, owner token, or attempt token. A recovery record may contain the already passkey-sealed envelope and narrowly scoped signed artifacts already held by the pending-custody queue.
@@ -238,6 +299,8 @@ optional replacement create invocation plus immutable receipt reference,
 account-signed customer deposits, custody DID and consent,
 passkey-sealed envelope, bounded publish invocation,
 optional replacement publish invocation plus immutable receipt reference,
+optional private pending-publish replacement source retained only across the
+two durable replacement writes,
 recovery_manifest_hex
 ```
 
