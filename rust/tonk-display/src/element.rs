@@ -1964,29 +1964,38 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
                     .and_then(|t| t.as_str())
                     .unwrap_or(field)
                     .to_owned();
-                // The typed probe missed. An UNTYPED re-probe tells a
-                // mistyped fact (present under another value type — a
-                // raw write with a different spelling) from a truly
-                // absent one.
-                let mut loose = spec.clone();
-                let declared = loose
-                    .as_object_mut()
-                    .and_then(|spec| spec.remove("as"))
-                    .and_then(|declared| declared.as_str().map(type_spelling));
-                let refound = match declared {
-                    Some(_) => probe_field(host, &entity, field, &loose).await,
-                    // No declared type: the loose probe is the same
-                    // probe; nothing new to learn.
-                    None => None,
-                };
-                match (refound, declared) {
-                    (Some(value), Some(declared)) => {
+                // The typed probe missed. Re-probing under the OTHER
+                // value types tells a mistyped fact (present under a
+                // different spelling) from a truly absent one — and
+                // pins which type actually holds it, so the value can
+                // be shown in ITS spelling (`+33`, not a bare `33`
+                // that would read as the very type it is not).
+                let declared_wire = spec.get("as").and_then(|t| t.as_str());
+                let mut found: Option<(String, &str)> = None;
+                if let Some(declared_wire) = declared_wire {
+                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                        if candidate == declared_wire {
+                            continue;
+                        }
+                        let mut probe = spec.clone();
+                        if let Some(probe) = probe.as_object_mut() {
+                            probe.insert("as".into(), serde_json::json!(candidate));
+                        }
+                        if let Some(value) = probe_field(host, &entity, field, &probe).await {
+                            found = Some((spell_value(&value, candidate), candidate));
+                            break;
+                        }
+                    }
+                }
+                match (found, declared_wire) {
+                    (Some((spelled, actual)), Some(declared_wire)) => {
                         let message = format!(
-                            "Attribute {uri} holds this value with a different value \
-                             type than the declared {declared} — e.g. bare digits are \
-                             unsigned, +N signed, N.0 float"
+                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                             concept reads it as {declared}",
+                            actual = type_spelling(actual),
+                            declared = type_spelling(declared_wire),
                         );
-                        mistyped.push((field.clone(), value, message));
+                        mistyped.push((field.clone(), spelled, message));
                     }
                     _ => missing.push((field.clone(), uri)),
                 }
@@ -2027,6 +2036,18 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
         Ipld::Float(f) => Some(format!("{f:?}")),
         Ipld::Bool(b) => Some(b.to_string()),
         _ => None,
+    }
+}
+
+/// Spell a probed value the way its type is written in notation:
+/// signed integers carry an explicit sign, floats their decimal
+/// point, text its quotes.
+fn spell_value(value: &str, wire_type: &str) -> String {
+    match wire_type {
+        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
+        "Float" if !value.contains('.') => format!("{value}.0"),
+        "Text" => format!("{value:?}"),
+        _ => value.to_owned(),
     }
 }
 
@@ -4142,7 +4163,7 @@ mod tests {
                     rows(&[]),
                     // TYPED probe of `count`: no unsigned value
                     rows(&[]),
-                    // UNTYPED re-probe: the fact exists, other type
+                    // SignedInteger re-probe: the fact lives there
                     rows(&[("id:demo-counter", &[("count", "41")])]),
                 ],
                 Some(model_concept_frame()),
@@ -4162,15 +4183,15 @@ mod tests {
                 .await
                 .expect("the mismatch diagnosis renders");
             for _ in 0..200 {
-                if (query.text_content().unwrap_or_default()).contains("41") {
+                if (query.text_content().unwrap_or_default()).contains("+41") {
                     break;
                 }
                 sleep(5).await;
             }
             let text = query.text_content().unwrap_or_default();
             assert!(
-                text.contains("count") && text.contains("41"),
-                "the stored value shows instead of a blank: {text}"
+                text.contains("count") && text.contains("+41"),
+                "the stored value shows in ITS spelling, not a blank: {text}"
             );
             let notation = display
                 .query_selector("[data-error-2]")
@@ -4178,8 +4199,19 @@ mod tests {
                 .expect("the mistyped line carries its story");
             let message = notation.get_attribute("data-error-2").unwrap_or_default();
             assert!(
-                message.contains("different value type"),
-                "the squiggle explains the divergence: {message}"
+                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                "the squiggle names both types: {message}"
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("the callout renders");
+            assert!(
+                callout
+                    .text_content()
+                    .unwrap_or_default()
+                    .contains("value type differs"),
+                "the headline stops claiming the attribute is missing",
             );
         }
 

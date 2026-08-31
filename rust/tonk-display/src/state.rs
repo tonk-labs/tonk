@@ -470,7 +470,14 @@ pub fn set_no_entity_diagnostic(
             let _ = icon.set_attribute("name", "circle-info");
             let _ = callout.append_child(&icon);
         }
-        let label = document.create_text_node("Concept mismatch: required attribute missing");
+        // Say what is actually wrong: "missing" over a value that is
+        // right there (just differently typed) sends the author
+        // hunting the wrong problem.
+        let label = document.create_text_node(if missing.is_empty() && !mistyped.is_empty() {
+            "Concept mismatch: attribute value type differs"
+        } else {
+            "Concept mismatch: required attribute missing"
+        });
         let _ = callout.append_child(&label);
         let _ = host.append_child(&callout);
     }
