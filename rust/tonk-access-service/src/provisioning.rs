@@ -76,17 +76,23 @@ pub async fn screen<S: Store>(
     // One query, not three. This runs before every presign, and read in
     // three separate steps it could see a customer that activates
     // between the first and the last.
-    let subject = store.servability(subject).await?;
+    //
+    // The DID keeps its own name: every refusal below names it, because
+    // "the subject is not provisioned" alone leaves a caller with no way
+    // to tell WHICH subject a failing request was about — and these
+    // arrive in logs where the request that produced them is long gone.
+    let did = subject;
+    let subject = store.servability(did).await?;
 
     // An account is both a customer and its own consumer, so its own
     // registration answers without consulting the consumer half.
     if let Some(status) = subject.own {
-        return Ok(servable(status, "the subject's own registration"));
+        return Ok(servable(status, &format!("{did}'s own registration")));
     }
     if !subject.consumer {
         return Ok(Err(denial(
             Recourse::None,
-            "the subject is not provisioned",
+            &format!("{did} is not provisioned"),
         )));
     }
     // A purge in flight refuses first: the objects may already be
@@ -95,13 +101,16 @@ pub async fn screen<S: Store>(
     if subject.deleted_at.is_some() {
         return Ok(Err(denial(
             Recourse::None,
-            "the subscription is being deleted",
+            &format!("the subscription for {did} is being deleted"),
         )));
     }
     // Archived data is gone by definition; the row survives only so what
     // it accrued can still be billed.
     if subject.archived_at.is_some() {
-        return Ok(Err(denial(Recourse::None, "the subscription is archived")));
+        return Ok(Err(denial(
+            Recourse::None,
+            &format!("the subscription for {did} is archived"),
+        )));
     }
     // A suspension with a deadline lifts itself: past that moment the
     // row still carries the reason, and it no longer applies. Retryable
@@ -112,13 +121,19 @@ pub async fn screen<S: Store>(
             Some(_) => {
                 return Ok(Err(denial(
                     Recourse::Retry,
-                    &format!("the subscription is suspended: {}", suspension.message),
+                    &format!(
+                        "the subscription for {did} is suspended: {}",
+                        suspension.message
+                    ),
                 )));
             }
             None => {
                 return Ok(Err(denial(
                     Recourse::None,
-                    &format!("the subscription is suspended: {}", suspension.message),
+                    &format!(
+                        "the subscription for {did} is suspended: {}",
+                        suspension.message
+                    ),
                 )));
             }
         }
@@ -129,10 +144,13 @@ pub async fn screen<S: Store>(
         .expires_at
         .is_some_and(|expires_at| expires_at <= now)
     {
-        return Ok(Err(denial(Recourse::None, "the subscription has expired")));
+        return Ok(Err(denial(
+            Recourse::None,
+            &format!("the subscription for {did} has expired"),
+        )));
     }
     match subject.provider {
-        Some(status) => Ok(servable(status, "the provider's registration")),
+        Some(status) => Ok(servable(status, &format!("the provider of {did}"))),
         // A subscription always names a provider, so this is that
         // customer having gone missing. Unreachable under SQLite, which
         // enforces the foreign key and refuses to delete a customer any
@@ -141,7 +159,7 @@ pub async fn screen<S: Store>(
         // Untested for the same reason: the fixture will not build it.
         None => Ok(Err(denial(
             Recourse::None,
-            "the provider is not a customer",
+            &format!("the provider of {did} is not a customer"),
         ))),
     }
 }

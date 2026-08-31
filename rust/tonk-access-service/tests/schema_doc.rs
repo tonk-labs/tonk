@@ -10,24 +10,56 @@
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
 use std::collections::BTreeMap;
-use std::path::Path;
+
+/// Every migration, in application order, embedded at compile time.
+///
+/// `include_str!` rather than reading the directory: CI runs this suite from
+/// a `cargo nextest archive`, which bundles the compiled test binaries but
+/// not arbitrary data files, so a runtime `read_dir` finds nothing and the
+/// test fails there while passing locally. Embedding makes each migration a
+/// build input that travels inside the archive.
+///
+/// Listed by hand for the same reason — the archive has no directory to
+/// enumerate. A new migration must be added here, and `it_applies_every_
+/// migration_on_disk` fails until it is.
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_control.sql",
+        include_str!("../migrations/0001_control.sql"),
+    ),
+    (
+        "0002_deletion.sql",
+        include_str!("../migrations/0002_deletion.sql"),
+    ),
+    (
+        "0003_deprovision.sql",
+        include_str!("../migrations/0003_deprovision.sql"),
+    ),
+    (
+        "0004_consumer_kind.sql",
+        include_str!("../migrations/0004_consumer_kind.sql"),
+    ),
+    (
+        "0005_customer_email.sql",
+        include_str!("../migrations/0005_customer_email.sql"),
+    ),
+    (
+        "0006_subscription_expiry.sql",
+        include_str!("../migrations/0006_subscription_expiry.sql"),
+    ),
+    (
+        "0007_activation_resend.sql",
+        include_str!("../migrations/0007_activation_resend.sql"),
+    ),
+];
 
 /// The schema every migration adds up to, as `table -> columns`.
 fn schema() -> BTreeMap<String, Vec<String>> {
     let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut migrations: Vec<_> = std::fs::read_dir(&directory)
-        .expect("migrations directory")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
-    // Numeric prefixes, so lexical order is application order.
-    migrations.sort();
-    for migration in &migrations {
-        let sql = std::fs::read_to_string(migration).expect("migration is readable");
+    for (name, sql) in MIGRATIONS {
         connection
-            .execute_batch(&sql)
-            .unwrap_or_else(|error| panic!("{} failed: {error}", migration.display()));
+            .execute_batch(sql)
+            .unwrap_or_else(|error| panic!("{name} failed: {error}"));
     }
 
     let mut tables = BTreeMap::new();
@@ -58,11 +90,23 @@ fn schema() -> BTreeMap<String, Vec<String>> {
 /// Entities the diagram draws without a table — `account` is a
 /// relationship the schema does not store — carry no column block, so
 /// they simply do not appear here.
-fn diagrammed() -> BTreeMap<String, Vec<String>> {
-    let document = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/access-control-schema.md"),
-    )
-    .expect("the schema document is readable");
+fn diagrammed() -> Option<BTreeMap<String, Vec<String>>> {
+    // Read at runtime, unlike the migrations above: `docs/` is outside the
+    // nix source filter (`nix/rust.nix` includes only `rust/`), so
+    // `include_str!` cannot reach it from a sandboxed build. The archive CI
+    // runs from carries no docs either, so this test simply does not run
+    // there — which is why the migrations, whose absence made the test panic
+    // rather than skip, are the half that had to be embedded.
+    let document = match std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/access-control-schema.md"),
+    ) {
+        Ok(document) => document,
+        // No document to compare against, so there is nothing to check. An
+        // empty diagram would fail as "draws no tables", which reads as
+        // drift rather than as the absent source tree it is.
+        Err(_) => return None,
+    };
     let block = document
         .split("```mermaid\nerDiagram\n")
         .nth(1)
@@ -86,13 +130,15 @@ fn diagrammed() -> BTreeMap<String, Vec<String>> {
             }
         }
     }
-    tables
+    Some(tables)
 }
 
 #[test]
 fn it_draws_every_table_the_migrations_create() {
     let schema = schema();
-    let drawn = diagrammed();
+    let Some(drawn) = diagrammed() else {
+        return; // No source tree: see `diagrammed`.
+    };
 
     let missing: Vec<_> = schema.keys().filter(|t| !drawn.contains_key(*t)).collect();
     assert!(
@@ -110,7 +156,9 @@ fn it_draws_every_table_the_migrations_create() {
 #[test]
 fn it_draws_every_column_and_invents_none() {
     let schema = schema();
-    let drawn = diagrammed();
+    let Some(drawn) = diagrammed() else {
+        return; // No source tree: see `diagrammed`.
+    };
 
     for (table, columns) in &schema {
         let Some(shown) = drawn.get(table) else {
@@ -128,4 +176,39 @@ fn it_draws_every_column_and_invents_none() {
             "the diagram gives `{table}` {invented:?}, which no migration creates"
         );
     }
+}
+
+/// The embedded list covers every migration on disk.
+///
+/// `MIGRATIONS` is hand-written because the archive has no directory to
+/// enumerate, so nothing but this test notices when a new migration is added
+/// and not listed — the schema would then be checked against a document
+/// describing a database the service does not have.
+///
+/// Reads the directory deliberately: this assertion is only meaningful where
+/// the source tree exists, and it is skipped rather than failed where it does
+/// not, which is exactly the archive case the embedding exists for.
+#[test]
+fn it_applies_every_migration_on_disk() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        // Running from an archive: no source tree, nothing to compare.
+        return;
+    };
+    let mut on_disk: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".sql"))
+        .collect();
+    on_disk.sort();
+
+    let listed: Vec<String> = MIGRATIONS
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        listed, on_disk,
+        "MIGRATIONS is out of step with rust/tonk-access-service/migrations; \
+         add the new file to the list in this test"
+    );
 }
