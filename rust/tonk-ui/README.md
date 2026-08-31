@@ -84,6 +84,16 @@ this update protocol therefore remain on their compatible existing controller
 until navigation; an update-aware page opts into the new controller only when
 it can perform the guarded alignment reload.
 
+An explicit readiness rejection is not treated as a silent boot stall. Before
+returning with the application root unmounted, the UI terminalizes the static
+boot shell with “Tonk couldn’t start. Check your connection, then reload. Your
+local data is safe.” Terminalization cancels automatic watchdog recovery,
+clears its per-tab retry counter, and never reloads, deletes CacheStorage, or
+unregisters a worker. The first terminal message wins so a more specific cause
+can retain its own recovery guidance; after correcting the cause, the person
+chooses when to reload. The watchdog ladder remains available for boots that
+stop making progress without producing an explicit error.
+
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. There is one rollout boundary: a shell cached before this
 bootstrap ships cannot run code it does not contain. Its existing worker can

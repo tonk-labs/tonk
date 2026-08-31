@@ -12,8 +12,8 @@
 - A first-ever install still waits for control and continues in the same document. Only replacement of a controller that existed at the beginning of this load causes the alignment reload.
 - A warm replacement reloads at most once per boot sequence, guarded by `sessionStorage` key `tonk:sw-upgrade-reload`. A stable load clears the guard. The reload happens before `mount_root()` creates `#tonk-root`, so neither UI chrome nor `/api/*` activity from the stale document becomes visible.
 - Keep the existing inline `#tonk-boot` overlay visible throughout update detection and controller replacement. An `updatefound` transition changes only its status text to `updating…`; no new modal, toast, or app-level loading view is introduced.
-- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure, loss of the existing controller, and an incoming worker that never reaches either replacement or `redundant` remain real boot failures handled by the existing bounded boot watchdog.
-- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of normal upgrade handling. The existing last-resort boot watchdog remains unchanged.
+- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure and loss of the existing controller are explicit boot failures: the strict gate leaves the root unmounted and terminalizes the boot shell without automatic reload or cleanup. An incoming worker that stops progressing without producing an error remains a silent stall handled by the bounded boot watchdog.
+- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of normal upgrade handling. The last-resort boot watchdog remains available for silent stalls; known readiness errors stop it through the terminal hook above.
 - Keep offline navigation cache-first. The new worker's install already refreshes the `/` shell cache, so the one post-replacement reload aligns the new controller with the fresh shell without changing fetch policy.
 - The first rollout has an unavoidable bootstrap boundary: a document cached before this change does not contain the explicit update call. Its current worker will stale-refresh `/` in the background, and the next ordinary navigation will run the new bootstrap. Document this one-time extra revisit; no new artifact can retroactively execute inside an already-cached old document. Once the new bootstrap is cached, later deployments update on the first warm load.
 - Add no Cargo, JavaScript, or Nix dependency, and do not change a lock file.
@@ -57,7 +57,7 @@
 - On `replaced`, set `sessionStorage["tonk:sw-upgrade-reload"] = "1"`, call `location.reload()`, and leave `serviceWorkerActivates` pending so no old-document mount or `/api/*` boot continues. The next document sees both the marker and its already-replaced controller, removes the marker, skips exactly that load's redundant network update check, sends connectivity, and resolves. This makes the guard a deterministic one-shot alignment handoff rather than a counter: even if another deployment lands during the few milliseconds between documents, it waits for the next user-initiated load instead of causing an automatic reload chain.
 - On `unchanged` or `failed`, retain the prior active controller, clear a stale reload guard, send connectivity, and resolve. `failed` also emits a diagnostic warning naming the incoming worker state; it does not unregister or clear storage. Every outcome removes the temporary registration, controller, and worker-state listeners before returning or reloading.
 - `tonk_host::ready` produces `#[cfg(target_arch = "wasm32")] pub async fn require() -> Result<(), wasm_bindgen::JsValue>`. Missing browser globals retain the current embed/test-harness no-op behavior, but rejection of an actual `serviceWorkerActivates()` promise is returned and does not set `SW_READY`. Existing `pub async fn wait()` calls `require()`, deliberately discards its result for backward compatibility, and preserves every current IO call site.
-- `ui::main` completes custom-element and host-hook registration plus the existing debug-only hot-swap injection, calls `tonk_host::ready::require().await`, and invokes `mount_root()` only on `Ok(())`. On `Err`, it reports the JavaScript value to the console and returns with `#tonk-boot` still present; the existing watchdog can then perform its bounded recovery. The gate belongs immediately before `mount_root()`, so no connected callback or app root can race the update while dev reload behavior remains unchanged.
+- `ui::main` completes custom-element and host-hook registration plus the existing debug-only hot-swap injection, calls `tonk_host::ready::require().await`, and invokes `mount_root()` only on `Ok(())`. On `Err`, it reports the JavaScript value to the console, asks `#tonk-boot` to enter its idempotent terminal state, and returns. Terminalization cancels the automatic watchdog ladder, clears its retry counter, preserves the first cause-specific message, and never reloads or removes caches/registrations. The gate belongs immediately before `mount_root()`, so no connected callback or app root can race the update while dev reload behavior remains unchanged.
 
 - [ ] Extend `tonk-ui-test-server` with the optional service-worker root and a Caddy `handle /service_worker.js` before the catch-all handler. Extend `TestEnvironment` / `TestServers::start` with the unique mutable script path. Run `cargo check -p tonk-ui --features integration-tests`; expect success and no behavior change yet.
 - [ ] Add `#[cfg(test)] mod service_worker_upgrade;` to `src/lib.rs`, with the new file internally gated to native `integration-tests` / `web-integration-tests`, matching `account_flow.rs`.
@@ -191,3 +191,32 @@ Fresh evidence after the final source changes:
   verification items, 6 triage findings), and 173/173 local Storybook links.
 - Not run: the full serialized browser suite and the two-build old-page/new-page
   ordering matrix; CI remains the broader integration boundary.
+
+## Explicit readiness terminal follow-up — 2026-08-31
+
+Cross-stack review found that the strict #800 gate returned unmounted on an
+explicit readiness rejection while the inherited boot watchdog remained live.
+After one earlier watchdog retry, the next quiet interval could therefore
+delete every origin CacheStorage entry and unregister every service-worker
+registration even though the failure was already known and actionable.
+
+- TDD RED: `node --test rust/tonk-ui/tests/boot-terminal.test.mjs` ran one test
+  and failed with two cache deletions, one reload, one unregistration,
+  `tonk:boot-retries=2`, “recovering…”, and no terminal hook.
+- First GREEN: the same command passed 1/1 after explicit readiness failure
+  terminalized the shell, cleared the retry counter, and blocked all late
+  automatic effects.
+- Second TDD RED: the focused command ran two tests; the generic later catch
+  overwrote an earlier withdrawal message while all destructive effects stayed
+  blocked.
+- Second GREEN: the same command passed 2/2 after terminalization became
+  idempotent and first-message-wins.
+- GREEN: `node --test rust/tonk-ui/tests/*.test.mjs` passed 5/5, covering both
+  terminal cases and all three activation/claim source contracts.
+- GREEN: `cargo fmt --all -- --check`, both Node syntax checks,
+  `nixfmt --check flake.nix`, and `git diff --check` passed.
+- GREEN: Storybook regenerated and passed `build.py --check` with 26 screens,
+  78 journeys, 115 verification items, and 6 triage findings; all 173 local
+  links passed.
+- Not run locally: Cargo/browser builds under shared-target disk pressure;
+  fresh CI remains the compiled and whole-browser boundary.

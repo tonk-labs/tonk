@@ -150,6 +150,14 @@ boundary: activation does not claim an older page, an explicit cold-start claim
 does take control, and an update-aware page claims its activated successor
 before exactly one guarded reload.
 
+An explicit readiness rejection is a terminal boot result, not an unobserved
+stall. Before returning without an application root, the UI asks the static
+shell to show “Tonk couldn’t start. Check your connection, then reload. Your
+local data is safe.” The first terminal result wins, clears the watchdog's
+per-tab retry counter, and disables later automatic recovery. It does not
+reload, delete CacheStorage, or unregister workers. Silent boots that stop
+making progress without an error retain the bounded watchdog ladder.
+
 ### Remain in flight
 
 Boot progress, configuration fetch, service-worker control, Wasm/custom-element
@@ -266,8 +274,9 @@ avoid recording credential/passkey inputs.
   coverage before treating `/activate` as stable.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
-- Define the visible boot error/retry contract for stale service-worker assets
-  and deployment misconfiguration.
+- Run explicit readiness rejection and silent-stall recovery in a real browser;
+  the source-level watchdog regression proves the former cannot fall through
+  into automatic cache deletion or worker unregistration.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
 - Verify the inspector against a configured upstream in a real browser,

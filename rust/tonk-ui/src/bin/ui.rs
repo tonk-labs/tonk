@@ -17,7 +17,11 @@ fn canonical_account_url(path: &str, search: &str) -> Option<String> {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{JsCast, prelude::*};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const READINESS_FAILURE_MESSAGE: &str =
+    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
@@ -71,9 +75,39 @@ async fn main() {
 
     if let Err(error) = tonk_host::ready::require().await {
         web_sys::console::error_1(&error);
+        show_readiness_failure();
         return;
     }
     mount_root();
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_readiness_failure() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if let Ok(hook) = js_sys::Reflect::get(&window, &JsValue::from_str("tonkBootTerminal"))
+        && let Ok(hook) = hook.dyn_into::<js_sys::Function>()
+        && hook
+            .call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(READINESS_FAILURE_MESSAGE),
+            )
+            .is_ok()
+    {
+        return;
+    }
+
+    // Test harnesses and embeds may omit the boot-watchdog hook. Preserve the
+    // same visible safe-state and next-action copy there.
+    let Some(status) = window
+        .document()
+        .and_then(|document| document.query_selector("[data-boot-status]").ok().flatten())
+    else {
+        return;
+    };
+    let _ = status.set_attribute("data-failed", "");
+    status.set_text_content(Some(READINESS_FAILURE_MESSAGE));
 }
 
 /// Mount the top-document shell. Account routes bypass sealed guests because

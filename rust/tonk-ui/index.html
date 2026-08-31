@@ -537,13 +537,17 @@
          actually wedged on; then give up honestly and leave the shell's
          failure line for the person. A detected wasm load failure
          (boot-progress.mjs onFailure) jumps straight onto the ladder via
-         tonkBootRecover instead of waiting out the stall window. -->
+         tonkBootRecover instead of waiting out the stall window. A known
+         readiness rejection instead enters an idempotent terminal state:
+         it cancels this automatic ladder, clears its retry counter, and
+         leaves a safe-state/next-action message for a deliberate reload. -->
         <script>
             (() => {
                 if (!("serviceWorker" in navigator)) return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();
+                let terminal = false;
                 self.tonkBootLife = () => {
                     lastLife = Date.now();
                 };
@@ -581,6 +585,7 @@
                 };
 
                 const recover = (why) => {
+                    if (terminal) return;
                     clearInterval(timer);
                     const n = attempts();
                     if (n >= 2) {
@@ -623,6 +628,20 @@
                     ]).then(reload, reload);
                 };
                 self.tonkBootRecover = recover;
+                self.tonkBootTerminal = (message) => {
+                    if (terminal) return;
+                    terminal = true;
+                    clearInterval(timer);
+                    try {
+                        sessionStorage.removeItem(RETRIES);
+                    } catch {}
+                    const status =
+                        document.querySelector("[data-boot-status]");
+                    if (status) {
+                        status.setAttribute("data-failed", "");
+                        status.textContent = message;
+                    }
+                };
 
                 const timer = setInterval(() => {
                     if (booted()) {
