@@ -755,10 +755,11 @@ pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkU
     }
 }
 
-/// Queue a custody cell that could not be published yet, so it is
-/// republished once provisioning and email activation let it through.
+/// Record the complete custody handoff. The worker queues provisioning before
+/// any deferred publish in one durable write, then drains both in order.
 pub async fn queue_custody_publish(
     custody: &str,
+    consent_hex: &str,
     sealed_hex: &str,
     invocation_hex: &str,
 ) -> Result<(), TonkUiError> {
@@ -767,6 +768,7 @@ pub async fn queue_custody_publish(
         .post(format!("{}/api/custody/queue", origin()))
         .json(&serde_json::json!({
             "custody": custody,
+            "consentHex": consent_hex,
             "sealedHex": sealed_hex,
             "invocationHex": invocation_hex,
         }))

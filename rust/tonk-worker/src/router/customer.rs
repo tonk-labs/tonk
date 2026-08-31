@@ -349,6 +349,15 @@ pub struct ProvisionCustodyRequest {
     pub consent_hex: String,
 }
 
+fn decode_custody_consent(
+    consent_hex: &str,
+) -> Result<dialog_ucan_core::DelegationChain, TonkWorkerError> {
+    let bytes = hex::decode(consent_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
+    dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))
+}
+
 /// POST `/api/custody/provision` → provision a custody space under
 /// this profile's account. The page runs the enrollment ceremony and
 /// hands the consent here; the call is idempotent, and retryable — the
@@ -363,10 +372,7 @@ pub async fn provision_custody(
         .custody
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid custody DID: {error:?}")))?;
-    let bytes = hex::decode(&request.consent_hex)
-        .map_err(|error| TonkWorkerError::Router(format!("consent is not hex: {error}")))?;
-    let consent = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
-        .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))?;
+    let consent = decode_custody_consent(&request.consent_hex)?;
     provision_or_defer(&state, &custody, &consent, Some("custody")).await?;
     Ok(Json(()))
 }
@@ -378,11 +384,34 @@ pub async fn provision_custody(
 pub struct QueueCustodyRequest {
     /// The custody space whose cell is waiting.
     pub custody: String,
+    /// Consent for provisioning this custody space. Optional only so a page
+    /// loaded before this worker version can finish its already-started flow.
+    #[serde(default)]
+    pub consent_hex: Option<String>,
     /// Hex-encoded sealed envelope to publish.
     pub sealed_hex: String,
     /// Hex-encoded pre-signed publish invocation, minted by the
     /// ceremony that sealed the envelope.
     pub invocation_hex: String,
+}
+
+fn custody_pending_batch(request: &QueueCustodyRequest) -> Vec<PendingWork> {
+    let mut work = Vec::with_capacity(2);
+    if let Some(consent_hex) = &request.consent_hex {
+        work.push(PendingWork::Provision {
+            consumer: request.custody.clone(),
+            consent_hex: consent_hex.clone(),
+            consumer_kind: Some("custody".to_owned()),
+        });
+    }
+    if !request.invocation_hex.is_empty() {
+        work.push(PendingWork::PublishCustody {
+            custody: request.custody.clone(),
+            sealed_hex: request.sealed_hex.clone(),
+            invocation_hex: request.invocation_hex.clone(),
+        });
+    }
+    work
 }
 
 /// POST `/api/custody/queue` → record a custody cell for publication
@@ -397,26 +426,21 @@ pub async fn queue_custody(
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
     let state = state.read().await;
+    if let Some(consent_hex) = &request.consent_hex {
+        // Reject malformed recovery material before it can poison the durable
+        // queue. The access service still verifies its authority on replay.
+        decode_custody_consent(consent_hex)?;
+    }
     // No passkey facts on this path: the queue route carries a cell that
     // could not be published, not a ceremony's creation metadata. The
     // ceremony records its own row where it has both.
     record_custody_cell(&state, &request.custody, &request.sealed_hex, None, "").await?;
-    // An empty invocation means the ceremony already published the cell
-    // (a passkey enrolled on an active account): the record above is
-    // all that was left to do.
-    if !request.invocation_hex.is_empty() {
-        defer(
-            &state,
-            PendingWork::PublishCustody {
-                custody: request.custody,
-                sealed_hex: request.sealed_hex,
-                invocation_hex: request.invocation_hex,
-            },
-        )
-        .await?;
-        // Nothing may be waiting on activation at all: a provisioning
-        // deposit queued just ahead of this can land right away.
-        drain_pending(&state).await;
+    let work = custody_pending_batch(&request);
+    if !work.is_empty() {
+        // Provision and publish are one durable ordered batch. Replaying this
+        // request also restores a missing provision ahead of a surviving
+        // publish from an interrupted earlier attempt.
+        defer_all(&state, work).await?;
     }
     Ok(Json(()))
 }
@@ -1011,11 +1035,36 @@ pub(crate) async fn defer(
     state: &crate::worker::TonkState,
     work: PendingWork,
 ) -> Result<(), TonkWorkerError> {
+    defer_all(state, vec![work]).await
+}
+
+async fn defer_all(
+    state: &crate::worker::TonkState,
+    work: Vec<PendingWork>,
+) -> Result<(), TonkWorkerError> {
     let mut queue = load_pending(state).await?;
-    queue.push(work);
+    queue.push_all(work);
     save_pending(state, &queue).await?;
     drain_pending(state).await;
     Ok(())
+}
+
+/// The next independently removable prefix. A custody provision immediately
+/// followed by its publish stays one replay unit: if publishing fails after
+/// provisioning succeeds, retaining both preserves the consent needed to try
+/// the complete handoff again.
+fn pending_replay_batch(work: &[PendingWork], start: usize) -> &[PendingWork] {
+    let Some(first) = work.get(start) else {
+        return &work[work.len()..];
+    };
+    let width = match (first, work.get(start + 1)) {
+        (
+            PendingWork::Provision { consumer, .. },
+            Some(PendingWork::PublishCustody { custody, .. }),
+        ) if consumer == custody => 2,
+        _ => 1,
+    };
+    &work[start..start + width]
 }
 
 /// Replay queued work in the order it was recorded, stopping at the
@@ -1036,14 +1085,15 @@ pub(crate) async fn drain_pending(state: &crate::worker::TonkState) {
     }
 
     let mut completed = 0;
-    for work in queue.entries() {
-        match run_pending(state, work).await {
-            Ok(()) => completed += 1,
-            Err(error) => {
+    'queue: while completed < queue.len() {
+        let batch = pending_replay_batch(queue.entries(), completed);
+        for work in batch {
+            if let Err(error) = run_pending(state, work).await {
                 log!("pending work for {} still waiting: {error}", work.subject());
-                break;
+                break 'queue;
             }
         }
+        completed += batch.len();
     }
     if completed == 0 {
         return;
@@ -1075,13 +1125,8 @@ async fn run_pending(
             let consumer: dialog_varsig::Did = consumer.parse().map_err(|error| {
                 TonkWorkerError::Router(format!("queued consumer DID is invalid: {error:?}"))
             })?;
-            let bytes = hex::decode(consent_hex).map_err(|error| {
-                TonkWorkerError::Router(format!("queued consent is not hex: {error}"))
-            })?;
-            let consent =
-                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
-                    TonkWorkerError::Router(format!("queued consent does not decode: {error}"))
-                })?;
+            let consent = decode_custody_consent(consent_hex)
+                .map_err(|error| TonkWorkerError::Router(format!("queued custody {error}")))?;
             provision_consumer(state, &consumer, &consent, consumer_kind.as_deref()).await
         }
         PendingWork::PublishCustody {
@@ -1262,5 +1307,71 @@ mod tests {
         assert!(!is_retryable(&TonkWorkerError::Internal(
             "consent does not encode".to_string()
         )));
+    }
+
+    #[test]
+    fn custody_queue_carries_an_ordered_repair_batch_and_accepts_legacy_requests() {
+        let request = QueueCustodyRequest {
+            custody: "did:key:zCustody".to_owned(),
+            consent_hex: Some("aa".to_owned()),
+            sealed_hex: "bb".to_owned(),
+            invocation_hex: "c0de".to_owned(),
+        };
+        assert_eq!(
+            custody_pending_batch(&request),
+            vec![
+                PendingWork::Provision {
+                    consumer: "did:key:zCustody".to_owned(),
+                    consent_hex: "aa".to_owned(),
+                    consumer_kind: Some("custody".to_owned()),
+                },
+                PendingWork::PublishCustody {
+                    custody: "did:key:zCustody".to_owned(),
+                    sealed_hex: "bb".to_owned(),
+                    invocation_hex: "c0de".to_owned(),
+                },
+            ]
+        );
+
+        let legacy: QueueCustodyRequest = serde_json::from_value(serde_json::json!({
+            "custody": "did:key:zCustody",
+            "sealedHex": "bb",
+            "invocationHex": "c0de"
+        }))
+        .unwrap();
+        assert_eq!(
+            custody_pending_batch(&legacy),
+            vec![PendingWork::PublishCustody {
+                custody: "did:key:zCustody".to_owned(),
+                sealed_hex: "bb".to_owned(),
+                invocation_hex: "c0de".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn custody_replay_keeps_a_matching_provision_and_publish_in_one_batch() {
+        let matching = QueueCustodyRequest {
+            custody: "did:key:zCustody".to_owned(),
+            consent_hex: Some("aa".to_owned()),
+            sealed_hex: "bb".to_owned(),
+            invocation_hex: "c0de".to_owned(),
+        };
+        let matching = custody_pending_batch(&matching);
+        assert_eq!(pending_replay_batch(&matching, 0), matching.as_slice());
+
+        let unrelated = vec![
+            PendingWork::Provision {
+                consumer: "did:key:zOne".to_owned(),
+                consent_hex: "aa".to_owned(),
+                consumer_kind: Some("custody".to_owned()),
+            },
+            PendingWork::PublishCustody {
+                custody: "did:key:zTwo".to_owned(),
+                sealed_hex: "bb".to_owned(),
+                invocation_hex: "c0de".to_owned(),
+            },
+        ];
+        assert_eq!(pending_replay_batch(&unrelated, 0), &unrelated[..1]);
     }
 }
