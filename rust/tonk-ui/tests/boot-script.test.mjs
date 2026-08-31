@@ -228,4 +228,55 @@ describe("boot script contract with the worker", () => {
       );
     }
   });
+
+  test("a withdrawn build terminalizes and unregisters only this page's worker", () => {
+    const registering = moduleBlockContaining("await isRevoked()");
+    const code = registering
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+
+    assert.match(
+      code,
+      /navigator\.serviceWorker\.getRegistration\(\)/,
+      "the page kill switch should target only its own registration",
+    );
+    assert.doesNotMatch(
+      code,
+      /navigator\.serviceWorker\.getRegistrations\(\)/,
+      "withdrawal must not unregister unrelated service-worker scopes",
+    );
+    assert.match(
+      code,
+      /presentBootFailure\(WITHDRAWN_BOOT_FAILURE\)/,
+      "the withdrawal copy must win before the readiness gate's generic fallback",
+    );
+  });
+
+  test("activation failures terminalize with safe actionable copy", () => {
+    const registering = moduleBlockContaining("serviceWorkerActivation.catch");
+    const updatePrompt = moduleBlockContaining(
+      "await self.serviceWorkerActivates()",
+    );
+
+    assert.match(
+      registering,
+      /presentBootFailure\(\s*\/module\|type\/i\.test\(detail\)\s*\?\s*OLD_BROWSER_BOOT_FAILURE\s*:\s*GENERIC_BOOT_FAILURE\s*,?\s*\)/,
+      "the eager activation owner should terminalize with specific old-browser or generic safe copy",
+    );
+    assert.match(
+      registering,
+      /Your local data is safe\./,
+      "generic activation failure copy should describe the local-data safety boundary",
+    );
+    assert.match(
+      registering,
+      /Safari 16\.4\+/,
+      "module-worker failures should retain the supported-browser next action",
+    );
+    assert.doesNotMatch(
+      updatePrompt,
+      /Tonk could not start:/,
+      "the later update-prompt module must not surface raw exception text",
+    );
+  });
 });

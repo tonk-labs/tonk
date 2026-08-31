@@ -156,7 +156,11 @@ shell to show “Tonk couldn’t start. Check your connection, then reload. Your
 local data is safe.” The first terminal result wins, clears the watchdog's
 per-tab retry counter, and disables later automatic recovery. It does not
 reload, delete CacheStorage, or unregister workers. Silent boots that stop
-making progress without an error retain the bounded watchdog ladder.
+making progress without an error receive at most one plain automatic reload;
+a second silent stall terminalizes with the same safe-state guidance and leaves
+every cache and registration intact. The explicit deployment-withdrawal kill
+switch is separate: it retains its specific withdrawal guidance and unregisters
+only the current page's registration, never every scope on the origin.
 
 ### Remain in flight
 
@@ -275,8 +279,9 @@ avoid recording credential/passkey inputs.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
 - Run explicit readiness rejection and silent-stall recovery in a real browser;
-  the source-level watchdog regression proves the former cannot fall through
-  into automatic cache deletion or worker unregistration.
+  the source-level watchdog regressions prove the former terminalizes
+  immediately and a second silent stall cannot delete any cache or unregister
+  any worker.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
 - Verify the inspector against a configured upstream in a real browser,

@@ -257,6 +257,24 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
+            const WITHDRAWN_BOOT_FAILURE =
+                "This Tonk version was withdrawn. Reload to try the current version.";
+            const OLD_BROWSER_BOOT_FAILURE =
+                "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.";
+            const GENERIC_BOOT_FAILURE =
+                "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+            const presentBootFailure = (message) => {
+                if (typeof self.tonkBootTerminal === "function") {
+                    self.tonkBootTerminal(message);
+                    return;
+                }
+                const status = document.querySelector("[data-boot-status]");
+                if (status) {
+                    status.setAttribute("data-failed", "");
+                    status.textContent = message;
+                }
+            };
+
             // Whether the currently deployed build has been revoked. Ambiguous
             // answers fail open: a network problem must not discard a healthy
             // worker.
@@ -288,16 +306,10 @@
                 }
 
                 if (await isRevoked()) {
-                    for (const registration of
-                        await navigator.serviceWorker.getRegistrations()) {
-                        await registration.unregister().catch(() => {});
-                    }
-                    const status =
-                        document.querySelector("[data-boot-status]");
-                    if (status) {
-                        status.textContent =
-                            "This Tonk version was withdrawn. Reload to try the current version.";
-                    }
+                    const registration =
+                        await navigator.serviceWorker.getRegistration();
+                    await registration?.unregister().catch(() => {});
+                    presentBootFailure(WITHDRAWN_BOOT_FAILURE);
                     throw new Error("This Tonk build has been revoked");
                 }
 
@@ -503,9 +515,16 @@
             // Observe rejection immediately so the eager promise cannot create
             // a transient `unhandledrejection` before Rust reaches its strict
             // await. The original promise remains rejected for that await.
-            serviceWorkerActivation.catch((error) =>
-                console.error("service-worker activation failed", error),
-            );
+            serviceWorkerActivation.catch((error) => {
+                console.error("service-worker activation failed", error);
+                const detail = String(error?.message || error);
+                if (/revoked/i.test(detail)) return;
+                presentBootFailure(
+                    /module|type/i.test(detail)
+                        ? OLD_BROWSER_BOOT_FAILURE
+                        : GENERIC_BOOT_FAILURE,
+                );
+            });
             self.serviceWorkerActivates = () => serviceWorkerActivation;
 
             // Register a one-shot background sync under `tag` so a
@@ -563,16 +582,13 @@
          30 quiet seconds with the app unmounted or uncontrolled trigger
          recovery.
 
-         The recovery ladder is bounded per tab (sessionStorage): first a
-         plain reload; then a reload after clearing CacheStorage and
-         unregistering the workers — the two poison sources boots have
-         actually wedged on; then give up honestly and leave the shell's
-         failure line for the person. A detected wasm load failure
-         (boot-progress.mjs onFailure) jumps straight onto the ladder via
-         tonkBootRecover instead of waiting out the stall window. A known
-         readiness rejection instead enters an idempotent terminal state:
-         it cancels this automatic ladder, clears its retry counter, and
-         leaves a safe-state/next-action message for a deliberate reload. -->
+         Recovery is bounded per tab (sessionStorage): the first silent stall
+         gets one plain reload. A second stall gives up honestly and leaves the
+         shell's failure line for the person; automatic recovery never deletes
+         caches or unregisters workers. A detected wasm load failure
+         (boot-progress.mjs onFailure) enters the same path immediately instead
+         of waiting out the stall window. A known readiness rejection enters
+         the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
                 if (!("serviceWorker" in navigator)) return;
@@ -620,17 +636,13 @@
                     if (terminal) return;
                     clearInterval(timer);
                     const n = attempts();
-                    if (n >= 2) {
+                    if (n >= 1) {
                         console.error(
                             `boot: still stuck after ${n} recoveries (${why}); giving up`,
                         );
-                        const status =
-                            document.querySelector("[data-boot-status]");
-                        if (status) {
-                            status.setAttribute("data-failed", "");
-                            status.textContent =
-                                "failed to load — check your connection and reload";
-                        }
+                        self.tonkBootTerminal(
+                            "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+                        );
                         return;
                     }
                     try {
@@ -640,24 +652,7 @@
                     const status =
                         document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "recovering…";
-                    const reload = () => location.reload();
-                    if (n === 0) return reload();
-                    Promise.allSettled([
-                        caches
-                            .keys()
-                            .then((keys) =>
-                                Promise.all(
-                                    keys.map((key) => caches.delete(key)),
-                                ),
-                            ),
-                        navigator.serviceWorker
-                            .getRegistrations()
-                            .then((regs) =>
-                                Promise.all(
-                                    regs.map((reg) => reg.unregister()),
-                                ),
-                            ),
-                    ]).then(reload, reload);
+                    location.reload();
                 };
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (message) => {
@@ -872,17 +867,10 @@
                     throw new Error("Service worker registration disappeared");
                 }
             } catch (err) {
-                // A module service worker needs Safari 16.4+. On older Safari
-                // registration rejects; surface that boundary instead of
-                // leaving the static boot shell on an endless loading state.
+                // The eager activation owner has already terminalized the
+                // boot shell with a safe, actionable message. Keep this later
+                // consumer from overwriting that message with raw error text.
                 console.error("Service worker activation failed:", err);
-                const status = document.querySelector("[data-boot-status]");
-                if (status && !/revoked/i.test(String(err?.message || err))) {
-                    status.textContent =
-                        /module|type/i.test(String(err?.message || err))
-                            ? "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox."
-                            : "Tonk could not start: " + (err?.message || err);
-                }
                 throw err;
             }
 
