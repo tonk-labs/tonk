@@ -1945,18 +1945,20 @@ async fn create_notebook_inner(
     Ok(entity)
 }
 
-/// The draft's blocks, minus the heading.
+/// The draft's blocks, heading and all.
 ///
-/// The heading became the notebook's title, so carrying it as a block too
-/// would open the new notebook with its name written twice. Blocks are
-/// separated by a blank line, which is what prosemirror-markdown emits
-/// between top-level blocks.
+/// The heading is KEPT. It also becomes the notebook's title, but a title
+/// is metadata: a notebook's document IS its blocks projected, so dropping
+/// the heading opens the new notebook without the line the author just
+/// wrote — they typed `# Counter` and land on an empty page.
+///
+/// Blocks are separated by a blank line, which is what prosemirror-markdown
+/// emits between top-level blocks.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn draft_blocks(body: &str) -> Vec<String> {
     body.split("\n\n")
         .map(str::trim)
         .filter(|chunk| !chunk.is_empty())
-        .skip_while(|chunk| chunk.starts_with('#'))
         .map(str::to_owned)
         .collect()
 }
@@ -6115,8 +6117,9 @@ block/insert!:
             "and so does a fence: {blocks:#?}"
         );
         assert!(
-            !sources.iter().any(|s| s.starts_with("# Groceries")),
-            "but the heading does NOT, it became the title: {blocks:#?}"
+            sources.iter().any(|s| s.starts_with("# Groceries")),
+            "and so does the heading: it is the title AND the document's \
+             first line, so dropping it opens the notebook blank: {blocks:#?}"
         );
     }
 
