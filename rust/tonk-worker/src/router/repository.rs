@@ -1904,13 +1904,22 @@ async fn create_notebook_inner(
             RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
         })?;
 
-    // Carry the draft's body over.
+    // Carry the draft's body over, and always leave at least one block.
     //
     // Everything under the heading is content the author already typed, so
     // the notebook they land in has to open with it — otherwise naming a
     // draft silently discards the writing that prompted the name.
-    let blocks = draft_blocks(body);
-    if !blocks.is_empty() {
+    //
+    // A title-only create has no body at all, and a notebook with no block
+    // does not satisfy `tonk:notebook` (which requires one), so the page
+    // you land on reports a missing attribute instead of rendering. An
+    // empty first block is also just what a new document is: somewhere to
+    // start typing.
+    let mut blocks = draft_blocks(body);
+    if blocks.is_empty() {
+        blocks.push(String::new());
+    }
+    {
         let mut document = String::new();
         // Written back to front and chained forward by `next`, the shape
         // the library's position rules expect (see `insert_notation`):
@@ -6108,6 +6117,43 @@ block/insert!:
         assert!(
             !sources.iter().any(|s| s.starts_with("# Groceries")),
             "but the heading does NOT, it became the title: {blocks:#?}"
+        );
+    }
+
+    /// A title-only create still leaves a block.
+    ///
+    /// `tonk:notebook` requires one, so a blockless notebook renders as a
+    /// missing-attribute callout instead of a document — which is what the
+    /// author lands on right after naming it.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_with_a_block_from_a_bare_title() {
+        let (_app, state, key) = fresh_repo("test-notebook-bare-title").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        // What the switcher sends for a title with nothing typed under it.
+        let entity = super::create_notebook_inner(&env, repo, "Counter", "# Counter")
+            .await
+            .expect("a bare title creates a notebook");
+
+        let placed = count(
+            &state,
+            repo,
+            &format!("notebook:\n  this: {entity}\n  title: ?title\n  block: {{?key: ?block}}\n"),
+        )
+        .await;
+        assert!(
+            placed > 0,
+            "the notebook resolves as `tonk:notebook`, so the page renders"
         );
     }
 

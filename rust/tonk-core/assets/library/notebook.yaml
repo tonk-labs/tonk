@@ -383,6 +383,15 @@ command!: &notebook/create
         every rename would also create a notebook.
       the: dom.event.detail/created-title
       as: text
+    body:
+      description: |
+        The draft's whole document, so the notebook that gets created keeps
+        what was already written under the heading. Declared here as well as
+        in `CreateNotebook`: a field the struct requires but the command
+        does not declare is simply absent from the descriptor, so the decode
+        fails and the binding falls through in silence.
+      the: dom.event.detail/created-body
+      as: text
 
 # Rename a notebook from its document's own heading.
 #
