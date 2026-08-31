@@ -1771,6 +1771,7 @@ mod tests {
             sync_queue: Default::default(),
             commands: crate::router::command_registry(),
             clients: Default::default(),
+            account_setup_lock: Default::default(),
             account_keys: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),

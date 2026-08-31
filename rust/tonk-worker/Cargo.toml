@@ -80,6 +80,7 @@ web-sys = { workspace = true, features = [
     "Cache",
     "CacheStorage",
     "Client",
+    "ClientQueryOptions",
     "Clients",
     "CryptoKey",
     "ExtendableEvent",

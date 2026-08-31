@@ -18,9 +18,6 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 mod account;
 mod account_deletion;
-// This lower-stack module defines and tests the durable protocol before the
-// next PR wires effects and routes to it.
-#[allow(dead_code)]
 mod account_setup;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
@@ -179,6 +176,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
         .route("/api/account/delete", post(account_deletion::delete))
+        .route(
+            "/api/account/setup",
+            post(account_setup::handle).layer(DefaultBodyLimit::max(
+                account_setup::ACCOUNT_SETUP_BODY_LIMIT,
+            )),
+        )
         .route(
             "/api/account/spaces/delete",
             post(account_deletion::delete_space),
@@ -565,6 +568,7 @@ pub mod tests {
             sync_queue: Default::default(),
             commands: super::command_registry(),
             clients: Default::default(),
+            account_setup_lock: Default::default(),
             account_keys: Default::default(),
             registry,
         }

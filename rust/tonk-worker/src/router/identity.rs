@@ -47,6 +47,46 @@ pub(crate) struct LocalRoot {
     pub encryption_key: Option<dialog_varsig::Did>,
 }
 
+/// Exact observation used by the account-setup saga. A mismatch is distinct
+/// from absence so recovery never replaces authority that belongs to another
+/// ceremony.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalRootObservation {
+    Missing,
+    Exact,
+    Mismatch,
+}
+
+pub(crate) async fn observe_root(
+    state: &TonkState,
+    expected_root_did: &str,
+    expected: &SaveRootRequest,
+) -> Result<LocalRootObservation, TonkWorkerError> {
+    let actual = match local_root(state).await {
+        Ok(actual) => actual,
+        Err(TonkWorkerError::RootRequired) => return Ok(LocalRootObservation::Missing),
+        Err(error) => return Err(error),
+    };
+    let expected_encryption = expected
+        .encryption_key
+        .as_deref()
+        .map(parse_encryption_key)
+        .transpose()?;
+    let expected_delegation = hex::decode(&expected.delegation_hex)
+        .map_err(|error| TonkWorkerError::Router(format!("invalid delegation hex: {error}")))?;
+    let exact = actual.root_did.to_string() == expected_root_did
+        && actual.device_did == state.profile.did()
+        && actual.credential_id == expected.credential_id
+        && actual.bytes == expected_delegation
+        && actual.passkey == expected.passkey
+        && actual.encryption_key == expected_encryption;
+    Ok(if exact {
+        LocalRootObservation::Exact
+    } else {
+        LocalRootObservation::Mismatch
+    })
+}
+
 pub(crate) async fn validate_grant(
     bytes: Vec<u8>,
     device_did: &dialog_varsig::Did,

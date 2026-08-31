@@ -462,6 +462,39 @@ async fn record_custody_cell(
     Ok(())
 }
 
+/// Persist the complete first-custody handoff in recovery-safe order.
+///
+/// The local sealed cell is written first. The provision and publish entries
+/// are then appended to one queue value in that exact order and saved once,
+/// after which draining is best effort. Repeating the operation is safe:
+/// branch assertions are idempotent and [`PendingQueue::push_all`] suppresses
+/// exact duplicates without changing order.
+pub(crate) async fn persist_custody_setup(
+    state: &crate::worker::TonkState,
+    custody: &str,
+    consent_hex: &str,
+    sealed_hex: &str,
+    invocation_hex: &str,
+) -> Result<(), TonkWorkerError> {
+    record_custody_cell(state, custody, sealed_hex).await?;
+    let mut queue = load_pending(state).await?;
+    queue.push_all([
+        PendingWork::Provision {
+            consumer: custody.to_owned(),
+            consent_hex: consent_hex.to_owned(),
+            consumer_kind: Some("custody".to_owned()),
+        },
+        PendingWork::PublishCustody {
+            custody: custody.to_owned(),
+            sealed_hex: sealed_hex.to_owned(),
+            invocation_hex: invocation_hex.to_owned(),
+        },
+    ]);
+    save_pending(state, &queue).await?;
+    drain_pending(state).await;
+    Ok(())
+}
+
 /// Provision `consumer`, or queue it when the account has not yet
 /// confirmed its email.
 ///
@@ -630,6 +663,53 @@ async fn load_customer(
             Ok(None)
         }
     }
+}
+
+/// Exact local enrollment observation used before replaying an at-least-once
+/// enrollment effect. An unreadable record is a mismatch here, never absence:
+/// the recovery saga must not erase ambiguity by resubmitting authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CustomerObservation {
+    Missing,
+    Exact,
+    Mismatch,
+}
+
+pub(crate) async fn observe_customer(
+    state: &crate::worker::TonkState,
+    expected_root: &str,
+    expected_email: &str,
+) -> Result<CustomerObservation, TonkWorkerError> {
+    let bytes = match state
+        .profile
+        .credential()
+        .site(CUSTOMER_CREDENTIAL_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.operator)
+        .await
+    {
+        Ok(bytes) if bytes.is_empty() => return Ok(CustomerObservation::Missing),
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => {
+            return Ok(CustomerObservation::Missing);
+        }
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the customer record: {error}"
+            )));
+        }
+    };
+    let record: CustomerRecord = match serde_json::from_slice(&bytes) {
+        Ok(record) => record,
+        Err(_) => return Ok(CustomerObservation::Mismatch),
+    };
+    Ok(
+        if record.customer == expected_root && record.email == expected_email {
+            CustomerObservation::Exact
+        } else {
+            CustomerObservation::Mismatch
+        },
+    )
 }
 
 /// Whether a provider actually serves this account — the precondition

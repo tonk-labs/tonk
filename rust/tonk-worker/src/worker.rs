@@ -398,6 +398,10 @@ pub struct TonkState {
     /// whether we have observed it alive. The stale-client sweep reaps
     /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
     pub clients: crate::router::ClientRegistry,
+    /// Per-worker half of the account-setup serialization fence. Browser
+    /// production pairs it with a profile-scoped Web Lock; native tests use
+    /// this deterministic mutex directly.
+    pub account_setup_lock: Arc<tokio::sync::Mutex<()>>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -1743,6 +1747,7 @@ pub(crate) async fn boot_state(
         commands: crate::router::command_registry(),
         sync_queue: Default::default(),
         clients: Default::default(),
+        account_setup_lock: Default::default(),
         account_keys: Default::default(),
         registry,
     };

@@ -147,11 +147,23 @@ fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue
     Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
     Reflect::set(
         &result,
+        &"delegationCid".into(),
+        &ceremony.delegation_cid.into(),
+    )?;
+    Reflect::set(
+        &result,
         &"delegationHex".into(),
         &ceremony.delegation_hex.into(),
     )?;
     if let Some(descriptor_hex) = ceremony.descriptor_hex {
         Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
+    }
+    if let Some(create_fingerprint) = ceremony.create_fingerprint {
+        Reflect::set(
+            &result,
+            &"createFingerprint".into(),
+            &create_fingerprint.into(),
+        )?;
     }
     Reflect::set(
         &result,
@@ -214,6 +226,13 @@ async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
     )?;
     if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
         Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
+    }
+    if let Some(create_fingerprint) = ceremony.account.create_fingerprint {
+        Reflect::set(
+            &result,
+            &"createFingerprint".into(),
+            &create_fingerprint.into(),
+        )?;
     }
     set_deposits(&result, &ceremony.deposits_hex)?;
     Reflect::set(&result, &"custodyDid".into(), &ceremony.custody_did.into())?;

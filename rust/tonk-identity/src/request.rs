@@ -64,6 +64,34 @@ pub async fn build_device_invocation(
         .context("failed to serialize the device invocation")
 }
 
+/// Build the provider's proof-bound account-setup status query.
+///
+/// The query carries the exact stable root-to-device proof and the canonical
+/// provider fingerprint. It is deliberately distinct from the root-signed
+/// create invocation so a restarted worker can ask what committed without
+/// retaining the account root key.
+pub async fn build_account_setup_status_invocation(
+    device: impl Into<Signer>,
+    link: &DelegationChain,
+    create_fingerprint: &str,
+) -> Result<Vec<u8>> {
+    tonk_account::creation::AccountCreationFingerprint::from_hex(create_fingerprint)
+        .context("create fingerprint is not canonical")?;
+    if link.proof_cids().len() != 1 {
+        anyhow::bail!("account setup status requires one stable root to device proof");
+    }
+    build_device_invocation(
+        device,
+        link,
+        vec!["account".into(), "setup".into(), "status".into()],
+        BTreeMap::from([(
+            "createFingerprint".into(),
+            Promised::String(create_fingerprint.to_owned()),
+        )]),
+    )
+    .await
+}
+
 /// Build a `/customer/enroll` container for the access service.
 ///
 /// The invocation is device-signed on the account's subject, exactly as
@@ -288,6 +316,44 @@ mod tests {
                 "put".to_string()
             ],
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_the_proof_bound_account_setup_status_invocation() {
+        let root = Ed25519Signer::import(&[17u8; 32]).await.unwrap();
+        let root_did = root.did();
+        let device = Ed25519Signer::import(&[18u8; 32]).await.unwrap();
+        let device_did = device.did();
+        let link = crate::delegation::mint_device_delegation(root, &device_did)
+            .await
+            .unwrap();
+        let fingerprint = "ab".repeat(32);
+
+        let bytes = build_account_setup_status_invocation(device, &link, &fingerprint)
+            .await
+            .unwrap();
+        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
+
+        chain
+            .verify(&dialog_ucan_core::verification::VerificationContext::new(
+                &dialog_ucan_core::verification::Environment::new(
+                    chain.proof_store(),
+                    dialog_credentials::DidKeyResolver,
+                    dialog_ucan_core::revocation::UnverifiedRevocations,
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(chain.issuer(), &device_did);
+        assert_eq!(chain.invocation.audience(), &root_did);
+        assert_eq!(chain.subject(), &root_did);
+        assert_eq!(chain.command().0, vec!["account", "setup", "status"]);
+        assert_eq!(
+            chain.arguments().get("createFingerprint"),
+            Some(&Promised::String(fingerprint))
+        );
+        assert_eq!(chain.proof_store().lock().unwrap().len(), 1);
+        assert!(chain.invocation.expiration().is_some());
     }
 
     #[dialog_common::test]

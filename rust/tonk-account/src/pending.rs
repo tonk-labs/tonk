@@ -99,6 +99,15 @@ impl PendingQueue {
         }
     }
 
+    /// Append a related batch in its supplied order, suppressing exact work
+    /// already present without allowing later entries to overtake earlier
+    /// ones. Callers serialize the queue once after this returns.
+    pub fn push_all(&mut self, work: impl IntoIterator<Item = PendingWork>) {
+        for entry in work {
+            self.push(entry);
+        }
+    }
+
     /// The entries in replay order.
     pub fn entries(&self) -> &[PendingWork] {
         &self.0
@@ -139,6 +148,29 @@ mod tests {
             matches!(queue.entries()[1], PendingWork::PublishCustody { .. }),
             "the publish must stay behind the provision that makes it servable"
         );
+    }
+
+    #[test]
+    fn it_appends_an_ordered_batch_without_splitting_or_reordering_it() {
+        let mut queue = PendingQueue::default();
+        queue.push(provision("did:key:zEarlier"));
+        let provision = provision("did:key:zCustody");
+        let publish = PendingWork::PublishCustody {
+            custody: "did:key:zCustody".to_string(),
+            sealed_hex: "bb".to_string(),
+            invocation_hex: "c0de".to_string(),
+        };
+
+        queue.push_all([provision.clone(), publish.clone()]);
+        queue.push_all([provision, publish]);
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.entries()[0].subject(), "did:key:zEarlier");
+        assert!(matches!(queue.entries()[1], PendingWork::Provision { .. }));
+        assert!(matches!(
+            queue.entries()[2],
+            PendingWork::PublishCustody { .. }
+        ));
     }
 
     #[test]

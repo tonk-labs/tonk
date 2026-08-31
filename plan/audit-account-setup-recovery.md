@@ -20,6 +20,21 @@ Focused evidence at this checkpoint:
 
 Still deliberately absent from this lower commit: credential-site reads/writes, Web Lock and live-`ClientId` ownership enforcement, provider HTTP effects, identity/customer/custody effects, top-document orchestration, UI copy, browser tests, and Storybook changes. Those remain the upper tasks below and must not be inferred from the foundation types alone.
 
+## Production saga checkpoint (2026-08-31)
+
+The next stacked slice starts from the reviewed foundation follow-up `89f9627b3` and wires Tasks 1–4 through the worker boundary without invoking the new flow from `tonk-ui` yet. It adds the pre-submit provider fingerprint and proof-bound status invocation, dedicated credential sites, profile-scoped Web Lock plus per-worker serialization, live-`ClientId`/token/revision fencing, a re-resolved canonical-configuration fence on every protected recovery validation, the bounded `/api/account/setup` route, recovery-before-root staging, status-first exact provider replay, exact local observations, ordered custody work, and complete-before-tombstone cleanup. Test-only store and provider ports cover unauthorized stage attempts, configuration drift, recovery/checkpoint loss, provider response loss, unknown provider outcomes, and tombstone-write loss without exposing protected payloads through `Debug` or logs.
+
+Deliberately deferred to the UI/WebAuthn slice: passing the worker-minted ceremony context into identity, producing the final root-signed manifest from the real browser ceremony, same-credential assertion/resume invocation, top-document owner/attempt-token orchestration, recovery copy, browser Web Lock races, service-worker critical-section composition, and Storybook. The production route is therefore wired and compile-checked but remains unreachable from existing UI entrypoints in this slice.
+
+Focused evidence after the final parent integration:
+
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker router::account_setup::tests --no-fail-fast`: 17 passed, 90 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-identity --lib`: 69 passed.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-account pending::tests --no-fail-fast`: 4 passed, 36 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker-api account_setup::tests --no-fail-fast`: 4 passed, 30 filtered.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker router::route_table:: --no-fail-fast`: 2 passed, 105 filtered.
+- `CARGO_INCREMENTAL=0 cargo clippy -p tonk-account -p tonk-identity -p tonk-worker --all-targets -- -D warnings` and `CARGO_INCREMENTAL=0 cargo check -p tonk-worker --target wasm32-unknown-unknown`: passed.
+
 **Constraints:**
 
 - Do not persist or log an account secret, PRF result, passkey-derived KEK, root private key, owner token, or attempt token. A recovery record may contain the already passkey-sealed envelope and narrowly scoped signed artifacts already held by the pending-custody queue.
@@ -203,11 +218,11 @@ Loading applies overall-body, per-string, per-hex/blob, deposit-count, and decod
 
 - [x] RED: add deterministic recovery-manifest tests proving canonical bytes and exact validation. Mutate operation, `ceremony_created_at`, canonical deployment URL/config identity, credential, root/device, fingerprint, passkey/encryption facts, each artifact hash, deposit order, subject/audience/domain, signature, version, and canonical encoding; cross two otherwise-valid ceremony bundles and require rejection. Add exact envelope/payload/string/list/body bounds before GREEN.
 - [x] GREEN: implement the durable domain-separated DAG-CBOR manifest in `tonk-account`, modeled on the repository descriptor but with a distinct signing domain. The manifest hashes bytes/facts and never contains an account secret, PRF result, KEK, or private key. `CARGO_INCREMENTAL=0 cargo test -p tonk-account recovery::tests` passes 4 tests.
-- [ ] RED: add `it_computes_the_provider_fingerprint_before_submission` with fixed root/device/delegation/descriptor facts and the independent provider test vector; run `CARGO_INCREMENTAL=0 cargo test -p tonk-identity it_computes_the_provider_fingerprint_before_submission`; expect a compile failure because `AccountCeremony` has no fingerprint.
+- [x] RED: add `it_computes_the_provider_fingerprint_before_submission` with fixed root/device/delegation/descriptor facts and the independent provider test vector; run `CARGO_INCREMENTAL=0 cargo test -p tonk-identity it_computes_the_provider_fingerprint_before_submission`; expect a compile failure because `AccountCeremony` has no fingerprint.
 - [ ] GREEN: compute through `tonk_account::AccountCreationFingerprintInput`; retain `root.clone()` until the publish artifact exists; sign the manifest with the worker-minted operation and worker-selected configuration context; expose fingerprint, descriptor, device DID, delegation CID, and manifest through the installed bridge; rerun the focused tests successfully.
 - [ ] RED: add `it_rebuilds_only_the_same_semantic_creation_from_a_recovered_secret` using a fixed secret and delegation; mutate credential ID, root DID, device DID, descriptor remote, passkey metadata, and sealed envelope independently; expect exact recovery only for the original tuple. Run the focused filter and observe the missing resume seam.
 - [ ] GREEN: separate assertion/unwrap from a native-testable `create_account_from_recovered_secret` helper; require the same root and canonical fingerprint; return no secret/PRF/KEK. Rerun the focused and adjacent `tonk-identity` tests.
-- [ ] RED/GREEN: add a request-container test proving status uses the exact stable proof, root audience/subject, fingerprint argument, and fresh expiration; malformed or alternate grants must not build a request accepted by the provider verifier.
+- [x] RED/GREEN: add a request-container test proving status uses the exact stable proof, root audience/subject, fingerprint argument, and fresh expiration; malformed or alternate grants must not build a request accepted by the provider verifier.
 - [ ] Run `CARGO_INCREMENTAL=0 cargo test -p tonk-identity ceremony::tests` and `CARGO_INCREMENTAL=0 cargo test -p tonk-identity request::tests`; expect success.
 
 ### Task 2: Persist and reduce one exclusively owned setup operation
@@ -236,8 +251,8 @@ Loading applies overall-body, per-string, per-hex/blob, deposit-count, and decod
 - [ ] RED: add table-driven reducer tests for every legal phase edge and every backward/skip transition, including `Leased -> Cancelled`, `Armed -> Cancel` returning `TooLate`, immutable `armed_at`, Armed owner loss with/without a validated recovery record, post-stage takeover with an exact bundle, conflict provenance, stale revision, wrong operation, token/client mismatch, time regression, and arbitrary public phase advancement being impossible.
 - [ ] GREEN: implement a pure monotonic reducer whose only post-stage advance input is a typed verified effect observation. The reducer consumes/returns complete validated private records, increments revision/timestamp itself, clears every transient field at its boundary, and revalidates all no-write and write results.
 - [ ] RED: race two distinct ClientIds and owner tokens against `Begin`/`Arm`; require one owner, one revision winner, and one `Arm`. Cover same-client worker restart, copied session token in another live tab, pre-arm reload after the old client dies, `Armed` owner loss becoming terminal without a bundle, and post-`RecoveryStaged` takeover by a new live ClientId only after the old client is absent.
-- [ ] GREEN: hash tokens with domain-separated BLAKE3, bind the live ClientId, and wrap load/reduce/save in the named Web Lock and expected-revision check.
-- [ ] Add a production Web Lock adapter based on `navigator.locks`; unavailable Web Locks fail setup closed before `Arm` rather than silently falling back to per-worker exclusion.
+- [x] GREEN: hash tokens with domain-separated BLAKE3, bind the live ClientId, and wrap load/reduce/save in the named Web Lock and expected-revision check.
+- [x] Add a production Web Lock adapter based on `navigator.locks`; unavailable Web Locks fail setup closed before `Arm` rather than silently falling back to per-worker exclusion.
 - [ ] RED/GREEN: add `Handshake` tests for exact worker protocol 2 and provider recovery capability 1. Missing worker route, worker version mismatch, provider 404/timeout/malformed capability, and provider capability absence all refuse before `Arm`; no test adapter may record a WebAuthn request.
 - [ ] Run `CARGO_INCREMENTAL=0 cargo test -p tonk-worker-api account_setup` and the native `tonk-worker` account-setup reducer filters; expect success.
 - [ ] Run `CARGO_INCREMENTAL=0 nix develop path:. -c test:web:debug -E 'test(account_setup)'`; expect the service-worker Web Lock/storage tests to pass.
@@ -257,9 +272,9 @@ Loading applies overall-body, per-string, per-hex/blob, deposit-count, and decod
 - `observe_local_effects` returns exact/missing/mismatch facts for root and provider link; mismatch is terminal and no stored authority is replaced.
 
 - [ ] RED: add fault tests after recovery save, checkpoint save, root record save, root access projection, and root-phase checkpoint save. Recreate the saga adapter after each injected failure and require convergence without another WebAuthn create.
-- [ ] GREEN: implement save-first staging and root reconciliation. A bundle present behind an `Armed` checkpoint repairs it to `RecoveryStaged`; an exact local root repairs to `RootSaved`; mismatched root/grant fails closed.
+- [x] GREEN: implement save-first staging and root reconciliation. A bundle present behind an `Armed` checkpoint repairs it to `RecoveryStaged`; an exact local root repairs to `RootSaved`; mismatched root/grant fails closed.
 - [ ] RED/GREEN: mutate and oversize every bundle field independently; cross records from two fully valid bundles; alter deposit ordering; and require no root/provider/customer/custody effect. Cover overall input, every string/blob/hex, deposit count/decoded total, canonical encoding, signatures/scopes, manifest binding, fingerprint, and sealed-envelope structure before expensive parsing where possible. Test `ceremony_created_at` at exactly both Stage skew bounds and the one-hour age bound, one second outside each, worker clock rollback, checked-arithmetic overflow, exact create/publish original-expiry bounds, and current `Usable`/`NeedsRefresh`. The constructor structurally validates the envelope without opening it; the manifest proves cross-record origin, while a later same-credential assertion proves the ciphertext opens to the expected root.
-- [ ] Add the explicit `InterruptedBeforeRecovery` observation for `Armed` with a dead owning client and no bundle; it must never offer automatic retry or claim no passkey was created.
+- [x] Add the explicit `InterruptedBeforeRecovery` observation for `Armed` with a dead owning client and no bundle; it must never offer automatic retry or claim no passkey was created.
 - [ ] Run the focused native fault filters and Wasm credential-storage filters serially; expect success.
 
 ### Task 4: Recover provider response loss and finish ordered local/customer/custody effects
@@ -279,13 +294,13 @@ Loading applies overall-body, per-string, per-hex/blob, deposit-count, and decod
 - Produces: `Continue` outcome `Complete`, `NeedsPasskey`, `RetryLater`, or terminal `Conflict`; transport uncertainty never becomes provider `Absent`.
 - Produces: `customer::persist_custody_setup` which records the local custody cell, appends `[Provision, PublishCustody]` in one queue save, and then drains best-effort.
 
-- [ ] RED: script provider `Accepted`, `Absent`, `Mismatch`, timeout, malformed body, and lost response after commit. Require status before create on every resume; Accepted advances with the canonical descriptor, Absent submits the exact stored invocation, Mismatch writes nothing, and unknown outcomes remain retryable without WebAuthn.
-- [ ] GREEN: implement the status invocation/HTTP adapter and strict response/fingerprint/descriptor checks. Exact create replay accepts either initial 201 or reused 200 but verifies the returned fingerprint and descriptor.
+- [x] RED: script provider `Accepted`, `Absent`, `Mismatch`, timeout, malformed body, and lost response after commit. Require status before create on every resume; Accepted advances with the canonical descriptor, Absent submits the exact stored invocation, Mismatch writes nothing, and unknown outcomes remain retryable without WebAuthn.
+- [x] GREEN: implement the status invocation/HTTP adapter and strict response/fingerprint/descriptor checks. Exact create replay accepts either initial 201 or reused 200 but verifies the returned fingerprint and descriptor.
 - [ ] RED/GREEN: when Absent and the stored invocation is expired, return `NeedsPasskey` with owner-authorized sealed recovery input. `ReplaceInvocation` accepts only a fresh invocation whose decoded semantic facts reproduce the stored fingerprint.
 - [ ] RED: inject failure after provider acceptance, provider-phase checkpoint, provider record save, account-state initialization, enrollment response, customer record, custody cell, ordered queue save, drain, and completion save. Recreate the worker between failures; require monotonic convergence and no duplicate account/device/custody ordering.
-- [ ] GREEN: reconcile exact provider link/customer/custody effects before replaying. Treat enrollment and pending work as at-least-once idempotent operations; never let `PublishCustody` overtake `Provision`.
+- [x] GREEN: reconcile exact provider link/customer/custody effects before replaying. Treat enrollment and pending work as at-least-once idempotent operations; never let `PublishCustody` overtake `Provision`.
 - [ ] RED/GREEN: make malformed pending work recoverable from the still-retained bundle, and prove a drained queue followed by checkpoint loss can safely reappend/replay the exact pair.
-- [ ] Save `Complete` before overwriting the recovery bundle with `RecoveryTombstoneV1`. A failed tombstone write leaves credential-store-protected sealed/bounded material and is retried on later inspection; do not assume delete/retract support.
+- [x] Save `Complete` before overwriting the recovery bundle with `RecoveryTombstoneV1`. A failed tombstone write leaves credential-store-protected sealed/bounded material and is retried on later inspection; do not assume delete/retract support.
 - [ ] Run `CARGO_INCREMENTAL=0 cargo test -p tonk-account pending::tests` and focused native/wasm worker saga filters; expect success.
 
 ### Task 5: Consolidate entrypoints and render truthful cancel/recovery states

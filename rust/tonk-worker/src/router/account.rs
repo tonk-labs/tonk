@@ -29,7 +29,7 @@ fn provider_error(error: tonk_account::AccountProviderError) -> TonkWorkerError 
     }
 }
 
-async fn load_provider(
+pub(crate) async fn load_provider(
     state: &crate::worker::TonkState,
     root_did: &dialog_varsig::Did,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
@@ -54,6 +54,34 @@ async fn load_provider(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("stored account provider is unusable: {error}"))
         })
+}
+
+/// Exact attachment observation for monotonic account-setup reconciliation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AttachmentObservation {
+    Missing,
+    Exact,
+    Mismatch,
+}
+
+pub(crate) async fn observe_attachment(
+    state: &crate::worker::TonkState,
+    root_did: &dialog_varsig::Did,
+    provider: &str,
+    descriptor: &[u8],
+) -> Result<AttachmentObservation, TonkWorkerError> {
+    let Some(record) = load_provider(state, root_did).await? else {
+        return Ok(AttachmentObservation::Missing);
+    };
+    let exact = record.provider() == provider
+        && record
+            .descriptor()
+            .is_some_and(|stored| stored.bytes() == descriptor);
+    Ok(if exact {
+        AttachmentObservation::Exact
+    } else {
+        AttachmentObservation::Mismatch
+    })
 }
 
 async fn save_provider(

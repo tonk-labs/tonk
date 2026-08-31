@@ -27,8 +27,12 @@ pub struct AccountCeremony {
     pub device_did: String,
     /// Hex-encoded `root → device` delegation chain.
     pub delegation_hex: String,
+    /// CID of the exact stable `root → device` delegation.
+    pub delegation_cid: String,
     /// Exact signed account repository descriptor, only during creation.
     pub descriptor_hex: Option<String>,
+    /// Canonical provider creation fingerprint, only during creation.
+    pub create_fingerprint: Option<String>,
     /// Hex-encoded root-signed invocation container for the account service.
     pub invocation_hex: String,
 }
@@ -123,13 +127,19 @@ fn strings(values: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap
         .collect()
 }
 
+struct AccountCeremonyArtifacts {
+    device_did: String,
+    delegation_hex: String,
+    delegation_cid: String,
+    descriptor_hex: Option<String>,
+    create_fingerprint: Option<String>,
+}
+
 async fn build(
     root: Ed25519Signer,
     command: Vec<String>,
     arguments: BTreeMap<String, Promised>,
-    device_did: String,
-    delegation_hex: String,
-    descriptor_hex: Option<String>,
+    artifacts: AccountCeremonyArtifacts,
 ) -> Result<AccountCeremony> {
     let root_did = root.did();
     let invocation = InvocationBuilder::new()
@@ -153,9 +163,11 @@ async fn build(
 
     Ok(AccountCeremony {
         root_did: root_did.to_string(),
-        device_did,
-        delegation_hex,
-        descriptor_hex,
+        device_did: artifacts.device_did,
+        delegation_hex: artifacts.delegation_hex,
+        delegation_cid: artifacts.delegation_cid,
+        descriptor_hex: artifacts.descriptor_hex,
+        create_fingerprint: artifacts.create_fingerprint,
         invocation_hex,
     })
 }
@@ -192,6 +204,7 @@ pub async fn create_account(
         .await
         .context("failed to sign account repository descriptor")?;
     let descriptor_hex = hex::encode(descriptor.bytes());
+    let descriptor_bytes = descriptor.bytes().to_vec();
     let device_did_string = device_did.to_string();
     let bytes = hex::decode(&delegation_hex).context("invalid existing delegation hex")?;
     let delegation = DelegationChain::try_from(bytes.as_slice())
@@ -199,6 +212,25 @@ pub async fn create_account(
     if delegation.issuer() != &root.did() || delegation.audience() != &device_did {
         anyhow::bail!("existing delegation does not match the evaluated root and device");
     }
+    let delegation_cid = delegation.proof_cids()[0].to_string();
+    let fingerprint = tonk_account::creation::AccountCreationFingerprintInput {
+        email: &email,
+        root_did: root.did().as_ref(),
+        credential_id: &credential_id,
+        passkey: passkey
+            .as_ref()
+            .map(|passkey| tonk_account::creation::AccountCreationPasskey {
+                created_at: passkey.created_at,
+                created_on: &passkey.created_on,
+            }),
+        descriptor: &descriptor_bytes,
+        device_did: &device_did_string,
+        device_name: &device_name,
+        delegation_cid: &delegation_cid,
+        delegation: &bytes,
+    }
+    .fingerprint()
+    .to_hex();
     let mut arguments = strings([
         ("email", email),
         ("credentialId", credential_id),
@@ -221,9 +253,13 @@ pub async fn create_account(
         root,
         vec!["account".into(), "create".into()],
         arguments,
-        device_did_string,
-        delegation_hex,
-        Some(descriptor_hex),
+        AccountCeremonyArtifacts {
+            device_did: device_did_string,
+            delegation_hex,
+            delegation_cid,
+            descriptor_hex: Some(descriptor_hex),
+            create_fingerprint: Some(fingerprint),
+        },
     )
     .await
 }
@@ -569,6 +605,7 @@ pub async fn link_device(
             .to_bytes()
             .context("failed to serialize root to device delegation")?,
     );
+    let delegation_cid = delegation.proof_cids()[0].to_string();
     build(
         root,
         vec!["account".into(), "device".into(), "link".into()],
@@ -577,9 +614,13 @@ pub async fn link_device(
             ("deviceName", device_name),
             ("delegation", delegation_hex.clone()),
         ]),
-        device_did_string,
-        delegation_hex,
-        None,
+        AccountCeremonyArtifacts {
+            device_did: device_did_string,
+            delegation_hex,
+            delegation_cid,
+            descriptor_hex: None,
+            create_fingerprint: None,
+        },
     )
     .await
 }
@@ -733,6 +774,56 @@ mod tests {
         let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
         assert!(!chain.arguments().contains_key("passkeyCreatedAt"));
         assert!(!chain.arguments().contains_key("passkeyCreatedOn"));
+    }
+
+    #[dialog_common::test]
+    async fn it_computes_the_provider_fingerprint_before_submission() {
+        let (root, device) = fixture().await;
+        let root_did = root.did().to_string();
+        let delegation = crate::delegation::mint_device_delegation(root.clone(), &device)
+            .await
+            .unwrap();
+        let delegation_bytes = delegation.to_bytes().unwrap();
+        let delegation_cid = delegation.proof_cids()[0].to_string();
+        let passkey = PasskeyCreationMetadata {
+            created_at: 1_754_380_800,
+            created_on: " Chrome on macOS ".into(),
+        };
+        let output = create_account(
+            root,
+            "PERSON@EXAMPLE.COM".into(),
+            "credential".into(),
+            device.clone(),
+            "laptop".into(),
+            hex::encode(&delegation_bytes),
+            "https://accounts.example/ucan/".into(),
+            Some(passkey.clone()),
+        )
+        .await
+        .unwrap();
+        let descriptor = hex::decode(output.descriptor_hex.as_ref().unwrap()).unwrap();
+        let expected = tonk_account::creation::AccountCreationFingerprintInput {
+            email: "PERSON@EXAMPLE.COM",
+            root_did: &root_did,
+            credential_id: "credential",
+            passkey: Some(tonk_account::creation::AccountCreationPasskey {
+                created_at: passkey.created_at,
+                created_on: &passkey.created_on,
+            }),
+            descriptor: &descriptor,
+            device_did: device.as_ref(),
+            device_name: "laptop",
+            delegation_cid: &delegation_cid,
+            delegation: &delegation_bytes,
+        }
+        .fingerprint()
+        .to_hex();
+
+        assert_eq!(output.delegation_cid, delegation_cid);
+        assert_eq!(
+            output.create_fingerprint.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[dialog_common::test]
