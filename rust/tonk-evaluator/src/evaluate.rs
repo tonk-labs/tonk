@@ -1436,6 +1436,31 @@ attribute!: &foo/title
             !result.fields.contains_key("card/key"),
             "the key operand does not leak as a field",
         );
+
+        // A literal key with a `_` value filters to decks carrying
+        // that entry AND projects the value back — a blank is a
+        // question here, not a retraction.
+        let parsed = parse("deck:\n  card:\n    alpha: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("blank-entry query failed: {e}"))?;
+        let result = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .next()
+            .expect("the deck with an `alpha` entry matches");
+        assert_eq!(
+            result.fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A"})),
+            "the blank value projects back under its key: {:?}",
+            result.fields,
+        );
         Ok(())
     }
 

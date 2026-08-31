@@ -78,6 +78,18 @@ pub(crate) fn build_query_application(
                     } else {
                         key
                     };
+                    // A `_` entry VALUE means "match anything and
+                    // project it back", like every other query blank.
+                    // (`collection_entry_terms` keeps it a true blank
+                    // for the assert path, where `{key: _}` retracts.)
+                    // Left anonymous it would match but surface
+                    // nothing — the match row's field drops and a
+                    // `show: {directory: _}` query reads as empty.
+                    let value = if value.is_blank() {
+                        Term::<dialog_query::Any>::unique()
+                    } else {
+                        value
+                    };
                     terms.insert(Relation::key_operand(field_name), key);
                     terms.insert(field_name.into(), value);
                     continue;
