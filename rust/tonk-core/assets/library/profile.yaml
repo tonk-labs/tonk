@@ -1387,31 +1387,44 @@ concept!: &account/sealed-inbox
       cardinality: one
       as: entity
 
-# What Tonk recorded when it created this account's passkey.
+# A passkey that can recover this account.
 #
-# Informational only: no derivation, delegation, authorization or
-# revocation path reads these. Both attributes are asserted in one
-# transaction, so a query requiring both never observes a half-written
-# pair on one replica.
-concept!: &account/passkey
-  this: tonk:account/passkey
-  description: When and where this account's passkey was created.
-  # ENTITY: the account's own DID — which is the flaw in this concept.
-  # Passkey metadata keyed on the ACCOUNT means an account with three
-  # passkeys has one creation record, and dialog's per-attribute merge
-  # can pair one device's timestamp with another's label. It belongs on
-  # the custody entity (one per passkey), which is the `to` of the
-  # `secret:message` holding that passkey's envelope; it
-  # stays here until something migrates the rows already written.
+# ENTITY: the custody DID — the principal the passkey's PRF output
+# derives. The same entity that is the `to` of the `secret:message`
+# holding that passkey's sealed envelope, so the two join on `this`.
+#
+# One row per passkey, which is the point. This used to hang off the
+# ACCOUNT, so an account with three passkeys had one creation record and
+# dialog's per-attribute merge could pair one device's timestamp with
+# another's label.
+#
+# No `account` field: the envelope already says which account this
+# recovers. Its `secret:message` names this custody DID as `to` and the
+# account as `sender`, so the link is a join, not a second copy.
+#
+# Enumerating an account's passkeys therefore means querying
+# `secret:message` by `sender` and reading the `to`s — the custody DID is
+# PRF-derived, so nothing can compute it without a live assertion.
+concept!: &recovery/passkey
+  this: recovery:passkey
+  description: A passkey that can recover this account.
   with:
+    credential-id:
+      description: >
+        The credential id the authenticator returns, at creation and on
+        every assertion. What an assertion names to select this
+        credential.
+      the: xyz.tonk.recovery/credential-id
+      cardinality: one
+      as: text
     created-at:
       description: Unix seconds at credential creation.
-      the: xyz.tonk.account/passkey-created-at
+      the: xyz.tonk.recovery/created-at
       cardinality: one
-      as: float
+      as: unsigned-integer
     created-on:
       description: Browser and operating-system label, e.g. "Chrome on macOS".
-      the: xyz.tonk.account/passkey-created-on
+      the: xyz.tonk.recovery/created-on
       cardinality: one
       as: text
 

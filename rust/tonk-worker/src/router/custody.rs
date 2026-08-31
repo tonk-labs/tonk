@@ -222,7 +222,7 @@ async fn perform(
     match intent {
         tonk_worker_api::CustodyIntent::Enroll(enrollment) => {
             let account = open(&custodian).await?;
-            enroll(&state, &custodian, &account, enrollment.email).await
+            enroll(&state, &custodian, &account, enrollment.email, None).await
         }
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => {
             create(&state, &custodian, creation).await
@@ -277,7 +277,7 @@ async fn add_passkey(
         .await
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
-    enroll(state, added, &sealed, None).await
+    enroll(state, added, &sealed, None, None).await
 }
 
 /// Open the account this passkey holds and link this browser to it.
@@ -381,6 +381,10 @@ async fn enroll(
     custodian: &tonk_identity::custodian::Custodian,
     account: &tonk_identity::account::Account,
     email: Option<String>,
+    // Present only when this enrollment created the passkey: the label
+    // comes from the browser that ran `credentials.create()`, and a
+    // re-enrollment or an added passkey carries none.
+    created_on: Option<String>,
 ) -> Result<wasm_bindgen::JsValue, String> {
     use wasm_bindgen::JsValue;
 
@@ -398,10 +402,19 @@ async fn enroll(
     // depend on the step after it succeeding.
     {
         let tonk = state.read().await;
+        let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
+            created_at: (js_sys::Date::now() / 1000.0) as u64,
+            created_on,
+        });
         crate::router::customer::record_custody_cell(
             &tonk,
             &material.custody.to_string(),
             &hex::encode(&material.sealed),
+            passkey,
+            &custodian
+                .credential_id()
+                .map(hex::encode)
+                .unwrap_or_default(),
         )
         .await
         .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
@@ -497,7 +510,7 @@ async fn create(
             email: creation.email.clone(),
             device_name: creation.device_name,
             remote: creation.remote.clone(),
-            created_on: creation.created_on,
+            created_on: creation.created_on.clone(),
             encryption_key: account.secret().did().to_string(),
         },
     )
@@ -545,7 +558,14 @@ async fn create(
     )
     .await?;
 
-    enroll(state, custodian, &account, Some(creation.email)).await
+    enroll(
+        state,
+        custodian,
+        &account,
+        Some(creation.email),
+        creation.created_on,
+    )
+    .await
 }
 
 /// Record the account the service just accepted, so this profile has
@@ -702,6 +722,8 @@ mod tests {
                 &tonk,
                 &material.custody.to_string(),
                 &hex::encode(&material.sealed),
+                None,
+                "",
             )
             .await
             .expect("the envelope records");

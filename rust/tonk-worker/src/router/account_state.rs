@@ -21,8 +21,7 @@ use tonk_account::{
 use tonk_common::log;
 use tonk_identity::sealed::RecipientKey;
 use tonk_schema::{
-    AccountPasskeyCreated, AccountSealedInbox, Replica, SecretMessage, SecretPrincipal, SeedKind,
-    prelude::DidExt as _,
+    AccountSealedInbox, Replica, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
 };
 use zeroize::Zeroizing;
 
@@ -662,9 +661,6 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     adopt_account_access(tonk).await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
-    if seed_passkey_facts(tonk).await {
-        log!("recorded this device's passkey creation facts in the account space");
-    }
     if seed_sealed_inbox(tonk).await {
         log!("published the account sealed-inbox address in the account space");
     }
@@ -761,9 +757,6 @@ pub(crate) async fn ensure_account_state_swept(
                 Ok(()) => {
                     // The path a freshly created account takes, where the
                     // ready sweep above has not run yet.
-                    if seed_passkey_facts(tonk).await {
-                        log!("recorded this device's passkey creation facts in the account space");
-                    }
                     if seed_sealed_inbox(tonk).await {
                         log!("published the account sealed-inbox address in the account space");
                     }
@@ -825,11 +818,18 @@ pub(crate) async fn require_ready_account_state(
     Ok(ReadyAccountBranch { key, subject })
 }
 
-/// Read the creation facts recorded on a ready account branch.
-async fn read_passkey_facts(
+/// The passkeys that can recover this account, newest first.
+///
+/// Found through the envelopes rather than by a field: each passkey's row is
+/// keyed on the custody DID its PRF output derives, which is the `to` of the
+/// `secret:message` this account sealed to it. So the account is reached by
+/// the message's `sender`, and no row carries a second copy of it.
+async fn read_passkeys(
     tonk: &TonkState,
     ready: &ReadyAccountBranch,
-) -> Result<Option<tonk_worker_api::PasskeyMetadata>, TonkWorkerError> {
+) -> Result<Vec<tonk_schema::RecoveryPasskey>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+
     let branch = tonk
         .reactor
         .profile_repository()
@@ -837,31 +837,56 @@ async fn read_passkey_facts(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
-    let rows: Vec<AccountPasskeyCreated> = branch
+
+    // `from` is optional on the concept, so it binds as a variable and the
+    // sender is matched here.
+    let envelopes: Vec<SecretMessage> = branch
         .handle()
         .query()
-        .select(Query::<AccountPasskeyCreated> {
-            this: Term::from(ready.subject.this()),
-            created_at: Term::var("created_at"),
-            created_on: Term::var("created_on"),
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::var("to"),
+            message: Term::var("message"),
+            from: Term::var("from"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("read account passkey facts: {error:?}"))
+            TonkWorkerError::Internal(format!("read the account envelopes: {error:?}"))
         })?;
-    Ok(rows
-        .into_iter()
-        .next()
-        .map(|row| tonk_worker_api::PasskeyMetadata {
-            created_at: row.seconds(),
-            created_on: row.created_on.0,
-        }))
+
+    let mut passkeys = Vec::new();
+    for envelope in envelopes {
+        if envelope
+            .from
+            .as_ref()
+            .is_none_or(|sender| sender.0 != ready.subject.this())
+        {
+            continue;
+        }
+        let rows: Vec<tonk_schema::RecoveryPasskey> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::RecoveryPasskey> {
+                this: Term::from(envelope.to.0.clone()),
+                credential_id: Term::var("credential_id"),
+                created_at: Term::var("created_at"),
+                created_on: Term::var("created_on"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("read the passkey facts: {error:?}"))
+            })?;
+        passkeys.extend(rows);
+    }
+    passkeys.sort_by(|a, b| b.seconds().cmp(&a.seconds()));
+    Ok(passkeys)
 }
 
-/// This account's passkey facts as recorded in the account space, absent when
-/// the account is not ready or carries none.
+/// The most recently created passkey's metadata, for the account panel.
 ///
 /// Best-effort by design — the dashboard has an explicit unavailable state and
 /// must not fail because a hidden system repository is mid-hydration. Every
@@ -869,8 +894,16 @@ async fn read_passkey_facts(
 /// visible rather than silent.
 pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
     let ready = require_ready_account_state(tonk).await.ok()?;
-    match read_passkey_facts(tonk, &ready).await {
-        Ok(facts) => facts,
+    match read_passkeys(tonk, &ready).await {
+        Ok(passkeys) => {
+            passkeys
+                .into_iter()
+                .next()
+                .map(|passkey| tonk_worker_api::PasskeyMetadata {
+                    created_at: passkey.seconds(),
+                    created_on: passkey.created_on.0,
+                })
+        }
         Err(error) => {
             log!("account passkey facts unreadable: {error}");
             None
@@ -1044,56 +1077,6 @@ pub(crate) async fn describe_own_device(tonk: &TonkState) {
     {
         log!("describe this device's link: {error}");
     }
-}
-
-/// Write this device's recorded passkey facts into the account space when it
-/// has them and the space does not. Returns whether it wrote.
-///
-/// Idempotent: a device that only ever *evaluated* an existing root has
-/// nothing to contribute and returns `false` without touching the branch. So
-/// does a device whose facts are already there — an existing fact is never
-/// overwritten, so a device that later derives a different label cannot
-/// rewrite history.
-pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
-    // Unconfigured and unhydrated are ordinary states, reached on every sweep
-    // of a signed-out profile. They are not worth a line in the log.
-    let Ok(ready) = require_ready_account_state(tonk).await else {
-        return false;
-    };
-    match read_passkey_facts(tonk, &ready).await {
-        Ok(None) => {}
-        Ok(Some(_)) => return false,
-        Err(error) => {
-            log!("account passkey facts unreadable before seeding: {error}");
-            return false;
-        }
-    }
-    let Ok(root) = super::identity::local_root(tonk).await else {
-        return false;
-    };
-    let Some(metadata) = root.passkey else {
-        return false;
-    };
-    if let Err(error) = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        .assert(AccountPasskeyCreated::new(
-            ready.subject.this(),
-            metadata.created_at,
-            metadata.created_on,
-        ))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("commit account passkey creation facts: {error}");
-        return false;
-    }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
-    true
 }
 
 /// The account's published encryption key, when the account is ready and
@@ -1892,30 +1875,13 @@ mod tests {
         (state, service, root_signer, remote)
     }
 
-    /// Every recorded creation fact on the ready account branch.
+    /// Every passkey recorded for the ready account, through its envelopes.
     #[cfg(not(target_arch = "wasm32"))]
     async fn recorded_passkey_facts(
         state: &TonkState,
         ready: &ReadyAccountBranch,
-    ) -> Vec<tonk_schema::AccountPasskeyCreated> {
-        state
-            .reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .acquire(&state.operator)
-            .await
-            .unwrap()
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::AccountPasskeyCreated> {
-                this: Term::from(ready.subject.this()),
-                created_at: Term::var("created_at"),
-                created_on: Term::var("created_on"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap()
+    ) -> Vec<tonk_schema::RecoveryPasskey> {
+        read_passkeys(state, ready).await.unwrap()
     }
 
     /// Remove the on-disk verifier repository `NativeSpace` rooted in the
@@ -1929,36 +1895,79 @@ mod tests {
         }
     }
 
+    /// A passkey's own row lands on the custody DID its envelope is
+    /// addressed to, and is reachable from the account through that
+    /// envelope's sender.
+    ///
+    /// This replaces two tests that pinned a sweep reading the local root:
+    /// the row is keyed per passkey now, and only the ceremony holds both
+    /// the custody DID and the creation label, so the sweep had nothing to
+    /// key on and was retired.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
-    async fn it_seeds_passkey_creation_facts_from_the_local_root() {
-        let (state, service, _root, _remote) =
-            ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
-                created_at: 1_754_380_800,
-                created_on: "Chrome on macOS".to_string(),
-            }))
-            .await;
+    async fn it_records_a_passkey_against_the_custody_its_envelope_names() {
+        use dialog_varsig::Principal as _;
 
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
         );
         let ready = require_ready_account_state(&state).await.unwrap();
-        let seeded = recorded_passkey_facts(&state, &ready).await;
-        assert_eq!(seeded.len(), 1);
-        assert_eq!(seeded[0].seconds(), 1_754_380_800);
-        assert_eq!(seeded[0].created_on.0, "Chrome on macOS");
-
-        // The sweep runs on every boot and every heartbeat. A second pass must
-        // find its own fact and leave it exactly as written.
-        assert_eq!(
-            ensure_account_state(&state).await,
-            AccountStateStatus::Ready
+        assert!(
+            recorded_passkey_facts(&state, &ready).await.is_empty(),
+            "nothing is recorded before a ceremony runs"
         );
-        let again = recorded_passkey_facts(&state, &ready).await;
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].seconds(), 1_754_380_800);
-        assert_eq!(again[0].created_on.0, "Chrome on macOS");
+
+        let custody = dialog_credentials::Ed25519Signer::import(&[21u8; 32])
+            .await
+            .unwrap()
+            .did();
+        super::super::customer::record_custody_cell(
+            &state,
+            &custody.to_string(),
+            &hex::encode([9u8; 16]),
+            Some(tonk_worker_api::PasskeyMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".to_string(),
+            }),
+            "credential-one",
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(recorded.len(), 1, "one passkey, found through its envelope");
+        assert_eq!(recorded[0].this, custody.this(), "keyed on the custody");
+        assert_eq!(recorded[0].credential_id.0, "credential-one");
+        assert_eq!(recorded[0].seconds(), 1_754_380_800);
+        assert_eq!(recorded[0].created_on.0, "Chrome on macOS");
+
+        // A second passkey is a second row rather than a merge — what the
+        // account-keyed shape could not do.
+        let other = dialog_credentials::Ed25519Signer::import(&[22u8; 32])
+            .await
+            .unwrap()
+            .did();
+        super::super::customer::record_custody_cell(
+            &state,
+            &other.to_string(),
+            &hex::encode([8u8; 16]),
+            Some(tonk_worker_api::PasskeyMetadata {
+                created_at: 1_754_380_900,
+                created_on: "Safari on iOS".to_string(),
+            }),
+            "credential-two",
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(recorded.len(), 2, "two passkeys are two rows");
+        assert_eq!(
+            recorded[0].created_on.0, "Safari on iOS",
+            "newest first, each keeping its own clock and label"
+        );
 
         service.stop().await.unwrap();
         discard(state, &ready.key);

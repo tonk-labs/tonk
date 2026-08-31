@@ -126,6 +126,34 @@ pub mod space {
 /// which already means an invite's access proof. One namespace holding
 /// both would make "authorization" ambiguous between a device link and
 /// a share link.
+/// Attributes of a passkey that can recover an account, keyed on the
+/// custody DID its PRF output derives.
+pub mod recovery {
+    use super::Attribute;
+
+    /// The credential id the authenticator returns, at creation and on
+    /// every assertion. What an assertion names to select this credential.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CredentialId(pub String);
+
+    /// Unix seconds at credential creation — when Tonk ran the ceremony,
+    /// not anything the authenticator signs.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CreatedAt(pub u64);
+
+    /// The browser and operating system where creation ran, e.g. `Chrome
+    /// on macOS`. Never the password manager or storage provider —
+    /// WebAuthn does not expose those reliably.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CreatedOn(pub String);
+}
+
 pub mod device {
     use super::{Attribute, Entity};
 
@@ -826,25 +854,6 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct DisplayName(pub String);
-
-    /// Browser-reported Unix time in seconds, captured immediately after
-    /// `navigator.credentials.create()` returned. `f64` because the value
-    /// system stores numbers as `Float`; second-resolution Unix times convert
-    /// losslessly at this magnitude. Cardinality-one: an account has one
-    /// passkey creation moment, so concurrent linked-device writes converge on
-    /// a deterministic winner rather than accumulating.
-    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-    #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
-    pub struct PasskeyCreatedAt(pub f64);
-
-    /// The browser and operating system where passkey creation ran, e.g.
-    /// `Chrome on macOS`. Never the password manager or storage provider —
-    /// WebAuthn does not expose those reliably.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
-    pub struct PasskeyCreatedOn(pub String);
 
     /// The account's registration state with the access service, as one
     /// of `Registered`, `Active`, or `Suspended`.

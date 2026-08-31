@@ -348,12 +348,11 @@ pub async fn save(
     let state = state.read().await;
     let status = persist_root(&state, request).await?;
     // A save that carries creation metadata is a passkey arriving — at
-    // signup or at a later custody enrollment. Seed the account facts
-    // now rather than on the next sweep, so the dashboard reflects the
-    // enrollment immediately. Idempotent and best-effort.
-    if super::account_state::seed_passkey_facts(&state).await {
-        tonk_common::log!("recorded this device's passkey creation facts in the account space");
-    }
+    // signup or at a later custody enrollment. The passkey's own row is
+    // written by the ceremony, which is the only place that holds both
+    // the custody DID it keys on and the creation label. Seed the
+    // sealed-inbox address now rather than on the next sweep, so the
+    // dashboard reflects the enrollment immediately.
     if super::account_state::seed_sealed_inbox(&state).await {
         tonk_common::log!("published the account's encryption key in the account space");
     }

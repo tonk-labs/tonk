@@ -397,7 +397,10 @@ pub async fn queue_custody(
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
     let state = state.read().await;
-    record_custody_cell(&state, &request.custody, &request.sealed_hex).await?;
+    // No passkey facts on this path: the queue route carries a cell that
+    // could not be published, not a ceremony's creation metadata. The
+    // ceremony records its own row where it has both.
+    record_custody_cell(&state, &request.custody, &request.sealed_hex, None, "").await?;
     // An empty invocation means the ceremony already published the cell
     // (a passkey enrolled on an active account): the record above is
     // all that was left to do.
@@ -425,6 +428,8 @@ pub(crate) async fn record_custody_cell(
     state: &crate::worker::TonkState,
     custody: &str,
     sealed_hex: &str,
+    passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    credential_id: &str,
 ) -> Result<(), TonkWorkerError> {
     let custody: dialog_varsig::Did = custody
         .parse()
@@ -432,7 +437,7 @@ pub(crate) async fn record_custody_cell(
     let cell = hex::decode(sealed_hex)
         .map_err(|error| TonkWorkerError::Router(format!("sealed cell is not hex: {error}")))?;
     let account = super::identity::root_did(state).await?;
-    state
+    let mut transaction = state
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
@@ -441,7 +446,21 @@ pub(crate) async fn record_custody_cell(
         // assertion of that passkey opens it. The account is a real
         // sender here — this envelope carries its own secret — so it is
         // one of the few places `sealed_by` earns its keep.
-        .assert(tonk_schema::SecretMessage::new(&custody, cell).sealed_by(&account))
+        .assert(tonk_schema::SecretMessage::new(&custody, cell).sealed_by(&account));
+    // The passkey's own row, on the same entity the envelope is
+    // addressed to. Written here because this is where the custody DID
+    // and the creation metadata are both in hand: only the browser that
+    // ran `credentials.create()` has the label, and only this call knows
+    // which passkey it belongs to.
+    if let Some(passkey) = passkey {
+        transaction = transaction.assert(tonk_schema::RecoveryPasskey::new(
+            &custody,
+            credential_id,
+            passkey.created_at,
+            passkey.created_on,
+        ));
+    }
+    transaction
         .commit()
         .perform(&state.operator)
         .await
