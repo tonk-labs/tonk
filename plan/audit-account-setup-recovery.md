@@ -2,19 +2,21 @@
 
 **Goal:** Recover browser account creation after reload, tab loss, worker restart, and provider response loss from every technically recoverable boundary, while starting at most one WebAuthn creation attempt and describing the one irrecoverable browser boundary honestly.
 **Approach:** Put account-setup ordering behind one deep UI module and one worker saga module. The top document remains the WebAuthn adapter, but the worker is the sole persistence and validation authority. It persists a secret-free versioned checkpoint and a separate credential-store-protected recovery bundle containing a passkey-sealed envelope, bounded authorizations, and a durable root-signed anti-mix manifest. It serializes ownership with a profile-scoped Web Lock plus revision checks, reconciles each durable effect, and uses the provider's proof-bound status and exact-replay contract before attaching local account state and queuing customer/custody work.
-**Base:** branch `fix/audit-account-setup-recovery`, worktree `/Users/jackdouglas/tonk/tonk/.wt/fix/audit-account-setup-recovery`, exact lower-base head `6923a9b16f9f528795d18589c58f601820e005fa`.
+**Base:** branch `fix/audit-account-setup-recovery`, worktree `/Users/jackdouglas/tonk/tonk/.wt/fix/audit-account-setup-recovery`, exact lower-base head `305a60f610d221bd6c9c65cc9eaf227bbb0a8162`.
 
-**Pending lower-base adoption:** provider PR #835 is reviewed at exact head `305a60f610d221bd6c9c65cc9eaf227bbb0a8162` and supplies `GET /capabilities` v1 plus the setup-status policy correction. After the local foundation passes bounded review, commit it, create a backup ref, and rebase merge-free from `6923a9b16f9f528795d18589c58f601820e005fa` onto that exact head. Only then replace the Base SHA above.
+**Lower-base adoption:** provider PR #835 was reviewed and adopted at exact head `305a60f610d221bd6c9c65cc9eaf227bbb0a8162`; it supplies `GET /capabilities` v1 plus the setup-status policy correction.
 
 ## Lower foundation checkpoint (2026-08-31)
 
 This first stacked slice intentionally stops before production route/effect/UI wiring. It contains the canonical manifest, versioned public wire contract (including the worker-selected ceremony context), private checkpoint/recovery encodings, envelope-first decoding, complete-record reducer, and the single bounded semantic `ValidatedRecoveryBundle` constructor. The constructor independently verifies every signed artifact and classifies current expiry separately from canonical/signature/original-window validity.
 
+A bounded foundation review additionally made version classification depend only on a minimal future-safe version envelope before parsing current tags, made `Arm` compare the worker's re-resolved configuration hash inside the reducer, and gave `Stage` a distinct command that must match the one armed attempt before the hash is cleared.
+
 Focused evidence at this checkpoint:
 
 - `CARGO_INCREMENTAL=0 cargo test -p tonk-account recovery::tests`: 4 passed.
 - `CARGO_INCREMENTAL=0 cargo test -p tonk-worker-api account_setup::tests`: 4 passed.
-- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker router::account_setup::tests`: 10 passed.
+- `CARGO_INCREMENTAL=0 cargo test -p tonk-worker router::account_setup::tests`: 12 passed.
 
 Still deliberately absent from this lower commit: credential-site reads/writes, Web Lock and live-`ClientId` ownership enforcement, provider HTTP effects, identity/customer/custody effects, top-document orchestration, UI copy, browser tests, and Storybook changes. Those remain the upper tasks below and must not be inferred from the foundation types alone.
 
@@ -114,7 +116,7 @@ provider exact-state mismatch -> Conflict (fail closed)
 
 ```text
 version, operation_id, revision, owner_hash, bound_client_id,
-provider_hash, phase, armed_at?, staged_at?, attempt_hash?, root_did?, create_fingerprint?, recovery_hash?,
+configuration_hash, phase, armed_at?, staged_at?, attempt_hash?, root_did?, create_fingerprint?, recovery_hash?,
 accepted_descriptor_hash?, last_transition_at
 ```
 

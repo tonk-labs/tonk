@@ -122,7 +122,7 @@ struct StoredCheckpointV2 {
     owner_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound_client_id: Option<String>,
-    provider_hash: String,
+    configuration_hash: String,
     phase: StoredPhaseV2,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     armed_at: Option<u64>,
@@ -220,12 +220,12 @@ enum StoredRecoveryRecord {
 enum StoredSetupError {
     TooLargeCheckpoint,
     MalformedCheckpoint,
-    UnsupportedCheckpointVersion(u16),
+    UnsupportedCheckpointVersion(u64),
     UnsupportedCheckpointPhase,
     InvalidCheckpoint,
     TooLargeRecovery,
     MalformedRecovery,
-    UnsupportedRecoveryVersion(u16),
+    UnsupportedRecoveryVersion(u64),
     UnsupportedRecoveryRecord,
     InvalidRecovery,
     Serialization,
@@ -233,8 +233,12 @@ enum StoredSetupError {
 
 #[derive(Deserialize)]
 struct CheckpointEnvelope {
-    version: u16,
     phase: PhaseEnvelope,
+}
+
+#[derive(Deserialize)]
+struct VersionEnvelope {
+    version: u64,
 }
 
 #[derive(Deserialize)]
@@ -244,7 +248,6 @@ struct PhaseEnvelope {
 
 #[derive(Deserialize)]
 struct RecoveryEnvelope {
-    version: u16,
     record: String,
 }
 
@@ -261,13 +264,15 @@ fn decode_checkpoint(bytes: &[u8]) -> Result<ValidatedCheckpoint, StoredSetupErr
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(StoredSetupError::TooLargeCheckpoint);
     }
-    let envelope: CheckpointEnvelope =
+    let version: VersionEnvelope =
         serde_json::from_slice(bytes).map_err(|_| StoredSetupError::MalformedCheckpoint)?;
-    if envelope.version != CHECKPOINT_VERSION {
+    if version.version != u64::from(CHECKPOINT_VERSION) {
         return Err(StoredSetupError::UnsupportedCheckpointVersion(
-            envelope.version,
+            version.version,
         ));
     }
+    let envelope: CheckpointEnvelope =
+        serde_json::from_slice(bytes).map_err(|_| StoredSetupError::MalformedCheckpoint)?;
     if !matches!(
         envelope.phase.kind.as_str(),
         "leased"
@@ -302,13 +307,15 @@ fn decode_recovery(bytes: &[u8]) -> Result<StoredRecoveryRecord, StoredSetupErro
     if bytes.len() > MAX_RECOVERY_RECORD_BYTES {
         return Err(StoredSetupError::TooLargeRecovery);
     }
-    let envelope: RecoveryEnvelope =
+    let version: VersionEnvelope =
         serde_json::from_slice(bytes).map_err(|_| StoredSetupError::MalformedRecovery)?;
-    if envelope.version != RECOVERY_VERSION {
+    if version.version != u64::from(RECOVERY_VERSION) {
         return Err(StoredSetupError::UnsupportedRecoveryVersion(
-            envelope.version,
+            version.version,
         ));
     }
+    let envelope: RecoveryEnvelope =
+        serde_json::from_slice(bytes).map_err(|_| StoredSetupError::MalformedRecovery)?;
     if !matches!(envelope.record.as_str(), "bundle" | "tombstone") {
         return Err(StoredSetupError::UnsupportedRecoveryRecord);
     }
@@ -336,7 +343,7 @@ fn validate_checkpoint(checkpoint: &StoredCheckpointV2) -> Result<(), StoredSetu
         || checkpoint.revision == 0
         || !owner_pair
         || !owner_valid
-        || !valid_hash(&checkpoint.provider_hash)
+        || !valid_hash(&checkpoint.configuration_hash)
         || checkpoint.last_transition_at == 0
     {
         return Err(StoredSetupError::InvalidCheckpoint);
@@ -1215,7 +1222,6 @@ enum RecoveryObservation {
 
 #[derive(Clone, PartialEq, Eq)]
 enum VerifiedEvidence {
-    RecoveryStaged(RecoveryEvidence),
     LocalRootSaved,
     ProviderAccepted { descriptor_hash: String },
     AttachmentSaved,
@@ -1229,6 +1235,12 @@ enum ReducerCommand {
     Arm {
         mutation: MutationContext,
         attempt_hash: String,
+        configuration_hash: String,
+    },
+    Stage {
+        mutation: MutationContext,
+        attempt_hash: String,
+        evidence: RecoveryEvidence,
     },
     Cancel {
         mutation: MutationContext,
@@ -1308,8 +1320,12 @@ fn reduce(
         ReducerCommand::Arm {
             mutation,
             attempt_hash,
+            configuration_hash,
         } => {
             authenticate(&checkpoint, &mutation)?;
+            if checkpoint.as_stored().configuration_hash != configuration_hash {
+                return Err(ReductionError::InvalidEvidence);
+            }
             if checkpoint.as_stored().phase != StoredPhaseV2::Leased || !valid_hash(&attempt_hash) {
                 return Err(ReductionError::InvalidTransition);
             }
@@ -1323,6 +1339,29 @@ fn reduce(
                 },
                 DurableAction::SaveCheckpoint,
                 PrivateNextAction::AwaitPasskeyResult,
+            )
+        }
+        ReducerCommand::Stage {
+            mutation,
+            attempt_hash,
+            evidence,
+        } => {
+            authenticate(&checkpoint, &mutation)?;
+            if checkpoint.as_stored().phase != StoredPhaseV2::Armed {
+                return Err(ReductionError::InvalidTransition);
+            }
+            if checkpoint.as_stored().attempt_hash.as_deref() != Some(attempt_hash.as_str()) {
+                return Err(ReductionError::InvalidEvidence);
+            }
+            if !evidence.is_valid() {
+                return Err(ReductionError::InvalidEvidence);
+            }
+            transition(
+                checkpoint,
+                mutation.now,
+                |next| apply_staged_recovery(next, evidence),
+                DurableAction::SaveCheckpoint,
+                PrivateNextAction::PersistLocalRoot,
             )
         }
         ReducerCommand::Cancel { mutation } => {
@@ -1512,19 +1551,6 @@ fn reduce_evidence(
     evidence: VerifiedEvidence,
 ) -> Result<Reduction, ReductionError> {
     match (checkpoint.as_stored().phase.clone(), evidence) {
-        (StoredPhaseV2::Armed, VerifiedEvidence::RecoveryStaged(evidence))
-            if evidence.is_valid() =>
-        {
-            transition(
-                checkpoint,
-                now,
-                |next| {
-                    apply_staged_recovery(next, evidence);
-                },
-                DurableAction::SaveCheckpoint,
-                PrivateNextAction::PersistLocalRoot,
-            )
-        }
         (StoredPhaseV2::RecoveryStaged, VerifiedEvidence::LocalRootSaved) => transition(
             checkpoint,
             now,
@@ -1725,7 +1751,7 @@ mod tests {
             revision: 1,
             owner_hash: Some(hash("11")),
             bound_client_id: Some("client-1".to_string()),
-            provider_hash: hash("22"),
+            configuration_hash: hash("22"),
             phase: StoredPhaseV2::Leased,
             armed_at: None,
             staged_at: None,
@@ -1970,15 +1996,17 @@ mod tests {
             ReducerCommand::Arm {
                 mutation: mutation(&leased(), 1_754_380_801),
                 attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
             },
         )
         .unwrap()
         .checkpoint;
         let staged = reduce(
             armed.clone(),
-            ReducerCommand::Observe {
+            ReducerCommand::Stage {
                 mutation: mutation(&armed, 1_754_380_802),
-                evidence: VerifiedEvidence::RecoveryStaged(recovery_evidence()),
+                attempt_hash: hash("33"),
+                evidence: recovery_evidence(),
             },
         )
         .unwrap()
@@ -1991,13 +2019,13 @@ mod tests {
         ));
 
         let future = br#"{
-            "version":99,
-            "phase":{"kind":"quantumRecovery","newField":true},
+            "version":65536,
             "futureRequiredField":{"nested":[1,2,3]}
         }"#;
         assert!(matches!(
             decode_checkpoint(future),
-            Err(StoredSetupError::UnsupportedCheckpointVersion(99))
+            Err(StoredSetupError::UnsupportedCheckpointVersion(version))
+                if version as u128 == 65_536
         ));
         assert!(matches!(
             decode_checkpoint(br#"{"version":2,"phase":{"kind":"future"}}"#),
@@ -2008,13 +2036,13 @@ mod tests {
         let bytes = encode_recovery(&recovery).unwrap();
         assert!(decode_recovery(&bytes).unwrap() == recovery);
         let future = br#"{
-            "record":"futureBundle",
-            "version":99,
+            "version":65536,
             "futureProtectedShape":{"ciphertext":"opaque"}
         }"#;
         assert!(matches!(
             decode_recovery(future),
-            Err(StoredSetupError::UnsupportedRecoveryVersion(99))
+            Err(StoredSetupError::UnsupportedRecoveryVersion(version))
+                if version as u128 == 65_536
         ));
         assert!(matches!(
             decode_recovery(br#"{"record":"futureBundle","version":1,"opaque":true}"#),
@@ -2030,6 +2058,7 @@ mod tests {
             ReducerCommand::Arm {
                 mutation: mutation(&leased_checkpoint, 1_754_380_801),
                 attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
             },
         )
         .unwrap();
@@ -2074,12 +2103,79 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_refuses_to_arm_after_the_worker_configuration_changes() {
+        let checkpoint = leased();
+        assert!(matches!(
+            reduce(
+                checkpoint.clone(),
+                ReducerCommand::Arm {
+                    mutation: mutation(&checkpoint, 1_754_380_801),
+                    attempt_hash: hash("33"),
+                    configuration_hash: hash("99"),
+                },
+            ),
+            Err(ReductionError::InvalidEvidence)
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_requires_the_exact_armed_attempt_to_stage_once() {
+        let leased_checkpoint = leased();
+        let armed = reduce(
+            leased_checkpoint.clone(),
+            ReducerCommand::Arm {
+                mutation: mutation(&leased_checkpoint, 1_754_380_801),
+                attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
+            },
+        )
+        .unwrap()
+        .checkpoint;
+
+        assert!(matches!(
+            reduce(
+                armed.clone(),
+                ReducerCommand::Stage {
+                    mutation: mutation(&armed, 1_754_380_802),
+                    attempt_hash: hash("44"),
+                    evidence: recovery_evidence(),
+                },
+            ),
+            Err(ReductionError::InvalidEvidence)
+        ));
+
+        let staged = reduce(
+            armed.clone(),
+            ReducerCommand::Stage {
+                mutation: mutation(&armed, 1_754_380_802),
+                attempt_hash: hash("33"),
+                evidence: recovery_evidence(),
+            },
+        )
+        .unwrap()
+        .checkpoint;
+        assert!(staged.as_stored().attempt_hash.is_none());
+        assert!(matches!(
+            reduce(
+                staged.clone(),
+                ReducerCommand::Stage {
+                    mutation: mutation(&staged, 1_754_380_803),
+                    attempt_hash: hash("33"),
+                    evidence: recovery_evidence(),
+                },
+            ),
+            Err(ReductionError::InvalidTransition)
+        ));
+    }
+
+    #[dialog_common::test]
     fn it_accepts_only_the_next_typed_evidence_and_returns_the_next_durable_action() {
         let armed = reduce(
             leased(),
             ReducerCommand::Arm {
                 mutation: mutation(&leased(), 1_754_380_801),
                 attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
             },
         )
         .unwrap()
@@ -2087,9 +2183,10 @@ mod tests {
 
         let staged = reduce(
             armed.clone(),
-            ReducerCommand::Observe {
+            ReducerCommand::Stage {
                 mutation: mutation(&armed, 1_754_380_802),
-                evidence: VerifiedEvidence::RecoveryStaged(recovery_evidence()),
+                attempt_hash: hash("33"),
+                evidence: recovery_evidence(),
             },
         )
         .unwrap();
@@ -2166,7 +2263,7 @@ mod tests {
             revision: 4,
             owner_hash: None,
             bound_client_id: None,
-            provider_hash: hash("22"),
+            configuration_hash: hash("22"),
             phase: StoredPhaseV2::Conflict {
                 last_safe_phase: StoredSafePhaseV2::RootSaved,
                 code: StoredConflictCodeV2::ProviderMismatch,
@@ -2187,6 +2284,7 @@ mod tests {
             ReducerCommand::Arm {
                 mutation: mutation(&leased(), 1_754_380_801),
                 attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
             },
         )
         .unwrap()
@@ -2210,6 +2308,7 @@ mod tests {
             ReducerCommand::Arm {
                 mutation: mutation(&leased(), 1_754_380_801),
                 attempt_hash: hash("33"),
+                configuration_hash: hash("22"),
             },
         )
         .unwrap()
