@@ -45,9 +45,12 @@ the flake check now runs all seven `wbg-pool` unit tests.
 
 A complete pooled debug attempt still stopped at 144 of 1,438 tests after
 three 60-second timeouts while unrelated builds heavily loaded the host. The
-same adjacent `tonk-analyzer` tests pass in the focused green run above. The
-full debug/release parity and performance benchmark remains required before
-changing the default runner.
+same adjacent `tonk-analyzer` tests pass in the focused green run above. To
+measure reliability and wall time on an isolated host, the PR web CI legs now
+select the opt-in pooled commands while native CI and canonical local commands
+remain unchanged. The completed stock CI run on commit `237de191c` is the
+baseline: 38m55s for debug and 33m44s for release. A passing pooled debug and
+release CI run remains required before changing the default runner.
 
 Tasks 3 and 4 are intentionally not started. They remain conditional on a
 complete passing parity and performance result for both profiles.
