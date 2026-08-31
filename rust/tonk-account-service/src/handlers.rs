@@ -1,8 +1,14 @@
 //! HTTP handlers: thin adapters from worker requests onto the core
 //! ceremony logic.
 
+pub mod capabilities;
 pub mod health;
 pub mod info;
+
+/// Methods allowed by every CORS-readable account-service response.
+pub(crate) const CORS_ALLOW_METHODS: &str = "GET, POST, OPTIONS";
+/// Origins allowed to read public account-service responses.
+pub(crate) const CORS_ALLOW_ORIGIN: &str = "*";
 
 #[cfg(target_arch = "wasm32")]
 pub mod accounts;
@@ -13,11 +19,10 @@ pub mod devices;
 pub mod repository;
 
 /// Add CORS headers permitting cross-origin requests to a response.
-#[cfg(target_arch = "wasm32")]
 pub fn with_cors_headers(response: worker::Response) -> worker::Response {
     let headers = response.headers().clone();
-    let _ = headers.set("Access-Control-Allow-Origin", "*");
-    let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    let _ = headers.set("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN);
+    let _ = headers.set("Access-Control-Allow-Methods", CORS_ALLOW_METHODS);
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
     let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
     response.with_headers(headers)

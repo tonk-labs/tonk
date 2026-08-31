@@ -1,7 +1,7 @@
 # Account-setup provider recovery implementation plan
 
 **Goal:** Make account creation safe to retry after a lost response and expose a proof-bound setup-status check without revealing whether an arbitrary root or email has an account.
-**Approach:** Validate every creation ceremony before the existing atomic account/device insert, then treat an insert conflict as a successful replay only when the persisted account and its earliest active device reproduce every caller-controlled semantic input. The shared `tonk-account` contract derives a domain-separated, length-framed BLAKE3 fingerprint from those inputs, allowing the caller to retain it before sending the request. A device-signed setup-status invocation can then distinguish absent, accepted, and mismatched provider state without adding mutable setup rows or a schema migration.
+**Approach:** Validate every creation ceremony before the existing atomic account/device insert, then treat an insert conflict as a successful replay only when the persisted account and its earliest active device reproduce every caller-controlled semantic input. The shared `tonk-account` contract derives a domain-separated, length-framed BLAKE3 fingerprint from those inputs, allowing the caller to retain it before sending the request. A device-signed setup-status invocation can then distinguish absent, accepted, and mismatched provider state without adding mutable setup rows or a schema migration. A privacy-neutral, CORS-readable capability marker lets clients confirm that full contract before creating a credential.
 **Constraints:**
 - Base this work only on live `origin/staging` commit `605ab21f548e2404db18d4800afbf67631ea9b94`; do not copy or depend on the dirty browser-account audit worktree.
 - Keep the initial `POST /accounts` response at HTTP 201. An exact replay returns HTTP 200 with `reused: true`; both outcomes carry the same stable account ID, canonical descriptor, and creation fingerprint.
@@ -13,6 +13,7 @@
 - Account creation, device registration, and setup status share one canonical stable-grant validator: exactly one valid `root -> device` proof, expected issuer/audience, subject-open, command-open, policy-free (an empty predicate list), and no not-before or expiration.
 - Setup status additionally requires the invocation audience to equal its root subject. It may query only that subject root, never a caller-supplied email or root.
 - Missing/deleted accounts, missing or inactive first devices, and nonmatching device DIDs or delegation CIDs are deliberately indistinguishable as `Absent`; only the exact active first-device proof may receive `Accepted` or `Mismatch`.
+- `GET /capabilities` returns only the service name and numeric `accountSetupRecovery: 1`; it performs no account lookup and exposes no identity-specific state.
 - Do not add a database migration or new dependency. If the live schema cannot support the contract, stop before changing it.
 - This provider-only PR changes no rendered UI or copy, so it does not add Storybook journeys; API documentation and executable HTTP coverage record the contract.
 
@@ -23,6 +24,7 @@
 - `rust/tonk-account/src/lib.rs`: exports the shared creation-recovery contract.
 - `rust/tonk-account-service/src/core/accounts.rs`: canonical stored creation facts, shared fingerprint adapter, exact-conflict recovery, and typed setup-status policy.
 - `rust/tonk-account-service/src/auth.rs`: narrow root-to-device setup proof verifier that does not consult account storage.
+- `rust/tonk-account-service/src/handlers/capabilities.rs`: shared exact capability payload plus the CORS-wrapped Worker handler.
 - `rust/tonk-account-service/src/handlers/accounts.rs`: Cloudflare create replay response and setup-status handler.
 - `rust/tonk-account-service/src/helpers/server.rs`: native route parity for status codes, JSON, CORS, and integration tests.
 - `rust/tonk-account-service/src/lib.rs`: Worker route and preflight registration.
@@ -79,6 +81,12 @@
 - [x] RED/GREEN: reject a non-empty predicate policy at the shared durable-grant boundary, so account creation/device registration cannot persist a grant that setup-status chain verification will later refuse after a lost response.
 - [x] Re-run both affected packages, warning-denied all-target clippy, rustfmt/diff checks, and the account-service-only Cloudflare build before the third commit; 35 unit plus 1 integration `tonk-account` tests, 53 unit plus 9 native HTTP account-service tests, both Clippy gates, and `/nix/store/4wdc713zip5rxyjg05cwsi7bwc8blsam-tonk-account-service-0.6.9` all pass.
 
+### Final capability follow-up
+
+- [x] RED/GREEN: require `GET /capabilities` to return HTTP 200, the exact numeric account-setup recovery marker, and CORS headers; the focused native HTTP test first received the existing 404, then passed unchanged after Worker/native route registration.
+- [x] Pin one deterministically serialized payload shared by the Worker handler and native helper, advertise `GET, POST, OPTIONS`, and register an exact Worker `OPTIONS /capabilities` route.
+- [x] Re-run the account-service package, warning-denied all-target Clippy, rustfmt/diff checks, and the account-service-only Cloudflare build before the fourth commit; 54 unit plus 10 native HTTP tests, Clippy, and `/nix/store/f85nyy0sdbsyyk8qmk1bmvr1mb7gzqay-tonk-account-service-0.6.9` all pass.
+
 ### Task 3: Keep Cloudflare and native HTTP contracts identical
 
 **Files:**
@@ -88,6 +96,8 @@
 - Test: `rust/tonk-account-service/tests/service.rs`
 
 **Interfaces:**
+- `GET /capabilities`: returns exactly `{ "service": "tonk-account-service", "capabilities": { "accountSetupRecovery": 1 } }` with HTTP 200 and CORS headers; no account state is read.
+- `OPTIONS /capabilities`: returns 204 with `GET, POST, OPTIONS` allowed.
 - `POST /accounts`: initial create returns 201; exact replay returns 200. Both return `{ accountId, descriptorHex, createFingerprint, reused }`.
 - `POST /accounts/setup-status`: accepts the CBOR invocation above and returns one typed JSON status with HTTP 200. Authentication/argument failures retain structured 4xx responses; storage failures retain generic 500 responses.
 - `OPTIONS /accounts/setup-status`: returns the service's existing CORS headers.
@@ -97,6 +107,7 @@
 - [x] Run the status HTTP test before routing; it failed with the expected 404. Exact replay had already failed at the core conflict boundary in the first RED run.
 - [x] Implement the Worker handler/routes, native helper route, response status selection, JSON serialization, and preflight registration from the same core/auth seams.
 - [x] Run the focused response-loss, privacy, and CORS HTTP filters; each passes. Native HTTP filters required loopback permission after the sandbox rejected binding before behavior ran.
+- [x] Add native HTTP and shared handler-payload tests for the capability marker, exact response, GET-enabled CORS, and preflight parity.
 
 ### Task 4: Document and verify the provider slice
 
@@ -105,13 +116,13 @@
 - Modify: `plan/audit-account-setup-provider.md:verification evidence`
 
 **Interfaces:**
-- Documents: retry semantics, exact fingerprint inputs/exclusions, setup-status proof requirements, response shapes, mismatch privacy, and deployment order before a browser client begins recovery calls.
+- Documents: retry semantics, exact fingerprint inputs/exclusions, setup-status proof requirements, response shapes, mismatch privacy, the capability marker, and deployment order before a browser client begins recovery calls.
 
 - [x] Update the README with exact request commands, response status codes/fields, proof requirements, and the no-account-existence-leak boundary.
 - [x] Run `cargo fmt --all -- --check` and `git diff --check`; both pass after rustfmt's mechanical layout changes.
-- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (53 unit plus 9 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
+- [x] Run `cargo test -p tonk-account` (35 unit plus 1 integration test) and `cargo test -p tonk-account-service --features helpers` (54 unit plus 10 native HTTP integration tests); all pass. The service package ran with loopback permission because the restricted sandbox had already denied native listener binding before behavior.
 - [x] Run all-target warning-denied clippy for both `tonk-account` and `tonk-account-service --features helpers`; both pass.
-- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final follow-up source passes at `/nix/store/4wdc713zip5rxyjg05cwsi7bwc8blsam-tonk-account-service-0.6.9` without building `tonk-ui`.
+- [x] Run the repository-defined account-service-only Cloudflare build, `nix build path:.#tonk-account-service --no-link`; the final follow-up source passes at `/nix/store/f85nyy0sdbsyyk8qmk1bmvr1mb7gzqay-tonk-account-service-0.6.9` without building `tonk-ui`.
 - [x] Re-read the final diff against every mismatch and privacy requirement, update this plan with fresh green evidence, and confirm no migration, lock-file change, UI source, or unrelated work entered the branch. That review found and fixed one malformed stored-delegation acceptance gap before commit.
 
 ## Focused TDD evidence
@@ -126,4 +137,5 @@
 - Status-privacy review RED/GREEN: `it_hides_every_nonmatching_first_device_state_as_absent` first returned `Mismatch` for a missing first device (0 passed / 1 failed / 50 filtered), then passed unchanged (1 / 1) after missing/inactive/wrong-device/wrong-CID states collapsed to `Absent`.
 - Audience review RED/GREEN: `it_rejects_setup_invocations_for_an_unrelated_audience` failed before the binding existed (0 passed / 1 failed / 51 filtered), then passed unchanged (1 / 1) once invocation audience had to equal root subject.
 - Predicate-policy review RED/GREEN: `it_never_persists_a_policy_scoped_grant_setup_status_would_reject` first proved setup authentication refused an impossible `createFingerprint` predicate while account creation still accepted and inserted that grant (0 passed / 1 failed / 52 filtered), then passed unchanged (1 / 1) after the shared validator required an empty predicate list and returned an actionable `PolicyScoped` error.
+- Capability-route RED/GREEN: `it_advertises_account_setup_recovery_with_cors` first received HTTP 404 from the native helper (0 passed / 1 failed / 9 filtered), then passed unchanged (1 / 1) with the exact shared JSON marker and `GET, POST, OPTIONS` CORS contract. The handler payload unit filter also passes 1 / 1.
 - The first native HTTP attempt in the restricted sandbox failed to bind loopback with `PermissionDenied` before behavior; every unchanged HTTP filter passed with loopback permission.

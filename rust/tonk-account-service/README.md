@@ -9,9 +9,9 @@ This crate is a Cloudflare Worker. It stores account and device rows in
 Cloudflare D1 (`migrations/` is the schema's single source of truth) and backs
 up chain bytes, keyed by content address, in an R2 bucket. It also relays self-certifying revocation artifacts into a separate immutable R2 bucket; the D1 device status is only an account UI projection.
 Email codes are sent through Resend. Natively (off wasm32), only the
-binding-free routes (`GET /`, `GET /health`) are registered; the D1/R2/Resend
-routes are wasm-only adapters (see `src/store/d1.rs`, `src/chains/r2.rs`,
-`src/email/resend.rs`).
+binding-free routes (`GET /`, `GET /health`, `GET /capabilities`) are
+registered; the D1/R2/Resend routes are wasm-only adapters (see
+`src/store/d1.rs`, `src/chains/r2.rs`, `src/email/resend.rs`).
 
 ## Auth model
 
@@ -49,12 +49,18 @@ is not: it orphans every credential minted under the wider boundary.
 
 ## Endpoints
 
-The Worker (`src/lib.rs`) routes, all under `accounts.tonk.xyz`. Every
-`POST` route also has a matching `OPTIONS` route for CORS preflight (204,
-permissive CORS headers).
+The Worker (`src/lib.rs`) routes, all under `accounts.tonk.xyz`. Every `POST`
+route and the CORS-readable capability route have a matching `OPTIONS` route
+for CORS preflight (204, permissive CORS headers).
 
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
+- `GET /capabilities`: privacy-neutral feature discovery with CORS headers.
+  Returns exactly `{ "service": "tonk-account-service", "capabilities": {
+  "accountSetupRecovery": 1 } }`. The numeric `1` is the only marker for the
+  response-loss recovery contract described below; a missing route, malformed
+  response, or different value is unsupported and must be rejected by the
+  calling UI before it creates a credential.
 - `POST /codes`: request an email verification code. Body: `{ "email": string }`.
 - `POST /accounts/preflight`: verify a submitted `{ "email", "code" }` and
   reject an already-registered address before WebAuthn. A successful check
@@ -171,10 +177,12 @@ fails closed if the route is absent rather than creating a passkey before email
 availability has been verified.
 
 Account-setup recovery has the same provider-first rollout requirement: deploy
-the account worker containing `/accounts/setup-status` and exact-retry support
-before a UI or CLI starts the recovery saga. Older clients can ignore the new
-fields on the initial `201`; recovery-aware clients must not assume the status
-route exists until that provider deployment is complete.
+the account worker containing `/capabilities`, `/accounts/setup-status`, and
+exact-retry support before a UI or CLI starts the recovery saga. A
+recovery-aware client must fetch `/capabilities` and require the numeric
+`accountSetupRecovery: 1` marker before credential creation; a missing, wrong,
+or unreadable marker fails closed without querying account state. Older clients
+can ignore the new fields on the initial `201`.
 
 Releases are not manual. `.github/workflows/publish.yml` applies this
 crate's migrations and deploys the worker on every push to `staging` and

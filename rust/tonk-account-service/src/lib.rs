@@ -28,6 +28,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     Router::new()
         .get_async("/", handlers::info::handle)
         .get_async("/health", handlers::health::handle)
+        .get_async("/capabilities", handlers::capabilities::handle)
+        .options_async("/capabilities", handlers::capabilities::handle_options)
         .post_async("/accounts", handlers::accounts::handle)
         .options_async("/accounts", handlers::accounts::handle_options)
         .post_async(
@@ -71,6 +73,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     Router::new()
         .get_async("/", handlers::info::handle)
         .get_async("/health", handlers::health::handle)
+        .get_async("/capabilities", handlers::capabilities::handle)
+        .options_async("/capabilities", handlers::capabilities::handle_options)
         .run(req, env)
         .await
 }

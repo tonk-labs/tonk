@@ -527,7 +527,7 @@ async fn it_rejects_an_over_long_expiration_window() {
 #[dialog_common::test]
 async fn it_answers_preflight_with_cors_headers() {
     let server = AccountServer::start().await;
-    for path in ["/accounts", "/accounts/setup-status"] {
+    for path in ["/capabilities", "/accounts", "/accounts/setup-status"] {
         let response = reqwest::Client::new()
             .request(
                 reqwest::Method::OPTIONS,
@@ -539,10 +539,60 @@ async fn it_answers_preflight_with_cors_headers() {
         assert_eq!(response.status(), 204, "wrong preflight status for {path}");
         let headers = response.headers();
         assert_eq!(headers["access-control-allow-origin"], "*");
-        assert_eq!(headers["access-control-allow-methods"], "POST, OPTIONS");
+        assert_eq!(
+            headers["access-control-allow-methods"],
+            "GET, POST, OPTIONS"
+        );
         assert_eq!(headers["access-control-allow-headers"], "Content-Type");
         assert_eq!(headers["access-control-expose-headers"], "Content-Type");
     }
+
+    server.stop().await;
+}
+
+#[dialog_common::test]
+async fn it_advertises_account_setup_recovery_with_cors() {
+    let server = AccountServer::start().await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{}/capabilities", server.endpoint))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let headers = response.headers().clone();
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(headers["content-type"], "application/json");
+    assert_eq!(
+        headers["access-control-allow-methods"],
+        "GET, POST, OPTIONS"
+    );
+    assert_eq!(headers["access-control-expose-headers"], "Content-Type");
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({
+            "service": "tonk-account-service",
+            "capabilities": {
+                "accountSetupRecovery": 1,
+            },
+        })
+    );
+
+    let preflight = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/capabilities", server.endpoint),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preflight.status(), 204);
+    assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+    assert_eq!(
+        preflight.headers()["access-control-allow-methods"],
+        "GET, POST, OPTIONS"
+    );
 
     server.stop().await;
 }

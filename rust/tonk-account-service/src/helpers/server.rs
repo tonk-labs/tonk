@@ -34,7 +34,8 @@ use crate::core::devices::{
 };
 use crate::email::CapturedEmail;
 use crate::error::{ErrorCode, ServiceError};
-use crate::handlers::ceremony_error;
+use crate::handlers::capabilities::response_body as capabilities_response_body;
+use crate::handlers::{CORS_ALLOW_METHODS, CORS_ALLOW_ORIGIN, ceremony_error};
 use crate::store::Store;
 use crate::store::sqlite::SqliteStore;
 
@@ -128,6 +129,9 @@ async fn handle_request(
     let response = match (req.method().clone(), req.uri().path()) {
         (Method::GET, "/") => return Ok(info_response()),
         (Method::GET, "/health") => return Ok(health_response()),
+        (Method::GET, "/capabilities") => {
+            Ok(json_response(StatusCode::OK, &capabilities_response_body()))
+        }
         (Method::GET, "/_test/emails") => emails_route(&backends),
         (Method::POST, "/accounts") => accounts_route(req, &backends).await,
         (Method::POST, "/accounts/setup-status") => {
@@ -578,10 +582,13 @@ fn no_content() -> Response<Full<Bytes>> {
 /// `crate::handlers::with_cors_headers`.
 fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     let headers = response.headers_mut();
-    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_ORIGIN,
+        CORS_ALLOW_ORIGIN.parse().unwrap(),
+    );
     headers.insert(
         ACCESS_CONTROL_ALLOW_METHODS,
-        "POST, OPTIONS".parse().unwrap(),
+        CORS_ALLOW_METHODS.parse().unwrap(),
     );
     headers.insert(
         ACCESS_CONTROL_ALLOW_HEADERS,
