@@ -143,13 +143,18 @@ self.oninstall = event => {
 };
 
 self.onactivate = event => {
-    // Claim clients and finish activating. The wasm worker is poked
-    // outside the waitUntil: activateWorker() waits for the
-    // active-worker lock, and gating ACTIVATION on that lock deadlocks
-    // the swap — the outgoing worker cannot die while its in-flight
-    // fetches hang, the lock never frees, and this worker pins in
+    // Do not claim every open page merely because this worker activated.
+    // A page from before the page-directed update protocol cannot align or
+    // reload itself safely, so it stays on its current controller until its
+    // next navigation. A compatible page sends `{type:"claim"}` below after
+    // observing this worker reach `activated`; first-install pages use the
+    // same explicit message.
+    //
+    // The wasm worker is still poked outside waitUntil: activateWorker()
+    // waits for the active-worker lock, and gating ACTIVATION on that lock
+    // deadlocks the swap — the outgoing worker cannot die while its
+    // in-flight fetches hang, the lock never frees, and this worker pins in
     // `activating` while every page waits on it.
-    event.waitUntil(self.clients.claim());
     (async () => {
         try {
             const worker = await activateWorker();

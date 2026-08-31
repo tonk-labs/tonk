@@ -60,11 +60,48 @@ The crate produces two Wasm bin targets, both referenced from `index.html` by a
 
 ## How the SPA and service worker compose
 
-`index.html` registers `/service_worker.js`, then the shell waits (via the
-`serviceWorkerActivates` bootstrap in `index.html`) until the worker is
-*controlling* the page before issuing any `/api/*` request. The worker is the
-local backend: the UI talks to it over HTTP and listens for change notifications
-on a `BroadcastChannel`, surfaced to Leptos as reactive signals.
+`index.html` starts one memoized registration and update check before the UI
+Wasm mounts. The static `#tonk-boot` overlay stays visible until that promise
+settles, and the top-document application root is not created while a worker
+replacement is in flight. `updateViaCache: "none"` keeps the update job's
+script fetches fresh; an explicit `ServiceWorkerRegistration.update()` starts
+that job on every user-initiated warm load.
+
+The load lifecycle has four cases:
+
+- A first install explicitly asks the activated worker to claim the current
+  document, then continues without reloading.
+- An online warm load checks for a newer worker behind the boot overlay.
+- A real warm replacement activates through `skipWaiting()`. The update-aware
+  page then explicitly asks that successor to claim it and reloads once before
+  the application root mounts so the document, shell, and controller agree.
+- An offline warm load keeps its existing controller and cached shell. A failed
+  update check does not unregister the worker or clear CacheStorage, IndexedDB,
+  or other local Tonk state.
+
+Activation alone does not claim already-open documents. Pages cached before
+this update protocol therefore remain on their compatible existing controller
+until navigation; an update-aware page opts into the new controller only when
+it can perform the guarded alignment reload.
+
+An explicit readiness rejection is not treated as a silent boot stall. Before
+returning with the application root unmounted, the UI terminalizes the static
+boot shell with “Tonk couldn’t start. Check your connection, then reload. Your
+local data is safe.” Terminalization cancels automatic watchdog recovery,
+clears its per-tab retry counter, and never reloads, deletes CacheStorage, or
+unregisters a worker. The first terminal message wins so a more specific cause
+can retain its own recovery guidance; after correcting the cause, the person
+chooses when to reload. The watchdog ladder remains available for boots that
+stop making progress without producing an explicit error.
+
+The one-shot alignment reload is guarded in `sessionStorage`; a stable load
+clears the guard. There is one rollout boundary: a shell cached before this
+bootstrap ships cannot run code it does not contain. Its existing worker can
+refresh `/` in the background, and the next ordinary navigation runs the new
+load-time update path. Later deployments are detected on the first warm load.
+
+The service worker is the local backend: the UI talks to it over HTTP and
+listens for change notifications on a `BroadcastChannel`.
 
 The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces the
 `ui` binary wires together:

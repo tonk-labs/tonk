@@ -246,27 +246,6 @@
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
-            // Resolve when the service worker is *controlling* this page.
-            //
-            // `controller` being non-null is the precise moment when
-            // `/api/*` fetches start routing through the worker. Three
-            // paths reach that state:
-            //
-            //   1. Already controlled (warm load) — return immediately.
-            //   2. Registration is in-flight — `controllerchange` fires
-            //      when the new SW claims this page during its install /
-            //      activate cycle.
-            //   3. SW activated in a previous session but this newly-
-            //      loaded document isn't being controlled — the SW's
-            //      `onactivate` doesn't refire, so without a nudge it
-            //      never calls `clients.claim()` for this client. We
-            //      send a `{type:"claim"}` message to the active worker
-            //      asking it to claim; the SW responds with
-            //      `self.clients.claim()`, which raises
-            //      `controllerchange` on this page.
-            //
-            // No reloads, no timeouts: the claim path is deterministic
-            // once the SW has a `message` handler that honors `claim`.
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
             // first data-plane call (this runs inside `serviceWorkerActivates`,
             // which the shell awaits at boot), so on a reload while offline the
@@ -278,35 +257,224 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
-            self.serviceWorkerActivates = async () => {
+            const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
+
+            // Begin registration and update detection eagerly, while the UI
+            // Wasm downloads. Every caller receives this exact promise, so the
+            // pre-mount gate and later host IO cannot start duplicate updates.
+            const serviceWorkerActivation = (async () => {
                 if (!("serviceWorker" in navigator)) {
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
                 }
-                if (navigator.serviceWorker.controller) {
-                    // Warm reload: already controlled. Still poke so a reload
-                    // while offline reconciles the offline state.
+
+                const priorController = navigator.serviceWorker.controller;
+                let resolveControlled;
+                const controlled = new Promise((resolve) => {
+                    resolveControlled = resolve;
+                });
+                const onFirstControl = () => resolveControlled();
+                navigator.serviceWorker.addEventListener(
+                    "controllerchange",
+                    onFirstControl,
+                );
+
+                let registration;
+                try {
+                    registration = await navigator.serviceWorker.register(
+                        "/service_worker.js",
+                        {
+                            type: "module",
+                            updateViaCache: "none",
+                        },
+                    );
+                } catch (error) {
+                    navigator.serviceWorker.removeEventListener(
+                        "controllerchange",
+                        onFirstControl,
+                    );
+                    throw error;
+                }
+
+                // First install (or an active-but-unclaimed worker) keeps this
+                // document. Wait until `/api/*` is controlled, nudging an
+                // already-active worker whose activate event happened earlier.
+                if (!priorController) {
+                    if (!navigator.serviceWorker.controller) {
+                        registration.active?.postMessage({ type: "claim" });
+                        await controlled;
+                    }
+                    navigator.serviceWorker.removeEventListener(
+                        "controllerchange",
+                        onFirstControl,
+                    );
+                    try {
+                        sessionStorage.removeItem(UPGRADE_RELOAD);
+                    } catch {}
+                    await sendConnectivity();
+                    return;
+                }
+                navigator.serviceWorker.removeEventListener(
+                    "controllerchange",
+                    onFirstControl,
+                );
+
+                // The replacement document consumes the one-shot handoff. Its
+                // controller is already current, so another network update here
+                // would permit an automatic reload chain if a second deployment
+                // landed between the two documents.
+                let alignmentReload = false;
+                try {
+                    alignmentReload = sessionStorage.getItem(UPGRADE_RELOAD) === "1";
+                } catch {}
+                if (alignmentReload) {
+                    try {
+                        sessionStorage.removeItem(UPGRADE_RELOAD);
+                    } catch {}
                     await sendConnectivity();
                     return;
                 }
 
-                const controlled = new Promise((resolve) => {
-                    navigator.serviceWorker.addEventListener(
-                        "controllerchange",
-                        resolve,
-                        { once: true },
+                let incoming = null;
+                let claimRequested = null;
+                let settled = false;
+                let resolveOutcome;
+                const outcome = new Promise((resolve) => {
+                    resolveOutcome = resolve;
+                });
+                const finish = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    resolveOutcome(value);
+                };
+                const noteLife = () => self.tonkBootLife?.();
+                const onWorkerState = () => {
+                    noteLife();
+                    if (incoming?.state === "redundant") finish("failed");
+                    // Activation alone deliberately leaves older, unaware
+                    // pages on their existing controller. This document owns
+                    // the update protocol, so once its observed successor is
+                    // ready it explicitly asks that worker to take control;
+                    // the resulting controllerchange drives the guarded
+                    // alignment reload below.
+                    if (
+                        incoming?.state === "activated" &&
+                        navigator.serviceWorker.controller === priorController &&
+                        claimRequested !== incoming
+                    ) {
+                        claimRequested = incoming;
+                        incoming.postMessage({ type: "claim" });
+                    }
+                    if (
+                        navigator.serviceWorker.controller &&
+                        navigator.serviceWorker.controller !== priorController
+                    ) {
+                        finish("replaced");
+                    }
+                };
+                const watchIncoming = (worker) => {
+                    if (!worker || worker === incoming) return;
+                    incoming?.removeEventListener("statechange", onWorkerState);
+                    incoming = worker;
+                    incoming.addEventListener("statechange", onWorkerState);
+                    const status = document.querySelector("[data-boot-status]");
+                    if (status) status.textContent = "updating…";
+                    noteLife();
+                    onWorkerState();
+                };
+                const onUpdateFound = () =>
+                    watchIncoming(registration.installing);
+                const onReplacement = () => {
+                    if (
+                        navigator.serviceWorker.controller &&
+                        navigator.serviceWorker.controller !== priorController
+                    ) {
+                        finish("replaced");
+                    }
+                };
+                const cleanup = () => {
+                    registration.removeEventListener(
+                        "updatefound",
+                        onUpdateFound,
                     );
-                });
+                    navigator.serviceWorker.removeEventListener(
+                        "controllerchange",
+                        onReplacement,
+                    );
+                    incoming?.removeEventListener(
+                        "statechange",
+                        onWorkerState,
+                    );
+                };
+                registration.addEventListener("updatefound", onUpdateFound);
+                navigator.serviceWorker.addEventListener(
+                    "controllerchange",
+                    onReplacement,
+                );
+                onReplacement();
 
-                // Nudge the active worker to claim this client.
-                navigator.serviceWorker.ready.then((reg) => {
-                    reg.active?.postMessage({ type: "claim" });
-                });
+                const existingUpdate =
+                    registration.installing || registration.waiting;
+                let result;
+                if (existingUpdate) {
+                    watchIncoming(existingUpdate);
+                    result = await outcome;
+                } else {
+                    try {
+                        await registration.update();
+                    } catch (error) {
+                        cleanup();
+                        if (
+                            navigator.serviceWorker.controller ===
+                            priorController
+                        ) {
+                            console.warn(
+                                "service-worker update check failed; keeping the active worker",
+                                error,
+                            );
+                            try {
+                                sessionStorage.removeItem(UPGRADE_RELOAD);
+                            } catch {}
+                            await sendConnectivity();
+                            return;
+                        }
+                        throw error;
+                    }
+                    watchIncoming(
+                        registration.installing || registration.waiting,
+                    );
+                    result = incoming ? await outcome : "unchanged";
+                }
 
-                await controlled;
+                cleanup();
+                if (result === "replaced") {
+                    try {
+                        sessionStorage.setItem(UPGRADE_RELOAD, "1");
+                    } catch {}
+                    location.reload();
+                    await new Promise(() => {});
+                    return;
+                }
+
+                try {
+                    sessionStorage.removeItem(UPGRADE_RELOAD);
+                } catch {}
+                if (result === "failed") {
+                    console.warn(
+                        `service-worker update failed in state ${incoming?.state ?? "unknown"}; keeping the active worker`,
+                    );
+                }
                 await sendConnectivity();
-            };
+            })();
+
+            // Observe rejection immediately so the eager promise cannot create
+            // a transient `unhandledrejection` before Rust reaches its strict
+            // await. The original promise remains rejected for that await.
+            serviceWorkerActivation.catch((error) =>
+                console.error("service-worker activation failed", error),
+            );
+            self.serviceWorkerActivates = () => serviceWorkerActivation;
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes
@@ -369,13 +537,17 @@
          actually wedged on; then give up honestly and leave the shell's
          failure line for the person. A detected wasm load failure
          (boot-progress.mjs onFailure) jumps straight onto the ladder via
-         tonkBootRecover instead of waiting out the stall window. -->
+         tonkBootRecover instead of waiting out the stall window. A known
+         readiness rejection instead enters an idempotent terminal state:
+         it cancels this automatic ladder, clears its retry counter, and
+         leaves a safe-state/next-action message for a deliberate reload. -->
         <script>
             (() => {
                 if (!("serviceWorker" in navigator)) return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();
+                let terminal = false;
                 self.tonkBootLife = () => {
                     lastLife = Date.now();
                 };
@@ -413,6 +585,7 @@
                 };
 
                 const recover = (why) => {
+                    if (terminal) return;
                     clearInterval(timer);
                     const n = attempts();
                     if (n >= 2) {
@@ -455,6 +628,20 @@
                     ]).then(reload, reload);
                 };
                 self.tonkBootRecover = recover;
+                self.tonkBootTerminal = (message) => {
+                    if (terminal) return;
+                    terminal = true;
+                    clearInterval(timer);
+                    try {
+                        sessionStorage.removeItem(RETRIES);
+                    } catch {}
+                    const status =
+                        document.querySelector("[data-boot-status]");
+                    if (status) {
+                        status.setAttribute("data-failed", "");
+                        status.textContent = message;
+                    }
+                };
 
                 const timer = setInterval(() => {
                     if (booted()) {
@@ -634,17 +821,5 @@
             </div>
         </div>
 
-        <script type="module">
-            if ("serviceWorker" in navigator) {
-                await navigator.serviceWorker.register("/service_worker.js", {
-                    type: "module",
-                    updateViaCache: "none",
-                });
-            } else {
-                console.error(
-                    "Service workers not supported; Tonk will not work!",
-                );
-            }
-        </script>
     </body>
 </html>

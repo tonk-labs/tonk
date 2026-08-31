@@ -36,16 +36,16 @@ mod imp {
         static SW_READY: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     }
 
-    /// Resolve once the service worker is activated. Idempotent
+    /// Require the service worker to be activated. Idempotent
     /// and cheap to call repeatedly — after the first successful
-    /// await, returns immediately. Silently no-ops when the shell
-    /// hook isn't installed (test harness, embeds) so callers
-    /// don't hang in those environments.
-    pub async fn wait() {
+    /// await, returns immediately. Missing shell globals remain a
+    /// successful no-op for test harnesses and embeds; rejection of an
+    /// installed readiness hook is returned without opening the gate.
+    pub async fn require() -> Result<(), JsValue> {
         // Fast path: already known ready.
         let cached = SW_READY.with(|cell| *cell.borrow());
         if cached {
-            return;
+            return Ok(());
         }
 
         // Slow path: probe and await the global. Each failure mode
@@ -54,27 +54,30 @@ mod imp {
         // environments without the shell hook (test harness, embeds).
         let Some(win) = window() else {
             SW_READY.with(|cell| *cell.borrow_mut() = true);
-            return;
+            return Ok(());
         };
         let Ok(activates_val) = Reflect::get(&win, &JsValue::from_str("serviceWorkerActivates"))
         else {
             SW_READY.with(|cell| *cell.borrow_mut() = true);
-            return;
+            return Ok(());
         };
         let Ok(activates) = activates_val.dyn_into::<Function>() else {
             SW_READY.with(|cell| *cell.borrow_mut() = true);
-            return;
+            return Ok(());
         };
-        let Ok(result) = activates.call0(&JsValue::UNDEFINED) else {
-            SW_READY.with(|cell| *cell.borrow_mut() = true);
-            return;
-        };
+        let result = activates.call0(&JsValue::UNDEFINED)?;
         let Ok(promise) = result.dyn_into::<Promise>() else {
             SW_READY.with(|cell| *cell.borrow_mut() = true);
-            return;
+            return Ok(());
         };
-        let _ = JsFuture::from(promise).await;
+        JsFuture::from(promise).await?;
         SW_READY.with(|cell| *cell.borrow_mut() = true);
+        Ok(())
+    }
+
+    /// Tolerant compatibility gate for existing host IO callers.
+    pub async fn wait() {
+        let _ = require().await;
     }
 }
 
@@ -86,4 +89,6 @@ mod imp {
     pub async fn wait() {}
 }
 
+#[cfg(target_arch = "wasm32")]
+pub use imp::require;
 pub use imp::wait;
