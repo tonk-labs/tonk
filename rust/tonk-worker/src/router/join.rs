@@ -1,27 +1,29 @@
 //! Redeeming an invite URL, atomically.
 //!
 //! A join is externally a single transition: either the recipient ends
-//! up holding a usable replica of the invited subject, or nothing about
-//! their profile changed. Getting there takes three stages, and the
-//! whole point of the split is that only the last one writes anything
-//! durable.
+//! up holding a usable replica of the invited subject, or nothing they
+//! can see about their profile changed.
 //!
 //! ```text
-//! parse -> verify audience -> build candidate chain -> stage proof/repository
-//!       -> authorize remote -> pull, mutate, and validate staged content
-//!       -> install staged content -> commit authority/profile state
-//!       -> backup -> navigate
+//! parse -> verify audience -> build candidate chain
+//!       -> mount replica (hidden) -> save candidate authority
+//!       -> pull -> validate -> commit claim
+//!       -> index replica (visible) -> backup -> navigate
 //! ```
 //!
 //! [`prepare_join`] does the reads: parse the URL, check the invite is
 //! addressed to this identity, and build the candidate delegation chain
-//! in memory. [`stage_join`] proves it, against a
-//! [`Staging`](staging::Staging) pool that never touches the durable
-//! stores: the remote either honours the chain or it does not, the
-//! content either carries what the space needs or it does not, and the
-//! roster facts this claim adds ride the same staged revision.
-//! [`commit_join`] then installs the exact staged revision, saves the
-//! accepted authority, and only then indexes the replica in the profile.
+//! in memory. [`perform_join`] is then plain dialog against the durable
+//! replica: mount it hidden, save the candidate chain (the pull's forks
+//! prove with it, and the remote honouring or refusing them is the
+//! authorization verdict), pull, validate what the remote served, and
+//! commit the roster claim — then save the accepted authority and only
+//! then index the replica in the profile.
+//!
+//! Atomicity needs no side store: a mounted-but-unindexed repository is
+//! invisible and resumable, content-addressed blocks are unobservable
+//! until a head references them, and a candidate chain the remote
+//! refused is inert authority that delegation pruning reclaims.
 //!
 //! Two outcomes:
 //!
@@ -48,12 +50,9 @@
 //! stable everyone-side.
 //!
 //! Invite URLs carry bearer authority in their query and fragment, so
-//! no type in this module renders one: [`PreparedJoin`],
-//! [`StagedJoin`], and [`JoinFailure`] all redact, and failure copy is
-//! fixed text chosen from a closed set rather than anything an upstream
-//! response said.
-
-mod staging;
+//! no type in this module renders one: [`PreparedJoin`] and
+//! [`JoinFailure`] both redact, and failure copy is fixed text chosen
+//! from a closed set rather than anything an upstream response said.
 
 use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
@@ -69,7 +68,7 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{
-    Branch, PullError, RemoteSite, Repository, RepositoryExt as _, Revision, SiteAddress,
+    Branch, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
 };
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
@@ -88,7 +87,6 @@ use tonk_schema::{
 use tonk_worker_api::JoinFailureKind;
 use zeroize::Zeroizing;
 
-use self::staging::Staging;
 use super::AppState;
 use super::repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
@@ -129,10 +127,9 @@ const CONCEPT_MARKER: &str = "db.meta/concept";
 
 /// The provider surface a branch read, commit, or remote fallback needs.
 ///
-/// Staged and durable work run against different operators
-/// ([`StagedOperator`](staging::StagedOperator) over volatile storage,
-/// the session operator over the device's), so the helpers they share
-/// are generic over this bundle rather than over `TonkState`.
+/// The join's helpers (validation, roster reads, the pull wrapper) are
+/// generic over this bundle rather than over `TonkState`, so they can be
+/// exercised against any operator that provides it.
 pub(crate) trait BranchEnv:
     Provider<Get>
     + Provider<Put>
@@ -502,58 +499,6 @@ impl PreparedJoin {
     }
 }
 
-/// A join whose authority and content have been proven in volatile
-/// storage and are ready to be committed.
-///
-/// Owns the staging pool for as long as the commit needs to read out of
-/// it — dropping this before [`commit_join`] is what makes a failed
-/// attempt leave nothing behind.
-pub(crate) struct StagedJoin {
-    prepared: PreparedJoin,
-    staging: Staging,
-    /// The candidate chain staging accepted.
-    chain: DelegationChain,
-    /// Staged content to publish, when the attempt produced a head.
-    installable: Option<StagedContent>,
-}
-
-/// The staged head to publish locally, and how much of it the durable
-/// replica has to be handed up front.
-struct StagedContent {
-    /// Staged branch the revision lives on.
-    branch: Branch,
-    /// The exact revision to publish.
-    revision: Revision,
-    /// The head the remote served, before this claim's facts were staged
-    /// on top of it.
-    ///
-    /// `Some` only when everything reachable from it is still reachable
-    /// *through the durable replica's own remote* — a fresh remote-backed
-    /// join, whose staged branch started empty and therefore holds exactly
-    /// what the remote handed back. Then the install carries only the nodes
-    /// this claim created and the rest is read lazily, the way every other
-    /// path in the worker already reads a synced branch.
-    ///
-    /// `None` when there is nowhere to read the remainder back from: a
-    /// local-only invite has no remote, and a renewal's staged branch is a
-    /// merge of local and remote content whose nodes exist whole in
-    /// neither store.
-    remote_head: Option<Revision>,
-}
-
-impl std::fmt::Debug for StagedJoin {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("StagedJoin")
-            .field("prepared", &self.prepared)
-            .field(
-                "installable",
-                &self.installable.as_ref().map(|content| &content.revision),
-            )
-            .finish_non_exhaustive()
-    }
-}
-
 /// Redeem an invite URL to this device's account.
 #[wasm_compat]
 pub async fn join(
@@ -621,26 +566,24 @@ pub(crate) struct JoinOutcome {
 /// Accreditation re-roots the membership from the custodied invite
 /// seed, so a join never has to be redone.
 ///
-/// Nothing durable changes before [`commit_join`], and everything
-/// [`commit_join`] does is either local or already proven, so a failure
-/// at any earlier stage leaves the recipient's profile, repository list,
-/// roster, and claim backup exactly as they were.
+/// A failure at any stage leaves the recipient's profile, repository
+/// list, roster, and claim backup exactly as they can see them: what a
+/// failed [`perform_join`] leaves behind — a hidden unindexed replica,
+/// unreferenced content-addressed blocks, an unused candidate chain —
+/// is invisible, resumable, and reclaimed by pruning.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
-    // Per-phase wall clock, logged on success: the staging phase is the
+    // Per-phase wall clock, logged on success: the perform phase is the
     // network-bound one (pull + validation + roster reads against the
     // remote), so a slow join in the field can be attributed to the
     // network or to local work without reproducing it.
     let started = web_time::Instant::now();
     let prepared = prepare_join(tonk, url).await?;
     let prepared_at = web_time::Instant::now();
-    let staged = stage_join(tonk, prepared).await?;
-    let staged_at = web_time::Instant::now();
-    let outcome = commit_join(tonk, staged).await?;
+    let outcome = perform_join(tonk, prepared).await?;
     log!(
-        "join: prepared {}ms, staged {}ms, committed {}ms",
+        "join: prepared {}ms, performed {}ms",
         prepared_at.duration_since(started).as_millis(),
-        staged_at.duration_since(prepared_at).as_millis(),
-        staged_at.elapsed().as_millis()
+        prepared_at.elapsed().as_millis()
     );
     Ok(outcome)
 }
@@ -707,151 +650,29 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
     })
 }
 
-/// Prove the candidate chain against the remote and the content, in
-/// volatile storage.
+/// Perform a prepared join directly against the durable replica —
+/// dialog's ordinary create-and-replicate flow, with the invite's chain
+/// as the authority that makes the pull answerable.
 ///
-/// The certificate store this stage writes to is the staging pool's, so
-/// the candidate chain never becomes durable authority until it has
-/// passed. When the join creates a replica, the roster facts this claim
-/// adds are committed onto the staged branch too — so the revision
-/// [`commit_join`] installs already contains them, and no fallible
-/// content work is left after the durable authority is saved.
-async fn stage_join(tonk: &TonkState, prepared: PreparedJoin) -> Result<StagedJoin, JoinFailure> {
-    let staging = Staging::open(tonk).await?;
-
-    // Retain only what the proof walk needs. The staged session's
-    // `profile -> operator` delegation is already in the pool; the claim
-    // composes onto the `account -> device` grant.
-    staging.retain(tonk, prepared.device_grant.clone()).await?;
-    let chain = prepared.chain.clone();
-    staging.retain(tonk, chain.clone()).await?;
-
-    let branch = staging
-        .mount(tonk, &prepared.subject, prepared.remote_url.as_deref())
-        .await?;
-
-    // A renewal starts from the exact local head, then merges the remote into
-    // that staged copy. Starting empty would discard unpushed local content.
-    if prepared.existing {
-        copy_existing_to_stage(tonk, &prepared, &branch, staging.operator()).await?;
-    }
-
-    // What the remote served, captured before this claim writes on top of
-    // it. Only a fresh join can use it as an install base: a renewal staged
-    // its local head first, so the merge below produces nodes the remote
-    // cannot serve back.
-    let mut remote_head = None;
-    if prepared.needs_remote_authorization() {
-        pull_staged(&branch, staging.operator()).await?;
-        validate_content(&branch, staging.operator(), &prepared.subject).await?;
-        if !prepared.existing {
-            remote_head = branch.revision();
-        }
-    }
-
-    // Every claim, including a renewal, stages roster/provenance/name into
-    // the exact revision that will be installed before authority is saved.
-    let (changes, _already_claimed) = claim_changes(
-        tonk,
-        &branch,
-        staging.operator(),
-        &prepared.invitation,
-        &prepared.invitation_execution,
-        &prepared.member,
-        &prepared.subject,
-    )
-    .await?;
-    if !changes.is_empty() {
-        branch
-            .transaction()
-            .assert(changes)
-            .commit()
-            .perform(staging.operator())
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to stage the claim: {error}"))
-            })?;
-    }
-    if prepared.needs_remote_authorization() {
-        validate_content(&branch, staging.operator(), &prepared.subject).await?;
-    }
-
-    // Every claim and every existing replica has an exact staged head to
-    // install.
-    let installable = branch.revision().map(|revision| StagedContent {
-        branch,
-        revision,
-        remote_head,
-    });
-
-    Ok(StagedJoin {
-        prepared,
-        staging,
-        chain,
-        installable,
-    })
-}
-
-/// Seed a renewal's volatile branch from the exact durable local head.
-async fn copy_existing_to_stage(
+/// There is no staging: the replica is mounted (hidden — no profile
+/// `Replica` fact yet, so nothing is navigable), the candidate chain is
+/// saved into the durable certificate store so the pull's forks can
+/// prove with it, and then the join is plain dialog: pull (the remote
+/// honouring the chain IS the authorization check), validate what it
+/// served, commit the roster claim. Content-addressed blocks a failed
+/// attempt hydrated are unobservable until a head references them, an
+/// unindexed repository is invisible and resumable, and a candidate
+/// chain the remote refused is inert authority that delegation pruning
+/// reclaims — so a failure needs no rollback and leaves nothing a user
+/// can see.
+///
+/// A renewal is the same flow on the already-mounted replica: the pull
+/// is dialog's normal merge of the remote into the local head, which is
+/// exactly what every later sync tick does.
+async fn perform_join(
     tonk: &TonkState,
-    prepared: &PreparedJoin,
-    destination: &Branch,
-    destination_env: &staging::StagedOperator,
-) -> Result<(), JoinFailure> {
-    let repository = tonk
-        .profile
-        .repository(prepared.key.as_str())
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to load the existing replica: {error}"))
-        })?;
-    let source = repository
-        .branch(DEFAULT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to open the existing content: {error}"))
-        })?;
-    let Some(revision) = source.revision() else {
-        return Ok(());
-    };
-    install_revision_between(
-        &source,
-        &repository,
-        &revision,
-        &tonk.operator,
-        destination_env,
-    )
-    .await?;
-    destination
-        .reset(revision)
-        .perform(destination_env)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to open staged existing content: {error}"))
-        })?;
-    Ok(())
-}
-
-/// Commit a proven join, in the order that keeps every intermediate
-/// state either invisible or usable.
-///
-/// Content is installed while the repository is still unindexed, the
-/// accepted authority is saved next, and the profile `Replica` fact —
-/// the moment the join becomes visible — lands only once both are in
-/// place. The backup and the caller's navigation follow.
-async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome, JoinFailure> {
-    let StagedJoin {
-        prepared,
-        staging,
-        chain,
-        installable,
-    } = staged;
-
+    prepared: PreparedJoin,
+) -> Result<JoinOutcome, JoinFailure> {
     let repository = if prepared.installs_replica() {
         mount_replica(
             tonk,
@@ -873,19 +694,82 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
                 JoinFailure::claim_failed(format!("failed to load the renewing replica: {error}"))
             })?
     };
-    if let Some(content) = installable {
-        install_revision(
-            tonk,
-            &content,
-            staging.operator(),
-            &repository,
-            prepared.needs_remote_authorization(),
-        )
-        .await?;
+
+    // The candidate authority, durable before the pull because the pull
+    // is what exercises it: the proof walk composes the chain onto the
+    // account's device grant out of the durable certificate store, and
+    // the remote accepting or refusing the forks it signs is the
+    // authorization verdict. Saving first is safe — idempotent at the
+    // dialog layer, and a chain a failed attempt leaves behind is unused
+    // authority that delegation pruning reclaims.
+    for grant in [&prepared.device_grant, &prepared.chain] {
+        tonk.profile
+            .access()
+            .save(UcanDelegation(grant.clone()))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!(
+                    "failed to save the candidate authority: {error}"
+                ))
+            })?;
     }
 
-    save_authority(tonk, &prepared, chain.clone()).await?;
-    retain_claim_authority(tonk, &prepared.key, &chain).await;
+    let branch = repository
+        .branch(DEFAULT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
+        })?;
+
+    if prepared.needs_remote_authorization() {
+        pull_upstream(&branch, &tonk.operator).await?;
+        validate_content(&branch, &tonk.operator, &prepared.subject).await?;
+    }
+
+    // Every claim, including a renewal, lands its roster/provenance/name
+    // facts as an ordinary commit; the next sync tick pushes them.
+    let (changes, _already_claimed) = claim_changes(
+        tonk,
+        &branch,
+        &tonk.operator,
+        &prepared.invitation,
+        &prepared.invitation_execution,
+        &prepared.member,
+        &prepared.subject,
+    )
+    .await?;
+    if !changes.is_empty() {
+        branch
+            .transaction()
+            .assert(changes)
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+            })?;
+    }
+
+    // The reactor may hold a handle from an earlier attempt at this key;
+    // the pull and commit moved the head underneath it. Leaving a stale
+    // handle cached would wedge every later sync on this branch, so a
+    // failure here fails the join rather than being logged past.
+    tonk.reactor
+        .refresh_branch(prepared.subject.repo_key(), DEFAULT_BRANCH, &tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to adopt the joined branch: {error}"))
+        })?;
+    // Deliver the fresh snapshot the refresh scheduled for any
+    // subscriptions the rebind carried over — a live view left waiting
+    // for the next commit waits forever on a branch nothing edits.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    save_authority(tonk, &prepared, prepared.chain.clone()).await?;
+    retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
@@ -901,8 +785,7 @@ async fn commit_join(tonk: &TonkState, staged: StagedJoin) -> Result<JoinOutcome
         // facts, record the mount configuration the invite carried,
         // or a fresh sign-in lists a space it can never mount.
         // Renewals record too. Best-effort, and strictly after the local
-        // commit — the
-        // join is already complete.
+        // commit — the join is already complete.
         match invite_configuration(
             &prepared.subject,
             prepared.remote_url.as_deref(),
@@ -1029,255 +912,12 @@ async fn save_authority(
     Ok(())
 }
 
-/// Give the durable repository the staged revision, then publish it as the
-/// branch head and verify what landed.
-///
-/// How much content moves depends on what the durable replica can read for
-/// itself. A synced replica reads through a remote-backed index on every
-/// ordinary path — `select`, `session`, `commit`, `pull`, `blob` — so a
-/// fresh remote-backed join only has to carry the nodes the staging pool
-/// holds: the claim's own novelty (which the remote cannot serve) plus the
-/// nodes staging already paid the network for, carried across so the first
-/// render does not fetch them a second time. The rest of the tree resolves
-/// on demand against the same `origin` the invite named. Copying it eagerly
-/// instead meant one authorized round trip per node and per blob, strictly
-/// sequential, before the recipient could see anything (~500 requests and
-/// ~110s on a modest space), which is a full replication masquerading as a
-/// join.
-///
-/// Everything else still moves whole, because there is nowhere to read the
-/// remainder back from: see [`StagedContent::remote_head`].
-///
-/// Not an export/import: that would mint a synthetic commit, drop the
-/// history the remote handed back, and leave blobs behind. Both paths write
-/// blocks without publishing a head, so the destination stays unreadable
-/// until the `reset` below, and the head it then carries is byte-identical
-/// to the one that was validated.
-async fn install_revision(
-    tonk: &TonkState,
-    content: &StagedContent,
-    source_env: &staging::StagedOperator,
-    repository: &Repository<Credential>,
-    validate_remote_content: bool,
-) -> Result<(), JoinFailure> {
-    let StagedContent {
-        branch: source,
-        revision,
-        remote_head,
-    } = content;
-    let revision = revision.clone();
-
-    match remote_head {
-        // A fresh remote-backed join: the remote can serve everything but
-        // the claim's own nodes, so only the staging pool's contents move
-        // (claim novelty plus the already-fetched spine) and the rest
-        // reads through the remote on demand.
-        Some(_) => {
-            let nodes = install_claim_nodes(tonk, source, source_env, &revision).await?;
-            log!(
-                "join: installed {nodes} staged node(s) (claim novelty + warmed reads); \
-                 the rest reads through the remote"
-            );
-        }
-        None => {
-            install_revision_between(source, repository, &revision, source_env, &tonk.operator)
-                .await?;
-        }
-    }
-    let installed = revision.clone();
-
-    let destination = repository
-        .branch(DEFAULT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to open the local content branch: {error}"))
-        })?;
-    destination
-        .reset(installed.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to publish the installed content: {error}"))
-        })?;
-
-    // Re-open rather than trust the handle just written through: this is
-    // the check that the content is readable from durable storage, not
-    // merely that the write returned.
-    let landed = repository
-        .branch(DEFAULT_BRANCH)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("installed content did not load back: {error}"))
-        })?;
-    if landed.revision().as_ref() != Some(&installed) {
-        return Err(JoinFailure::claim_failed(
-            "installed content did not become the local head",
-        ));
-    }
-    // Re-read the content through the durable replica — but only when the
-    // durable replica actually holds it. On the lazy path most of the tree
-    // is still upstream, so this query would go to the remote, and the
-    // authority to ask has deliberately not been saved yet
-    // (`save_authority` runs after this returns). Nothing is lost: the
-    // staged pass validated this exact revision, and the head-equality
-    // check above is what proves the reset landed.
-    if validate_remote_content && remote_head.is_none() {
-        validate_content(&landed, &tonk.operator, &repository.did()).await?;
-    }
-
-    // The reactor may hold a handle from an earlier attempt at this key;
-    // the install moved the head underneath it. Leaving a stale handle
-    // cached would wedge every later sync on this branch, so a failure
-    // here fails the join rather than being logged past.
-    tonk.reactor
-        .refresh_branch(repository.did().repo_key(), DEFAULT_BRANCH, &tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to adopt the installed branch: {error}"))
-        })?;
-    // Deliver the fresh snapshot the refresh scheduled for any
-    // subscriptions the rebind carried over — a live view left waiting
-    // for the next commit waits forever on a branch nothing edits.
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-
-    Ok(())
-}
-
-/// Copy `revision`'s complete reachable tree and referenced blobs from
-/// `source_env`'s storage into `destination_env`'s without publishing a
-/// head — dialog's snapshot export/import (the successor of the backported
-/// `Branch::install`). Reads fall back to `branch`'s remote upstream when
-/// it tracks one, so a sparse source replica still exports a complete
-/// snapshot.
-async fn install_revision_between<Source, Destination>(
-    branch: &Branch,
-    repository: &Repository<Credential>,
-    revision: &Revision,
-    source_env: &Source,
-    destination_env: &Destination,
-) -> Result<(), JoinFailure>
-where
-    Source: Provider<Get>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<dialog_effects::blob::Read>
-        + Provider<dialog_effects::blob::Import>
-        + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, dialog_effects::blob::Read>>
-        + ConditionalSync
-        + 'static,
-    Destination: Provider<Put> + Provider<dialog_effects::blob::Import> + ConditionalSync + 'static,
-{
-    use dialog_repository::{RepositoryMemoryExt as _, Upstream};
-
-    let mut export = repository.snapshot(revision.clone()).export();
-    if let Some(Upstream::Remote { remote, .. }) = branch.upstream() {
-        let remote = branch
-            .subject()
-            .remote(remote)
-            .load()
-            .perform(source_env)
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to read the source remote: {error}"))
-            })?;
-        export = export.download(remote);
-    }
-    let items = export.perform(source_env);
-    repository
-        .import(items)
-        .perform(destination_env)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to install the staged content: {error}"))
-        })?;
-    Ok(())
-}
-
-/// Copy every tree node the staging pool holds under the staged head into
-/// the durable archive: the nodes this claim created plus every node the
-/// staging phase fetched from the remote to validate and claim.
-///
-/// The claim's own novelty MUST move — the remote cannot serve nodes that
-/// were minted locally — and it is covered here by structural sharing:
-/// every node the staged commit created is local to the pool and reachable
-/// from the staged head. The rest of the pool's nodes (the spine and the
-/// leaves the validation and roster reads descended through) are exactly
-/// the blocks the first render would otherwise re-fetch over the network,
-/// one authorized round trip each; carrying them across costs local copies
-/// only. Content-addressed blocks are unobservable until a head references
-/// them, so landing them before the reset is the same install order the
-/// claim nodes already used.
-///
-/// The walk reads the staging pool ONLY (no remote fallback) and prunes at
-/// absent nodes — the by-reference frontier the pull adopted and nobody
-/// read. That bound is what keeps this from being dialog's
-/// `Branch::install` (which diffs from `Index::empty()` over a networked
-/// store and therefore replicates the whole tree): the copy is capped by
-/// what staging actually fetched.
-///
-/// Blobs are skipped: the durable replica reads them through the same
-/// remote on demand, and a claim writes roster facts, not blobs.
-///
-/// Returns how many nodes were copied — bounded by the staging phase's own
-/// fetch count, and the number a "join re-fetches everything" regression
-/// would blow up.
-async fn install_claim_nodes<Source>(
-    tonk: &TonkState,
-    source: &Branch,
-    source_env: &Source,
-    revision: &Revision,
-) -> Result<usize, JoinFailure>
-where
-    Source: Provider<Get> + Provider<Put> + Provider<Resolve> + ConditionalSync + 'static,
-{
-    use dialog_artifacts::tree::TreeStorageBridge;
-    use dialog_common::Blake3Hash;
-    use dialog_effects::archive::prelude::CatalogExt as _;
-    use dialog_repository::{Index, LocalIndex, RepositoryArchiveExt as _};
-    use dialog_search_tree::{ContentAddressedStorage, Traversable as _, Visit};
-
-    let catalog = source.archive().index();
-    let index = LocalIndex::new(source_env, catalog.clone());
-    let storage = ContentAddressedStorage::new(TreeStorageBridge(index));
-    let tree = Index::from_hash(Blake3Hash::from(*revision.tree.hash()));
-
-    let visits = tree.traverse_available(&storage);
-    futures_util::pin_mut!(visits);
-    let mut installed = 0usize;
-    while let Some(visit) = visits.next().await {
-        let node = match visit.map_err(|error| {
-            JoinFailure::claim_failed(format!("staged claim node did not read back: {error}"))
-        })? {
-            Visit::Present(node) => node,
-            // The by-reference frontier: subtrees the pull adopted by hash
-            // and no staged read ever touched. The durable replica reads
-            // them through the same remote on demand.
-            Visit::Absent(_) => continue,
-        };
-        catalog
-            .clone()
-            .put(node.buffer().clone())
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to install a claim node: {error}"))
-            })?;
-        installed += 1;
-    }
-    Ok(installed)
-}
-
-/// Pull the staged branch and classify what the remote said.
+/// Pull the branch from its upstream and classify what the remote said.
 ///
 /// The typed service response survives the pull's error chain, so a
 /// revoked credential is separated from an unreachable service without
 /// reading either one's body.
-async fn pull_staged<Env: BranchEnv>(branch: &Branch, env: &Env) -> Result<(), JoinFailure> {
+async fn pull_upstream<Env: BranchEnv>(branch: &Branch, env: &Env) -> Result<(), JoinFailure> {
     match branch.pull().perform(env).await {
         Ok(_) => Ok(()),
         Err(error) => Err(classify_pull(&error)),
@@ -2183,7 +1823,7 @@ pub(crate) mod tests {
     /// roster on the subject's content branch, and whether the accepted
     /// authority proves — i.e. every surface the recipient can observe
     /// after an attempt.
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     struct JoinSnapshot {
         /// Routing keys of every replica the profile indexes.
         replicas: Vec<String>,
@@ -2777,8 +2417,13 @@ pub(crate) mod tests {
     }
 
     /// The invite parses and the audience matches; only the remote is
-    /// gone. Nothing may be recorded — a replica whose content never
-    /// arrived is exactly the half-installed state to avoid.
+    /// gone. Nothing the user can see may be recorded — the replica never
+    /// enters the profile index and the roster stays empty. The candidate
+    /// chain, saved before the pull that exercises it, is the one
+    /// deliberate residue: unused authority is inert (the remote is the
+    /// enforcement point) and delegation pruning reclaims it, which is
+    /// what lets the join run as plain dialog instead of through a
+    /// side store.
     #[dialog_common::test]
     async fn it_leaves_no_trace_when_the_remote_is_unreachable() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -2792,15 +2437,23 @@ pub(crate) mod tests {
         );
 
         let after = snapshot(&state, &key).await;
-        assert_eq!(after, before);
+        assert_eq!(
+            JoinSnapshot {
+                authority: before.authority,
+                ..after.clone()
+            },
+            before,
+            "everything visible is untouched; only the inert candidate \
+             chain may have been saved",
+        );
         assert!(
             !after.replicas.iter().any(|entry| entry == &key),
             "the replica never enters the profile index",
         );
     }
 
-    /// A remote-backed renewal is staged too: an outage cannot save the
-    /// candidate authority or mutate the existing roster/head.
+    /// A remote-backed renewal fails the same way: an outage cannot
+    /// mutate the existing roster or head.
     #[dialog_common::test]
     async fn it_leaves_an_existing_replica_untouched_when_renewal_remote_is_unavailable() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -3144,18 +2797,16 @@ pub(crate) mod tests {
     /// a space.
     ///
     /// That stronger property no longer holds unconditionally anyway. A
-    /// remote-backed join now installs only the nodes its claim created and
-    /// reads the rest through the remote (see [`install_claim_nodes`]), so a
+    /// remote-backed join replicates lazily — the pull adopts the remote
+    /// head by reference and blocks hydrate as reads touch them — so a
     /// revoked replica retains what it happened to read, not a whole copy.
     /// Access control is unchanged — the access service still refuses a
-    /// revoked credential — but local durability after revocation is now a
+    /// revoked credential — but local durability after revocation is a
     /// consequence of what was read, not a guarantee.
     ///
     /// Proving the stronger property would need a working remote, which no
     /// fixture here has: every invite is either remote-less or points at an
     /// unreachable host.
-    ///
-    /// [`install_claim_nodes`]: super::install_claim_nodes
     #[dialog_common::test]
     async fn it_leaves_local_state_untouched_when_a_refusal_is_classified() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -3290,198 +2941,5 @@ name!:
         super::validate_content(&content, &tonk.operator, &repository.did())
             .await
             .expect("content carrying a declared space model is joinable");
-    }
-
-    /// What installing one claim costs on a space of `filler` facts.
-    struct ClaimInstallCost {
-        /// Nodes copied when the diff keeps the base the remote served —
-        /// what a join actually pays.
-        based: usize,
-        /// Nodes copied by the same install once that base is thrown
-        /// away: the space itself.
-        baseless: usize,
-    }
-
-    /// Build a branch holding `filler` facts, snapshot it, commit one more
-    /// fact on top, and report what
-    /// [`install_claim_nodes`](super::install_claim_nodes) copies to carry
-    /// that last commit — against the snapshot, and against a head from
-    /// before the filler was written.
-    ///
-    /// The snapshot stands in for the head a remote served, and the commit
-    /// on top for the roster facts a claim stages — the two revisions the
-    /// real install diffs. The pre-filler head stands in for the base the
-    /// regression loses, and prices the same install as a full copy of the
-    /// space.
-    async fn claim_install_cost(filler: usize) -> ClaimInstallCost {
-        use dialog_repository::{Branch, RepositoryExt as _};
-
-        let tonk = test_state().await;
-
-        // Tree shape is a pure function of its keys, and history keys carry
-        // the repository issuer. `put_repo` deliberately generates a fresh
-        // signer, which made this cost fixture sample a different tree on
-        // every run and occasionally turn one insert into a near-total
-        // rechunk. Pin the issuer so this test measures the install
-        // algorithm rather than key-distribution luck.
-        let signer = Ed25519Signer::import(&[65u8; 32])
-            .await
-            .expect("the fixture signer imports");
-        let repo = signer.did().repo_key().to_owned();
-        let repository = tonk
-            .profile
-            .repository(repo)
-            .create()
-            .with_credential(signer)
-            .perform(&tonk.operator)
-            .await
-            .expect("the fixture repository creates");
-        let content: Branch = repository
-            .branch(DEFAULT_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .expect("content branch opens");
-
-        // A head that predates the filler, so a diff against it has to
-        // carry the whole space. Committed rather than read off the fresh
-        // branch, which need not have a revision until something is
-        // written to it.
-        content
-            .transaction()
-            .assert(tonk_schema::RepositoryName {
-                this: "id:filler/origin".parse().expect("entity parses"),
-                name: tonk_schema::domain::repo::Name("the origin".to_string()),
-            })
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .expect("the origin commits");
-        let origin = content.revision().expect("the origin produced a head");
-
-        // Enough distinct entities to give the tree real depth. One
-        // transaction: the cost under test is the diff between two
-        // revisions, not how many commits produced them.
-        let mut bulk = content.transaction();
-        for index in 0..filler {
-            bulk = bulk.assert(tonk_schema::RepositoryName {
-                this: format!("id:filler/{index}").parse().expect("entity parses"),
-                name: tonk_schema::domain::repo::Name(format!("filler {index}")),
-            });
-        }
-        bulk.commit()
-            .perform(&tonk.operator)
-            .await
-            .expect("the filler commits");
-        let base = content.revision().expect("the filler produced a head");
-
-        content
-            .transaction()
-            .assert(tonk_schema::RepositoryName {
-                this: "id:filler/claim".parse().expect("entity parses"),
-                name: tonk_schema::domain::repo::Name("the claim".to_string()),
-            })
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .expect("the claim commits");
-        let target = content.revision().expect("the claim produced a head");
-
-        ClaimInstallCost {
-            based: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
-                .await
-                .expect("the claim installs"),
-            baseless: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &origin)
-                .await
-                .expect("the space copies"),
-        }
-    }
-
-    /// A claim install carries what the claim wrote, not what the space
-    /// holds — so it stays a fraction of what copying the space costs.
-    ///
-    /// This is the regression that shipped: dialog's `Branch::install`
-    /// diffs against `Index::empty()`, which makes every node in the tree
-    /// novel and turns a join into a full replication. On a modest space
-    /// that was ~500 sequential authorized round trips and ~110 seconds
-    /// before the recipient saw anything, against ~40 and ~9s once the diff
-    /// had a real base.
-    ///
-    /// Both counts are taken on the same tree, because losing the base is
-    /// precisely what makes them converge. Pricing the big space against a
-    /// small one instead — the shape this test had first — put a one-node
-    /// tree in the denominator, and left the bound unable to say how bad a
-    /// violation was: a CI run reported 36 nodes against a bound of 3, and
-    /// only measuring the space itself showed that 36 was most of a full
-    /// copy rather than a handful of legitimately rewritten ancestors.
-    /// A correct install copies one node against the low forties for the
-    /// space, so the eighth asserted here carries the tree changing shape
-    /// without letting a near-total copy through.
-    ///
-    /// The fixture is sized to discriminate, not to impress: in the browser
-    /// harness this test runs against Chrome's 30-second renderer-liveness
-    /// check, and a bigger space proves nothing more while drifting toward
-    /// that cliff on a loaded runner.
-    #[dialog_common::test]
-    async fn it_installs_a_claim_without_copying_the_space() {
-        let cost = claim_install_cost(3000).await;
-
-        assert!(
-            cost.based > 0,
-            "a claim that wrote a fact must carry at least one node",
-        );
-        assert!(
-            cost.based * 8 <= cost.baseless,
-            "installing a claim onto a 3000-fact space copied {} nodes, \
-             against {} for the space itself — the copy is scaling with the \
-             space, so the diff has lost its base",
-            cost.based,
-            cost.baseless,
-        );
-    }
-
-    /// The limit case of the rule above: when a claim writes nothing, the
-    /// join copies nothing, and the replica is composed entirely of content
-    /// read back through the remote.
-    #[dialog_common::test]
-    async fn it_copies_nothing_when_a_claim_wrote_nothing() {
-        use dialog_repository::{Branch, Repository, RepositoryExt as _};
-
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let repo = put_repo(&app, "guest-visit").await;
-        let tonk = state.read().await;
-        let repository: Repository = tonk
-            .profile
-            .repository(&repo)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .expect("repo loads");
-        let content: Branch = repository
-            .branch(DEFAULT_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .expect("content branch opens");
-        content
-            .transaction()
-            .assert(tonk_schema::RepositoryName {
-                this: repository.did().this(),
-                name: tonk_schema::domain::repo::Name("Untitled".to_string()),
-            })
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .expect("the content commits");
-        let head = content.revision().expect("the content produced a head");
-
-        let copied = super::install_claim_nodes(&tonk, &content, &tonk.operator, &head, &head)
-            .await
-            .expect("an empty claim installs");
-
-        assert_eq!(
-            copied, 0,
-            "a visit that adds no facts must carry no nodes of its own",
-        );
     }
 }

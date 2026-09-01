@@ -40,15 +40,18 @@ but round-trip count and the per-request redeem.
 
 ## What changed in this audit
 
-- **The staging pool's fetches now survive the join.**
-  `install_claim_nodes` (`router/join.rs`) no longer copies only the
-  claim's diff-novel nodes: it walks the staged head over the staging
-  pool *without* remote fallback, pruning at the by-reference frontier,
-  and imports every locally held node into the durable archive. That is
-  the claim's novelty (covered by structural sharing) plus exactly the
-  blocks staging paid the network for — so the first render no longer
-  re-fetches them. The copy stays bounded by what staging fetched; it is
-  not a full replication.
+- **The join no longer stages at all.** The volatile staging pool, the
+  install step (`install_claim_nodes` / `install_revision_between`), and
+  the double-fetch they caused are deleted (~700 net lines). A join is
+  now plain dialog against the durable replica: mount it hidden, save
+  the candidate chain (the pull's forks prove with it — the remote
+  honouring or refusing them is the authorization verdict), pull,
+  validate, commit the roster claim, then index the replica visible.
+  Atomicity needs no side store: an unindexed replica is invisible and
+  resumable, content-addressed blocks are unobservable until a head
+  references them, and a chain a failed attempt saved is inert
+  authority that delegation pruning reclaims. Renewals become dialog's
+  ordinary pull-merge instead of two full tree copies through the pool.
 - **The first-push repair no longer full-scans.** `dialog-reactor`'s
   push fallback (which fires only on a typed missing-local-node failure;
   dialog's boundary-tolerant push diff handles the lazy case since
