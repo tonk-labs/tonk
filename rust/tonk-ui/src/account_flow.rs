@@ -1874,7 +1874,11 @@ mod tests {
         let path = std::env::var_os("TONK_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                // Runtime variable first: under the `tests-e2e` archive
+                // the compile-time path names the Nix build sandbox.
+                let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                    .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+                PathBuf::from(manifest_dir)
                     .join("../..")
                     .join("target/debug/tonk")
             });
