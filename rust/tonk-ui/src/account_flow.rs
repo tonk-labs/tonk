@@ -448,6 +448,28 @@ mod tests {
         Ok(())
     }
 
+    /// Print the browser console (page and service worker alike) via
+    /// chromedriver's classic log endpoint. Diagnostic only; requires
+    /// the driver to have been created with TONK_E2E_CHROME_LOG set.
+    async fn dump_browser_log(driver: &WebDriver, env: &TestEnvironment) {
+        let path = format!("session/{}/se/log", driver.session_id());
+        let Ok(url) = env.chromedriver.join(&path) else {
+            return;
+        };
+        match reqwest::Client::new()
+            .post(url)
+            .json(&serde_json::json!({ "type": "browser" }))
+            .send()
+            .await
+        {
+            Ok(response) => eprintln!(
+                "BROWSER LOG DUMP: {}",
+                response.text().await.unwrap_or_default()
+            ),
+            Err(error) => eprintln!("BROWSER LOG DUMP failed: {error}"),
+        }
+    }
+
     /// Take the cluster down the way its own control does.
     async fn dismiss_register_dialog(driver: &WebDriver) -> Result<()> {
         driver.enter_default_frame().await?;
@@ -751,7 +773,14 @@ mod tests {
         // Creation mints the first custody passkey in the same ceremony
         // that generates and seals the secret, so the dashboard
         // describes it immediately.
-        wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await
+        {
+            let summary = get_json(&driver, "/api/account/summary").await;
+            eprintln!("PROBE /api/account/summary: {summary:?}");
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
         // The device list lives on the Devices tab, whose pane is
         // hidden until selected — and hidden text reads as empty.
         click(&driver, "#account-tab-devices").await?;
@@ -1090,7 +1119,17 @@ mod tests {
         // What this test exists for: a row naming the outstanding step,
         // not a failure. The ceremony stays up, because the thing it
         // waits on has not happened yet.
-        let row = element(&second, "#tonk-register-confirm-row").await?;
+        let row = match element(&second, "#tonk-register-confirm-row").await {
+            Ok(row) => row,
+            Err(error) => {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    let text = status.text().await.unwrap_or_default();
+                    eprintln!("PROBE register status: {text:?}");
+                }
+                dump_browser_log(&second, &env).await;
+                return Err(error);
+            }
+        };
         let text = row.text().await?;
         assert!(
             text.contains("awaiting confirmation"),
@@ -1624,6 +1663,25 @@ mod tests {
             let host = element(&driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = element(&driver, "#account-error").await?.text().await?;
+            // Whether the worker still answers at all separates a state
+            // bug from a wedged worker.
+            let health = driver
+                .execute_async(
+                    r#"const done = arguments[arguments.length - 1];
+                       const timer = setTimeout(() => done({ timedOut: true }), 3000);
+                       fetch("/api/health")
+                           .then(async r => { clearTimeout(timer); done({ status: r.status, body: await r.text() }); })
+                           .catch(e => { clearTimeout(timer); done({ error: String(e) }); });"#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone());
+            eprintln!("PROBE /api/health: {health:?}");
+            for path in ["/api/account", "/api/account/summary"] {
+                let answer = get_json(&driver, path).await;
+                eprintln!("PROBE {path}: {answer:?}");
+            }
+            dump_browser_log(&driver, &env).await;
             return Err(wait_error).context(format!(
                 "same-account re-login stopped in mode {mode:?}: {error:?}"
             ));
@@ -2211,7 +2269,24 @@ mod tests {
         {
             Ok(result) => {
                 result?;
-                assert_eq!(outcome_line.trim_end(), "signed in");
+                // A mismatch here is usually the CLI exiting instead of
+                // finishing (EOF reads as an empty line); its stderr says
+                // why, so bring it into the failure instead of asserting
+                // on the bare line.
+                if outcome_line.trim_end() != "signed in" {
+                    child.kill().await?;
+                    let mut stderr_text = String::new();
+                    use tokio::io::AsyncReadExt as _;
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        stderr.read_to_string(&mut stderr_text),
+                    )
+                    .await;
+                    return Err(anyhow!(
+                        "the CLI never reported \"signed in\" (got {outcome_line:?}); \
+                         its stderr: {stderr_text}"
+                    ));
+                }
             }
             Err(_) => {
                 child.kill().await?;
@@ -2869,18 +2944,26 @@ mod tests {
         // is already settled at `awaiting confirmation` while the link
         // is out, so asking only "has it settled" answers yes before
         // activation has reached this tab at all.
-        await_row_value(&driver, "email", "verified").await?;
+        let staged: Result<()> = async {
+            await_row_value(&driver, "email", "verified").await?;
 
-        // 19. Then the name, typed and committed.
-        type_into_settled_row(&driver, "display name", "Alice").await?;
-        assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
+            // 19. Then the name, typed and committed.
+            type_into_settled_row(&driver, "display name", "Alice").await?;
+            assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
 
-        // 20–22. The closing action is the thing the share was for.
-        await_register_action(&driver, "copy share link").await?;
-        watch_clipboard(&driver).await?;
-        click_register_action(&driver).await?;
-        await_register_action(&driver, "copying link…").await?;
-        await_narrator_containing(&driver, "invite someone into a space").await?;
+            // 20–22. The closing action is the thing the share was for.
+            await_register_action(&driver, "copy share link").await?;
+            watch_clipboard(&driver).await?;
+            click_register_action(&driver).await?;
+            await_register_action(&driver, "copying link…").await?;
+            await_narrator_containing(&driver, "invite someone into a space").await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = staged {
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
 
         // 23. And it really is an invite.
         //
@@ -4352,8 +4435,22 @@ mod tests {
         // the emailed link is opened below — before and after on one
         // surface.
         dismiss_register_dialog(&driver).await?;
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+                .await
+        {
+            for path in ["/api/account", "/api/customer", "/api/identity/root"] {
+                let answer = get_json(&driver, path).await;
+                eprintln!("PROBE {path}: {answer:?}");
+            }
+            let mode = element(&driver, "tonk-account")
+                .await?
+                .attr("data-mode")
+                .await?;
+            eprintln!("PROBE panel mode: {mode:?}");
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
 
         let key = create_space(&driver, "Opted In").await?;
 
