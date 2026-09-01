@@ -381,6 +381,27 @@ describe("exact fetch routing", () => {
     };
   }
 
+  test("delegates an OPTIONS health request to the common CORS boundary", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0])),
+    });
+    await loadWith({
+      wasmHash: "dev",
+      activateSource: `async () => ({
+        onfetch: async event => new Response(event.request.method, { status: 209 }),
+      })`,
+    });
+    const fetch = fetchEvent(
+      new Request("https://tonk.test/api/health", { method: "OPTIONS" }),
+    );
+
+    self.onfetch(fetch.event);
+
+    const response = await fetch.response();
+    assert.equal(response.status, 209);
+    assert.equal(await response.text(), "OPTIONS");
+  });
+
   test("serves exact controlled static pages while app routes use the root shell", async () => {
     const { self, caches } = withGlobals();
     self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });
