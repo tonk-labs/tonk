@@ -1,0 +1,461 @@
+/* =============================================================================
+   GOOEY · LOW-FI → WEB AWESOME DESIGN TOKENS
+   -----------------------------------------------------------------------------
+   The Gooey "low-fi" preset (mono blueprint) translated to Web Awesome tokens:
+   IBM Plex Mono throughout, one blue (#3f74f0) for every surface, ink, line and
+   status; orange ONLY for danger/destructive; hard 0 corners; blue hairlines;
+   flat elevation; dark mode is deep navy, not near-black.
+
+   Usage — load after Web Awesome's own styles:
+
+     <link rel="stylesheet"
+       href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome/dist/styles/webawesome.css">
+     <link rel="stylesheet" href="styles.css">
+
+   Dark mode: add class="wa-dark" to <html> (or any subtree). Nothing else.
+
+   These rules are intentionally unlayered so they win over Web Awesome's
+   @layer'd defaults at equal specificity.
+============================================================================= */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap");
+
+/* =============================================================================
+   1 · PALETTE RAMPS (mode-independent)
+   Web Awesome resolves almost everything through the five variant ramps.
+   Gooey low-fi is two colors, so: brand = the blue; neutral = the same hue,
+   desaturated toward ink; success + warning = aliased to brand (status is
+   blue in this system); danger = the one orange.
+   Higher number = lighter (95) … lower = darker (05).
+============================================================================= */
+:root,
+.wa-light,
+.wa-dark,
+.wa-invert {
+    /* BRAND — the blue (#3f74f0). Real Gooey anchors marked ◆ */
+    --wa-color-brand-95: #e3ecfd;
+    --wa-color-brand-90: #d6e2fb; /* ◆ accent / hover wash        */
+    --wa-color-brand-80: #b3c9f8;
+    --wa-color-brand-70: #8aabf7;
+    --wa-color-brand-60: #5b8cff; /* ◆ dark-mode primary          */
+    --wa-color-brand-50: #3f74f0; /* ◆ THE blue                   */
+    --wa-color-brand-40: #2e5bd0;
+    --wa-color-brand-30: #1d3370; /* ◆ secondary-foreground       */
+    --wa-color-brand-20: #16264e;
+    --wa-color-brand-10: #0f1a35;
+    --wa-color-brand-05: #0a1124;
+    --wa-color-brand: var(--wa-color-brand-50);
+    --wa-color-brand-key: 50;
+    --wa-color-brand-on: #ffffff;
+
+    /* NEUTRAL — same hue, desaturated toward the blueprint ink */
+    --wa-color-neutral-95: #eef3fc;
+    --wa-color-neutral-90: #e5edfb; /* ◆ muted                      */
+    --wa-color-neutral-80: #a6bbe8; /* ◆ border / input hairline    */
+    --wa-color-neutral-70: #93a6cf; /* ◆ dark-mode muted text       */
+    --wa-color-neutral-60: #7285b3;
+    --wa-color-neutral-50: #5a6ea2; /* ◆ muted-foreground           */
+    --wa-color-neutral-40: #47588a;
+    --wa-color-neutral-30: #2c3f66; /* ◆ dark-mode border           */
+    --wa-color-neutral-20: #1f2c4b;
+    --wa-color-neutral-10: #16223d; /* ◆ deep-blue ink (foreground) */
+    --wa-color-neutral-05: #0d1630; /* ◆ overlay ink                */
+    --wa-color-neutral: var(--wa-color-neutral-40);
+    --wa-color-neutral-key: 40;
+    --wa-color-neutral-on: #ffffff;
+
+    /* SUCCESS + WARNING — blue. Status is blue in low-fi; only danger differs. */
+    --wa-color-success-95: var(--wa-color-brand-95);
+    --wa-color-success-90: var(--wa-color-brand-90);
+    --wa-color-success-80: var(--wa-color-brand-80);
+    --wa-color-success-70: var(--wa-color-brand-70);
+    --wa-color-success-60: var(--wa-color-brand-60);
+    --wa-color-success-50: var(--wa-color-brand-50);
+    --wa-color-success-40: var(--wa-color-brand-40);
+    --wa-color-success-30: var(--wa-color-brand-30);
+    --wa-color-success-20: var(--wa-color-brand-20);
+    --wa-color-success-10: var(--wa-color-brand-10);
+    --wa-color-success-05: var(--wa-color-brand-05);
+    --wa-color-success: var(--wa-color-brand);
+    --wa-color-success-key: 50;
+    --wa-color-success-on: var(--wa-color-brand-on);
+
+    --wa-color-warning-95: var(--wa-color-brand-95);
+    --wa-color-warning-90: var(--wa-color-brand-90);
+    --wa-color-warning-80: var(--wa-color-brand-80);
+    --wa-color-warning-70: var(--wa-color-brand-70);
+    --wa-color-warning-60: var(--wa-color-brand-60);
+    --wa-color-warning-50: var(--wa-color-brand-50);
+    --wa-color-warning-40: var(--wa-color-brand-40);
+    --wa-color-warning-30: var(--wa-color-brand-30);
+    --wa-color-warning-20: var(--wa-color-brand-20);
+    --wa-color-warning-10: var(--wa-color-brand-10);
+    --wa-color-warning-05: var(--wa-color-brand-05);
+    --wa-color-warning: var(--wa-color-brand);
+    --wa-color-warning-key: 50;
+    --wa-color-warning-on: var(--wa-color-brand-on);
+
+    /* DANGER — orange, the only non-blue. ◆ #db6a23 light · #f0913f dark */
+    --wa-color-danger-95: #fdf2e7;
+    --wa-color-danger-90: #fbe3cb;
+    --wa-color-danger-80: #f8c795;
+    --wa-color-danger-70: #f4ab62;
+    --wa-color-danger-60: #f0913f; /* ◆ dark-mode destructive      */
+    --wa-color-danger-50: #db6a23; /* ◆ destructive                */
+    --wa-color-danger-40: #b25015;
+    --wa-color-danger-30: #8c3d0e;
+    --wa-color-danger-20: #662b08;
+    --wa-color-danger-10: #3f1a04;
+    --wa-color-danger-05: #2a1002;
+    --wa-color-danger: var(--wa-color-danger-50);
+    --wa-color-danger-key: 50;
+    --wa-color-danger-on: #ffffff;
+}
+
+/* =============================================================================
+   2 · SEMANTIC COLOR — LIGHT  (Gooey :root)
+============================================================================= */
+:root,
+.wa-light,
+.wa-dark .wa-invert {
+    color-scheme: light;
+
+    /* surfaces — the card is LIGHTER than the canvas; it lifts off the paper */
+    --wa-color-surface-default: #e8effb; /* ◆ light-blue paper     */
+    --wa-color-surface-raised: #f7faff; /* ◆ card / popover       */
+    --wa-color-surface-lowered: #dfe8fb; /* ◆ secondary            */
+    --wa-color-surface-border: #a6bbe8; /* ◆ border               */
+
+    --wa-color-text-normal: #16223d; /* ◆ deep-blue ink        */
+    --wa-color-text-quiet: #5a6ea2; /* ◆ muted-foreground     */
+    --wa-color-text-link: #3f74f0; /* ◆ primary              */
+
+    --wa-color-overlay-modal: rgb(13 22 48 / 0.34); /* ◆ scrim                */
+    --wa-color-overlay-inline: color-mix(
+        in oklab,
+        var(--wa-color-brand) 16%,
+        transparent
+    );
+
+    --wa-color-shadow: rgb(23 32 60 / 0.1); /* ◆ soft lift            */
+    --wa-color-focus: #3f74f0; /* ◆ ring                 */
+
+    /* hover: keep WA's flip-the-lightness mechanic (works on any fill — loud
+     blue lightens, danger stays orange-pure), tuned a touch stronger */
+    --wa-color-mix-hover: oklch(from currentColor calc(1 - l) c h) 12%;
+    --wa-color-mix-active: var(--wa-color-surface-default) 10%;
+
+    /* brand: quiet=muted · normal=secondary · loud=primary */
+    --wa-color-brand-fill-quiet: #e5edfb; /* ◆ muted                */
+    --wa-color-brand-fill-normal: #dfe8fb; /* ◆ secondary            */
+    --wa-color-brand-fill-loud: #3f74f0; /* ◆ primary              */
+    --wa-color-brand-border-quiet: #c4d3f2;
+    --wa-color-brand-border-normal: #a6bbe8; /* ◆ border               */
+    --wa-color-brand-border-loud: #3f74f0; /* ◆ primary              */
+    --wa-color-brand-on-quiet: #1d3370; /* ◆ secondary-foreground */
+    --wa-color-brand-on-normal: #1d3370; /* ◆ secondary-foreground */
+    --wa-color-brand-on-loud: #ffffff; /* ◆ primary-foreground   */
+
+    /* neutral: same washes; loud = solid ink */
+    --wa-color-neutral-fill-quiet: #e5edfb; /* ◆ muted                */
+    --wa-color-neutral-fill-normal: #dfe8fb; /* ◆ secondary            */
+    --wa-color-neutral-fill-loud: #16223d; /* ◆ ink                  */
+    --wa-color-neutral-border-quiet: #c4d3f2;
+    --wa-color-neutral-border-normal: #a6bbe8; /* ◆ border               */
+    --wa-color-neutral-border-loud: #a6bbe8; /* ◆ border — the ONE hairline; outlined controls read this */
+    --wa-color-neutral-on-quiet: #5a6ea2; /* ◆ muted-foreground     */
+    --wa-color-neutral-on-normal: #1d3370; /* ◆ secondary-foreground */
+    --wa-color-neutral-on-loud: #ffffff;
+
+    /* danger: the one orange */
+    --wa-color-danger-fill-quiet: #fdf2e7;
+    --wa-color-danger-fill-normal: #fbe3cb;
+    --wa-color-danger-fill-loud: #db6a23; /* ◆ destructive          */
+    --wa-color-danger-border-quiet: #f8c795;
+    --wa-color-danger-border-normal: #f4ab62;
+    --wa-color-danger-border-loud: #db6a23; /* ◆ destructive          */
+    --wa-color-danger-on-quiet: #b25015;
+    --wa-color-danger-on-normal: #8c3d0e;
+    --wa-color-danger-on-loud: #ffffff; /* ◆ destructive-fg       */
+}
+
+/* =============================================================================
+   3 · SEMANTIC COLOR — DARK  (Gooey .dark: dark BLUE, not near-black)
+============================================================================= */
+.wa-dark,
+.wa-invert,
+.wa-light .wa-invert {
+    color-scheme: dark;
+
+    --wa-color-surface-default: #0a1530; /* ◆ deep navy            */
+    --wa-color-surface-raised: #0e1c3a; /* ◆ card                 */
+    --wa-color-surface-lowered: #081126;
+    --wa-color-surface-border: #2c3f66; /* ◆ border               */
+
+    --wa-color-text-normal: #e6eefc; /* ◆ foreground           */
+    --wa-color-text-quiet: #93a6cf; /* ◆ muted-foreground     */
+    --wa-color-text-link: #5b8cff; /* ◆ primary              */
+
+    --wa-color-overlay-modal: rgb(0 0 0 / 0.6); /* ◆ scrim                */
+    --wa-color-overlay-inline: color-mix(
+        in oklab,
+        var(--wa-color-brand-60) 14%,
+        transparent
+    );
+
+    --wa-color-shadow: rgb(0 0 0 / 0.45);
+    --wa-color-focus: #5b8cff; /* ◆ ring                 */
+
+    --wa-color-mix-hover: oklch(from currentColor calc(1 - l) c h) 16%;
+    --wa-color-mix-active: var(--wa-color-surface-default) 20%;
+
+    /* brand — note: text ON the loud blue is dark navy, not white */
+    --wa-color-brand-fill-quiet: #101f3f;
+    --wa-color-brand-fill-normal: #17284b; /* ◆ secondary/muted      */
+    --wa-color-brand-fill-loud: #5b8cff; /* ◆ primary              */
+    --wa-color-brand-border-quiet: #22345a;
+    --wa-color-brand-border-normal: #2c3f66; /* ◆ border               */
+    --wa-color-brand-border-loud: #5b8cff; /* ◆ primary              */
+    --wa-color-brand-on-quiet: #b3c9f8;
+    --wa-color-brand-on-normal: #e6eefc; /* ◆ secondary-foreground */
+    --wa-color-brand-on-loud: #081027; /* ◆ primary-foreground   */
+
+    --wa-color-neutral-fill-quiet: #101d3b;
+    --wa-color-neutral-fill-normal: #17284b; /* ◆ secondary/muted      */
+    --wa-color-neutral-fill-loud: #e6eefc;
+    --wa-color-neutral-border-quiet: #22345a;
+    --wa-color-neutral-border-normal: #2c3f66; /* ◆ border               */
+    --wa-color-neutral-border-loud: #2c3f66; /* ◆ border — the ONE hairline */
+    --wa-color-neutral-on-quiet: #93a6cf; /* ◆ muted-foreground     */
+    --wa-color-neutral-on-normal: #e6eefc; /* ◆ foreground           */
+    --wa-color-neutral-on-loud: #0a1530;
+
+    --wa-color-danger-fill-quiet: #3f1a04;
+    --wa-color-danger-fill-normal: #662b08;
+    --wa-color-danger-fill-loud: #f0913f; /* ◆ destructive          */
+    --wa-color-danger-border-quiet: #662b08;
+    --wa-color-danger-border-normal: #8c3d0e;
+    --wa-color-danger-border-loud: #f0913f; /* ◆ destructive          */
+    --wa-color-danger-on-quiet: #f4ab62;
+    --wa-color-danger-on-normal: #f8c795;
+    --wa-color-danger-on-loud: #1a0f02; /* ◆ destructive-fg       */
+}
+
+/* =============================================================================
+   4 · SUCCESS / WARNING SEMANTICS — aliased to brand (mode-independent)
+   var() resolves per element, so these follow brand into dark mode for free.
+============================================================================= */
+:root,
+.wa-light,
+.wa-dark,
+.wa-invert {
+    --wa-color-success-fill-quiet: var(--wa-color-brand-fill-quiet);
+    --wa-color-success-fill-normal: var(--wa-color-brand-fill-normal);
+    --wa-color-success-fill-loud: var(--wa-color-brand-fill-loud);
+    --wa-color-success-border-quiet: var(--wa-color-brand-border-quiet);
+    --wa-color-success-border-normal: var(--wa-color-brand-border-normal);
+    --wa-color-success-border-loud: var(--wa-color-brand-border-loud);
+    --wa-color-success-on-quiet: var(--wa-color-brand-on-quiet);
+    --wa-color-success-on-normal: var(--wa-color-brand-on-normal);
+    --wa-color-success-on-loud: var(--wa-color-brand-on-loud);
+
+    --wa-color-warning-fill-quiet: var(--wa-color-brand-fill-quiet);
+    --wa-color-warning-fill-normal: var(--wa-color-brand-fill-normal);
+    --wa-color-warning-fill-loud: var(--wa-color-brand-fill-loud);
+    --wa-color-warning-border-quiet: var(--wa-color-brand-border-quiet);
+    --wa-color-warning-border-normal: var(--wa-color-brand-border-normal);
+    --wa-color-warning-border-loud: var(--wa-color-brand-border-loud);
+    --wa-color-warning-on-quiet: var(--wa-color-brand-on-quiet);
+    --wa-color-warning-on-normal: var(--wa-color-brand-on-normal);
+    --wa-color-warning-on-loud: var(--wa-color-brand-on-loud);
+}
+
+/* =============================================================================
+   5 · TYPE · SPACE · SHAPE · MOTION (mode-independent)
+============================================================================= */
+:root,
+.wa-light,
+.wa-dark,
+.wa-invert {
+    /* TYPOGRAPHY — IBM Plex Mono everywhere */
+    --wa-font-family-body:
+        "IBM Plex Mono", ui-monospace, Menlo, Monaco, "Source Code Pro",
+        monospace;
+    --wa-font-family-heading: var(--wa-font-family-body);
+    --wa-font-family-code: var(--wa-font-family-body);
+    --wa-font-family-longform: var(--wa-font-family-body);
+
+    /* 13px body; the derived ladder gives 3xs 9 · 2xs 10 · xs 11 · s 12 ·
+     m 13 · l 16, and the top of the ladder is pinned to Gooey's exact
+     heading sizes (4xl/5xl re-derive from 3xl). Gooey's --text-lg 18px is
+     the one size with no WA slot — l stays 16px. */
+    --wa-font-size-scale: 0.8125;
+    --wa-font-size-xl: 1.375rem; /* ◆ text-xl  22px */
+    --wa-font-size-2xl: 1.6875rem; /* ◆ text-2xl 27px */
+    --wa-font-size-3xl: 2.25rem; /* ◆ text-3xl 36px */
+
+    /* Plex Mono ships 400–700; "light" clamps to 400 */
+    --wa-font-weight-light: 400;
+    --wa-font-weight-normal: 400;
+    --wa-font-weight-semibold: 600;
+    --wa-font-weight-bold: 700;
+    --wa-font-weight-body: var(--wa-font-weight-normal);
+    --wa-font-weight-heading: var(
+        --wa-font-weight-semibold
+    ); /* Gooey headings: 600 */
+    --wa-font-weight-code: var(--wa-font-weight-normal);
+    --wa-font-weight-longform: var(--wa-font-weight-normal);
+    --wa-font-weight-action: 500; /* Gooey buttons: 500  */
+
+    --wa-line-height-condensed: 1.2; /* ◆ leading-tight   */
+    --wa-line-height-normal: 1.5; /* ◆ leading-normal  */
+    --wa-line-height-expanded: 1.65; /* ◆ leading-relaxed */
+
+    /* links: solid underline, no dotted default */
+    --wa-link-decoration-default: underline;
+    --wa-link-decoration-hover: underline;
+
+    /* SPACE — Gooey is roomy/airy: 2 4 8 12 18 26 36 52 72.
+     1.125 × WA's rem scale ≈ 2 5 9 14 18 27 36 45 54 72 */
+    --wa-space-scale: 1.125;
+
+    /* BORDERS — solid blue hairlines; strong line = 1.5px */
+    --wa-border-style: solid;
+    --wa-border-width-scale: 1;
+    --wa-border-width-s: calc(
+        var(--wa-border-width-scale) * 0.0625rem
+    ); /* 1px   */
+    --wa-border-width-m: calc(
+        var(--wa-border-width-scale) * 0.09375rem
+    ); /* 1.5px */
+    --wa-border-width-l: calc(
+        var(--wa-border-width-scale) * 0.125rem
+    ); /* 2px   */
+
+    /* RADIUS — hard 0 corners EVERYWHERE, matching Gooey --radius-full: 0
+     (square avatars, square pill badges, square progress tracks). Radios and
+     switches — the only curves in the system — are restored in §6. */
+    --wa-border-radius-scale: 0;
+    --wa-border-radius-pill: 0px;
+    --wa-border-radius-circle: 0px;
+
+    /* FOCUS — a crisp, full-strength 2px ring, flush to the edge.
+     (Zero lengths stay typed: WA feeds these tokens into calc().) */
+    --wa-focus-ring-style: solid;
+    --wa-focus-ring-width: 0.125rem; /* 2px */
+    --wa-focus-ring-offset: 0px;
+
+    /* ELEVATION — flat; soft lift only where it counts (both modes) */
+    --wa-shadow-s: 0 0 0 0 transparent; /* ◆ shadow-xs/sm: none */
+    --wa-shadow-m: 0 4px 16px rgb(23 32 60 / 0.1); /* ◆ shadow-md          */
+    --wa-shadow-l: 0 16px 40px rgb(23 32 60 / 0.16); /* ◆ shadow-lg          */
+
+    /* MOTION — standard */
+    --wa-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+    --wa-transition-fast: 75ms;
+    --wa-transition-normal: 150ms; /* ◆ duration      */
+    --wa-transition-slow: 300ms; /* ◆ duration-slow */
+
+    /* ---------------------------------------------------------------------------
+     COMPONENT GROUPS
+  --------------------------------------------------------------------------- */
+    /* form controls — inputs sit on the canvas color, hairline border, 40px tall */
+    --wa-form-control-background-color: var(--wa-color-surface-default);
+    --wa-form-control-border-color: var(--wa-color-surface-border);
+    --wa-form-control-border-style: var(--wa-border-style);
+    --wa-form-control-border-width: var(--wa-border-width-s);
+    --wa-form-control-border-radius: 0px;
+    --wa-form-control-activated-color: var(--wa-color-brand-fill-loud);
+    --wa-form-control-label-font-weight: var(--wa-font-weight-semibold);
+    --wa-form-control-placeholder-color: var(--wa-color-text-quiet);
+    /* Gooey's .req is destructive orange; on-quiet keeps it orange while
+     clearing the 3:1 UI-contrast bar the raw fill misses in light mode */
+    --wa-form-control-required-content-color: var(--wa-color-danger-on-quiet);
+    --wa-form-control-padding-block: 0.75rem; /* 12px → 40px ◆ control-height;
+                                                sm/lg sizes tuned in §6       */
+    --wa-form-control-padding-inline: 1rem; /* ◆ control-pad-x: 16px         */
+
+    /* buttons — technical draft: no squish, no lift */
+    --wa-button-transform-hover: none;
+    --wa-button-transform-active: none;
+
+    /* panels — hairline, hard corners */
+    --wa-panel-border-style: var(--wa-border-style);
+    --wa-panel-border-width: var(--wa-border-width-s);
+    --wa-panel-border-radius: 0px;
+
+    /* tooltips — inverted ink chip, hard corners */
+    --wa-tooltip-background-color: var(--wa-color-text-normal);
+    --wa-tooltip-border-radius: 0px;
+    --wa-tooltip-font-size: var(--wa-font-size-xs);
+}
+
+/* =============================================================================
+   6 · COMPONENT-SCOPED TOKEN TUNING
+   Custom properties inherit into shadow DOM, so these narrow re-declarations
+   restore details one global token can't carry.
+============================================================================= */
+
+/* radio + toggle stay round, even though everything else is hard-cornered
+   (mirrors the Gooey preset's own exception) */
+wa-radio {
+    --wa-border-radius-circle: 50%;
+}
+wa-switch {
+    --wa-border-radius-pill: 9999px;
+}
+
+/* outlined/plain neutral buttons: Gooey ghost/outline ink is full foreground,
+   not muted (mode-aware via text-normal) */
+wa-button {
+    --wa-color-neutral-on-quiet: var(--wa-color-text-normal);
+}
+
+/* Gooey dark mode gives popovers their own, lighter navy (◆ #122444),
+   one step above the card — cards themselves keep surface-raised #0e1c3a */
+.wa-dark
+    :is(
+        wa-dialog,
+        wa-drawer,
+        wa-popover,
+        wa-popup,
+        wa-dropdown,
+        wa-select,
+        wa-menu
+    ) {
+    --wa-color-surface-raised: #122444;
+}
+
+/* control-height ramp: WA sizes controls by font, so padding is retuned per
+   size to land Gooey's exact 34 / 40 / 48 px heights */
+.wa-size-s {
+    --wa-form-control-padding-block: 0.6125rem;
+} /* ◆ control-height-sm 34px */
+.wa-size-l {
+    --wa-form-control-padding-block: 0.9rem;
+} /* ◆ control-height-lg 48px */
+
+/* =============================================================================
+   7 · BESPOKE — the blueprint canvas (optional; delete freely)
+   The blue dot-grid page background and the blue selection wash are part of
+   the low-fi identity but reach beyond tokens.
+============================================================================= */
+body {
+    background-color: var(--wa-color-surface-default);
+    background-image: radial-gradient(
+        circle,
+        color-mix(in srgb, var(--wa-color-brand-fill-loud) 24%, transparent)
+            1.25px,
+        transparent 1.35px
+    );
+    background-size: 15px 15px;
+}
+
+::selection {
+    background: color-mix(
+        in srgb,
+        var(--wa-color-brand-fill-loud) 22%,
+        transparent
+    );
+    color: var(--wa-color-text-normal);
+}

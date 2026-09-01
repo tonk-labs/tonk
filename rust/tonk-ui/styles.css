@@ -754,8 +754,11 @@ tonk-display > .site-pending:not([hidden]) {
     flex-direction: column;
     gap: var(--wa-space-s);
 }
-/* Opt out of the global heading highlight-cover (the dark filled box):
-   the Hub title is a plain heading like the mock. */
+/* The Hub title is a plain heading like the mock, in the theme's
+   heading face rather than the system default. (This predates the
+   plain heading default and once opted out of the global
+   highlight-cover; the explicit resets are kept for independence
+   from the default.) */
 .hub-title {
     display: block;
     margin: 0;
@@ -1551,31 +1554,38 @@ tonk-notation .tonk-notation-error {
     align-items: center;
     gap: var(--wa-space-xs);
 }
-/* Headline-cover treatment after Tachyons'
-   `title-highlight-header-cover` example: the dark fill wraps
-   the *text* (an inner `<span>`) rather than the heading box.
-   That way the box hugs each line of text when it wraps, and
-   any padding affects only the highlighted span — not the
-   heading's outer rhythm. `box-decoration-break: clone` makes
-   each wrapped line its own complete box (with consistent
-   padding on both sides) instead of leaving an unpainted
-   sliver at line breaks. */
-/* Tachyons' headline-cover treatment, baked in as the default
-   look for headings: a dark filled box hugging the text. The
-   heading goes `display: inline-block` so the box shrinks to
-   the text width instead of stretching across its container,
-   `line-height: 1.5` provides the vertical breathing room
-   that keeps the text from looking cramped at the box edges,
-   and `box-decoration-break: clone` makes every wrapped line
-   render as a complete padded box (rather than a sliced one).
-   System-font stack matches Tachyons; tracking is tightened
-   per the original example. */
+/* Default headings: plain system bold — no decoration. Chosen
+   over the former Tachyons headline-cover after comparing the
+   candidates side by side (the "Heading presets" page in the
+   staging-demo space): uncustomized markup in a guest should
+   read as text, not chrome. Sizes and line-height stay with the
+   Web Awesome base (`text-wrap: balance` included); apps that
+   want their own face override locally, and chrome that wants
+   a cover on purpose declares it (the space banner below, the
+   query-table concept header). */
 h1,
 h2,
 h3,
 h4,
 h5,
 h6 {
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+        system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.021em;
+}
+
+/* The space banner keeps the Tachyons headline-cover the default
+   used to carry: a dark filled box hugging the text. Inline-block
+   shrinks the box to the text width, `line-height: 1.5` gives the
+   text breathing room at the box edges, and
+   `box-decoration-break: clone` renders every wrapped line as a
+   complete padded box rather than a sliced one. System-font stack
+   and tightened tracking match the original Tachyons example. */
+.space-banner h1 {
+    margin: 0;
+    font-size: var(--wa-font-size-3xl);
     display: inline-block;
     background: var(--wa-color-text-normal);
     color: var(--wa-color-neutral-fill-quiet);
@@ -1588,11 +1598,6 @@ h6 {
     padding: var(--wa-space-2xs) var(--wa-space-xs);
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
-}
-
-.space-banner h1 {
-    margin: 0;
-    font-size: var(--wa-font-size-3xl);
 }
 
 /* Space view padding; WA's `wa-stack` handles vertical gaps
@@ -2635,10 +2640,14 @@ tonk-code:focus-within {
 }
 
 /* The concept-name header sits in a span painted in inverse
-   colors (page foreground as background) — the same
-   headline-cover treatment the page's `h1` uses. The cover hugs
-   the text, not the whole cell. It is the table's title, so it
-   reads a notch larger than the plain field headers. */
+   colors (page foreground as background) — the Tachyons
+   headline-cover treatment the space banner's `h1` also keeps
+   (no longer the default heading look). The dark fill wraps the
+   *text* rather than the cell, so the box hugs each line when it
+   wraps, padding affects only the highlighted span, and
+   `box-decoration-break: clone` renders every wrapped line as a
+   complete padded box. It is the table's title, so it reads a
+   notch larger than the plain field headers. */
 .query-table th.query-table-this > span {
     background: var(--wa-color-text-normal);
     color: var(--wa-color-neutral-fill-quiet);
