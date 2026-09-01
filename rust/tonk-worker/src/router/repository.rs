@@ -1074,14 +1074,22 @@ async fn run_invite(
     // A share is a promise the recipient can actually pull, and an
     // upstream can outlive its provisioning (a space created before the
     // account had an active customer keeps its remote while the service
-    // refuses every presign). Ensure the consumer row exists before any
-    // key material is minted: `/provider/add` is idempotent — an already
-    // provided consumer answers `ConsumerProvided`, treated as success —
-    // so every share self-heals that half-state. Best effort like the
-    // enable-sync attach: a foreign remote (self-hosted, a test server)
-    // is not our access service, and refusing the mint over it would
-    // make those unshareable.
-    match provision_space_consumer(&tonk, &repository.did()).await {
+    // refuses every presign). Whether the consumer row exists is read
+    // from the account db first: the `SpaceProvider` fact is written
+    // when `/provider/add` succeeds and retracted when the gate stops
+    // serving the subject, so a provisioned space mints its link with
+    // no registration call at all. Only a space with no record runs the
+    // ceremony — a legacy space provisioned before the fact existed, or
+    // one whose earlier attempt failed — and success records the fact,
+    // so it runs once, not per share. Best effort like the enable-sync
+    // attach: a foreign remote (self-hosted, a test server) is not our
+    // access service, and refusing the mint over it would make those
+    // unshareable.
+    match if super::customer::space_provider_recorded(&tonk, &repository.did()).await {
+        Ok(())
+    } else {
+        provision_space_consumer(&tonk, &repository.did()).await
+    } {
         Ok(()) => {}
         // Our own service said no, and waiting will not change the
         // answer. A link minted anyway points at a space the service
