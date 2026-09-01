@@ -298,6 +298,18 @@ pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
     Dock::from_symbol(symbol)
 }
 
+/// Resolve the persisted collapse from a `/query` result — the same row
+/// shapes [`dock_from_conclusions`] reads. `None` when the result is
+/// empty or malformed, which the caller treats as expanded.
+pub fn collapsed_from_conclusions(rows: &Value) -> Option<bool> {
+    let first = rows.as_array()?.first()?;
+    first
+        .get("fields")
+        .and_then(|fields| fields.get("collapsed"))
+        .or_else(|| first.get("collapsed"))
+        .and_then(Value::as_bool)
+}
+
 /// Pick the fallback corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
@@ -424,6 +436,39 @@ pub fn dock_claim_json(dock: Dock) -> Value {
                 "parameters": {
                     "this": "state:fab",
                     "dock": dock.symbol()
+                }
+            }
+        }]
+    })
+}
+
+/// Build a `TransactRequest` JSON body persisting whether the bar is
+/// collapsed, on the same `state:fab` entity the dock claim rides.
+///
+/// A concept of its own rather than a second field on the dock concept:
+/// both are cardinality-one, and a two-field descriptor stops matching
+/// whichever claim was written alone, stranding the older state.
+pub fn collapsed_claim_json(collapsed: bool) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "durable",
+                    "concept": {
+                        "description": "Persisted FAB collapse (profile claim).",
+                        "with": {
+                            "collapsed": {
+                                "the": "xyz.tonk.fab/collapsed",
+                                "cardinality": "one",
+                                "as": "Boolean"
+                            }
+                        }
+                    }
+                },
+                "parameters": {
+                    "this": "state:fab",
+                    "collapsed": collapsed
                 }
             }
         }]
@@ -974,6 +1019,31 @@ mod persist {
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+
+    #[test]
+    fn collapsed_claim_json_rides_the_fab_entity() {
+        let v = collapsed_claim_json(true);
+        assert_eq!(v["claims"][0]["op"], "assert");
+        let app = &v["claims"][0]["application"];
+        // Like the dock, a durable profile choice — not a transient.
+        assert_eq!(app["predicate"]["kind"], "durable");
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["collapsed"]["the"],
+            "xyz.tonk.fab/collapsed"
+        );
+        assert_eq!(app["parameters"]["this"], "state:fab");
+        assert_eq!(app["parameters"]["collapsed"], true);
+    }
+
+    #[test]
+    fn collapsed_resolves_from_conclusions() {
+        let rows = serde_json::json!([{ "this": "state:fab", "fields": { "collapsed": true } }]);
+        assert_eq!(collapsed_from_conclusions(&rows), Some(true));
+        let flat = serde_json::json!([{ "this": "state:fab", "collapsed": false }]);
+        assert_eq!(collapsed_from_conclusions(&flat), Some(false));
+        assert_eq!(collapsed_from_conclusions(&serde_json::json!([])), None);
+        assert_eq!(collapsed_from_conclusions(&serde_json::json!({})), None);
     }
 
     #[test]

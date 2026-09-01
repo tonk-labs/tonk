@@ -984,6 +984,17 @@ fn set_element_visible(element: &Element, visible: bool, collapsed: bool) {
 pub(crate) fn collapse(this: &HtmlElement, state: &Shared) {
     commit_edit(this, state);
     close_internal(this, state, false);
+    seat_collapsed(this, state);
+    if let Some(sync) = query(this, Cell::Sync.selector()) {
+        let _ = sync.unchecked_ref::<HtmlElement>().focus();
+    }
+}
+
+/// Seat the bar collapsed without touching focus or open work: what
+/// [`collapse`] does to the DOM, minus the interaction. The restore
+/// path applies a stamp read back at boot, where there is nothing to
+/// commit and stealing focus would be rude.
+pub(crate) fn seat_collapsed(this: &HtmlElement, state: &Shared) {
     state.borrow_mut().collapsed = true;
     if let Some(wrapper) = wrapper(this) {
         let _ = wrapper.class_list().add_1("collapsed");
@@ -1000,9 +1011,6 @@ pub(crate) fn collapse(this: &HtmlElement, state: &Shared) {
         if let Some(element) = query(this, selector) {
             let _ = element.set_attribute("tabindex", "-1");
         }
-    }
-    if let Some(sync) = query(this, Cell::Sync.selector()) {
-        let _ = sync.unchecked_ref::<HtmlElement>().focus();
     }
     update(this);
 }
