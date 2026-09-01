@@ -165,6 +165,37 @@ impl SpaceName {
     }
 }
 
+/// The account currently providing this space with the access
+/// service, on the directory entity.
+///
+/// Its presence IS the provisioned state: `/provider/add` succeeded
+/// for this subject, so its remote is served and a share can skip the
+/// provisioning ceremony. The sync engine retracts it when the gate
+/// answers that the subject is no longer served (a `Declined` refusal
+/// retrying cannot clear), which returns the space to local-only.
+///
+/// The value is the providing ACCOUNT's DID entity rather than a
+/// timestamp: every replica that observes the provisioning asserts the
+/// identical fact, so the record converges, where per-writer
+/// timestamps would give each device its own value.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceProvider {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// The account (customer) whose registration serves this space.
+    pub provider: crate::domain::space::Provider,
+}
+
+impl SpaceProvider {
+    /// Record that `provider` provides `subject`.
+    pub fn new(subject: &Did, provider: &Did) -> Self {
+        Self {
+            this: subject.this(),
+            provider: crate::domain::space::Provider(provider.this()),
+        }
+    }
+}
+
 /// Who founded a space and when, on the directory entity.
 ///
 /// Founding is distinct from mounting: [`record_space_mount`] runs for
@@ -517,6 +548,14 @@ impl Replica {
     /// The `status` value for a temporarily unavailable service.
     pub fn unavailable_status() -> SyncStatusAttr {
         SyncStatusAttr(Self::UNAVAILABLE.parse().expect("sync:unavailable parses"))
+    }
+
+    /// The `status` value for a local-only space. Also published when
+    /// the service answers that the subject is no longer served — a
+    /// remote nothing will serve is a remote in name only, and `local`
+    /// is what drives the connect affordance that re-provisions it.
+    pub fn local_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::LOCAL.parse().expect("sync:local parses"))
     }
 
     /// Map a head-comparison [`SyncState`](crate::SyncState) to the
