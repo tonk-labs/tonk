@@ -5,7 +5,7 @@
 //! subject; this gate asks whether the subject is anyone's to serve.
 //! A subject is servable when it is an active customer itself, or a
 //! provisioned consumer whose provider is an active customer — the
-//! rule the `Consumer` row has always documented. Without it, any
+//! rule the `Subscription` row has always documented. Without it, any
 //! self-minted keypair stores bytes under its own namespace unbilled.
 //!
 //! Always enforced, on both the worker and the native server: a flag
@@ -71,24 +71,95 @@ pub fn container_subject(container_bytes: &[u8]) -> Option<String> {
 pub async fn screen<S: Store>(
     store: &S,
     subject: &str,
+    now: u64,
 ) -> Result<Result<(), AuthorizeError>, StoreError> {
-    if let Some(customer) = store.customer(subject).await? {
-        return Ok(servable(customer.status, "the subject's own registration"));
+    // One query, not three. This runs before every presign, and read in
+    // three separate steps it could see a customer that activates
+    // between the first and the last.
+    //
+    // The DID keeps its own name: every refusal below names it, because
+    // "the subject is not provisioned" alone leaves a caller with no way
+    // to tell WHICH subject a failing request was about — and these
+    // arrive in logs where the request that produced them is long gone.
+    let did = subject;
+    let subject = store.servability(did).await?;
+
+    // An account is both a customer and its own consumer, so its own
+    // registration answers without consulting the consumer half.
+    if let Some(status) = subject.own {
+        return Ok(servable(status, &format!("{did}'s own registration")));
     }
-    let Some(consumer) = store.consumer(subject).await? else {
+    if !subject.consumer {
         return Ok(Err(denial(
             Recourse::None,
-            "the subject is not provisioned",
+            &format!("{did} is not provisioned"),
         )));
-    };
-    let Some(provider) = consumer.provider else {
-        return Ok(Err(denial(Recourse::None, "the subject has no provider")));
-    };
-    match store.customer(&provider).await? {
-        Some(customer) => Ok(servable(customer.status, "the provider's registration")),
+    }
+    // A purge in flight refuses first: the objects may already be
+    // half gone, and reading a partly deleted space is worse than
+    // reading none of it.
+    if subject.deleted_at.is_some() {
+        return Ok(Err(denial(
+            Recourse::None,
+            &format!("the subscription for {did} is being deleted"),
+        )));
+    }
+    // Archived data is gone by definition; the row survives only so what
+    // it accrued can still be billed.
+    if subject.archived_at.is_some() {
+        return Ok(Err(denial(
+            Recourse::None,
+            &format!("the subscription for {did} is archived"),
+        )));
+    }
+    // A suspension with a deadline lifts itself: past that moment the
+    // row still carries the reason, and it no longer applies. Retryable
+    // for the same reason — waiting is what clears it.
+    if let Some(suspension) = &subject.suspension {
+        match suspension.until {
+            Some(until) if until <= now => {}
+            Some(_) => {
+                return Ok(Err(denial(
+                    Recourse::Retry,
+                    &format!(
+                        "the subscription for {did} is suspended: {}",
+                        suspension.message
+                    ),
+                )));
+            }
+            None => {
+                return Ok(Err(denial(
+                    Recourse::None,
+                    &format!(
+                        "the subscription for {did} is suspended: {}",
+                        suspension.message
+                    ),
+                )));
+            }
+        }
+    }
+    // An expired subscription serves nothing, whatever the customer
+    // behind it is doing. Null never expires.
+    if subject
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return Ok(Err(denial(
+            Recourse::None,
+            &format!("the subscription for {did} has expired"),
+        )));
+    }
+    match subject.provider {
+        Some(status) => Ok(servable(status, &format!("the provider of {did}"))),
+        // A subscription always names a provider, so this is that
+        // customer having gone missing. Unreachable under SQLite, which
+        // enforces the foreign key and refuses to delete a customer any
+        // subscription still names — but D1 does not enforce foreign
+        // keys, so this refuses rather than assuming it cannot arise.
+        // Untested for the same reason: the fixture will not build it.
         None => Ok(Err(denial(
             Recourse::None,
-            "the provider is not a customer",
+            &format!("the provider of {did} is not a customer"),
         ))),
     }
 }
@@ -113,6 +184,7 @@ fn servable(status: CustomerStatus, who: &str) -> Result<(), AuthorizeError> {
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::store::Enrollment;
     use crate::store::sqlite::SqliteStore;
 
     async fn store_with(
@@ -122,7 +194,15 @@ mod tests {
         let store = SqliteStore::in_memory().expect("in-memory store");
         for (did, status) in customers {
             store
-                .enroll_customer(did, &format!("{did}@example.com"), b"", "trial@2026-08", 0)
+                .enroll_customer(Enrollment {
+                    did,
+                    email: &format!("{did}@example.com"),
+                    plan: "trial@2026-08",
+                    ledger: did,
+                    custody: &format!("{}-custody", did),
+                    now: 0,
+                    expires_at: u64::MAX,
+                })
                 .await
                 .expect("customer");
             match status {
@@ -141,12 +221,16 @@ mod tests {
         }
         for (consumer, provider) in consumers {
             store
-                .add_consumer(consumer, provider, 0, crate::store::ConsumerKind::Space)
+                .add_subscription(consumer, provider, 0, crate::store::SubscriptionKind::Space)
                 .await
                 .expect("consumer");
         }
         store
     }
+
+    /// A fixed "now" for the gate. The fixtures register at 0, so any
+    /// positive value reads as the present.
+    const NOW: u64 = 1_000;
 
     #[dialog_common::test]
     async fn it_serves_an_active_customer_and_its_provisioned_consumer() {
@@ -155,8 +239,11 @@ mod tests {
             &[("did:key:zSpace", "did:key:zCustomer")],
         )
         .await;
-        assert_eq!(screen(&store, "did:key:zCustomer").await.unwrap(), Ok(()));
-        assert_eq!(screen(&store, "did:key:zSpace").await.unwrap(), Ok(()));
+        assert_eq!(
+            screen(&store, "did:key:zCustomer", NOW).await.unwrap(),
+            Ok(())
+        );
+        assert_eq!(screen(&store, "did:key:zSpace", NOW).await.unwrap(), Ok(()));
     }
 
     #[dialog_common::test]
@@ -166,14 +253,29 @@ mod tests {
             &[("did:key:zSpace", "did:key:zPending")],
         )
         .await;
-        assert!(screen(&store, "did:key:zNobody").await.unwrap().is_err());
-        assert!(screen(&store, "did:key:zPending").await.unwrap().is_err());
-        assert!(screen(&store, "did:key:zSpace").await.unwrap().is_err());
+        assert!(
+            screen(&store, "did:key:zNobody", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            screen(&store, "did:key:zPending", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            screen(&store, "did:key:zSpace", NOW)
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 
     /// The recourse a refusal carries, or `None` when it served.
     async fn recourse_of(store: &SqliteStore, subject: &str) -> Option<Recourse> {
-        match screen(store, subject).await.unwrap() {
+        match screen(store, subject, NOW).await.unwrap() {
             Ok(()) => None,
             Err(AuthorizeError::Declined { recourse, .. }) => Some(recourse),
             Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
@@ -255,6 +357,45 @@ mod tests {
         assert_eq!(recourse_of(&store, "did:key:zCustomer").await, None);
     }
 
+    /// An expired subscription serves nothing, however healthy the
+    /// customer behind it is. `None` never expires, which is what every
+    /// subscription carries today.
+    #[dialog_common::test]
+    async fn it_refuses_an_expired_subscription() {
+        let store = store_with(
+            &[("did:key:zCustomer", CustomerStatus::Active)],
+            &[("did:key:zSpace", "did:key:zCustomer")],
+        )
+        .await;
+        assert_eq!(recourse_of(&store, "did:key:zSpace").await, None);
+
+        store.expire_for_test("did:key:zSpace", NOW - 1).await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zSpace").await,
+            Some(Recourse::None),
+            "an expired subscription is not worth retrying: it needs renewing"
+        );
+    }
+
+    /// The boundary: a subscription is served up to the moment it
+    /// expires, not up to the moment before.
+    #[dialog_common::test]
+    async fn it_serves_a_subscription_until_the_instant_it_expires() {
+        let store = store_with(
+            &[("did:key:zCustomer", CustomerStatus::Active)],
+            &[("did:key:zSpace", "did:key:zCustomer")],
+        )
+        .await;
+        store.expire_for_test("did:key:zSpace", NOW + 1).await;
+        assert_eq!(recourse_of(&store, "did:key:zSpace").await, None);
+
+        store.expire_for_test("did:key:zSpace", NOW).await;
+        assert_eq!(
+            recourse_of(&store, "did:key:zSpace").await,
+            Some(Recourse::None)
+        );
+    }
+
     /// The sentence is for a person, not a client. It is asserted here
     /// only so a refusal that says nothing useful fails loudly; nothing
     /// in the system matches on it.
@@ -262,7 +403,7 @@ mod tests {
     async fn it_explains_itself_in_words_too() {
         let store = store_with(&[("did:key:zPending", CustomerStatus::Registered)], &[]).await;
         let Err(AuthorizeError::Declined { reason, .. }) =
-            screen(&store, "did:key:zPending").await.unwrap()
+            screen(&store, "did:key:zPending", NOW).await.unwrap()
         else {
             panic!("an unconfirmed customer is declined");
         };

@@ -17,7 +17,7 @@ use sha2_0_10::Sha256;
 use std::marker::PhantomData;
 use zeroize::Zeroizing;
 
-use crate::clearance::{Account, Clearance, Recovery};
+use crate::clearance::{Clearance, Recovery};
 
 /// HKDF info for the account's Ed25519 signing seed. Bumping the
 /// version is a deliberate account rotation, never a routine change.
@@ -96,31 +96,41 @@ impl AccountSecret {
         Self(bytes)
     }
 
-    /// The Ed25519 signing seed, via [`SIGNING_CONTEXT`].
-    pub fn signing_seed(&self) -> Zeroizing<[u8; 32]> {
-        expand(&self.0, SIGNING_CONTEXT)
+    /// The secret's own bytes, for sealing it through a handle.
+    ///
+    /// [`Kek::seal`] reaches them directly, which a `CryptoKey`-backed
+    /// KEK cannot: sealing there goes through
+    /// [`crate::webcrypto_kek::seal_seed`], which takes bytes. Not the
+    /// signing seed — that is derived *from* this, and an envelope
+    /// holding it would recover a signer and nothing else.
+    pub(crate) fn material(&self) -> Zeroizing<[u8; 32]> {
+        self.0.clone()
     }
 
-    /// The account-clearance key: wraps the secrets this account
-    /// custodies, which today means space and invite signing seeds.
+    /// The Ed25519 signing seed, via [`SIGNING_CONTEXT`].
     ///
-    /// Derived rather than stored, so a device that can open the account
-    /// can wrap and unwrap everything below it with no second secret to
-    /// keep in step. The flip side is that rotating the account secret
-    /// rotates this key, so accreditation must re-wrap every seed under
-    /// the new one.
-    pub fn account_kek(&self) -> Kek<Account> {
-        Kek(
-            Material::Bytes(expand(&self.0, Account::CONTEXT)),
-            PhantomData,
-        )
+    /// Crate-private: [`Self::signer`] is what callers want, and it
+    /// imports the seed non-extractably rather than yielding bytes.
+    pub(crate) fn signing_seed(&self) -> Zeroizing<[u8; 32]> {
+        expand(&self.0, SIGNING_CONTEXT)
     }
 
     /// The account's X25519 encryption key, via [`ENCRYPTION_CONTEXT`].
     /// Its public half is the recipient every device seals custodied
     /// seeds to; the private half only exists inside a ceremony.
-    pub fn encryption_key(&self) -> crate::sealed::EncryptionKey {
+    ///
+    /// Crate-private: [`Self::secret`] offers what this key can do
+    /// without handing the key itself to a caller.
+    pub(crate) fn encryption_key(&self) -> crate::sealed::EncryptionKey {
         crate::sealed::EncryptionKey::from_bytes(expand(&self.0, ENCRYPTION_CONTEXT))
+    }
+
+    /// Seal to and open for this account.
+    ///
+    /// Mirrors `Ed25519Signer::secret`: a capability over the account's
+    /// encryption key, rather than the key.
+    pub fn secret(&self) -> crate::sealed::AccountSecretKey<'_> {
+        crate::sealed::AccountSecretKey::new(self)
     }
 
     /// The account signer. On the web target the key imports into
@@ -458,7 +468,7 @@ impl<C: Clearance, K: Capability> Kek<C, K> {
     ///
     /// The caller asserts the level; nothing about raw bytes carries
     /// one. Prefer the derivations that name their level themselves —
-    /// [`AccountSecret::account_kek`], [`Kek::from_custodian`] — and
+    /// [`Kek::from_custodian`] — and
     /// keep this for bytes that arrived already bound to a level.
     pub fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(Material::Bytes(bytes), PhantomData)
@@ -670,6 +680,11 @@ impl<C: Clearance> Kek<C, Sealing> {
     ///
     /// Returns an error if the platform has no entropy for the KEK, or
     /// the custodian's identity yields no agreement key to seal to.
+    ///
+    /// The concrete signer: sealing goes through
+    /// `secret(context).conceal`, which reaches an X25519 agreement key
+    /// derived from an Ed25519 one. Dialog's algorithm-agnostic `Signer`
+    /// offers no such thing.
     pub async fn seal_to_custodian(custodian: &Ed25519Signer) -> Result<(Self, SealedSecret)> {
         let mut bytes = Zeroizing::new([0u8; 32]);
         getrandom::fill(bytes.as_mut())
@@ -720,6 +735,7 @@ impl<K: Capability> Kek<Recovery, K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clearance::Account;
     use dialog_varsig::Principal;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

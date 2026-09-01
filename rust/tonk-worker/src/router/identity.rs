@@ -43,7 +43,7 @@ pub(crate) struct LocalRoot {
     pub passkey: Option<PasskeyMetadata>,
     /// The account's X25519 recipient, when the ceremony that wrote this
     /// record held the secret. Published to the account space by
-    /// `seed_encryption_key`.
+    /// `seed_sealed_inbox`.
     pub encryption_key: Option<dialog_varsig::Did>,
 }
 
@@ -334,7 +334,7 @@ fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError
     let did: dialog_varsig::Did = did
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
-    tonk_identity::sealed::RecipientKey::from_did(&did)
+    tonk_identity::sealed::RecipientKey::try_from(&did)
         .map_err(|error| TonkWorkerError::Router(format!("invalid encryptionKey: {error}")))?;
     Ok(did)
 }
@@ -348,13 +348,12 @@ pub async fn save(
     let state = state.read().await;
     let status = persist_root(&state, request).await?;
     // A save that carries creation metadata is a passkey arriving — at
-    // signup or at a later custody enrollment. Seed the account facts
-    // now rather than on the next sweep, so the dashboard reflects the
-    // enrollment immediately. Idempotent and best-effort.
-    if super::account_state::seed_passkey_facts(&state).await {
-        tonk_common::log!("recorded this device's passkey creation facts in the account space");
-    }
-    if super::account_state::seed_encryption_key(&state).await {
+    // signup or at a later custody enrollment. The passkey's own row is
+    // written by the ceremony, which is the only place that holds both
+    // the custody DID it keys on and the creation label. Seed the
+    // sealed-inbox address now rather than on the next sweep, so the
+    // dashboard reflects the enrollment immediately.
+    if super::account_state::seed_sealed_inbox(&state).await {
         tonk_common::log!("published the account's encryption key in the account space");
     }
     Ok(Json(status))
@@ -432,8 +431,7 @@ mod tests {
 
     fn recipient_did(byte: u8) -> dialog_varsig::Did {
         tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([byte; 32]))
-            .encryption_key()
-            .recipient()
+            .secret()
             .did()
     }
 

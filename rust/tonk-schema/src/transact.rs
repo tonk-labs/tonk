@@ -26,6 +26,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
+use dialog_query::attribute::Relation;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
@@ -637,7 +638,22 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         let Term::Constant(value) = term else {
             continue;
         };
-        let the: dialog_artifacts::Attribute = attribute.the().clone().into();
+        // A collection entry is written under `domain/key`; the key is
+        // the literal the assertion named, carried in the field's key
+        // operand. An entry with no key has no fact to write.
+        let the: dialog_artifacts::Attribute = match attribute.the().attribute() {
+            Some(the) => the,
+            None => {
+                let key = query.terms.get(&Relation::key_operand(field_name));
+                let Some(Term::Constant(Value::String(key))) = key else {
+                    continue;
+                };
+                let Ok(the) = attribute.the().entry(key) else {
+                    continue;
+                };
+                the
+            }
+        };
         if assert {
             // Cardinality-one fields use `associate_unique` so a
             // re-assert of the same attribute on the same entity

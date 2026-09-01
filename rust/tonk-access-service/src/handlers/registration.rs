@@ -15,6 +15,37 @@ use crate::service::{did_document, signer_from_hex};
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_EMAIL_TOKEN_TTL: u64 = 24 * 60 * 60;
 
+/// An [`crate::email::EmailSender`] that may not be configured: `Ready`
+/// delegates to Resend, `Missing` fails at the SEND with the reason.
+///
+/// Only enrollment and resend mail anything, so an environment without
+/// email secrets — every preview lacked them at some point — still
+/// answers activation, provisioning, and the operator commands, instead
+/// of refusing every registration invocation up front over a credential
+/// most of them never use.
+#[cfg(target_arch = "wasm32")]
+enum MaybeEmail {
+    /// Configured; sends deliver.
+    Ready(crate::email::Resend),
+    /// Not configured; sends fail with this explanation.
+    Missing(String),
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl crate::email::EmailSender for MaybeEmail {
+    async fn send_activation(
+        &self,
+        email: &str,
+        link: &str,
+    ) -> Result<(), crate::email::EmailError> {
+        match self {
+            Self::Ready(resend) => resend.send_activation(email, link).await,
+            Self::Missing(reason) => Err(crate::email::EmailError::Send(reason.clone())),
+        }
+    }
+}
+
 /// Answer a registration invocation.
 #[cfg(target_arch = "wasm32")]
 pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Response> {
@@ -43,16 +74,26 @@ async fn handle_inner(
         env.d1("CONTROL")
             .map_err(|err| internal(format!("control database: {err}")))?,
     );
-    let service = service_signer(env)?;
-    let api_key = env
-        .secret("RESEND_API_KEY")
-        .map_err(|err| internal(format!("RESEND_API_KEY: {err}")))?
+    let service_seed = env
+        .secret("SERVICE_SECRET_KEY")
+        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?
         .to_string();
-    let from = env
-        .var("EMAIL_FROM")
-        .map_err(|err| internal(format!("EMAIL_FROM: {err}")))?
-        .to_string();
-    let email = Resend::new(api_key, from);
+    let service = signer_from_hex(&service_seed)
+        .map_err(|message| RegistrationError::Internal { message })?;
+    // Missing email credentials fail at the SEND, not up front: only
+    // enrollment and resend mail anything, and refusing activation over
+    // an email secret it never uses stranded every preview environment
+    // that lacked one.
+    let email = match (env.secret("RESEND_API_KEY"), env.var("EMAIL_FROM")) {
+        (Ok(api_key), Ok(from)) => {
+            MaybeEmail::Ready(Resend::new(api_key.to_string(), from.to_string()))
+        }
+        (api_key, from) => MaybeEmail::Missing(format!(
+            "email delivery is not configured: RESEND_API_KEY {}, EMAIL_FROM {}",
+            if api_key.is_ok() { "set" } else { "missing" },
+            if from.is_ok() { "set" } else { "missing" },
+        )),
+    };
 
     let url = req
         .url()
@@ -74,10 +115,19 @@ async fn handle_inner(
         IndexedRevocations(KvRevocationIndex::new(kv))
     };
 
+    // The same authorizer the presign path runs. Enrollment redeems the
+    // recovery invocation through it, so the custody cell is written to
+    // exactly the object that invocation names.
+    let vault = crate::vault::AuthorizedVault(WorkerRedeemer(
+        super::ucan::create_authorizer(env).map_err(|refusal| internal(format!("{refusal:?}")))?,
+    ));
+
     let registration = Registration {
         store: &store,
         email: &email,
+        vault: &vault,
         service: &service,
+        service_seed: &service_seed,
         origin: &origin,
         activation_ttl,
         now: Date::now().as_millis() / 1_000,
@@ -136,10 +186,11 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
     match store.customer(did).await {
         Ok(Some(customer)) => {
             let receipt = Receipt {
-                customer: customer.did.parse().map_err(|err| {
+                customer: customer.account.parse().map_err(|err| {
                     worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
                 })?,
                 status: customer.status,
+                ledger: None,
                 // Only for a customer this service actually serves. The
                 // probe is what notices activation, so it must answer
                 // the address then — but naming one for a customer
@@ -181,5 +232,38 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
         .host_str()
         .map(ToString::to_string)
         .unwrap_or_default();
-    Response::from_json(&did_document(&host, &signer))
+    // The request's own origin: on the Worker this is the deployment the
+    // browser actually reached, which is what a client should sync to.
+    let origin = req.url()?.origin().ascii_serialization();
+    let document = did_document(&host, &origin, &signer);
+    // Pretty-printed: a DID document is something people open and read,
+    // and `from_json` would emit it on one line.
+    let body = serde_json::to_string_pretty(&document)
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    Response::ok(body).map(|response| {
+        response.with_headers({
+            let headers = worker::Headers::new();
+            let _ = headers.set("content-type", "application/json");
+            headers
+        })
+    })
+}
+
+/// The worker's [`Redeemer`]: its own authorizer, asked directly rather
+/// than over HTTP.
+#[cfg(target_arch = "wasm32")]
+struct WorkerRedeemer(dialog_remote_ucan_s3::UcanAuthorizer);
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl crate::vault::Redeemer for WorkerRedeemer {
+    async fn redeem(
+        &self,
+        container: &[u8],
+    ) -> Result<dialog_remote_s3::Permit, crate::vault::VaultError> {
+        self.0
+            .authorize(container)
+            .await
+            .map_err(|error| crate::vault::VaultError::Unavailable(error.to_string()))
+    }
 }

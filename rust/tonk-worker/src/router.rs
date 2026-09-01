@@ -183,7 +183,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
-        .route("/api/customer/activated", post(customer::activated))
         .route("/api/customer/pending", get(customer::get_pending))
         .route("/api/custody/provision", post(customer::provision_custody))
         .route("/api/custody/queue", post(customer::queue_custody))
@@ -620,8 +619,7 @@ pub mod tests {
         let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
             zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
         )
-        .encryption_key()
-        .recipient()
+        .secret()
         .did();
         super::identity::persist_root(
             state,
@@ -639,7 +637,7 @@ pub mod tests {
             .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .transaction()
-            .assert(tonk_schema::AccountEncryptionKey::new(
+            .assert(tonk_schema::AccountSealedInbox::new(
                 root_did.this(),
                 recipient.this(),
             ))
@@ -1551,10 +1549,12 @@ pub mod tests {
                 .expect("SSE-framed body"),
         )
         .expect("delta is JSON");
-        // Refreshing the branch handle deliberately rebinds its subscription
-        // engine, so this is a replacement snapshot; an ordinary mint on an
-        // unchanged handle is an incremental `asserted` delta. The FAB accepts
-        // both frame kinds.
+        // An ordinary mint on a quiet handle broadcasts an incremental
+        // `asserted` delta; a snapshot (`conclusions`) arrives when a poll
+        // serves a pending subscriber instead. The FAB accepts both frame
+        // kinds, so this does too. (The in-place `refresh_branch` no longer
+        // rebinds the engine mid-flow, so no empty replacement snapshot can
+        // race in front of the invite delta — that was a CI flake.)
         let rows = delta["conclusions"]
             .as_array()
             .or_else(|| delta["asserted"].as_array())

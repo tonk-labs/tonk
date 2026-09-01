@@ -47,10 +47,26 @@ async fn wait_for(selector: &str) -> Element {
 /// stubbed `fetch` used to be how this test put the bar into
 /// "Registered", and stubbing it today changes nothing at all — the
 /// read it stood in for is gone.
+/// Deliver a frame the way the two subscriptions do.
+///
+/// `status` selects which fact the frame carries: a registration frame
+/// names the address, an activation frame names the provider. There is no
+/// status string on the wire any more — the element latches whichever
+/// facts have arrived and renders from the pair.
 fn deliver(bar: &HtmlElement, status: &str, email: &str) {
     let fields = Object::new();
-    Reflect::set(&fields, &"status".into(), &status.into()).expect("status");
-    Reflect::set(&fields, &"email".into(), &email.into()).expect("email");
+    if status == "Active" {
+        Reflect::set(
+            &fields,
+            &"provider".into(),
+            &"https://service.example/ucan/".into(),
+        )
+        .expect("provider");
+        Reflect::set(&fields, &"activated_at".into(), &JsValue::from_f64(1.0)).expect("at");
+    } else {
+        Reflect::set(&fields, &"email".into(), &email.into()).expect("email");
+        Reflect::set(&fields, &"registered_at".into(), &JsValue::from_f64(1.0)).expect("at");
+    }
     let row = Object::new();
     Reflect::set(&row, &"fields".into(), &fields).expect("fields");
     let rows = js_sys::Array::new();

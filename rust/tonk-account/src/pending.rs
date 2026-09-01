@@ -53,7 +53,7 @@ pub enum PendingWork {
         custody: String,
         /// Hex-encoded sealed envelope, the content to publish.
         sealed_hex: String,
-        /// Hex-encoded pre-signed `/memory/publish` invocation. An
+        /// Hex-encoded pre-signed `/use/put/memory/cell` invocation. An
         /// entry from before invocations were queued decodes with an
         /// empty string and is void: dropped with a log rather than
         /// blocking the queue forever.

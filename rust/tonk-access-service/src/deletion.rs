@@ -18,7 +18,7 @@ use dialog_varsig::AnySignature;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ConsumerDeletionState, ConsumerKind, Store};
+use crate::store::{Store, SubscriptionKind};
 
 /// The deprovisioning command: the reverse of `/provider/add`.
 pub const COMMAND: [&str; 2] = ["provider", "remove"];
@@ -41,7 +41,11 @@ pub struct Receipt {
 #[serde(rename_all = "camelCase")]
 pub struct HostedSpace {
     pub space: String,
-    pub deletion_state: String,
+    /// When deletion began, if a purge is already in flight. A finished
+    /// deletion takes the row with it, so such a space is simply absent
+    /// from the plan rather than listed as gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleting_since: Option<u64>,
 }
 
 /// Authoritative access-service inventory of the customer's owned
@@ -197,15 +201,21 @@ pub async fn delete<S: Store, P: SpacePurger>(
         // `/customer/delete`, after every other owned space is gone.
         return Err(Error::Forbidden);
     }
-    let consumer = store
+    // No row is the finished state: deletion takes it with the data, so
+    // a retry after one completed lands here. Idempotent-successful,
+    // reporting this attempt's clock — the original moment went with the
+    // row, and nothing reads the field.
+    let Some(consumer) = store
         .consumer(space.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
-        .ok_or(Error::NotRegistered)?;
-    if consumer.owner.as_deref() != Some(customer.as_str()) {
+    else {
+        return Ok(receipt(&space, now));
+    };
+    if consumer.provider != customer.as_str() {
         return Err(Error::Forbidden);
     }
-    if consumer.kind == ConsumerKind::Custody {
+    if consumer.kind == SubscriptionKind::Custody {
         // Custody namespaces hold the account's own sealed key
         // material. They are purged by customer finalization, last —
         // deprovisioning one earlier would destroy the account's
@@ -213,50 +223,41 @@ pub async fn delete<S: Store, P: SpacePurger>(
         return Err(Error::Forbidden);
     }
 
-    if consumer.deletion_state == ConsumerDeletionState::Deleted {
-        return Ok(receipt(&space, consumer.deleted_at.unwrap_or_default()));
-    }
-    if consumer.deletion_state == ConsumerDeletionState::Active
-        && !store
-            .mark_consumer_deleting(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        let current = store
-            .consumer(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-            .ok_or(Error::NotRegistered)?;
-        if current.deletion_state == ConsumerDeletionState::Deleted {
-            return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
+    // Stop serving before any object goes: purging is neither atomic nor
+    // certain to finish in one attempt, and a client must not read a
+    // half-purged space. The write is a compare-and-set, so a second
+    // request arriving now finds the deletion already begun and joins it
+    // rather than starting its own.
+    let began = match consumer.deleted_at {
+        Some(began) => began,
+        None => {
+            store
+                .mark_consumer_deleting(space.as_str(), now)
+                .await
+                .map_err(|error| Error::Internal(error.to_string()))?;
+            // Whoever won the race, the row now carries the moment
+            // deletion began, and the receipt reports that rather than
+            // this attempt's clock.
+            store
+                .consumer(space.as_str())
+                .await
+                .map_err(|error| Error::Internal(error.to_string()))?
+                .and_then(|current| current.deleted_at)
+                .unwrap_or(now)
         }
-        if current.deletion_state != ConsumerDeletionState::Deleting {
-            return Err(Error::Internal(
-                "could not enter deletion denial state".into(),
-            ));
-        }
-    }
+    };
 
     purger
         .purge(&format!("{space}/"))
         .await
         .map_err(Error::Incomplete)?;
-    if !store
-        .finish_consumer_deletion(space.as_str(), now)
+    // The row goes with the data. A retry after this finds no row and is
+    // answered by the caller above as already deleted.
+    store
+        .finish_consumer_deletion(space.as_str())
         .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        let current = store
-            .consumer(space.as_str())
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-            .ok_or(Error::NotRegistered)?;
-        if current.deletion_state != ConsumerDeletionState::Deleted {
-            return Err(Error::Internal("could not finalize deletion state".into()));
-        }
-        return Ok(receipt(&space, current.deleted_at.unwrap_or_default()));
-    }
-    Ok(receipt(&space, now))
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    Ok(receipt(&space, began))
 }
 
 /// The `consumer` argument naming which hosted space to deprovision.
@@ -282,14 +283,16 @@ pub async fn customer_plan<S: Store>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_PLAN_COMMAND, now, true).await?;
     let spaces = store
-        .consumers_by_owner(customer.as_str())
+        .subscriptions_by_provider(customer.as_str())
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .into_iter()
-        .filter(|consumer| consumer.did != customer && consumer.kind == ConsumerKind::Space)
+        .filter(|consumer| {
+            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
+        })
         .map(|consumer| HostedSpace {
-            space: consumer.did,
-            deletion_state: consumer.deletion_state.as_str().to_string(),
+            space: consumer.consumer,
+            deleting_since: consumer.deleted_at,
         })
         .collect();
     Ok(CustomerDeletionPlan { customer, spaces })
@@ -306,17 +309,15 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     let customer =
         verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, true).await?;
     let consumers = store
-        .consumers_by_owner(&customer)
+        .subscriptions_by_provider(&customer)
         .await
         .map_err(|error| Error::Internal(error.to_string()))?;
     let remaining: Vec<_> = consumers
         .iter()
         .filter(|consumer| {
-            consumer.did != customer
-                && consumer.kind == ConsumerKind::Space
-                && consumer.deletion_state != ConsumerDeletionState::Deleted
+            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
         })
-        .map(|consumer| consumer.did.clone())
+        .map(|consumer| consumer.consumer.clone())
         .collect();
     if !remaining.is_empty() {
         return Err(Error::OwnedSpacesRemain(remaining));
@@ -327,23 +328,21 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     // could still need the account's key material can be left waiting
     // on it. Denial-first like any other purge, and idempotent.
     for consumer in &consumers {
-        if consumer.kind != ConsumerKind::Custody
-            || consumer.deletion_state == ConsumerDeletionState::Deleted
-        {
+        if consumer.kind != SubscriptionKind::Custody {
             continue;
         }
-        if consumer.deletion_state == ConsumerDeletionState::Active {
+        if consumer.deleted_at.is_none() {
             let _ = store
-                .mark_consumer_deleting(&consumer.did)
+                .mark_consumer_deleting(&consumer.consumer, now)
                 .await
                 .map_err(|error| Error::Internal(error.to_string()))?;
         }
         purger
-            .purge(&format!("{}/", consumer.did))
+            .purge(&format!("{}/", consumer.consumer))
             .await
             .map_err(Error::Incomplete)?;
         let _ = store
-            .finish_consumer_deletion(&consumer.did, now)
+            .finish_consumer_deletion(&consumer.consumer)
             .await
             .map_err(|error| Error::Internal(error.to_string()))?;
     }
@@ -353,9 +352,9 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
         .ok_or(Error::NotRegistered)?;
-    if self_consumer.deletion_state == ConsumerDeletionState::Active
+    if self_consumer.deleted_at.is_none()
         && !store
-            .mark_self_consumer_deleting(&customer)
+            .mark_self_consumer_deleting(&customer, now)
             .await
             .map_err(|error| Error::Internal(error.to_string()))?
     {
@@ -635,7 +634,7 @@ mod tests {
 
     use super::*;
     use crate::store::sqlite::SqliteStore;
-    use crate::store::{SIGNUP_PLAN, Store};
+    use crate::store::{Enrollment, SIGNUP_PLAN, Store};
 
     /// A device-signed deprovision invocation, proving through the
     /// root's delegation — the shape the worker sends.
@@ -726,21 +725,23 @@ mod tests {
         let space = Ed25519Signer::import(&[72; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "owner@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "owner@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
@@ -754,18 +755,26 @@ mod tests {
             delete(&store, &purger, &invocation, at + 1).await,
             Err(Error::Incomplete(_))
         ));
+        // The purge failed, so the row stays and carries the moment
+        // deletion began: service is already refused.
         let denied = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denied.deletion_state, ConsumerDeletionState::Deleting);
-        assert_eq!(denied.provider.as_deref(), Some(root.did().as_str()));
+        assert_eq!(denied.deleted_at, Some(at + 1));
+        assert_eq!(denied.provider, root.did().to_string());
 
         let receipt = delete(&store, &purger, &invocation, at + 2).await.unwrap();
         assert_eq!(receipt.space, space.did());
-        let deleted = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(deleted.deletion_state, ConsumerDeletionState::Deleted);
-        assert!(deleted.provider.is_none());
+        // A finished deletion takes the row with the data.
+        assert!(
+            store
+                .consumer(space.did().as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
 
+        // Replaying is still successful: nothing is left to delete.
         let replay = delete(&store, &purger, &invocation, at + 3).await.unwrap();
-        assert_eq!(replay.deleted_at, receipt.deleted_at);
+        assert_eq!(replay.space, receipt.space);
         assert_eq!(
             purger.prefixes.lock().unwrap().as_slice(),
             &[format!("{}/", space.did()), format!("{}/", space.did())]
@@ -788,30 +797,32 @@ mod tests {
         let custody = Ed25519Signer::import(&[94; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "custody@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "custody@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: custody.did().as_str(),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 custody.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Custody,
+                SubscriptionKind::Custody,
             )
             .await
             .unwrap();
@@ -852,12 +863,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receipt.customer, root.did().to_string());
-        let purged = store
-            .consumer(custody.did().as_str())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(purged.deletion_state, ConsumerDeletionState::Deleted);
+        // Finalization takes the subscription rows with the customer:
+        // a subscription names who pays for it, and nobody does now.
+        assert!(
+            store
+                .consumer(custody.did().as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
             &[
@@ -869,6 +883,65 @@ mod tests {
         );
     }
 
+    /// Deleting a customer releases the address: the row holds it under
+    /// a unique index, so an account that is gone must not keep an email
+    /// claimed. The whole point of releasing it is enrolling again.
+    #[dialog_common::test]
+    async fn deleting_a_customer_frees_the_address_for_another_account() {
+        let store = SqliteStore::in_memory().unwrap();
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let root = Ed25519Signer::generate().await.unwrap();
+        let at = now();
+        store
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "alice@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .customer_by_email("alice@example.com")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
+        delete_customer(&store, &purger, &invocation, at + 1)
+            .await
+            .expect("a customer with no other spaces finalizes");
+
+        assert!(
+            store
+                .customer_by_email("alice@example.com")
+                .await
+                .unwrap()
+                .is_none(),
+            "the address is free once the account holding it is gone"
+        );
+
+        // And a different account may take it.
+        let other = Ed25519Signer::generate().await.unwrap();
+        store
+            .enroll_customer(Enrollment {
+                did: other.did().as_str(),
+                email: "alice@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: other.did().as_str(),
+                custody: &format!("{}-custody", other.did().as_str()),
+                now: at + 2,
+                expires_at: u64::MAX,
+            })
+            .await
+            .expect("the released address enrolls again");
+    }
+
     #[dialog_common::test]
     async fn customer_finalization_requires_every_owned_space_then_removes_email_state() {
         let store = SqliteStore::in_memory().unwrap();
@@ -876,21 +949,23 @@ mod tests {
         let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "delete@example.com",
-                b"access",
-                SIGNUP_PLAN,
-                at,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "delete@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
-            .add_consumer(
+            .add_subscription(
                 space.did().as_str(),
                 root.did().as_str(),
                 at,
-                ConsumerKind::Space,
+                SubscriptionKind::Space,
             )
             .await
             .unwrap();
@@ -939,38 +1014,34 @@ mod tests {
         assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
         assert!(
             store
-                .consumers_by_owner(root.did().as_str())
+                .subscriptions_by_provider(root.did().as_str())
                 .await
                 .unwrap()
                 .is_empty()
         );
-        let denial = store.consumer(space.did().as_str()).await.unwrap().unwrap();
-        assert_eq!(denial.deletion_state, ConsumerDeletionState::Deleted);
-        assert!(denial.provider.is_none());
-        assert!(denial.owner.is_none());
+        // Finalization leaves nothing behind: the subscription rows go
+        // with the customer that paid for them. Nothing marks the space
+        // DID as spent, so provisioning it again succeeds — only the
+        // holder of that space's key can present the DID, and a customer
+        // who deletes their account and comes back with the same space
+        // is a customer rather than an attacker.
         assert!(
-            !store
-                .add_consumer(
-                    space.did().as_str(),
-                    root.did().as_str(),
-                    at + 4,
-                    ConsumerKind::Space,
-                )
-                .await
-                .unwrap()
-        );
-        assert_eq!(
             store
                 .consumer(space.did().as_str())
                 .await
                 .unwrap()
-                .unwrap()
-                .deletion_state,
-            ConsumerDeletionState::Deleted
+                .is_none()
         );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
-            &[format!("{}/", space.did()), format!("{}/", root.did())]
+            &[
+                format!("{}/", space.did()),
+                // Enrollment claims the passkey's custody space, so
+                // finalization purges it: after the data spaces, before
+                // the account's own.
+                format!("{}-custody/", root.did()),
+                format!("{}/", root.did()),
+            ]
         );
     }
 }

@@ -213,18 +213,14 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 // so no later completion can replace success with an error.
                 terminal.set(true);
                 pending.set(false);
-                // Hand the receipt to the worker before declaring
-                // success. The service names the provider serving this
-                // account here, and this page is the only place that
-                // answer arrives — post it to `/api/customer/activated`
-                // so it is recorded as a fact rather than discarded.
-                // Best effort: activation itself succeeded, and the
-                // status probe records the same thing on the next read.
-                if let Err(error) = crate::api::report_activation(&body).await {
-                    web_sys::console::warn_1(
-                        &format!("activation receipt not recorded: {error}").into(),
-                    );
-                }
+                // Nothing is reported to the worker. This page used to
+                // post the receipt so the provider it named could be
+                // recorded — but enrollment names the provider now, and
+                // activation is observed rather than announced: the
+                // account remote is already attached, the gate stops
+                // answering 403, and the next sync records it. That works
+                // on every device, including the ones that never opened
+                // this link, which a report from here never could.
                 set_busy(&host, false, true);
                 clear_error(&host);
                 set_status(&host, "");

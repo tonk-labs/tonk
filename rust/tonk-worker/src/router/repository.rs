@@ -1081,16 +1081,31 @@ async fn run_invite(
     // enable-sync attach: a foreign remote (self-hosted, a test server)
     // is not our access service, and refusing the mint over it would
     // make those unshareable.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
-            }
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        // Our own service said no, and waiting will not change the
+        // answer. A link minted anyway points at a space the service
+        // will not serve — the recipient meets "you don't have this
+        // space" — so the share is refused with the reason instead.
+        Err(error @ TonkWorkerError::Upstream { .. })
+            if remote_is_own_service(remote_execution.access_url.as_str())
+                && !super::customer::is_retryable(&error) =>
+        {
+            log!("Invite for repo '{repo_name}': the service refused to provision: {error}");
+            drop(tonk);
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                tonk_worker_api::share::BLOCKED_NOT_PROVISIONED,
+                &error.to_string(),
+                time,
+            )
+            .await;
+            return Ok(RunInvite::Settled);
         }
         Err(error) => {
-            log!("Invite for repo '{repo_name}': no prefix to provision with: {error}");
+            log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
         }
     }
 
@@ -2308,12 +2323,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 /// space syncs.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
-    match super::customer::provider_address(tonk).await {
-        Some(provider) => Some(provider),
-        None => super::account::descriptor(tonk)
-            .await
-            .map(|descriptor| descriptor.remote().to_string()),
-    }
+    super::account_state::account_remote(tonk).await.ok()
 }
 
 /// Create a space local-only, split out so its `?` errors are logged
@@ -2403,23 +2413,25 @@ async fn enable_sync_inner(
     // local-only space earns its remote, so it is where the consumer row
     // has to be created.
     //
-    // Best effort, not fatal. A remote is not necessarily OUR access
-    // service — a self-hosted endpoint or a test server is attached the
-    // same way, and `/provider/add` against our own service is beside
-    // the point there. Refusing the attach on a failed provision would
-    // make those unreachable, so the attach proceeds and a space that
-    // does need provisioning surfaces it as a refused presign rather
-    // than a refused attach.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("enable sync '{key}': provisioning skipped: {error}");
-            }
+    // Best effort ONLY for a remote that is not our access service — a
+    // self-hosted endpoint or a test server is attached the same way,
+    // and `/provider/add` against our own service is beside the point
+    // there. But when the remote IS our service and it refuses with an
+    // answer waiting will not change, attaching anyway wires the space
+    // to an upstream that refuses every presign terminally: the sync
+    // loop hammers it forever and a link handed out against it answers
+    // "you don't have this space". That refusal fails the attach.
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        Err(error) if remote_is_own_service(remote) && !super::customer::is_retryable(&error) => {
+            return Err(RepositoryError::Internal(format!(
+                "enable sync '{key}': the service refused to provision this space, and \
+                 attaching its own remote anyway would wire the space to an upstream \
+                 that refuses every request: {error}"
+            )));
         }
         Err(error) => {
-            log!("enable sync '{key}': no root delegation to consent with: {error}")
+            log!("enable sync '{key}': provisioning skipped: {error}");
         }
     }
 
@@ -2905,6 +2917,61 @@ pub async fn create_repository(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision `subject` under this profile's account, repairing a stale
+/// consent first.
+///
+/// A space created before sign-in mints its consent to the account the
+/// profile held THEN — the onboarding account — and the stored chain
+/// does not change when the real account arrives. Presenting it earns
+/// `consent was issued to <onboarding>, not the invoking customer`, and
+/// treating that refusal as skippable wired spaces to remotes that then
+/// refused every presign terminally, with an invite already handed out:
+/// the recipient met "you don't have this space" while this device's
+/// sync hammered an unprovisionable upstream. The rotation sweep is the
+/// repair — it re-issues from the space's own key — so when the stored
+/// audience is not the current root it runs HERE, before anything is
+/// presented, rather than whenever the next boot chore gets to it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn provision_space_consumer(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), TonkWorkerError> {
+    let held = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => match super::identity::root_did(tonk).await {
+            Ok(root) if prefix.audience() != &root => None,
+            _ => Some(prefix),
+        },
+        // A space created before sign-in may have persisted no prefix at
+        // all — there was no account to delegate to. The rotation sweep
+        // below mints and installs it from the sealed seed.
+        Err(TonkWorkerError::NotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    let prefix = match held {
+        Some(current) => current,
+        None => {
+            log!("{subject}: consent missing or audienced to a retired account; re-issuing");
+            super::rotation::rotate_from_onboarding(tonk).await;
+            space_root_prefix(tonk, subject).await?
+        }
+    };
+    super::customer::provision_consumer(tonk, subject, &prefix, None).await
+}
+
+/// Whether `remote` is this deployment's own access service — the one
+/// party whose provisioning refusal is authoritative for it. A foreign
+/// remote (self-hosted, a test server) is attached and shared without
+/// asking our service's opinion.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn remote_is_own_service(remote: &str) -> bool {
+    let Ok(own) = super::customer::service_origin() else {
+        return false;
+    };
+    url::Url::parse(remote)
+        .map(|remote| remote.origin() == own.origin())
+        .unwrap_or(false)
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
@@ -4385,6 +4452,10 @@ where
                 })?;
         }
     }
+    // Deliver the fresh snapshots the refresh scheduled for the rebound
+    // subscriptions: without this drain a live view over a just-wired
+    // branch waits for a commit that a quiet space never makes.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(effective)
 }
@@ -4939,29 +5010,45 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+        let principals: Vec<tonk_schema::SecretPrincipal> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            .select(Query::<tonk_schema::SecretPrincipal> {
+                this: Term::from(subject.this()),
                 kind: Term::var("kind"),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&tonk.operator)
             .try_vec()
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1, "one custodied space seed");
-        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        assert_eq!(principals.len(), 1, "one sealed space principal");
+        assert_eq!(
+            principals[0].kind.0.to_string(),
+            tonk_schema::SeedKind::SPACE
+        );
+
+        let rows: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the principal names a real message");
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
         let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
             crate::router::tests::test_root_seed(&tonk.profile_name),
         ));
         let opened = account
-            .encryption_key()
-            .open(&sealed, &subject)
+            .secret()
+            .reveal(&sealed, &subject)
             .expect("the account key opens the custodied seed");
         let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
             .await
@@ -5888,15 +5975,19 @@ mod tests {
         );
     }
 
-    /// Reconciling the cached handle swaps in a fresh `BranchState`, but it
-    /// must carry the live subscriptions across so in-flight SSE streams
-    /// don't silently freeze on the discarded handle.
+    /// Reconciling the cached handle refreshes it IN PLACE, so everything
+    /// hanging off the `BranchState` — live subscriptions AND the session
+    /// overlay — survives. An earlier version opened a fresh handle and
+    /// swapped it in: the swap adopted subscriptions but a fresh open
+    /// mints an empty overlay, so a tab's `tonk:site` stamp vanished the
+    /// moment the share flow wired a remote and the space view sat on its
+    /// placeholder dot indefinitely.
     #[dialog_common::test]
-    async fn it_keeps_live_subscriptions_when_refreshing_a_branch() {
+    async fn it_keeps_subscriptions_and_overlay_when_refreshing_a_branch() {
         use std::sync::Arc;
 
         use dialog_query::{ConceptQuery, Query};
-        use tonk_schema::meta::Name;
+        use tonk_schema::meta::{Name, name::Referent};
 
         let (app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
         let repo = repo.as_str();
@@ -5905,7 +5996,7 @@ mod tests {
         // Register a subscription on the cached `main` and note which
         // `BranchState` it landed on. Hold the subscriber so its receiver
         // (and the paired sender in the state) stays connected.
-        let subscriber;
+        let mut subscriber;
         let before_ptr;
         {
             let guard = state.read().await;
@@ -5921,6 +6012,34 @@ mod tests {
                 .expect("subscribe");
             before_ptr = Arc::as_ptr(&session.state);
         }
+        // Drain whatever subscribing itself delivered, so anything that
+        // arrives next can only be a later write's doing.
+        while subscriber.receiver.try_recv().is_ok() {}
+
+        // An ephemeral session fact — the kind a tab's `tonk:site` stamp
+        // or the sync status is made of. It must survive the refresh.
+        {
+            let guard = state.read().await;
+            guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .overlay()
+                .assert(Name {
+                    this: "id:overlay-survivor".parse().expect("entity"),
+                    entity: Referent("id:overlay-target".parse().expect("entity")),
+                })
+                .write()
+                .perform(&guard.operator)
+                .await
+                .expect("overlay write");
+            guard.reactor.run_scheduled_polls(&guard.operator).await;
+        }
+        assert!(
+            subscriber.receiver.try_recv().is_ok(),
+            "the overlay write must reach the live subscriber",
+        );
+        while subscriber.receiver.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -5933,14 +6052,40 @@ mod tests {
             .await
             .expect("re-acquire main");
         assert!(
-            !std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
-            "refresh must swap in a fresh BranchState",
+            std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
+            "refresh must keep the cached BranchState, not swap it",
         );
         assert_eq!(
             session.state.subscriptions().lock().len(),
             1,
             "the live subscription must survive the refresh",
         );
+        // The refreshed handle must still track the wired upstream…
+        assert!(
+            session.state.branch.upstream().is_some(),
+            "the in-place refresh must pick up the wired upstream",
+        );
+        // …and still fold the session overlay: a fresh subscriber's
+        // snapshot carries the ephemeral fact. Before the in-place
+        // refresh this was the share-flow regression — the swapped-in
+        // handle's empty overlay silently dropped every session fact.
+        let mut fresh = session
+            .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
+            .expect("subscribe after refresh");
+        // A new subscriber is Pending until a poll serves its snapshot;
+        // drive one the way the request dispatcher would.
+        guard.reactor.schedule_poll(Arc::clone(&session.state));
+        guard.reactor.run_scheduled_polls(&guard.operator).await;
+        let mut snapshot = Vec::new();
+        while let Ok(bytes) = fresh.receiver.try_recv() {
+            snapshot.extend_from_slice(&bytes);
+        }
+        let snapshot = String::from_utf8_lossy(&snapshot);
+        assert!(
+            snapshot.contains("overlay-survivor"),
+            "the session overlay must survive the refresh; snapshot: {snapshot}",
+        );
+        drop(fresh);
         drop(subscriber);
     }
 
@@ -6436,46 +6581,53 @@ mod tests {
         );
     }
 
-    /// The gate reads the customer's status, not merely whether an
-    /// account exists: `Registered` (enrolled, email unconfirmed) is as
-    /// unservable as no registration at all.
+    /// The gate reads what the account actually proved, not merely that
+    /// one exists: enrolled-but-unconfirmed is as unservable as no
+    /// registration at all.
+    ///
+    /// One account per state, because the facts are monotone — an
+    /// activation is never unmade by a later enrollment answer, which is
+    /// the race the three-fact shape exists to prevent. Reusing one
+    /// account across states would assert the opposite.
     #[dialog_common::test]
     async fn it_treats_an_enrolled_but_unconfirmed_customer_as_inactive() {
-        let (_app, state, _key) = fresh_repo("test-registered-inactive").await;
+        use tonk_account::customer::CustomerStatus;
 
-        let tonk = state.read().await;
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Registered,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Registered customer awaits email activation and is not servable",
-        );
+        let (_app, registered, _k1) = fresh_repo("test-registered-inactive").await;
+        {
+            let tonk = registered.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Registered customer awaits email activation and is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Suspended,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Suspended customer is not servable",
-        );
+        let (_app, suspended, _k2) = fresh_repo("test-suspended-inactive").await;
+        {
+            let tonk = suspended.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Suspended)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Suspended customer is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Active,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            crate::router::customer::is_active(&tonk).await,
-            "an Active customer is the one state the service serves",
-        );
+        let (_app, active, _k3) = fresh_repo("test-active-servable").await;
+        {
+            let tonk = active.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                crate::router::customer::is_active(&tonk).await,
+                "an Active customer is the one state the service serves",
+            );
+        }
     }
 
     /// The account's provider is read from the registration fact, so
@@ -6558,15 +6710,16 @@ mod tests {
         );
     }
 
-    /// An `Active` account whose provider write has not landed yet
-    /// still reads as served.
+    /// Activation carries its provider, so "active with no address"
+    /// cannot arise.
     ///
-    /// Activation writes the status and the address, and a space created
-    /// in the moment between them must not come up local-only. Reading
-    /// this as `AwaitingActivation` would tell an activated user to go
-    /// confirm an email they already confirmed.
+    /// The old shape wrote a status string and an address as separate
+    /// fields, so a space created between the two writes came up
+    /// local-only and the user was told to confirm an email they had
+    /// already confirmed. `tonk:account/active` carries both or neither:
+    /// there is no in-between to fall into.
     #[dialog_common::test]
-    async fn it_treats_an_active_account_without_a_recorded_provider_as_served() {
+    async fn it_records_no_activation_without_a_provider_to_serve_from() {
         use crate::router::customer::{
             Registration, is_active, record_customer_status, registration,
         };
@@ -6575,18 +6728,37 @@ mod tests {
         let (_app, state, _key) = fresh_repo("test-active-no-provider").await;
         let tonk = state.read().await;
 
+        // An activation answer that names no provider records the
+        // registration and withholds the activation, rather than
+        // claiming served with nowhere to serve from.
         record_customer_status(&tonk, CustomerStatus::Active, "who@example.test", None)
             .await
             .expect("the status records");
 
         assert!(
-            matches!(registration(&tonk).await, Registration::Served { .. }),
-            "an Active account is served whether or not its address landed yet",
+            matches!(
+                registration(&tonk).await,
+                Registration::AwaitingActivation { .. }
+            ),
+            "no provider means nothing was activated",
         );
+        assert!(!is_active(&tonk).await);
+
+        // The answer that names one activates.
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "who@example.test",
+            Some("https://service.example/ucan/"),
+        )
+        .await
+        .expect("the status records");
+
         assert!(
-            is_active(&tonk).await,
-            "the create gate must not withhold a remote from an activated account",
+            matches!(registration(&tonk).await, Registration::Served { .. }),
+            "an activation with a provider is served",
         );
+        assert!(is_active(&tonk).await);
     }
 
     /// Registration reads as one of four states, and the provider

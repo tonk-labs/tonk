@@ -76,6 +76,10 @@ enum ReturnFocus {
 /// The dialog's host id, and the parts the handlers address.
 const DIALOG_ID: &str = "tonk-register";
 const COMMITTED_EMAIL_ATTR: &str = "data-register-email";
+/// Which ceremony ran: `signup` created the account, `login` reached an
+/// existing one. Only signup's finish asks for a display name.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const CEREMONY_KIND_ATTR: &str = "data-register-ceremony";
 const EMAIL_INPUT: &str = "#tonk-register-email";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ACTION: &str = "#tonk-register-action";
@@ -649,6 +653,29 @@ fn clear_state() {
 /// That durability is the whole reason to read this rather than the
 /// address-lookup row: the emailed link opens in a different tab with
 /// its own worker session, and an overlay fact written there never
+/// Whether this account has already activated.
+///
+/// Asked once, at the end of a sign-in, to decide whether the ceremony can
+/// close or has to wait for the emailed link. The steady-state answer
+/// still arrives as a fact through [`await_activation`]'s subscription —
+/// this is only the initial read, for the device that just signed in and
+/// has nothing on screen yet.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_is_activated() -> bool {
+    // The registration fact carries the provider from enrollment; the
+    // activation fact is what says the customer confirmed. Presence is the
+    // whole signal, so an absent row means "still waiting".
+    crate::api::customer_state()
+        .await
+        .ok()
+        .and_then(|state| {
+            state
+                .get("status")
+                .and_then(|value| value.as_str().map(str::to_owned))
+        })
+        .is_some_and(|status| status == "Active")
+}
+
 /// crosses.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn await_activation(host: &Element) {
@@ -691,7 +718,41 @@ fn activation_watch_failed(detail: &str) {
     set_action(RETURN_TO_SPACE, true);
 }
 
+/// Whether a failed ceremony is the ordinary wait for an emailed link.
+///
+/// The one question the outcome arm asks, as a function so a test can
+/// ask it too: the arm itself only builds DOM rows.
+///
+/// A second device signing in before anyone opens the link is not a
+/// failure -- it is the same wait signing up ends in, and it ends the
+/// same way. Reported as an error it read "we couldn't finish logging
+/// you in. check your connection and try again", which named the wrong
+/// problem and offered the wrong remedy to someone whose account was one
+/// click away.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn awaits_confirmation(denial: Option<&tonk_identity::custody::CustodyDenial>) -> bool {
+    matches!(
+        denial,
+        Some(tonk_identity::custody::CustodyDenial::AwaitingActivation)
+    )
+}
+
+/// The frame field whose presence means the account is served.
+///
+/// Named once because two things must agree on it: the subscription that
+/// asks for it ([`account_query_body`]) and the reader that looks for it
+/// ([`account_is_active`]). They drifted apart once — the query moved from
+/// a `status` string to the activation fact and the reader kept comparing
+/// `status == "Active"`, so every frame read as not-yet-active and the
+/// ceremony waited forever on an account that had already activated.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+const ACTIVE_FIELD: &str = "activated_at";
+
 /// Whether a frame carries an activated account.
+///
+/// Presence, not comparison: the row resolves only when the account has an
+/// activation fact, so a frame arriving at all is the answer. There is no
+/// status string to match against.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn account_is_active(payload: &JsValue, is_delta: bool) -> bool {
     let rows = if is_delta {
@@ -702,30 +763,26 @@ fn account_is_active(payload: &JsValue, is_delta: bool) -> bool {
     js_sys::Array::from(&rows).iter().any(|row| {
         js_sys::Reflect::get(&row, &"fields".into())
             .ok()
-            .and_then(|fields| js_sys::Reflect::get(&fields, &"status".into()).ok())
-            .and_then(|status| status.as_string())
-            .as_deref()
-            == Some("Active")
+            .and_then(|fields| js_sys::Reflect::get(&fields, &ACTIVE_FIELD.into()).ok())
+            .is_some_and(|value| !value.is_undefined() && !value.is_null())
     })
 }
 
-/// The account's registration row: status, and the provider its spaces
-/// sync to.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// The account's ACTIVATION row: when it activated, and the provider its
+/// spaces sync to. Its presence is what makes an account served — there is
+/// no status string to compare against.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_query_body() -> String {
     serde_json::json!({
         "predicate": { "with": {
-            "status": {
-                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
-            },
-            "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            "activated_at": {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
             }
         } },
         "terms": {
             "this": { "?": { "name": "account" } },
-            "status": { "?": { "name": "status" } },
-            "provider": { "?": { "name": "provider" } }
+            "activated_at": { "?": { "name": "activated_at" } },
         }
     })
     .to_string()
@@ -1226,6 +1283,14 @@ pub(crate) fn run_signup_ceremony() {
     // and the step in front of you is the only one taking input.
     if let Some(host) = host_element() {
         let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
+        // Which ceremony this is, for the finish: only REGISTRATION
+        // ever asks for a display name. A login reaches an account that
+        // already belongs to someone — asking again on every device
+        // would have each answer overwrite the last.
+        let _ = host.set_attribute(
+            CEREMONY_KIND_ATTR,
+            if existing { "login" } else { "signup" },
+        );
     }
     settle_named_row(EMAIL_ROW, "email", &email);
     // While the platform holds the ceremony, the action row says so
@@ -1240,9 +1305,41 @@ pub(crate) fn run_signup_ceremony() {
             crate::account::run_account_ceremony(&email, set_status).await
         };
         match outcome {
+            // The account exists and registered, but nobody has opened
+            // the emailed link yet. That is not a failure to report: it
+            // is the same wait signing up ends in, so it ends the same
+            // way -- the row that says what is outstanding, and the
+            // subscription that closes the ceremony when activation
+            // lands from whichever device opens the link.
+            //
+            // Reported as an error once, and it read "we couldn't finish
+            // logging you in. check your connection and try again" for
+            // someone whose connection was fine and whose account was
+            // one click away, with no way to tell from the screen that
+            // waiting was all it needed.
+            Err(error) if awaits_confirmation(error.denial.as_ref()) => {
+                tonk_common::log!("register: the account awaits its email confirmation");
+                hide_action();
+                add_row(
+                    &host_element().unwrap_or_else(|| unreachable!()),
+                    "tonk-register-confirm-row",
+                    "email",
+                    "awaiting confirmation",
+                );
+                set_status("Open the confirmation link in your email to finish signing in.");
+                // No subscription here: the login did not complete, so
+                // this profile holds no account and no fact will ever
+                // arrive on it. The service is the only party that knows
+                // when the link is opened, so ask it — the address
+                // lookup — until it says so, then hand the passkey step
+                // back. One tap resumes: the ceremony needs a fresh
+                // assertion anyway, since its derivation handles were
+                // dropped with the failed handoff.
+                poll_lookup_until_active(email.clone());
+            }
             Err(error) => {
                 tonk_common::log!("register: the ceremony did not complete: {error}");
-                set_status(&user_error::diagnostic(
+                set_status(&user_error::ceremony(
                     if existing {
                         AccountAction::LogIn
                     } else {
@@ -1280,9 +1377,20 @@ pub(crate) fn run_signup_ceremony() {
                     "passkey",
                     &crate::device_name::current(),
                 );
-                if existing {
-                    // Signing in needs no email round trip: the account
-                    // is already activated, so go straight to the close.
+                // `existing` means an account exists for this address —
+                // NOT that it is activated. Signing in on a second device
+                // while the first has not opened the emailed link is the
+                // ordinary case, and closing the ceremony there stranded
+                // it: the account branch cannot hydrate until the customer
+                // confirms, so the device sat behind a failure message
+                // with nothing to act on.
+                //
+                // Both paths wait the same way. The row says what is
+                // outstanding, and the subscription closes the ceremony
+                // when activation lands — from the emailed link on any
+                // device, since what it waits on is a fact that syncs.
+                if existing && account_is_activated().await {
+                    // Already activated: nothing to wait for.
                     finish_ceremony();
                 } else {
                     // What happens next arrives as facts: the emailed
@@ -1296,10 +1404,20 @@ pub(crate) fn run_signup_ceremony() {
                         "email",
                         "awaiting confirmation",
                     );
-                    set_status("Click the confirmation link we sent to your email.");
+                    set_status(if existing {
+                        "Open the confirmation link in your email to finish signing in."
+                    } else {
+                        "Click the confirmation link we sent to your email."
+                    });
                     if let Some(host) = host_element() {
                         await_activation(&host);
-                        probe_while_waiting();
+                        // The activation signal is the account sweep's
+                        // own pull being served, so drive the sweeps at
+                        // the ceremony's cadence: confirmation should
+                        // land here seconds after the link is opened,
+                        // not whenever the background heartbeat next
+                        // comes around.
+                        nudge_sync_while_waiting();
                     }
                 }
             }
@@ -1307,45 +1425,133 @@ pub(crate) fn run_signup_ceremony() {
     });
 }
 
-/// Ask the service whether the account activated yet, until it has.
+/// Ask the worker to drain sync every few seconds while the ceremony
+/// waits on the emailed link.
 ///
-/// Activation reaches this device as a fact on profile main, and
-/// [`await_activation`] is subscribed to it — but only the browser that
-/// OPENED the link writes that fact. Confirm from a phone, or another
-/// browser, and this one is never told: its worker learns nothing until
-/// something calls the status probe, which is why a reload used to be
-/// the fix.
-///
-/// So poll the probe, not the answer. `GET /api/customer` reconciles the
-/// fact on every read and replays the work deferred during the wait, so
-/// a device that was merely waiting still ends up with the same rows as
-/// the device that clicked. The subscription remains what redraws the
-/// ceremony; this only gives it something to see.
-///
-/// Stops when the cluster goes away, so a dismissed ceremony leaves no
-/// timer running.
+/// The sweep that is finally served records the activation fact in the
+/// same pass, and the subscription flips the ceremony — this loop only
+/// controls how soon that sweep runs. Stops with the wait: a settled
+/// row, a dismissed cluster.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn probe_while_waiting() {
-    /// Long enough not to hammer the service through a wait measured in
-    /// however long it takes to reach an inbox, short enough that
-    /// confirming elsewhere feels answered rather than stuck.
+fn nudge_sync_while_waiting() {
+    /// Fast enough that confirming feels answered, slow enough not to
+    /// hammer a drain that also runs on its own heartbeat.
     const EVERY: i32 = 3_000;
 
     wasm_bindgen_futures::spawn_local(async move {
         loop {
-            // The ceremony is gone (dismissed, or finished): nothing
-            // left to report to.
             let Some(host) = host_element() else {
                 return;
             };
-            // Past the wait already — the subscription got there first.
-            if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+            let still_waiting = host
+                .query_selector(&format!("{CONFIRM_ROW} .v"))
+                .ok()
+                .flatten()
+                .and_then(|value| value.text_content())
+                .is_some_and(|value| value.trim() == "awaiting confirmation");
+            if !still_waiting {
                 return;
             }
-            // The answer is a FACT the probe writes, so the reply here
-            // is deliberately ignored: reading it would give the
-            // ceremony a second source of truth to disagree with.
-            let _ = crate::api::customer_state().await;
+            if let Err(error) = crate::api::kick_sync().await {
+                tonk_common::log!("register: sync nudge did not run: {error}");
+            }
+            sleep(EVERY).await;
+        }
+    });
+}
+
+/// Ask the address lookup about `email` until it answers `active`, then
+/// offer the passkey step again.
+///
+/// The waiting sign-in's driver. The registering browser waits on a fact
+/// its own account sweep writes, but a browser whose login was refused
+/// holds no account: nothing local will ever change, and only the
+/// service knows when the emailed link is opened. Each round transacts
+/// the same `account/check-email` the typing path uses, the worker asks
+/// the service and rewrites the overlay answer, and the answer
+/// subscription repaints `data-state` — which is what this loop reads.
+///
+/// Stops when the cluster goes away, when something else moved the
+/// ceremony past waiting, and on the flip itself: the resume needs a
+/// fresh passkey assertion (the refused ceremony's derivation handles
+/// are gone), so the flip re-arms the action row rather than asserting
+/// on its own — WebAuthn wants a gesture, and a surprise passkey prompt
+/// from a background timer reads as an attack.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn poll_lookup_until_active(email: String) {
+    /// Long enough not to hammer the service through a wait measured in
+    /// however long it takes to reach an inbox, short enough that
+    /// confirming on the other device feels answered rather than stuck.
+    const EVERY: i32 = 4_000;
+
+    wasm_bindgen_futures::spawn_local(async move {
+        // Rounds the lookup has answered `active` while the worker's
+        // parked login was still finishing. The tap is the FALLBACK —
+        // the worker kept the assertion's handles and completes the
+        // login itself — so the offer waits a few rounds for the silent
+        // finish before asking for a gesture the flow may not need.
+        let mut served_rounds = 0u32;
+        loop {
+            // The ceremony is gone (dismissed, or finished): nothing
+            // left to resume.
+            let Some(host) = host_element() else {
+                return;
+            };
+            // Something else moved the ceremony past waiting: the row is
+            // gone, or no longer reads as the wait this loop drives.
+            let still_waiting = host
+                .query_selector(&format!("{CONFIRM_ROW} .v"))
+                .ok()
+                .flatten()
+                .and_then(|value| value.text_content())
+                .is_some_and(|value| value.trim() == "awaiting confirmation");
+            if !still_waiting {
+                return;
+            }
+            // The worker finished the login it parked: the account is
+            // linked, and nothing needs a second passkey tap. Finish
+            // the ceremony the way a completed sign-in would.
+            if matches!(
+                crate::api::account_status().await,
+                Ok(tonk_worker_api::AccountStatus::Registered { .. })
+            ) {
+                settle_named_row(CONFIRM_ROW, "email", "verified");
+                if host
+                    .query_selector("#tonk-register-passkey-row")
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    add_row(
+                        &host,
+                        "tonk-register-passkey-row",
+                        "passkey",
+                        &crate::device_name::current(),
+                    );
+                }
+                finish_ceremony();
+                return;
+            }
+            if host.get_attribute("data-state").as_deref() == Some(tonk_schema::email_state::ACTIVE)
+            {
+                served_rounds += 1;
+                if served_rounds >= 3 {
+                    // The silent finish did not land — a restarted
+                    // worker dropped the handles — so the way back in
+                    // is one tap and a fresh assertion.
+                    settle_named_row(CONFIRM_ROW, "email", "verified");
+                    set_status("Your email is confirmed. Log in with your passkey to continue.");
+                    set_action("log in with your passkey", true);
+                    focus_action();
+                    return;
+                }
+            }
+            if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
+                // A missed round is the next round's problem: the wait
+                // is already open-ended, and the loop is the only thing
+                // that can end it.
+                tonk_common::log!("register: activation lookup did not run: {error}");
+            }
             sleep(EVERY).await;
         }
     });
@@ -1465,6 +1671,11 @@ fn hide_action() {
 /// Called once activation lands — from the ceremony directly when
 /// signing in (already activated), or from the `EmailStatus`
 /// subscription when the emailed link is opened.
+///
+/// The name is asked for once per ACCOUNT, not once per device: signing
+/// in reaches an account that was already named when it was created, so
+/// the existing name is shown as a record rather than asked for again —
+/// retyping it would overwrite what every other device already shows.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn finish_ceremony() {
     let Some(host) = host_element() else {
@@ -1480,6 +1691,52 @@ pub(crate) fn finish_ceremony() {
     // confirmation row stands — signing in with an existing passkey
     // never raises one — there is nothing to settle.
     settle_named_row(CONFIRM_ROW, "email", "verified");
+
+    // Only REGISTRATION asks. A login reaches an account that already
+    // belongs to someone: it may be named already, or its naming may
+    // still be waiting in the signup ceremony open on the device that
+    // registered — either way, asking here would have every device's
+    // answer overwrite the last one's.
+    let signing_in = host.get_attribute(CEREMONY_KIND_ATTR).as_deref() == Some("login");
+    wasm_bindgen_futures::spawn_local(async move {
+        // The summary's display name is the CHOSEN one — the
+        // `AccountDisplayName` fact, absent until the registering
+        // ceremony answers the question — not the roster's, which falls
+        // back to a petname and so cannot tell a named account from a
+        // fresh one. Best-effort: an unreadable summary only means the
+        // record row is not shown.
+        let named = crate::api::account_summary()
+            .await
+            .ok()
+            .and_then(|summary| summary.display_name)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty());
+        let Some(host) = host_element() else {
+            return;
+        };
+        // A second frame can race the summary read past the guard above.
+        if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+            return;
+        }
+        match named {
+            Some(name) => {
+                add_row(
+                    &host,
+                    NAME_ROW.trim_start_matches('#'),
+                    "display name",
+                    &name,
+                );
+                conclude("Your account is ready.");
+            }
+            None if signing_in => conclude("You're signed in."),
+            None => ask_for_name(&host),
+        }
+    });
+}
+
+/// Unfold the display-name input and focus it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn ask_for_name(host: &Element) {
     set_status("What should we call you?");
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
@@ -1509,7 +1766,7 @@ pub(crate) fn finish_ceremony() {
         }
     }
     unfold(&row);
-    commit_name_on_enter(&host);
+    commit_name_on_enter(host);
     if let Some(field) = host
         .query_selector("#tonk-register-name")
         .ok()
@@ -1574,23 +1831,30 @@ fn offer_the_link(name: &str) {
                     )
                 }
             };
-            match pending_share() {
-                Some(_) => {
-                    set_status(&status);
-                    set_action(COPY_LINK, true);
-                }
-                None => {
-                    // Opened on its own there is no link to hand over,
-                    // but there is still a way out to offer: hiding the
-                    // action left the ceremony finished and standing,
-                    // with only the back arrow to leave by.
-                    set_status(&status);
-                    set_action(RETURN_TO_SPACE, true);
-                    focus_action();
-                }
-            }
+            conclude(&status);
         }
     });
+}
+
+/// Close the finished ceremony out: the interrupted share's link when
+/// one is pending, the way back to the space otherwise.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn conclude(status: &str) {
+    match pending_share() {
+        Some(_) => {
+            set_status(status);
+            set_action(COPY_LINK, true);
+        }
+        None => {
+            // Opened on its own there is no link to hand over, but
+            // there is still a way out to offer: hiding the action left
+            // the ceremony finished and standing, with only the back
+            // arrow to leave by.
+            set_status(status);
+            set_action(RETURN_TO_SPACE, true);
+            focus_action();
+        }
+    }
 }
 
 /// The `profile/rename` claim, in the shape the seeded descriptor
@@ -1773,6 +2037,74 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+
+    use tonk_identity::custody::CustodyDenial;
+
+    /// A second device that signs in before the link is opened waits,
+    /// rather than being told it failed.
+    ///
+    /// The service answers this refusal for the ordinary case of signing
+    /// in on a phone while the laptop's confirmation email sits unopened.
+    /// The dialog reported it as a failure -- "check your connection and
+    /// try again" -- for someone whose connection was fine and whose
+    /// account was one click from ready, with nothing on screen to say
+    /// that waiting was the whole remedy.
+    #[dialog_common::test]
+    fn it_waits_when_the_account_needs_its_email_confirmed() {
+        assert!(super::awaits_confirmation(Some(
+            &CustodyDenial::AwaitingActivation
+        )));
+    }
+
+    /// Every other refusal is still a failure to report.
+    ///
+    /// Showing "open the link in your email" for a suspension or an
+    /// unprovisioned space would park someone on a wait that no email
+    /// ends.
+    #[dialog_common::test]
+    fn it_reports_refusals_no_email_would_clear() {
+        assert!(!super::awaits_confirmation(Some(
+            &CustodyDenial::Suspended("unpaid".to_owned())
+        )));
+        assert!(!super::awaits_confirmation(Some(
+            &CustodyDenial::NotProvisioned("nobody pays".to_owned())
+        )));
+        assert!(!super::awaits_confirmation(Some(&CustodyDenial::Other(
+            "something else".to_owned()
+        ))));
+        // A dismissed passkey prompt never reached the service.
+        assert!(!super::awaits_confirmation(None));
+    }
+
+    /// The subscription asks for the field the reader looks for.
+    ///
+    /// These are two halves of one contract and nothing but this test holds
+    /// them together. They came apart once: the query moved from a `status`
+    /// string to the activation fact, the reader kept comparing `status ==
+    /// "Active"`, and because a field that is not requested is simply absent
+    /// from every frame, `account_is_active` answered false forever. The
+    /// account activated, the service said so, and the ceremony sat on
+    /// "awaiting confirmation" until the tab was reloaded.
+    ///
+    /// Nothing failed loudly, which is why it reached a browser: a
+    /// subscription that resolves and a reader that finds nothing look
+    /// identical from the outside.
+    #[dialog_common::test]
+    fn it_reads_the_field_its_subscription_asks_for() {
+        let body: serde_json::Value =
+            serde_json::from_str(&account_query_body()).expect("the query body is JSON");
+
+        assert!(
+            body["predicate"]["with"][ACTIVE_FIELD].is_object(),
+            "the subscription must request `{ACTIVE_FIELD}`, which is what \
+             `account_is_active` reads; got {}",
+            body["predicate"]["with"],
+        );
+        assert!(
+            body["terms"][ACTIVE_FIELD].is_object(),
+            "`{ACTIVE_FIELD}` must be bound in `terms` or it never reaches a frame",
+        );
+    }
 
     /// The button's label and the ceremony it runs must agree.
     ///

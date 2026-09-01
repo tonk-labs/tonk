@@ -350,6 +350,7 @@ impl Replica {
         if kind != Self::profile_kind()
             && kind != Self::repository_kind()
             && kind != Self::account_kind()
+            && kind != Self::ledger_kind()
         {
             return None;
         }
@@ -374,6 +375,18 @@ impl Replica {
             .expect("account replica kind is valid")
     }
 
+    /// Build the replica for the service's own ledger space.
+    ///
+    /// The account holds a read grant over it and nothing more, so it
+    /// is never a space in the Hub sense. Kinding it keeps it out of
+    /// space enumeration for the same reason the account replica is
+    /// kinded: the directory selects on `kind`, and an unkinded row
+    /// would show up as a space the user could rename or leave.
+    pub fn ledger(profile: Did, subject: Did) -> Self {
+        Self::with_kind(profile, subject, Self::ledger_kind())
+            .expect("ledger replica kind is valid")
+    }
+
     /// `kind` URI for the profile's own self-replica.
     pub const PROFILE: &'static str = "tonk:profile";
 
@@ -383,6 +396,9 @@ impl Replica {
 
     /// `kind` URI for the hidden root-owned account repository.
     pub const ACCOUNT: &'static str = "tonk:account";
+
+    /// `kind` URI for the service-owned ledger space the account reads.
+    pub const LEDGER: &'static str = "tonk:ledger";
 
     /// The [`Kind`] for the profile's own self-replica.
     pub fn profile_kind() -> Kind {
@@ -397,6 +413,11 @@ impl Replica {
     /// The [`Kind`] for the hidden account-system repository.
     pub fn account_kind() -> Kind {
         Kind(Self::ACCOUNT.parse().expect("tonk:account parses"))
+    }
+
+    /// The [`Kind`] for the service-owned ledger space.
+    pub fn ledger_kind() -> Kind {
+        Kind(Self::LEDGER.parse().expect("tonk:ledger parses"))
     }
 
     /// `status` URI for a freshly created replica whose content

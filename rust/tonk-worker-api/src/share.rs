@@ -24,6 +24,12 @@ pub const BLOCKED_ACCOUNT_REQUIRED: &str = "account-required";
 /// Terminal: nothing the user can do from the bar.
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";
 
+/// The service refused to provision this space under the account, so a
+/// link would point at a space the service will not serve. Terminal
+/// from the bar: the refusal names its reason in `detail`, and sharing
+/// again after it is addressed re-runs provisioning.
+pub const BLOCKED_NOT_PROVISIONED: &str = "not-provisioned";
+
 /// The space has no upstream and this device has no account registered
 /// with a provider, so there is nothing to attach it to. Repairable, but
 /// not by attaching a remote: the bar asks the user to register.

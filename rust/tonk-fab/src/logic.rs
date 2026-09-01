@@ -1814,22 +1814,24 @@ mod invite_link {
 /// on connect is stale by then — the bar kept offering to log in to
 /// someone who just had.
 ///
-/// `provider` is optional on the concept because it is assigned only
-/// after email confirmation. Keeping it optional here lets the bar
-/// distinguish an enrolled account awaiting confirmation from a profile
-/// with no account at all.
+/// Subscribes to the REGISTRATION fact: an account that enrolled has one,
+/// whatever happened after. Resolving at all is what tells the bar an
+/// account exists — the old query required a provider, so a just-enrolled
+/// account read as no account and the bar went on offering "log in to
+/// share" to someone who had just registered.
+///
+/// Whether that account is SERVED is a separate fact
+/// (`xyz.tonk.account/activated-at`), read by whoever needs it. There is no
+/// status string to compare against in either case.
 pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "status": {
-                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            "registered_at": {
+                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "cardinality": "one"
             },
             "email": {
                 "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one"
-            },
-            "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one",
-                "optional": true
             }
         } },
         "terms": {
@@ -1844,13 +1846,46 @@ pub fn account_customer_query_body() -> String {
             // is not known here; there is one customer row per profile,
             // so whatever binds is it.
             "this": { "?": { "name": "account" } },
-            "status": { "?": { "name": "status" } },
-            "email": { "?": { "name": "email" } },
-            "provider": { "?": { "name": "provider" } }
+            "registered_at": { "?": { "name": "registered_at" } },
+            "email": { "?": { "name": "email" } }
         }
     })
     .to_string()
 }
+
+/// Whether this account is SERVED: the activation fact, whose presence is
+/// the whole answer.
+///
+/// A separate subscription from the registration one because the two
+/// resolve independently — an enrolled account has a registration row and
+/// no activation row, and a query requiring both would resolve for neither
+/// (the join-status lesson). No status string is compared in either.
+pub fn account_active_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            ACTIVATION_FIELD: {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": { "?": { "name": "account" } },
+            ACTIVATION_FIELD: { "?": { "name": ACTIVATION_FIELD } },
+        }
+    })
+    .to_string()
+}
+
+/// The frame field whose presence says the account activated.
+///
+/// Named once because the subscription that asks for it
+/// ([`account_active_query_body`]) and the banner reader that looks for
+/// it (`activation::apply`) must agree. They drifted once — the query
+/// moved from carrying a `provider` to the bare activation timestamp and
+/// the reader kept probing `provider` — so every activation frame read
+/// as not-yet-active and the pending banner lingered for the life of the
+/// page after the account was served.
+pub const ACTIVATION_FIELD: &str = "activated_at";
 
 /// The share control's single subscription: where this space's invite
 /// has got to.
@@ -1999,16 +2034,8 @@ mod account_state_query {
             parsed["terms"]["this"].is_object(),
             "`this` must be bound, got {body}",
         );
-        assert!(body.contains("xyz.tonk.account/customer-status"));
-        assert_eq!(
-            parsed["predicate"]["with"]["email"]["the"],
-            "xyz.tonk.account/customer-email",
-        );
-        assert!(body.contains("xyz.tonk.account/provider-address"));
-        assert_eq!(
-            parsed["predicate"]["with"]["provider"]["optional"], true,
-            "a Registered customer has no provider until email activation",
-        );
+        assert!(body.contains("xyz.tonk.account/registered-at"));
+        assert!(body.contains("xyz.tonk.account/customer-email"));
     }
 }
 
@@ -2070,6 +2097,31 @@ mod share_blocked_query {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(share_blocked_query_body("").is_err());
+    }
+
+    /// The activation subscription asks for the field its reader checks.
+    ///
+    /// Two halves of one contract, held together only by this test. They
+    /// came apart once: the query moved from carrying a `provider` to
+    /// the bare activation timestamp, the banner reader kept probing
+    /// `provider`, and because a field that is not requested is simply
+    /// absent from every frame, activation was never noticed — the
+    /// pending banner lingered for the life of the page after the
+    /// account was served.
+    #[test]
+    fn it_reads_the_field_the_activation_subscription_asks_for() {
+        let body: serde_json::Value =
+            serde_json::from_str(&account_active_query_body()).expect("the query body is JSON");
+        assert!(
+            body["predicate"]["with"][ACTIVATION_FIELD].is_object(),
+            "the subscription must request `{ACTIVATION_FIELD}`, which is what the \
+             banner reader checks; got {}",
+            body["predicate"]["with"],
+        );
+        assert!(
+            body["terms"][ACTIVATION_FIELD].is_object(),
+            "`{ACTIVATION_FIELD}` must be bound in `terms` or it never reaches a frame",
+        );
     }
 }
 

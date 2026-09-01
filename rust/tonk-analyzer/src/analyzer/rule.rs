@@ -1150,11 +1150,11 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "String".to_owned());
                 txn = txn
-                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                        "{}/{}",
-                        attr.domain(),
-                        attr.name()
-                    )))
+                    .assert(
+                        the!("db.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(attr.the().to_string()),
+                    )
                     .assert(
                         the!("db.attribute/type")
                             .of(attr_entity.clone())

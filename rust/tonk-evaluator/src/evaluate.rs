@@ -60,6 +60,7 @@ use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
+use dialog_query::attribute::Relation;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
 use dialog_repository::{RemoteSite, Transaction};
@@ -718,9 +719,23 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
         if !matches!(term, Term::Variable { name: None, .. }) {
             continue;
         }
-        let the_term: dialog_query::attribute::The = attribute.the().clone();
+        // A collection entry's attribute is `domain/key`, the key
+        // being the literal the assertion named; without one there
+        // is no single fact to retract.
+        let the = match attribute.the().attribute() {
+            Some(the) => the,
+            None => {
+                let key = plan.statement.terms.get(&Relation::key_operand(field_name));
+                let Some(Term::Constant(Value::String(key))) = key else {
+                    continue;
+                };
+                attribute.the().entry(key).map_err(|e| {
+                    EvaluateError::Query(format!("retraction target for {field_name}: {e}"))
+                })?
+            }
+        };
         let query = dialog_query::AttributeQuery::new(
-            Term::from(the_term),
+            Term::Constant(Value::Symbol(the)),
             Term::from(this_entity.clone()),
             Term::<dialog_query::Any>::var("v"),
             Term::<dialog_query::attribute::Cause>::blank(),
@@ -1140,11 +1155,11 @@ mod tests {
             let attr_entity: dialog_artifacts::Entity =
                 attr.to_uri().parse().expect("attribute URI");
             txn = txn
-                .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                    "{}/{}",
-                    attr.domain(),
-                    attr.name()
-                )))
+                .assert(
+                    the!("db.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(attr.the().to_string()),
+                )
                 .assert(
                     the!("db.attribute/type")
                         .of(attr_entity.clone())

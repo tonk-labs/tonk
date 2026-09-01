@@ -24,19 +24,18 @@ use crate::TonkWorkerError;
 use crate::device::RosterEntry;
 use crate::worker::{DefaultSpace, TonkState};
 
-/// The active profile's roster entry, rebuilt from live state.
+/// The active profile's switcher row, built from live state.
 ///
-/// The account fields all derive from the provider attachment: an
-/// unattached profile is a local workspace whatever root record it still
-/// holds, which is exactly how sign-out demotes a row without deleting
-/// anything. `email` overrides when `Some`; otherwise the stored entry's
-/// email carries forward while an account is attached — the roster is
-/// the only place it lives between provider fetches.
-async fn refreshed_entry(
-    tonk: &TonkState,
-    existing: Option<&RosterEntry>,
-    email: Option<String>,
-) -> RosterEntry {
+/// Every field but the storage handle is read where it actually lives: the
+/// provider attachment, the local root, the display name on the account
+/// branch. Nothing is carried forward from the roster, which now stores only
+/// the handle — a copy there could only go stale, since nothing invalidated
+/// it when the source changed.
+///
+/// The account fields all derive from the provider attachment: an unattached
+/// profile is a local workspace whatever root record it still holds, which is
+/// how sign-out demotes a row without deleting anything.
+async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry {
     let provider = super::account::provider(tonk).await;
     let root_did = if provider.is_some() {
         super::identity::local_root(tonk)
@@ -46,16 +45,11 @@ async fn refreshed_entry(
     } else {
         None
     };
-    let email = if provider.is_some() {
-        email.or_else(|| existing.and_then(|entry| entry.email.clone()))
-    } else {
-        None
-    };
     RosterEntry {
         profile_name: tonk.profile_name.clone(),
         root_did,
-        provider,
-        email,
+        provider: provider.clone(),
+        email: provider.and(email),
         display_name: super::profile_name::resolve_display_name(tonk).await,
     }
 }
@@ -74,18 +68,15 @@ pub(crate) async fn upsert_active_entry(tonk: &TonkState, email: Option<String>)
 
 async fn try_upsert_active_entry(
     tonk: &TonkState,
-    email: Option<String>,
+    _email: Option<String>,
 ) -> Result<(), TonkWorkerError> {
-    let roster = tonk
-        .registry
-        .read_roster(&tonk.storage, &tonk.operator)
-        .await?;
-    let existing = roster
-        .iter()
-        .find(|entry| entry.profile_name == tonk.profile_name);
-    let entry = refreshed_entry(tonk, existing, email).await;
     tonk.registry
-        .upsert_roster(&tonk.storage, &tonk.operator, entry)
+        .upsert_roster(
+            &tonk.storage,
+            &tonk.operator,
+            &tonk.profile.did(),
+            &tonk.profile_name,
+        )
         .await
 }
 
@@ -114,16 +105,10 @@ async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWo
         .registry
         .read_roster(&tonk.storage, &tonk.operator)
         .await?;
-    let existing = roster
-        .iter()
-        .find(|entry| entry.profile_name == tonk.profile_name)
-        .cloned();
-    let entry = refreshed_entry(tonk, existing.as_ref(), None).await;
-    if existing.as_ref() != Some(&entry) {
-        tonk.registry
-            .upsert_roster(&tonk.storage, &tonk.operator, entry.clone())
-            .await?;
-    }
+    // The roster holds only handles, so the active profile's row is built
+    // from live state and spliced over whatever the roster listed.
+    let entry = refreshed_entry(tonk, None).await;
+    try_upsert_active_entry(tonk, None).await?;
     match roster
         .iter_mut()
         .find(|slot| slot.profile_name == entry.profile_name)
@@ -233,14 +218,17 @@ async fn finish_swap(
     let mut roster = registry
         .read_roster(&new_state.storage, &new_state.operator)
         .await?;
-    let existing = roster
-        .iter()
-        .find(|entry| entry.profile_name == name)
-        .cloned();
-    let entry = refreshed_entry(&new_state, existing.as_ref(), None).await;
-    registry
-        .upsert_roster(&new_state.storage, &new_state.operator, entry.clone())
-        .await?;
+    let entry = refreshed_entry(&new_state, None).await;
+    {
+        registry
+            .upsert_roster(
+                &new_state.storage,
+                &new_state.operator,
+                &new_state.profile.did(),
+                &name,
+            )
+            .await?;
+    }
     match roster
         .iter_mut()
         .find(|slot| slot.profile_name == entry.profile_name)

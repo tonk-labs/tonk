@@ -1115,6 +1115,10 @@ async fn install_revision(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to adopt the installed branch: {error}"))
         })?;
+    // Deliver the fresh snapshot the refresh scheduled for any
+    // subscriptions the rebind carried over — a live view left waiting
+    // for the next commit waits forever on a branch nothing edits.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
 }
@@ -3038,28 +3042,43 @@ pub(crate) mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+        // The principal's entity IS the subject, so the invite principal
+        // is read from `this` rather than from a repeated field.
+        let principals: Vec<tonk_schema::SecretPrincipal> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::CustodiedSeed> {
+            .select(Query::<tonk_schema::SecretPrincipal> {
                 this: Term::var("this"),
-                subject: Term::var("subject"),
                 kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&tonk.operator)
             .try_vec()
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1, "one custodied invite seed");
-        let principal: dialog_varsig::Did = rows[0].subject.0.to_string().parse().unwrap();
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        assert_eq!(principals.len(), 1, "one sealed invite principal");
+        let principal: dialog_varsig::Did = principals[0].this.to_string().parse().unwrap();
+
+        let rows: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the principal names a real message");
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
         let opened = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .open(&sealed, &principal)
+            .secret()
+            .reveal(&sealed, &principal)
             .expect("the onboarding account opens its custodied seed");
         let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
             .await

@@ -2071,6 +2071,15 @@ impl TonkServiceWorker {
         let ports = event.ports();
 
         future_to_promise(async move {
+            // A custody envelope carries two `CryptoKey` handles, which
+            // are not JSON: reading it through `serde_wasm_bindgen`
+            // would silently drop them. So it is recognised on the raw
+            // value, before anything parses.
+            if crate::router::custody::is_custody_envelope(&data) {
+                crate::router::custody::receive(state, data, ports).await;
+                return Ok(JsValue::UNDEFINED);
+            }
+
             let envelope: serde_json::Value = match serde_wasm_bindgen::from_value(data) {
                 Ok(v) => v,
                 Err(e) => {

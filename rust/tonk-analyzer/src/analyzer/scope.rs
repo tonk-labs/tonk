@@ -262,7 +262,7 @@ impl Scope {
             .in_doc_attributes
             .lock()
             .values()
-            .find(|def| format!("{}/{}", def.descriptor.domain(), def.descriptor.name()) == id)
+            .find(|def| def.descriptor.the().to_string() == id)
         {
             return Some(found.clone());
         }

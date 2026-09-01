@@ -26,7 +26,7 @@ use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
-use tonk_schema::{RosterAccount, RosterEmail, RosterProfile};
+use tonk_schema::DeviceProfile;
 
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, DefaultSpace};
@@ -79,14 +79,6 @@ pub(crate) struct RosterEntry {
     pub email: Option<String>,
     /// Display name at last refresh.
     pub display_name: String,
-}
-
-/// The stamps currently on one roster entry, as read back for a refresh:
-/// what a refresh must retract when the attachment or email goes away.
-#[derive(Default)]
-struct Stamps {
-    account: Vec<RosterAccount>,
-    email: Vec<RosterEmail>,
 }
 
 /// Where the pointer lives: a profile name and the directory it is
@@ -269,18 +261,22 @@ impl Registry {
 
     /// The stored roster, ordered by storage name; empty when no entry was
     /// ever written.
+    ///
+    /// Carries only what this device knows: the profile and the handle to
+    /// open it with. A row's label, address and link state live on that
+    /// profile's own account branch, and the caller fills them in for the
+    /// profiles it opens.
     pub(crate) async fn read_roster(
         &self,
         storage: &Storage<DefaultSpace>,
         operator: &DefaultOperator,
     ) -> Result<Vec<RosterEntry>, TonkWorkerError> {
         let branch = self.roster_branch(storage, operator).await?;
-        let profiles: Vec<RosterProfile> = branch
+        let profiles: Vec<DeviceProfile> = branch
             .query()
-            .select(Query::<RosterProfile> {
+            .select(Query::<DeviceProfile> {
                 this: Term::var("this"),
                 name: Term::var("name"),
-                label: Term::var("label"),
             })
             .perform(operator)
             .try_vec()
@@ -288,142 +284,39 @@ impl Registry {
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to read the profile roster: {error:?}"))
             })?;
-        let accounts: Vec<RosterAccount> = branch
-            .query()
-            .select(Query::<RosterAccount> {
-                this: Term::var("this"),
-                account: Term::var("account"),
-                provider: Term::var("provider"),
-            })
-            .perform(operator)
-            .try_vec()
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to read the profile roster attachments: {error:?}"
-                ))
-            })?;
-        let emails: Vec<RosterEmail> = branch
-            .query()
-            .select(Query::<RosterEmail> {
-                this: Term::var("this"),
-                email: Term::var("email"),
-            })
-            .perform(operator)
-            .try_vec()
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to read the profile roster emails: {error:?}"
-                ))
-            })?;
 
         let mut roster: Vec<RosterEntry> = profiles
             .into_iter()
-            .map(|profile| {
-                let account = accounts.iter().find(|stamp| stamp.this == profile.this);
-                let email = emails.iter().find(|stamp| stamp.this == profile.this);
-                RosterEntry {
-                    profile_name: profile.name.0,
-                    root_did: account.map(|stamp| stamp.account.0.to_string()),
-                    provider: account.map(|stamp| stamp.provider.0.clone()),
-                    email: email.map(|stamp| stamp.email.0.clone()),
-                    display_name: profile.label.0,
-                }
+            .map(|profile| RosterEntry {
+                profile_name: profile.name.0,
+                root_did: None,
+                provider: None,
+                email: None,
+                display_name: String::new(),
             })
             .collect();
         roster.sort_by(|a, b| a.profile_name.cmp(&b.profile_name));
         Ok(roster)
     }
 
-    /// The stamps currently on the entry for `name`.
-    async fn stamps(
-        branch: &Branch,
-        operator: &DefaultOperator,
-        name: &str,
-    ) -> Result<Stamps, TonkWorkerError> {
-        let entry = RosterProfile::entity(name);
-        let account = branch
-            .query()
-            .select(Query::<RosterAccount> {
-                this: Term::from(entry.clone()),
-                account: Term::var("account"),
-                provider: Term::var("provider"),
-            })
-            .perform(operator)
-            .try_vec()
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to read the roster attachment of '{name}': {error:?}"
-                ))
-            })?;
-        let email = branch
-            .query()
-            .select(Query::<RosterEmail> {
-                this: Term::from(entry),
-                email: Term::var("email"),
-            })
-            .perform(operator)
-            .try_vec()
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to read the roster email of '{name}': {error:?}"
-                ))
-            })?;
-        Ok(Stamps { account, email })
-    }
-
-    /// Insert or replace the roster entry named by `entry.profile_name`.
+    /// Record that `profile` can be opened on this device under
+    /// `storage_name`.
     ///
-    /// A stamp the entry no longer carries is retracted rather than left
-    /// behind: an unlinked profile has to render as a local workspace.
+    /// Keyed on the profile's own DID, so re-recording it under a different
+    /// handle updates the entry in place rather than leaving a second one
+    /// behind. Nothing else is written: a row's label, address and link
+    /// state belong to that profile's account branch.
     pub(crate) async fn upsert_roster(
         &self,
         storage: &Storage<DefaultSpace>,
         operator: &DefaultOperator,
-        entry: RosterEntry,
+        profile: &Did,
+        storage_name: &str,
     ) -> Result<(), TonkWorkerError> {
         let branch = self.roster_branch(storage, operator).await?;
-        let current = Self::stamps(&branch, operator, &entry.profile_name).await?;
-        let this = RosterProfile::entity(&entry.profile_name);
-
-        let mut transaction = branch.transaction().assert(RosterProfile::new(
-            entry.profile_name.clone(),
-            entry.display_name.clone(),
-        ));
-        match (&entry.root_did, &entry.provider) {
-            (Some(root), Some(provider)) => {
-                let account: Did = root.parse().map_err(|error| {
-                    TonkWorkerError::Internal(format!(
-                        "roster entry '{}' names an unparseable account root: {error:?}",
-                        entry.profile_name
-                    ))
-                })?;
-                transaction = transaction.assert(RosterAccount::new(
-                    this.clone(),
-                    &account,
-                    provider.clone(),
-                ));
-            }
-            _ => {
-                for stale in current.account {
-                    transaction = transaction.retract(stale);
-                }
-            }
-        }
-        match &entry.email {
-            Some(email) => {
-                transaction = transaction.assert(RosterEmail::new(this, email.clone()));
-            }
-            None => {
-                for stale in current.email {
-                    transaction = transaction.retract(stale);
-                }
-            }
-        }
-        transaction
+        branch
+            .transaction()
+            .assert(DeviceProfile::new(profile, storage_name))
             .commit()
             .perform(operator)
             .await
@@ -564,14 +457,25 @@ mod tests {
         );
     }
 
-    fn entry(name: &str, display_name: &str) -> RosterEntry {
+    /// The row `read_roster` yields for a profile stored under `name`:
+    /// the handle and nothing else, since identity now lives on that
+    /// profile's own account branch.
+    fn entry(name: &str) -> RosterEntry {
         RosterEntry {
             profile_name: name.to_string(),
             root_did: None,
             provider: None,
             email: None,
-            display_name: display_name.to_string(),
+            display_name: String::new(),
         }
+    }
+
+    /// A DID to key an entry on, distinct per seed.
+    async fn profile_did(seed: u8) -> Did {
+        dialog_credentials::Ed25519Signer::import(&[seed; 32])
+            .await
+            .unwrap()
+            .did()
     }
 
     /// An operator to read and write the roster through: the registry's
@@ -597,63 +501,77 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_upserts_a_roster_entry_by_profile_name() {
+    async fn it_lists_every_profile_it_recorded() {
         let registry = scratch();
         let storage = Storage::<DefaultSpace>::default();
         let operator = operator(&registry, &storage).await;
 
         registry
-            .upsert_roster(&storage, &operator, entry("one", "first"))
+            .upsert_roster(&storage, &operator, &profile_did(1).await, "one")
             .await
             .unwrap();
         registry
-            .upsert_roster(&storage, &operator, entry("two", "second"))
-            .await
-            .unwrap();
-        registry
-            .upsert_roster(&storage, &operator, entry("one", "renamed"))
+            .upsert_roster(&storage, &operator, &profile_did(2).await, "two")
             .await
             .unwrap();
 
-        let roster = registry.read_roster(&storage, &operator).await.unwrap();
-        assert_eq!(roster.len(), 2, "an upsert replaces, never duplicates");
         assert_eq!(
-            roster[0].display_name, "renamed",
-            "the entry takes the new value"
+            registry.read_roster(&storage, &operator).await.unwrap(),
+            vec![entry("one"), entry("two")],
+            "ordered by storage name"
         );
-        assert_eq!(roster[1].profile_name, "two");
     }
 
+    /// The entity is the profile, so recording the same profile under a
+    /// new handle moves the entry rather than adding one.
     #[dialog_common::test]
-    async fn it_retracts_the_attachment_when_an_entry_is_demoted() {
+    async fn it_keeps_one_entry_per_profile_when_the_handle_changes() {
         let registry = scratch();
         let storage = Storage::<DefaultSpace>::default();
         let operator = operator(&registry, &storage).await;
-        let root = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let profile = profile_did(1).await;
 
-        let attached = RosterEntry {
-            root_did: Some(root.did().to_string()),
-            provider: Some("https://accounts.example".to_string()),
-            email: Some("person@example.com".to_string()),
-            ..entry("one", "first")
-        };
         registry
-            .upsert_roster(&storage, &operator, attached.clone())
+            .upsert_roster(&storage, &operator, &profile, "one")
             .await
             .unwrap();
+        registry
+            .upsert_roster(&storage, &operator, &profile, "renamed")
+            .await
+            .unwrap();
+
         assert_eq!(
             registry.read_roster(&storage, &operator).await.unwrap(),
-            vec![attached]
+            vec![entry("renamed")],
+            "one profile is one entry, whatever it is stored under"
         );
+    }
+
+    /// Two profiles sharing a storage name would be a bug elsewhere, but
+    /// the roster keys on the profile, so they stay two rows.
+    #[dialog_common::test]
+    async fn it_keeps_distinct_profiles_apart() {
+        let registry = scratch();
+        let storage = Storage::<DefaultSpace>::default();
+        let operator = operator(&registry, &storage).await;
 
         registry
-            .upsert_roster(&storage, &operator, entry("one", "first"))
+            .upsert_roster(&storage, &operator, &profile_did(1).await, "one")
             .await
             .unwrap();
+        registry
+            .upsert_roster(&storage, &operator, &profile_did(2).await, "one")
+            .await
+            .unwrap();
+
         assert_eq!(
-            registry.read_roster(&storage, &operator).await.unwrap(),
-            vec![entry("one", "first")],
-            "a signed-out profile carries no attachment or email"
+            registry
+                .read_roster(&storage, &operator)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "two profiles are two entries"
         );
     }
 
@@ -663,7 +581,7 @@ mod tests {
         let storage = Storage::<DefaultSpace>::default();
         let operator = operator(&registry, &storage).await;
         registry
-            .upsert_roster(&storage, &operator, entry("one", "first"))
+            .upsert_roster(&storage, &operator, &profile_did(1).await, "one")
             .await
             .unwrap();
 
@@ -676,7 +594,7 @@ mod tests {
             .operator;
         assert_eq!(
             registry.read_roster(&storage, &other).await.unwrap(),
-            vec![entry("one", "first")]
+            vec![entry("one")]
         );
     }
 

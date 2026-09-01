@@ -28,7 +28,6 @@ const ROUTES: &[&str] = &[
     "/api/custody/provision",
     "/api/custody/queue",
     "/api/customer",
-    "/api/customer/activated",
     "/api/customer/pending",
     "/api/identify",
     "/api/identity/root",

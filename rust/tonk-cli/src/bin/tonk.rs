@@ -1689,12 +1689,9 @@ async fn link_account(
     .await
     {
         Ok(outcome) => {
-            // Matched against the provider the page delivered rather than
-            // the flag: the ceremony records whichever service its own
-            // deployment named, while the flag's default says production
-            // wherever it ran.
-            let discovery =
-                tonk_cli::deployment::discover(&ceremony_page, &outcome.service_url).await;
+            // The deployment that served the ceremony page is the one
+            // whose endpoints this account uses.
+            let discovery = tonk_cli::deployment::discover(&ceremony_page).await;
             let record = tonk_cli::deployment::account_record(
                 &outcome.root_did,
                 &ceremony_page,

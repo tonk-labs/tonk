@@ -897,11 +897,11 @@ mod tests {
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| "Text".to_owned());
                 txn = txn
-                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                        "{}/{}",
-                        attr.domain(),
-                        attr.name()
-                    )))
+                    .assert(
+                        the!("db.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(attr.the().to_string()),
+                    )
                     .assert(
                         the!("db.attribute/type")
                             .of(attr_entity.clone())
@@ -982,11 +982,11 @@ mod tests {
             for (_, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
                 txn = txn
-                    .assert(the!("db.attribute/id").of(attr_entity.clone()).is(format!(
-                        "{}/{}",
-                        attr.domain(),
-                        attr.name()
-                    )))
+                    .assert(
+                        the!("db.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(attr.the().to_string()),
+                    )
                     .assert(
                         the!("db.attribute/type")
                             .of(attr_entity.clone())

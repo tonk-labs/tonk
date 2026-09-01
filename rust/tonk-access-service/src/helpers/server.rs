@@ -9,6 +9,7 @@ use crate::email::{CapturedEmail, EmailError, EmailSender};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
+use crate::store::Enrollment;
 use crate::store::ingest::{IngestStore, SqliteIngest};
 use crate::store::sqlite::SqliteStore;
 use async_trait::async_trait;
@@ -66,12 +67,38 @@ struct RegistrationState {
     emails: Arc<CapturedEmail>,
     sender: AnnouncedEmail,
     service: Ed25519Signer,
+    /// The hex seed `service` was built from; customer spaces derive
+    /// from it, and a signer cannot give its seed back.
+    service_seed: String,
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
     /// Revocations recorded by `/ucan/revoke`. In memory, as the
     /// worker's KV namespace is. Shared with the authorizer, which
     /// reads it back while verifying every presented chain.
     revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
+    /// Redeems the enrollment's recovery invocation for a presigned
+    /// request, so the custody cell is written the way any other cell
+    /// write is authorized.
+    authorizer: Arc<tokio::sync::RwLock<ServerAuthorizer>>,
+}
+
+/// The dev server's [`Redeemer`]: the same authorizer that answers
+/// `/ucan/`, asked directly rather than over HTTP.
+struct ServerRedeemer(Arc<tokio::sync::RwLock<ServerAuthorizer>>);
+
+#[async_trait::async_trait]
+impl crate::vault::Redeemer for ServerRedeemer {
+    async fn redeem(
+        &self,
+        container: &[u8],
+    ) -> Result<dialog_remote_s3::Permit, crate::vault::VaultError> {
+        self.0
+            .read()
+            .await
+            .authorize(container)
+            .await
+            .map_err(|error| crate::vault::VaultError::Unavailable(error.to_string()))
+    }
 }
 
 /// Captures activation emails and announces them on stdout, so a human
@@ -136,11 +163,19 @@ impl AccessServer {
         // A persistent state dir keeps the service's identity stable
         // across restarts; rotating it would orphan the deposits and the
         // enrollment records the published service DID anchors.
-        let service = match state_dir {
+        let (service, service_seed) = match state_dir {
             Some(dir) => persistent_signer(dir).await?,
-            None => Ed25519Signer::generate()
-                .await
-                .map_err(|err| anyhow::anyhow!("service signer: {err:?}"))?,
+            // An ephemeral identity still needs its seed, since customer
+            // spaces derive from it and a signer cannot give one back.
+            None => {
+                let mut seed = [0u8; 32];
+                getrandom::fill(&mut seed)
+                    .map_err(|err| anyhow::anyhow!("no entropy source: {err}"))?;
+                let encoded = hex::encode(seed);
+                let signer = crate::service::signer_from_hex(&encoded)
+                    .map_err(|message| anyhow::anyhow!("service signer: {message}"))?;
+                (signer, encoded)
+            }
         };
         let service_did = service.did().to_string();
         let (store, ingest) = match state_dir {
@@ -161,11 +196,13 @@ impl AccessServer {
             emails: emails.clone(),
             sender: AnnouncedEmail(emails.clone()),
             service,
+            service_seed,
             // Activation links open on the page origin, which behind a
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
             revocations,
+            authorizer: authorizer.clone(),
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -234,6 +271,28 @@ fn request_host(req: &Request<Incoming>) -> String {
         .unwrap_or_default()
 }
 
+/// The largest `/ucan/` body the harness accepts, matching the worker's default.
+const MAX_BODY_BYTES: u64 = 64 * 1024;
+
+/// `413`, naming the limit so a caller can act on it.
+fn too_large_response() -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(StatusCode::PAYLOAD_TOO_LARGE)
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::json!({
+                "error": {
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": format!(
+                        "request body exceeds the {MAX_BODY_BYTES}-byte limit for /ucan/"
+                    ),
+                }
+            })
+            .to_string(),
+        )))
+        .expect("a static response builds")
+}
+
 /// Handle an incoming UCAN access service request.
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
@@ -284,7 +343,7 @@ async fn handle_request(
                     .status(StatusCode::OK)
                     .header(CONTENT_TYPE, "application/json")
                     .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&config).expect("deployment config serializes"),
+                        serde_json::to_vec_pretty(&config).expect("deployment config serializes"),
                     )))
                     .unwrap()
             }
@@ -296,13 +355,23 @@ async fn handle_request(
         return Ok(cors_response(response));
     }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
-        let document = did_document(&request_host(&req), &registration.service);
+        // The configured origin's host, for the same reason the customer
+        // documents use it: a proxy's `Host` header is not the name the
+        // browser resolved, and the service's own DID must not change with
+        // the path a request took.
+        let host = registration
+            .origin
+            .trim_end_matches('/')
+            .split_once("://")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| request_host(&req));
+        let document = did_document(&host, &registration.origin, &registration.service);
         return Ok(cors_response(
             Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&document).expect("did document serializes"),
+                    serde_json::to_vec_pretty(&document).expect("did document serializes"),
                 )))
                 .unwrap(),
         ));
@@ -379,7 +448,7 @@ async fn handle_request(
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&body).expect("service did serializes"),
+                    serde_json::to_vec_pretty(&body).expect("service did serializes"),
                 )))
                 .unwrap(),
         ));
@@ -395,10 +464,21 @@ async fn handle_request(
     {
         use crate::lookup::{address_from_segments, customer_did, resolve};
 
-        let host = request_host(&req);
+        // The configured public origin, not the `Host` header. A dev proxy
+        // forwards `Host: 127.0.0.1` — no port, and not the name the browser
+        // used — so a header-derived document published
+        // `http://127.0.0.1/ucan/`, which resolves to port 80 and fails to
+        // fetch. Worse, the DID ITSELF is built from this, so the identity a
+        // customer resolves to would depend on which proxy a request came
+        // through.
+        let origin = registration.origin.trim_end_matches('/').to_string();
+        let host = origin
+            .split_once("://")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| request_host(&req));
         let found = match address_from_segments(domain, local) {
             Some(address) => match customer_did(&host, &address) {
-                Some(did) => resolve(&registration.store, &did, &address).await,
+                Some(did) => resolve(&registration.store, &did, &address, &origin).await,
                 None => Ok(None),
             },
             None => Ok(None),
@@ -419,7 +499,7 @@ async fn handle_request(
                     },
                 )
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&found.document).expect("did document serializes"),
+                    serde_json::to_vec_pretty(&found.document).expect("did document serializes"),
                 )))
                 .unwrap(),
             Ok(None) => Response::builder()
@@ -446,12 +526,16 @@ async fn handle_request(
         use tonk_account::customer::{CustomerStatus, Receipt, RegistrationError};
 
         let response = match registration.store.customer(did).await {
-            Ok(Some(customer)) => match customer.did.parse() {
+            Ok(Some(customer)) => match customer.account.parse() {
                 Ok(parsed) => {
                     let receipt = Receipt {
                         customer: parsed,
                         status: customer.status,
                         // Only for a served customer; see the worker twin.
+                        // A status probe reports stored state; the space
+                        // is minted by enroll and activate, which are the
+                        // answers a client records it from.
+                        ledger: None,
                         provider: (customer.status == CustomerStatus::Active).then(|| {
                             format!("{}/ucan/", registration.origin.trim_end_matches('/'))
                         }),
@@ -508,6 +592,19 @@ async fn handle_request(
         ));
     }
 
+    // Refused on size alone, before anything is decoded — the same
+    // limit the worker applies, so a request rejected in production is
+    // rejected here too.
+    if let Some(declared) = req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        && declared > MAX_BODY_BYTES
+    {
+        return Ok(cors_response(too_large_response()));
+    }
+
     // Read request body
     use http_body_util::BodyExt;
     let body_bytes = match req.into_body().collect().await {
@@ -524,6 +621,9 @@ async fn handle_request(
             ));
         }
     };
+    if body_bytes.len() as u64 > MAX_BODY_BYTES {
+        return Ok(cors_response(too_large_response()));
+    }
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Mirrors the Worker handler.
@@ -622,7 +722,9 @@ async fn handle_request(
         let env = Registration {
             store: &registration.store,
             email: &registration.sender,
+            vault: &crate::vault::AuthorizedVault(ServerRedeemer(registration.authorizer.clone())),
             service: &registration.service,
+            service_seed: &registration.service_seed,
             origin: &registration.origin,
             activation_ttl: 24 * 60 * 60,
             now: unix_now(),
@@ -673,9 +775,9 @@ async fn handle_request(
     if outcome.is_ok()
         && let Some(subject) = crate::deletion::subject(&body_bytes)
     {
-        use crate::store::{ConsumerDeletionState, Store};
+        use crate::store::Store;
         match registration.store.consumer(subject.as_str()).await {
-            Ok(Some(consumer)) if consumer.deletion_state != ConsumerDeletionState::Active => {
+            Ok(Some(consumer)) if consumer.deleted_at.is_some() => {
                 return Ok(cors_response(
                     Response::builder()
                         .status(StatusCode::FORBIDDEN)
@@ -704,26 +806,27 @@ async fn handle_request(
     // this denies the data plane.
     if outcome.is_ok() {
         match crate::provisioning::container_subject(&body_bytes) {
-            Some(subject) => match crate::provisioning::screen(&registration.store, &subject).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(reason)) => {
-                    println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
-                    return Ok(cors_response(authorize_error_response(
-                        StatusCode::FORBIDDEN,
-                        &reason,
-                    )));
+            Some(subject) => {
+                match crate::provisioning::screen(&registration.store, &subject, unix_now()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(reason)) => {
+                        println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::FORBIDDEN,
+                            &reason,
+                        )));
+                    }
+                    Err(error) => {
+                        // Fails closed, but as our own unavailability rather
+                        // than a denial billed to the customer.
+                        eprintln!("presign refused, control store unreachable: {error}");
+                        return Ok(cors_response(authorize_error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            &unavailable_provisioning(),
+                        )));
+                    }
                 }
-                Err(error) => {
-                    // Fails closed, but as our own unavailability rather
-                    // than a denial billed to the customer.
-                    eprintln!("presign refused, control store unreachable: {error}");
-                    return Ok(cors_response(authorize_error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        &unavailable_provisioning(),
-                    )));
-                }
-            },
+            }
             None => {
                 return Ok(cors_response(authorize_error_response(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -818,7 +921,7 @@ fn unix_now() -> u64 {
 /// provisioning gate serves it. Idempotent, and derived from the
 /// subject so two subjects never collide on one provider row.
 async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Result<()> {
-    use crate::store::{ConsumerKind, SIGNUP_PLAN, Store};
+    use crate::store::{SIGNUP_PLAN, Store, SubscriptionKind};
 
     let provider = format!("did:test:provider-for-{subject}");
     if store
@@ -828,7 +931,15 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
         .is_none()
     {
         store
-            .enroll_customer(&provider, "tests@example.com", b"", SIGNUP_PLAN, 0)
+            .enroll_customer(Enrollment {
+                did: &provider,
+                email: "tests@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: &provider,
+                custody: "did:key:zTestCustody",
+                now: 0,
+                expires_at: u64::MAX,
+            })
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         store
@@ -837,7 +948,7 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
             .map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     store
-        .add_consumer(subject, &provider, 0, ConsumerKind::Space)
+        .add_subscription(subject, &provider, 0, SubscriptionKind::Space)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(())
@@ -954,8 +1065,8 @@ async fn serve_shortcut(
             .unwrap()
     };
     match shortcuts.read().await.get(&key) {
-        Some((expires, target)) => {
-            let remaining = expires.saturating_sub(unix_now());
+        Some((expires_at, target)) => {
+            let remaining = expires_at.saturating_sub(unix_now());
             if remaining == 0 {
                 return not_found();
             }
@@ -1041,19 +1152,22 @@ impl Default for AccessServiceSettings {
 
 /// The service's signing identity from `{dir}/service.key`, minting and
 /// persisting a fresh seed on first start.
-async fn persistent_signer(dir: &std::path::Path) -> anyhow::Result<Ed25519Signer> {
+async fn persistent_signer(dir: &std::path::Path) -> anyhow::Result<(Ed25519Signer, String)> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("service.key");
     if let Ok(seed) = std::fs::read_to_string(&path) {
-        return crate::service::signer_from_hex(seed.trim())
-            .map_err(|message| anyhow::anyhow!("stored service key is unusable: {message}"));
+        let seed = seed.trim().to_string();
+        let signer = crate::service::signer_from_hex(&seed)
+            .map_err(|message| anyhow::anyhow!("stored service key is unusable: {message}"))?;
+        return Ok((signer, seed));
     }
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).map_err(|err| anyhow::anyhow!("no entropy source: {err}"))?;
     let encoded = hex::encode(seed);
     std::fs::write(&path, &encoded)?;
-    crate::service::signer_from_hex(&encoded)
-        .map_err(|message| anyhow::anyhow!("fresh service key is unusable: {message}"))
+    let signer = crate::service::signer_from_hex(&encoded)
+        .map_err(|message| anyhow::anyhow!("fresh service key is unusable: {message}"))?;
+    Ok((signer, encoded))
 }
 
 /// Dev durability for the in-memory blob store: hydrate it from a

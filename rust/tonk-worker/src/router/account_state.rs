@@ -16,14 +16,12 @@ use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal;
 use tonk_account::{
-    AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
-    probe_remote_main, publish_genesis_if_absent,
+    AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
 use tonk_identity::sealed::RecipientKey;
 use tonk_schema::{
-    AccountEncryptionKey, AccountPasskeyCreated, CustodiedSeed, Replica, SeedKind,
-    prelude::DidExt as _,
+    AccountSealedInbox, Replica, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
 };
 use zeroize::Zeroizing;
 
@@ -61,12 +59,12 @@ async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerE
 
 async fn mark_trusted(
     tonk: &TonkState,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError> {
     tonk.profile
         .credential()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-        .save(descriptor.content_hash().to_vec())
+        .save(subject.as_str().as_bytes().to_vec())
         .perform(&tonk.operator)
         .await
         .map_err(|error| {
@@ -76,23 +74,71 @@ async fn mark_trusted(
         })
 }
 
-fn marker_matches(marker: Option<&[u8]>, descriptor: &AccountRepositoryDescriptorV1) -> bool {
-    marker == Some(descriptor.content_hash().as_slice())
+/// Whether the trusted base already recorded names this account.
+///
+/// The account DID, not a descriptor hash: what the marker answers is
+/// "did I trust a base for THIS account", and the subject is what says
+/// which account.
+fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
+    marker == Some(subject.as_str().as_bytes())
 }
 
-/// The descriptor this profile is configured with, absent when the local link
-/// is missing, unreadable, or still a legacy raw delegation.
-async fn configured_descriptor(tonk: &TonkState) -> Option<AccountRepositoryDescriptorV1> {
-    super::account::descriptor(tonk).await
+/// Where the account syncs.
+///
+/// The address the access service named at enrollment, when one is
+/// recorded — that service is the authority on where it serves from.
+/// Otherwise this deployment's own `/ucan/` endpoint: the origin
+/// serving the page IS the access service that serves it, so a device
+/// knows the address before it knows anything about an account, with
+/// nothing fetched and nothing published to learn it.
+pub(crate) async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorkerError> {
+    if let Some(address) = super::customer::provider_address(tonk).await {
+        return Ok(address);
+    }
+    // What the email lookup resolved, before enrollment has recorded
+    // anything: the account's own document naming where it syncs.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(address) = super::email_status::resolved_service() {
+        return Ok(address);
+    }
+    // What the link named, which is where the linking party was
+    // actually talking to the service.
+    if let Some(remote) = super::account::attachment(tonk)
+        .await
+        .and_then(|record| record.remote().map(ToOwned::to_owned))
+    {
+        return Ok(remote);
+    }
+    // This deployment's own endpoint. The origin serving the page IS
+    // the access service that serves it, so a device knows where to
+    // sync before it knows anything about an account.
+    Ok(format!(
+        "{}ucan/",
+        super::customer::service_origin()?.as_str()
+    ))
+}
+
+/// Whether this profile has an account to sync at all.
+///
+/// The attachment, not an address: every device can name an address
+/// (its own origin, at worst), so the address does not say whether
+/// there is an account behind it. The attachment does.
+async fn account_configured(tonk: &TonkState) -> bool {
+    super::account::attachment(tonk).await.is_some()
 }
 
 /// Current durable account-state status, without a network request.
 pub(crate) async fn status(tonk: &TonkState) -> AccountStateStatus {
-    let Some(descriptor) = configured_descriptor(tonk).await else {
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return AccountStateStatus::Unconfigured;
     };
+    if !account_configured(tonk).await {
+        return AccountStateStatus::Unconfigured;
+    }
     match trusted_marker(tonk).await {
-        Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => AccountStateStatus::Ready,
+        Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
+            AccountStateStatus::Ready
+        }
         Ok(_) => AccountStateStatus::Unhydrated,
         Err(error) => {
             log!("account trusted-base marker unreadable: {error}");
@@ -147,14 +193,10 @@ pub(crate) async fn is_account_key(tonk: &TonkState, key: &str) -> bool {
     matched
 }
 
-/// Every routing key that names this profile's account: the configured
-/// descriptor's subject, plus the local root itself — the account
-/// subject is the root, so its key is derivable without an attachment.
+/// Every routing key that names this profile's account. The account
+/// subject IS the local root, so one key derives from it.
 async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
     let mut keys = HashSet::new();
-    if let Some(descriptor) = configured_descriptor(tonk).await {
-        keys.insert(descriptor.account_subject().repo_key().to_owned());
-    }
     if let Ok(root) = super::identity::local_root(tonk).await {
         keys.insert(root.root_did.repo_key().to_owned());
     }
@@ -281,13 +323,13 @@ async fn repoint_remote<C: Principal>(
 /// and no database — exists behind it any more.
 async fn configure_account_upstream(
     tonk: &TonkState,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
 ) -> Result<String, TonkWorkerError> {
-    let subject = descriptor.account_subject().clone();
+    let subject = subject.clone();
     let key = subject.repo_key().to_owned();
     let repository = Repository::from(&tonk.profile);
 
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let address = SiteAddress::from(UcanAddress::new(account_remote(tonk).await?.as_str()));
     let remote = match repository
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
@@ -323,14 +365,26 @@ async fn configure_account_upstream(
             })?,
     };
 
-    let branch = repository
+    // The REACTOR's cached session, not a fresh handle. A branch handle
+    // captures its upstream cell when first opened, and the reactor's
+    // profile-main session opens early — boot chores, enrollment fact
+    // writes — before any account remote exists. Setting the upstream on
+    // a separately opened handle published it durably but left the
+    // cached cell empty, so every sweep's pull and push through the
+    // reactor answered `Branch main has no upstream` FOREVER: the exact
+    // wedge that left a signed-up browser watching its 403s turn into
+    // 200s with nothing able to hydrate. Performed on the cached handle,
+    // the write lands in both places at once.
+    let session = tonk
+        .reactor
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to open profile main branch: {error}"))
         })?;
+    let branch = session.handle();
     let remote_branch = remote
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -581,8 +635,8 @@ async fn observe_registration(
     // means no enrollment on this device, and nothing to complete.
     let email = match super::customer::registration(tonk).await {
         super::customer::Registration::AwaitingActivation { email } => email,
-        _ => match super::customer::account_customer(tonk).await {
-            Some(customer) => customer.email.0.clone(),
+        _ => match super::customer::account_registration(tonk).await.email {
+            Some(email) => email,
             None => return,
         },
     };
@@ -617,13 +671,18 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     // account above is present but unusable until the access branch adopts
     // it. Runs on every sweep, and is a no-op once the upstream is set.
     adopt_account_access(tonk).await;
+    // The pull above went through, which is the gate saying this account
+    // is served. Recorded on THIS arm too, not only on first hydration:
+    // the browser that enrolled already holds the trusted marker, so it
+    // takes this path on every sweep and never took the hydrate one. Its
+    // "awaiting confirmation" row waited on a fact nothing on that device
+    // would ever write, so opening the emailed link left the screen that
+    // sent you there unchanged.
+    super::customer::record_activation(tonk).await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
-    if seed_passkey_facts(tonk).await {
-        log!("recorded this device's passkey creation facts in the account space");
-    }
-    if seed_encryption_key(tonk).await {
-        log!("published the account's encryption key in the account space");
+    if seed_sealed_inbox(tonk).await {
+        log!("published the account sealed-inbox address in the account space");
     }
     describe_own_device(tonk).await;
     if let Err(error) = converge_account_state(tonk).await {
@@ -676,11 +735,18 @@ pub(crate) async fn ensure_account_state_swept(
     static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _serialized = ENSURE.lock().await;
 
-    let Some(descriptor) = configured_descriptor(tonk).await else {
+    // An account with somewhere to sync. A root exists from the moment
+    // a passkey does, so the root alone does not mean the account is
+    // configured; an address does, and it comes from the customer fact,
+    // the resolved DID document, or the link.
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return (AccountStateStatus::Unconfigured, Ok(()));
     };
+    if !account_configured(tonk).await {
+        return (AccountStateStatus::Unconfigured, Ok(()));
+    }
 
-    let key = match configure_account_upstream(tonk, &descriptor).await {
+    let key = match configure_account_upstream(tonk, &root.root_did).await {
         Ok(key) => key,
         Err(error) => {
             log!("account upstream configuration failed: {error}");
@@ -702,22 +768,28 @@ pub(crate) async fn ensure_account_state_swept(
     }
 
     match trusted_marker(tonk).await {
-        Ok(marker) if marker_matches(marker.as_deref(), &descriptor) => {
+        Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
             let swept = sync_ready(tonk, &key).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
-            Ok(()) => match mark_trusted(tonk, &descriptor).await {
+            Ok(()) => match mark_trusted(tonk, &root.root_did).await {
                 Ok(()) => {
                     // The path a freshly created account takes, where the
                     // ready sweep above has not run yet.
-                    if seed_passkey_facts(tonk).await {
-                        log!("recorded this device's passkey creation facts in the account space");
-                    }
-                    if seed_encryption_key(tonk).await {
-                        log!("published the account's encryption key in the account space");
+                    if seed_sealed_inbox(tonk).await {
+                        log!("published the account sealed-inbox address in the account space");
                     }
                     describe_own_device(tonk).await;
+                    // Hydrating IS activation, observed rather than asked
+                    // for: the account remote is attached from enrollment
+                    // and the gate refuses an unconfirmed customer, so a
+                    // pull that succeeds is the service saying the emailed
+                    // link was opened. Recording it here is what replaced
+                    // polling a status endpoint — and it works on a device
+                    // that never opened the link, since it learns from the
+                    // sync it was already doing.
+                    super::customer::record_activation(tonk).await;
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
@@ -755,16 +827,16 @@ pub(crate) async fn ensure_account_state_swept(
 pub(crate) async fn require_ready_account_state(
     tonk: &TonkState,
 ) -> Result<ReadyAccountBranch, TonkWorkerError> {
-    let descriptor = configured_descriptor(tonk)
+    let root = super::identity::local_root(tonk)
         .await
-        .ok_or_else(|| TonkWorkerError::Conflict("account state is unconfigured".to_string()))?;
+        .map_err(|_| TonkWorkerError::Conflict("account state is unconfigured".to_string()))?;
     let marker = trusted_marker(tonk).await?;
-    if !marker_matches(marker.as_deref(), &descriptor) {
+    if !marker_matches(marker.as_deref(), &root.root_did) {
         return Err(TonkWorkerError::Conflict(
             "account state has no trusted remote base".to_string(),
         ));
     }
-    let subject = descriptor.account_subject().clone();
+    let subject = root.root_did.clone();
     let key = subject.repo_key().to_owned();
     tonk.reactor
         .profile_repository()
@@ -775,11 +847,18 @@ pub(crate) async fn require_ready_account_state(
     Ok(ReadyAccountBranch { key, subject })
 }
 
-/// Read the creation facts recorded on a ready account branch.
-async fn read_passkey_facts(
+/// The passkeys that can recover this account, newest first.
+///
+/// Found through the envelopes rather than by a field: each passkey's row is
+/// keyed on the custody DID its PRF output derives, which is the `to` of the
+/// `secret:message` this account sealed to it. So the account is reached by
+/// the message's `sender`, and no row carries a second copy of it.
+async fn read_passkeys(
     tonk: &TonkState,
     ready: &ReadyAccountBranch,
-) -> Result<Option<tonk_worker_api::PasskeyMetadata>, TonkWorkerError> {
+) -> Result<Vec<tonk_schema::RecoveryPasskey>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+
     let branch = tonk
         .reactor
         .profile_repository()
@@ -787,31 +866,58 @@ async fn read_passkey_facts(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
-    let rows: Vec<AccountPasskeyCreated> = branch
+
+    // `from` is optional on the concept, so it binds as a variable and the
+    // sender is matched here.
+    let envelopes: Vec<SecretMessage> = branch
         .handle()
         .query()
-        .select(Query::<AccountPasskeyCreated> {
-            this: Term::from(ready.subject.this()),
-            created_at: Term::var("created_at"),
-            created_on: Term::var("created_on"),
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::var("to"),
+            message: Term::var("message"),
+            from: Term::var("from"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("read account passkey facts: {error:?}"))
+            TonkWorkerError::Internal(format!("read the account envelopes: {error:?}"))
         })?;
-    Ok(rows
-        .into_iter()
-        .next()
-        .map(|row| tonk_worker_api::PasskeyMetadata {
-            created_at: row.seconds(),
-            created_on: row.created_on.0,
-        }))
+
+    let mut passkeys = Vec::new();
+    for envelope in envelopes {
+        if envelope
+            .from
+            .as_ref()
+            .is_none_or(|sender| sender.0 != ready.subject.this())
+        {
+            continue;
+        }
+        let rows: Vec<tonk_schema::RecoveryPasskey> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::RecoveryPasskey> {
+                this: Term::from(envelope.to.0.clone()),
+                credential_id: Term::var("credential_id"),
+                created_at: Term::var("created_at"),
+                created_on: Term::var("created_on"),
+                name: Term::var("name"),
+                display_name: Term::var("display_name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("read the passkey facts: {error:?}"))
+            })?;
+        passkeys.extend(rows);
+    }
+    passkeys.sort_by_key(|passkey| std::cmp::Reverse(passkey.seconds()));
+    Ok(passkeys)
 }
 
-/// This account's passkey facts as recorded in the account space, absent when
-/// the account is not ready or carries none.
+/// The most recently created passkey's metadata, for the account panel.
 ///
 /// Best-effort by design — the dashboard has an explicit unavailable state and
 /// must not fail because a hidden system repository is mid-hydration. Every
@@ -819,8 +925,16 @@ async fn read_passkey_facts(
 /// visible rather than silent.
 pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
     let ready = require_ready_account_state(tonk).await.ok()?;
-    match read_passkey_facts(tonk, &ready).await {
-        Ok(facts) => facts,
+    match read_passkeys(tonk, &ready).await {
+        Ok(passkeys) => {
+            passkeys
+                .into_iter()
+                .next()
+                .map(|passkey| tonk_worker_api::PasskeyMetadata {
+                    created_at: passkey.seconds(),
+                    created_on: passkey.created_on.0,
+                })
+        }
         Err(error) => {
             log!("account passkey facts unreadable: {error}");
             None
@@ -839,10 +953,10 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
 /// cannot reach the account keeps whatever authority it already holds.
 /// Returns whether it adopted, and logs every reason it did not.
 pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
-    let Ok(descriptor) = configured_descriptor(tonk).await.ok_or(()) else {
+    let Ok(root) = super::identity::local_root(tonk).await else {
         return false;
     };
-    let subject = descriptor.account_subject().clone();
+    let subject = root.root_did.clone();
     let repository = Repository::from(&tonk.profile);
     let access = match repository
         .branch(dialog_repository::ACCESS_BRANCH)
@@ -860,7 +974,11 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
     // A remote resolved against the ACCOUNT's DID. A local upstream would
     // resolve against this profile's own subject and could only name a
     // sibling branch, never the account's.
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let Ok(remote) = account_remote(tonk).await else {
+        log!("the worker origin is unavailable, so the account has no remote");
+        return false;
+    };
+    let address = SiteAddress::from(UcanAddress::new(remote.as_str()));
     let remote = match repository
         .remote(ACCOUNT_ACCESS_REMOTE)
         .load()
@@ -992,70 +1110,20 @@ pub(crate) async fn describe_own_device(tonk: &TonkState) {
     }
 }
 
-/// Write this device's recorded passkey facts into the account space when it
-/// has them and the space does not. Returns whether it wrote.
-///
-/// Idempotent: a device that only ever *evaluated* an existing root has
-/// nothing to contribute and returns `false` without touching the branch. So
-/// does a device whose facts are already there — an existing fact is never
-/// overwritten, so a device that later derives a different label cannot
-/// rewrite history.
-pub(crate) async fn seed_passkey_facts(tonk: &TonkState) -> bool {
-    // Unconfigured and unhydrated are ordinary states, reached on every sweep
-    // of a signed-out profile. They are not worth a line in the log.
-    let Ok(ready) = require_ready_account_state(tonk).await else {
-        return false;
-    };
-    match read_passkey_facts(tonk, &ready).await {
-        Ok(None) => {}
-        Ok(Some(_)) => return false,
-        Err(error) => {
-            log!("account passkey facts unreadable before seeding: {error}");
-            return false;
-        }
-    }
-    let Ok(root) = super::identity::local_root(tonk).await else {
-        return false;
-    };
-    let Some(metadata) = root.passkey else {
-        return false;
-    };
-    if let Err(error) = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        .assert(AccountPasskeyCreated::new(
-            ready.subject.this(),
-            metadata.created_at,
-            metadata.created_on,
-        ))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("commit account passkey creation facts: {error}");
-        return false;
-    }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
-    true
-}
-
 /// The account's published encryption key, when the account is ready and
 /// has one.
-pub(crate) async fn read_encryption_key(
+pub(crate) async fn read_sealed_inbox(
     tonk: &TonkState,
     ready: &ReadyAccountBranch,
 ) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
-    published_encryption_key(tonk, &ready.subject).await
+    published_sealed_inbox(tonk, &ready.subject).await
 }
 
 /// The encryption key published for `account` on profile `main`, if any.
 /// Reads the branch as it is, ready or not: the fact arrives with the
 /// account pull or is written locally, and neither needs the descriptor
 /// gate to be read back.
-pub(crate) async fn published_encryption_key(
+pub(crate) async fn published_sealed_inbox(
     tonk: &TonkState,
     account: &dialog_varsig::Did,
 ) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
@@ -1066,25 +1134,25 @@ pub(crate) async fn published_encryption_key(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
-    let rows: Vec<AccountEncryptionKey> = branch
+    let rows: Vec<AccountSealedInbox> = branch
         .handle()
         .query()
-        .select(Query::<AccountEncryptionKey> {
+        .select(Query::<AccountSealedInbox> {
             this: Term::from(account.this()),
-            key: Term::var("key"),
+            address: Term::var("address"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("read account encryption key: {error:?}"))
+            TonkWorkerError::Internal(format!("read account sealed-inbox address: {error:?}"))
         })?;
     rows.into_iter()
         .next()
         .map(|row| {
-            row.key.0.to_string().parse().map_err(|error| {
+            row.address.0.to_string().parse().map_err(|error| {
                 TonkWorkerError::Internal(format!(
-                    "the published account encryption key is not a DID: {error}"
+                    "the published sealed-inbox address is not a DID: {error}"
                 ))
             })
         })
@@ -1099,7 +1167,7 @@ pub(crate) async fn published_encryption_key(
 /// device that merely links has nothing to contribute and returns
 /// `false`. A differing published key is replaced: the record comes
 /// from the most recent ceremony, and rotation is what changes it.
-pub(crate) async fn seed_encryption_key(tonk: &TonkState) -> bool {
+pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
     let Ok(ready) = require_ready_account_state(tonk).await else {
         return false;
     };
@@ -1109,7 +1177,7 @@ pub(crate) async fn seed_encryption_key(tonk: &TonkState) -> bool {
     let Some(recipient) = root.encryption_key else {
         return false;
     };
-    match read_encryption_key(tonk, &ready).await {
+    match read_sealed_inbox(tonk, &ready).await {
         Ok(Some(published)) if published == recipient => return false,
         Ok(_) => {}
         Err(error) => {
@@ -1122,7 +1190,7 @@ pub(crate) async fn seed_encryption_key(tonk: &TonkState) -> bool {
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(AccountEncryptionKey::new(
+        .assert(AccountSealedInbox::new(
             ready.subject.this(),
             recipient.this(),
         ))
@@ -1139,7 +1207,8 @@ pub(crate) async fn seed_encryption_key(tonk: &TonkState) -> bool {
 }
 
 /// Seal `seed` (the signing seed `subject` derives from) to the account's
-/// published encryption key and record it as a [`CustodiedSeed`] in the
+/// published sealed-inbox address and record it as a [`SecretMessage`]
+/// plus the [`SecretPrincipal`] naming it, in the
 /// account space, so any device on the account can re-issue the subject
 /// after a passkey ceremony opens it. Returns whether it wrote.
 ///
@@ -1160,8 +1229,8 @@ pub(crate) async fn custody_seed(
             return false;
         }
     };
-    let sealed = match RecipientKey::from_did(&recipient) {
-        Ok(key) => match key.seal(&seed, subject) {
+    let sealed = match RecipientKey::try_from(&recipient) {
+        Ok(key) => match key.secret().conceal(&seed, subject) {
             Ok(sealed) => sealed.encode(),
             Err(error) => {
                 log!("seed for {subject} not custodied: {error}");
@@ -1173,12 +1242,17 @@ pub(crate) async fn custody_seed(
             return false;
         }
     };
+    let message = SecretMessage::new(&recipient, sealed);
     if let Err(error) = tonk
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(CustodiedSeed::new(subject.clone(), kind, recipient, sealed))
+        // Two rows: the envelope, and the principal whose seed it carries.
+        // Asserted together — a principal naming a message that was never
+        // written would be a seed nothing can open.
+        .assert(message.clone())
+        .assert(SecretPrincipal::new(subject, kind, message.this()))
         .commit()
         .perform(&tonk.operator)
         .await
@@ -1209,7 +1283,7 @@ async fn custody_recipient(
     match super::identity::local_root(tonk).await {
         Ok(root) => {
             let ready = require_ready_account_state(tonk).await.ok();
-            if let Some(recipient) = published_encryption_key(tonk, &root.root_did).await? {
+            if let Some(recipient) = published_sealed_inbox(tonk, &root.root_did).await? {
                 return Ok((recipient, ready));
             }
             // A ceremony recorded the key with the root but the sweep has
@@ -1226,7 +1300,7 @@ async fn custody_recipient(
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .assert(AccountEncryptionKey::new(
+                .assert(AccountSealedInbox::new(
                     root.root_did.this(),
                     recipient.this(),
                 ))
@@ -1240,18 +1314,18 @@ async fn custody_recipient(
         }
         Err(TonkWorkerError::RootRequired) => {
             let secret = crate::onboarding::account(tonk).await?;
-            let recipient = secret.encryption_key().recipient().did();
+            let recipient = secret.secret().did();
             let account = secret
                 .signer()
                 .await
                 .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?
                 .did();
-            if published_encryption_key(tonk, &account).await?.is_none() {
+            if published_sealed_inbox(tonk, &account).await?.is_none() {
                 tonk.reactor
                     .profile_repository()
                     .branch(tonk_account::MAIN_BRANCH)
                     .transaction()
-                    .assert(AccountEncryptionKey::new(account.this(), recipient.this()))
+                    .assert(AccountSealedInbox::new(account.this(), recipient.this()))
                     .commit()
                     .perform(&tonk.operator)
                     .await
@@ -1531,19 +1605,19 @@ mod tests {
 
     use super::*;
 
+    /// The marker answers "did I trust a base for THIS account", so a
+    /// marker naming another account — or none at all — is not ready.
     #[dialog_common::test]
-    async fn it_requires_the_exact_descriptor_hash_for_readiness() {
-        let root = Ed25519Signer::import(&[7; 32]).await.unwrap();
-        let descriptor =
-            AccountRepositoryDescriptorV1::sign(&root, "https://accounts.example/ucan/")
-                .await
-                .unwrap();
-        let hash = descriptor.content_hash();
-        let different = [9_u8; 32];
+    async fn it_requires_the_marker_to_name_this_account() {
+        use dialog_varsig::Principal as _;
 
-        assert!(marker_matches(Some(&hash), &descriptor));
-        assert!(!marker_matches(None, &descriptor));
-        assert!(!marker_matches(Some(&different), &descriptor));
+        let root = Ed25519Signer::import(&[7; 32]).await.unwrap();
+        let subject = root.did();
+        let other = Ed25519Signer::import(&[9; 32]).await.unwrap().did();
+
+        assert!(marker_matches(Some(subject.as_str().as_bytes()), &subject));
+        assert!(!marker_matches(None, &subject));
+        assert!(!marker_matches(Some(other.as_str().as_bytes()), &subject));
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1570,27 +1644,18 @@ mod tests {
             crate::router::tests::test_root_seed(&tonk.profile_name)
         };
         let root = Ed25519Signer::import(&seed).await.unwrap();
-        let descriptor = AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/")
-            .await
-            .unwrap();
         let missing = Ed25519Signer::import(&[77; 32]).await.unwrap().did();
         let missing_key = missing.repo_key().to_owned();
         {
             let tonk = state.read().await;
             let matching = crate::router::account::tests_matching_request(&tonk).await;
-            crate::router::account::persist_link(
-                &tonk,
-                &tonk_worker_api::AccountLinkRequest {
-                    descriptor_hex: hex::encode(descriptor.bytes()),
-                    ..matching
-                },
-            )
-            .await
-            .unwrap();
+            crate::router::account::persist_link(&tonk, &matching)
+                .await
+                .unwrap();
             tonk.profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(descriptor.content_hash().to_vec())
+                .save(root.did().as_str().as_bytes().to_vec())
                 .perform(&tonk.operator)
                 .await
                 .unwrap();
@@ -1742,7 +1807,28 @@ mod tests {
             tonk_access_service::helpers::AccessServiceAddress,
             tonk_access_service::helpers::AccessServer,
         >,
-        AccountRepositoryDescriptorV1,
+        Ed25519Signer,
+        String,
+    ) {
+        linked_account_state(passkey, true).await
+    }
+
+    /// A linked account against a real access service. `activated`
+    /// decides how far the customer got: `true` is the state every
+    /// steady-state test wants — the emailed link opened, the trusted
+    /// marker in place — while `false` stops at `Registered`, which is
+    /// the state a browser that just signed up is actually in: enrolled,
+    /// refused by the gate, and never yet hydrated.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn linked_account_state(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        activated: bool,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
         Ed25519Signer,
         String,
     ) {
@@ -1786,18 +1872,25 @@ mod tests {
         // Hydration syncs the account space, which the access service
         // serves only once its customer has confirmed the emailed
         // activation link.
-        service
-            .address
-            .activate_customer(&root, "worker-account-state@example.com")
-            .await
-            .unwrap();
+        if activated {
+            service
+                .address
+                .activate_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        } else {
+            service
+                .address
+                .enroll_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        }
+        // The endpoint the account syncs against, not the service root:
+        // the remote is the address a link names, and that is `/ucan/`.
         let remote = format!(
-            "{}/",
+            "{}/ucan/",
             service.address.access_service_url.trim_end_matches('/')
         );
-        let descriptor = AccountRepositoryDescriptorV1::sign(&root, &remote)
-            .await
-            .unwrap();
         let root_did = root.did().to_string();
         let credential_id = "account-state-test-credential".to_string();
         let delegation =
@@ -1825,48 +1918,36 @@ mod tests {
                 root_did,
                 credential_id,
                 delegation_hex,
-                descriptor_hex: hex::encode(descriptor.bytes()),
+                remote: remote.clone(),
                 initialize_name: false,
             },
         )
         .await
         .unwrap();
-        state
-            .profile
-            .credential()
-            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-            .save(vec![0_u8; 32])
-            .perform(&state.operator)
-            .await
-            .unwrap();
+        // The marker only exists once a hydration succeeded, and none
+        // can while the customer is still `Registered`: pre-setting it
+        // there would put the fixture in a state no real browser reaches.
+        if activated {
+            state
+                .profile
+                .credential()
+                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .save(root_signer.did().as_str().as_bytes().to_vec())
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
 
-        (state, service, descriptor, root_signer, remote)
+        (state, service, root_signer, remote)
     }
 
-    /// Every recorded creation fact on the ready account branch.
+    /// Every passkey recorded for the ready account, through its envelopes.
     #[cfg(not(target_arch = "wasm32"))]
     async fn recorded_passkey_facts(
         state: &TonkState,
         ready: &ReadyAccountBranch,
-    ) -> Vec<tonk_schema::AccountPasskeyCreated> {
-        state
-            .reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .acquire(&state.operator)
-            .await
-            .unwrap()
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::AccountPasskeyCreated> {
-                this: Term::from(ready.subject.this()),
-                created_at: Term::var("created_at"),
-                created_on: Term::var("created_on"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap()
+    ) -> Vec<tonk_schema::RecoveryPasskey> {
+        read_passkeys(state, ready).await.unwrap()
     }
 
     /// Remove the on-disk verifier repository `NativeSpace` rooted in the
@@ -1880,36 +1961,480 @@ mod tests {
         }
     }
 
+    /// Activation writes the fact the bar subscribes to.
+    ///
+    /// `account/active` resolves only when both `activated-at` and
+    /// `provider-address` are present, and the provider comes from the
+    /// service's receipt. A device that confirmed elsewhere learns it from
+    /// the status probe rather than from the activation page, so this pins
+    /// the write itself rather than either caller.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
-    async fn it_seeds_passkey_creation_facts_from_the_local_root() {
-        let (state, service, _descriptor, _root, _remote) =
-            ready_account_state(Some(tonk_worker_api::PasskeyMetadata {
-                created_at: 1_754_380_800,
-                created_on: "Chrome on macOS".to_string(),
-            }))
-            .await;
+    async fn it_records_the_activation_the_bar_subscribes_to() {
+        use tonk_account::customer::CustomerStatus;
+        use tonk_schema::{AccountActive, AccountRegistered};
 
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
         );
         let ready = require_ready_account_state(&state).await.unwrap();
-        let seeded = recorded_passkey_facts(&state, &ready).await;
-        assert_eq!(seeded.len(), 1);
-        assert_eq!(seeded[0].seconds(), 1_754_380_800);
-        assert_eq!(seeded[0].created_on.0, "Chrome on macOS");
+        let account = super::super::identity::root_did(&state).await.unwrap();
 
-        // The sweep runs on every boot and every heartbeat. A second pass must
-        // find its own fact and leave it exactly as written.
+        // Enrollment: registered, and nothing more. The service names no
+        // provider until the emailed link is opened.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Registered,
+            "person@example.com",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let registered: Vec<AccountRegistered> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.this()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+                provider: Term::var("provider"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(registered.len(), 1, "enrollment records the registration");
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(active.is_empty(), "an enrolled account is not yet served");
+
+        // Activation, as the receipt reports it.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Active,
+            "person@example.com",
+            Some("http://localhost:8080/ucan/"),
+        )
+        .await
+        .unwrap();
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1, "activation records the served fact");
+        assert!(active[0].activated_at.0 > 0, "carrying when it happened");
+
+        // Where the account syncs rides on the REGISTRATION: it is known at
+        // enrollment and unchanged by activation, so a client attaches its
+        // remote immediately and learns it was activated from the gate
+        // answering 200 instead of 403 — not from asking a status endpoint.
+        let registered: Vec<AccountRegistered> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.this()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+                provider: Term::var("provider"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            registered[0].provider(),
+            "http://localhost:8080/ucan/",
+            "the registration names where to sync"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The registering browser's whole wait, end to end: enrolled and
+    /// refused, activated somewhere else, noticed at the FIRST sweep the
+    /// gate serves. Every other test here starts `Active` with the
+    /// trusted marker pre-set, so none of them ran this lifecycle — and
+    /// the live flow broke exactly inside it: a browser that had never
+    /// hydrated sat on "awaiting confirmation" watching its pulls turn
+    /// from 403 to 200 with nothing recording the transition.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_notices_activation_at_the_first_served_sweep() {
+        use tonk_account::customer::CustomerStatus;
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, remote) = linked_account_state(None, false).await;
+        // What enrollment records on the device: registered, and where
+        // the account will sync — the receipt names the provider now.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Registered,
+            "worker-account-state@example.com",
+            Some(&remote),
+        )
+        .await
+        .unwrap();
+
+        // While the customer is `Registered` the gate refuses the
+        // sweep, and nothing may claim the account is served.
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert!(
+            status != AccountStateStatus::Ready || swept.is_err(),
+            "the gate refuses while awaiting activation, got {status:?} / {swept:?}"
+        );
+        let account = super::super::identity::root_did(&state).await.unwrap();
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let read_active = || async {
+            let rows: Vec<AccountActive> = branch
+                .handle()
+                .query()
+                .select(Query::<AccountActive> {
+                    this: Term::from(account.this()),
+                    activated_at: Term::var("activated_at"),
+                })
+                .perform(&state.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            rows
+        };
+        assert!(
+            read_active().await.is_empty(),
+            "no sweep may record activation the gate has not granted"
+        );
+
+        // The emailed link is opened somewhere this browser cannot see.
+        service
+            .address
+            .confirm_email("worker-account-state@example.com")
+            .await
+            .unwrap();
+
+        // The next sweep is served, and being served IS the signal: it
+        // must both hydrate and record the fact the ceremony waits on,
+        // in this same pass — not on some later one.
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(
+            status,
+            AccountStateStatus::Ready,
+            "the first served sweep hydrates"
+        );
+        swept.unwrap();
+        assert_eq!(
+            read_active().await.len(),
+            1,
+            "and records the activation the confirm row waits on"
+        );
+        assert!(
+            matches!(
+                super::super::customer::registration(&state).await,
+                super::super::customer::Registration::Served { .. }
+            ),
+            "the registration reads served"
+        );
+
+        let ready = require_ready_account_state(&state).await.unwrap();
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// A sweep of an ALREADY-READY account records the activation.
+    ///
+    /// The browser that enrolled holds the trusted marker from the moment
+    /// it created the account, so every later sweep takes the ready arm
+    /// and never the first-hydration one. Activation was recorded on the
+    /// hydrate arm alone, so that browser's "awaiting confirmation" row
+    /// waited on a fact nothing there would ever write: opening the
+    /// emailed link changed every other device and left the screen that
+    /// sent you there saying "awaiting confirmation" forever.
+    ///
+    /// The pull inside the sweep is the signal. It goes through only
+    /// because the gate served this account, so a sweep that completes IS
+    /// the 403 -> 200 transition, and that is what writes `activated-at`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_records_the_activation_when_a_ready_account_syncs() {
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        // The first sweep hydrates. The second is the one under test: the
+        // marker matches now, which is the enrolling browser's every sweep.
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
         );
-        let again = recorded_passkey_facts(&state, &ready).await;
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].seconds(), 1_754_380_800);
-        assert_eq!(again[0].created_on.0, "Chrome on macOS");
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+
+        // Enrolled and not yet confirmed: the only state with a
+        // transition to observe, and the state the browser that just
+        // signed up is actually in.
+        super::super::customer::record_customer_status(
+            &state,
+            tonk_account::customer::CustomerStatus::Registered,
+            "person@example.com",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Clear what the hydrating sweep recorded, so what is asserted
+        // below can only have come from the ready arm.
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let recorded: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        for row in recorded {
+            branch
+                .handle()
+                .transaction()
+                .retract(row)
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
+        let cleared: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(cleared.is_empty(), "nothing says served going in");
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready, "the marker matches");
+        swept.unwrap();
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            active.len(),
+            1,
+            "a served sync records the fact the confirm row waits on"
+        );
+        assert!(active[0].activated_at.0 > 0, "carrying when it happened");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// An account that is already active is not written again.
+    ///
+    /// The sweep runs on a heartbeat, so an unconditional assert would
+    /// commit a cardinality-one row it already holds every time round --
+    /// a transaction, a branch head and a push, forever, to record
+    /// something that cannot change again. Activation is one-way: once
+    /// the fact is there nobody is waiting on it, so there is nothing
+    /// left to watch for.
+    ///
+    /// Pinned on the timestamp, which is what a rewrite would move.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_stops_watching_once_the_account_is_active() {
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+
+        // Active, and recorded a while ago. The provider is the fixture's
+        // own service: naming another address would repoint the upstream
+        // and the sweeps below would fail on the network rather than on
+        // what they are here to observe.
+        super::super::customer::record_customer_status(
+            &state,
+            tonk_account::customer::CustomerStatus::Active,
+            "person@example.com",
+            Some(&remote),
+        )
+        .await
+        .unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let read = || async {
+            let rows: Vec<AccountActive> = branch
+                .handle()
+                .query()
+                .select(Query::<AccountActive> {
+                    this: Term::from(account.this()),
+                    activated_at: Term::var("activated_at"),
+                })
+                .perform(&state.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            rows
+        };
+        let before = read().await;
+        assert_eq!(before.len(), 1, "active going in");
+
+        // Two more heartbeats.
+        for _ in 0..2 {
+            let (status, swept) = ensure_account_state_swept(&state).await;
+            assert_eq!(status, AccountStateStatus::Ready);
+            swept.unwrap();
+        }
+
+        let after = read().await;
+        assert_eq!(after.len(), 1, "still one row");
+        assert_eq!(
+            after[0].activated_at.0, before[0].activated_at.0,
+            "the sweep left the activation alone rather than restamping it"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// A passkey's own row lands on the custody DID its envelope is
+    /// addressed to, and is reachable from the account through that
+    /// envelope's sender.
+    ///
+    /// This replaces two tests that pinned a sweep reading the local root:
+    /// the row is keyed per passkey now, and only the ceremony holds both
+    /// the custody DID and the creation label, so the sweep had nothing to
+    /// key on and was retired.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_records_a_passkey_against_the_custody_its_envelope_names() {
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        assert!(
+            recorded_passkey_facts(&state, &ready).await.is_empty(),
+            "nothing is recorded before a ceremony runs"
+        );
+
+        let custody = dialog_credentials::Ed25519Signer::import(&[21u8; 32])
+            .await
+            .unwrap()
+            .did();
+        super::super::customer::record_custody_cell(
+            &state,
+            custody.as_ref(),
+            &hex::encode([9u8; 16]),
+            Some(tonk_worker_api::PasskeyMetadata {
+                created_at: 1_754_380_800,
+                created_on: "Chrome on macOS".to_string(),
+            }),
+            "credential-one",
+            Some("person@example.com"),
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(recorded.len(), 1, "one passkey, found through its envelope");
+        assert_eq!(recorded[0].this, custody.this(), "keyed on the custody");
+        assert_eq!(recorded[0].credential_id.0, "credential-one");
+        assert_eq!(recorded[0].seconds(), 1_754_380_800);
+        assert_eq!(recorded[0].created_on.0, "Chrome on macOS");
+
+        // A second passkey is a second row rather than a merge — what the
+        // account-keyed shape could not do.
+        let other = dialog_credentials::Ed25519Signer::import(&[22u8; 32])
+            .await
+            .unwrap()
+            .did();
+        super::super::customer::record_custody_cell(
+            &state,
+            other.as_ref(),
+            &hex::encode([8u8; 16]),
+            Some(tonk_worker_api::PasskeyMetadata {
+                created_at: 1_754_380_900,
+                created_on: "Safari on iOS".to_string(),
+            }),
+            "credential-two",
+            Some("person@example.com"),
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded_passkey_facts(&state, &ready).await;
+        assert_eq!(recorded.len(), 2, "two passkeys are two rows");
+        assert_eq!(
+            recorded[0].created_on.0, "Safari on iOS",
+            "newest first, each keeping its own clock and label"
+        );
 
         service.stop().await.unwrap();
         discard(state, &ready.key);
@@ -1917,14 +2442,14 @@ mod tests {
 
     /// The recipient a ceremony recorded on the local root is published
     /// as the account's encryption key, and a seed sealed to it lands as
-    /// a `CustodiedSeed` row that the account's own key opens.
+    /// a `SecretMessage` that the account's own key opens.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_publishes_the_encryption_key_and_custodies_a_seed() {
         use tonk_identity::envelope::AccountSecret;
         use tonk_identity::sealed::Sealed;
 
-        let (state, service, _descriptor, root, _remote) = ready_account_state(None).await;
+        let (state, service, root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -1932,14 +2457,14 @@ mod tests {
         let ready = require_ready_account_state(&state).await.unwrap();
 
         // A device that only linked recorded no recipient: nothing to seed.
-        assert!(!seed_encryption_key(&state).await);
-        assert_eq!(read_encryption_key(&state, &ready).await.unwrap(), None);
+        assert!(!seed_sealed_inbox(&state).await);
+        assert_eq!(read_sealed_inbox(&state, &ready).await.unwrap(), None);
         let subject: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
         assert!(!custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
 
         // A ceremony that held the secret re-saves the root with the recipient.
         let account = AccountSecret::from_bytes(Zeroizing::new([5u8; 32]));
-        let recipient = account.encryption_key().recipient().did();
+        let recipient = account.secret().did();
         let grant =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &state.profile.did())
                 .await
@@ -1955,10 +2480,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(seed_encryption_key(&state).await);
-        assert!(!seed_encryption_key(&state).await, "already published");
+        assert!(seed_sealed_inbox(&state).await);
+        assert!(!seed_sealed_inbox(&state).await, "already published");
         assert_eq!(
-            read_encryption_key(&state, &ready).await.unwrap(),
+            read_sealed_inbox(&state, &ready).await.unwrap(),
             Some(recipient.clone())
         );
 
@@ -1970,25 +2495,39 @@ mod tests {
             .acquire(&state.operator)
             .await
             .unwrap();
-        let rows: Vec<CustodiedSeed> = branch
+        // The principal names the message; the message carries the seed.
+        let principals: Vec<SecretPrincipal> = branch
             .handle()
             .query()
-            .select(Query::<CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            .select(Query::<SecretPrincipal> {
+                this: Term::from(subject.this()),
                 kind: Term::var("kind"),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&state.operator)
             .try_vec()
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind.0.to_string(), SeedKind::SPACE);
-        assert_eq!(rows[0].recipient.0, recipient.this());
-        let sealed = Sealed::decode(&rows[0].sealed.0).unwrap();
-        let opened = account.encryption_key().open(&sealed, &subject).unwrap();
+        assert_eq!(principals.len(), 1);
+        assert_eq!(principals[0].kind.0.to_string(), SeedKind::SPACE);
+
+        let rows: Vec<SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the principal names a real message");
+        assert_eq!(rows[0].to.0, recipient.this());
+        let sealed = Sealed::decode(&rows[0].message.0).unwrap();
+        let opened = account.secret().reveal(&sealed, &subject).unwrap();
         assert_eq!(*opened, [7u8; 32]);
 
         service.stop().await.unwrap();
@@ -2001,7 +2540,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_describes_this_device_on_the_account_sweep() {
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -2040,7 +2579,7 @@ mod tests {
         use dialog_ucan_core::subject::Subject as UcanSubject;
         use dialog_varsig::Principal as _;
 
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
         assert_eq!(
             ensure_account_state(&state).await,
             AccountStateStatus::Ready
@@ -2119,10 +2658,106 @@ mod tests {
             .is_ok()
     }
 
+    /// The ledger read grant a registration receipt carries is retained
+    /// as a delegation, not kept as the hex string it travelled as.
+    ///
+    /// The service mints `ledger -> account` for `/use/get` and names it
+    /// in the receipt. Retaining is what makes it usable and what makes
+    /// it reach a second device: dialog decomposes the proof onto its
+    /// own entity on the account branch, so the authority syncs as facts
+    /// rather than sitting in a blob this device alone can read.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_retains_the_ledger_read_grant_a_receipt_carries() {
+        use dialog_ucan::{Parameters, Scope};
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::command::Command;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let root = super::super::identity::local_root(&state).await.unwrap();
+
+        // The shape `Registration::ledger` mints: the ledger space
+        // grants the account every read over itself, and nothing else.
+        let ledger = dialog_credentials::Ed25519Signer::import(&[11u8; 32])
+            .await
+            .unwrap();
+        let subject = ledger.did();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(ledger))
+            .audience(&root.root_did)
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec!["use".to_string(), "get".to_string()])
+            .try_build()
+            .await
+            .unwrap();
+        let read_hex = hex::encode(
+            dialog_ucan_core::DelegationChain::new(delegation)
+                .to_bytes()
+                .unwrap(),
+        );
+
+        let receipt = tonk_account::customer::Receipt {
+            customer: root.root_did.clone(),
+            status: tonk_account::customer::CustomerStatus::Active,
+            provider: None,
+            ledger: Some(tonk_account::customer::Ledger {
+                did: subject.clone(),
+                read_hex,
+            }),
+        };
+        super::super::customer::retain_ledger(&state, &receipt).await;
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let proven = branch
+            .handle()
+            .delegations()
+            .prove(
+                root.root_did.clone(),
+                Scope {
+                    subject: UcanSubject::Specific(subject.clone()),
+                    command: Command::parse("/use/get").unwrap(),
+                    parameters: Parameters::default(),
+                },
+            )
+            .perform(&state.operator)
+            .await;
+        assert!(
+            proven.is_ok(),
+            "the retained ledger grant must prove the account may read it"
+        );
+
+        // A receipt naming no ledger leaves the account branch alone
+        // rather than failing: every enrollment receipt predating the
+        // field is one.
+        let bare = tonk_account::customer::Receipt {
+            customer: root.root_did.clone(),
+            status: tonk_account::customer::CustomerStatus::Active,
+            provider: None,
+            ledger: None,
+        };
+        super::super::customer::retain_ledger(&state, &bare).await;
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_seeds_nothing_when_the_local_root_has_no_passkey_metadata() {
-        let (state, service, _descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, _root, _remote) = ready_account_state(None).await;
 
         assert_eq!(
             ensure_account_state(&state).await,
@@ -2141,7 +2776,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_mounts_hydrates_and_keeps_readiness_offline() {
-        let (state, service, descriptor, _root, _remote) = ready_account_state(None).await;
+        let (state, service, root, _remote) = ready_account_state(None).await;
 
         let renamed = rename_display_name(&state, "linked-name")
             .await
@@ -2154,7 +2789,7 @@ mod tests {
             AccountStateStatus::Ready
         );
         let ready = require_ready_account_state(&state).await.unwrap();
-        assert_eq!(ready.subject, descriptor.account_subject().clone());
+        assert_eq!(ready.subject, root.did());
         assert!(
             !state.reactor.repos().read().contains_key(&ready.key),
             "the account key routes the sweep; no repository — and no \

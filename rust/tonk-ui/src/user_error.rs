@@ -113,6 +113,39 @@ pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
     fallback(action).to_owned()
 }
 
+/// Present a failed passkey ceremony.
+///
+/// A refusal the access service explained is answered from its REASON,
+/// not from its wording: an unconfirmed email is a step someone can take,
+/// and telling them to "check your connection" instead sends them to fix
+/// something that is not broken. Anything the service did not refuse --
+/// a dismissed prompt, an unsupported authenticator -- falls through to
+/// the ordinary diagnostic.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn ceremony(
+    action: AccountAction,
+    error: &crate::custody_relay::CeremonyError,
+) -> String {
+    use tonk_identity::custody::CustodyDenial;
+
+    match &error.denial {
+        Some(CustodyDenial::AwaitingActivation) => {
+            "Open the confirmation link in your email to finish signing in. You can leave this page open."
+                .to_owned()
+        }
+        Some(CustodyDenial::Suspended(_)) => {
+            "This account is suspended, so it cannot be used on this device. Contact support to restore it."
+                .to_owned()
+        }
+        Some(CustodyDenial::NotProvisioned(_)) => {
+            "This account is not set up for syncing yet. Finish creating it on the browser that holds its passkey, then try again."
+                .to_owned()
+        }
+        Some(CustodyDenial::Other(reason)) => diagnostic(action, reason.as_str()),
+        None => diagnostic(action, &error.message),
+    }
+}
+
 /// Present a typed local API error at an account action boundary.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),

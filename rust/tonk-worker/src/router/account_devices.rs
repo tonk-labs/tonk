@@ -6,8 +6,6 @@
 //! and the branch every device syncs doubles as the registry. Only the
 //! account summary still proxies the account service.
 
-use std::collections::BTreeMap;
-
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
@@ -25,24 +23,6 @@ use tonk_worker_api::{
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
-
-/// The linked account provider's base URL, when an account is attached.
-pub(crate) async fn account_service_url(tonk: &TonkState) -> Option<String> {
-    crate::router::account::provider(tonk).await
-}
-
-/// Resolve the stored link and service URL, or explain what's missing.
-pub(super) async fn linked_service(
-    state: &TonkState,
-) -> Result<(dialog_ucan_core::DelegationChain, String), TonkWorkerError> {
-    let link = super::account::account_link(state).await.ok_or_else(|| {
-        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
-    })?;
-    let service = account_service_url(state).await.ok_or_else(|| {
-        TonkWorkerError::NotFound("no account service is attached to this profile".to_string())
-    })?;
-    Ok((link, service))
-}
 
 /// This account's device links and their audiences, from local facts.
 ///
@@ -194,18 +174,6 @@ pub async fn register(
     Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
 }
 
-/// The account service's `POST /account/summary` response.
-///
-/// Deliberately its own type rather than [`AccountSummary`]: the provider hop
-/// and the local hop no longer carry the same shape, and decoding the provider
-/// straight into the local DTO is what would silently re-couple them.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderSummary {
-    email: String,
-    passkey: Option<PasskeyMetadata>,
-}
-
 /// Prefer the portable account-space fact; fall back to what the provider
 /// recorded at account creation.
 ///
@@ -222,6 +190,7 @@ fn merge_summary(
     AccountSummary {
         email,
         passkey: space.or(provider),
+        display_name: None,
     }
 }
 
@@ -231,40 +200,54 @@ fn merge_summary(
 /// Shared by the HTTP route and the roster hooks that capture the
 /// account email best-effort at link time.
 pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary, TonkWorkerError> {
-    let (link, service) = linked_service(state).await?;
-    let space = super::account_state::passkey_facts(state).await;
-    let body = tonk_identity::request::build_device_invocation(
-        state.profile.signer().signer().clone(),
-        &link,
-        vec!["account".into(), "summary".into()],
-        BTreeMap::new(),
-    )
-    .await
-    .map_err(|error| {
-        TonkWorkerError::Internal(format!("build account-summary invocation: {error}"))
+    // An unlinked profile has no account to summarize, and answering
+    // with empty facts would read as "an account with nothing in it".
+    super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let endpoint = url::Url::parse(&format!(
-        "{}/account/summary",
-        service.trim_end_matches('/')
-    ))
-    .map_err(|error| TonkWorkerError::Internal(format!("invalid account provider URL: {error}")))?;
-    match super::http::post_cbor(&endpoint, &body).await {
-        Ok(response) => {
-            let provider: ProviderSummary =
-                serde_json::from_slice(&response.body).map_err(|error| {
-                    TonkWorkerError::Internal(format!("parse account summary: {error}"))
-                })?;
-            Ok(merge_summary(Some(provider.email), space, provider.passkey))
-        }
-        // The account repository already answered the passkey question, so an
-        // unreachable provider costs the email and nothing else. With no space
-        // fact there is nothing to serve, and the caller keeps the real error.
-        Err(error) if space.is_some() => {
-            log!("account summary falling back to account-space facts: {error}");
-            Ok(merge_summary(None, space, None))
-        }
-        Err(error) => Err(error.into()),
-    }
+    // Facts, not a request. Both halves of the summary already ride the
+    // account's own sync — the address enrollment recorded, and the
+    // passkey metadata the root save wrote — so asking a service for
+    // them was asking for a second copy of what this branch holds.
+    let email = super::customer::account_registration(state).await.email;
+    let passkey = super::account_state::passkey_facts(state).await;
+    let mut summary = merge_summary(email, passkey, None);
+    summary.display_name = account_display_name(state).await;
+    Ok(summary)
+}
+
+/// The chosen account display name, straight from the fact — `None` when
+/// nobody has named the account yet. Distinct from the roster's
+/// display name, which falls back to an auto-generated petname and so
+/// cannot say whether a person ever chose one.
+async fn account_display_name(state: &TonkState) -> Option<String> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+
+    let account = super::identity::root_did(state).await.ok()?;
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .ok()?;
+    let names: Vec<AccountDisplayName> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountDisplayName> {
+            this: Term::from(account.this()),
+            name: Term::var("name"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names
+        .into_iter()
+        .next()
+        .map(|row| row.name.0)
+        .filter(|name| !name.trim().is_empty())
 }
 
 /// Return verified account facts authorized by this profile's active grant.
@@ -423,14 +406,10 @@ pub(super) async fn publish_revocation(
 
     let mut endpoints: BTreeSet<String> = BTreeSet::new();
 
-    // The account's own service, from its signed descriptor rather than
-    // from configuration.
-    if let Some(descriptor) = super::account::descriptor(state).await {
-        endpoints.insert(
-            UcanAddress::new(descriptor.remote().as_str())
-                .endpoint()
-                .to_string(),
-        );
+    // The account's own service: the address enrollment recorded, or
+    // this deployment's own when nothing has answered yet.
+    if let Ok(remote) = super::account_state::account_remote(state).await {
+        endpoints.insert(UcanAddress::new(remote.as_str()).endpoint().to_string());
     }
 
     // And every service a space in the directory syncs through.

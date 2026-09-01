@@ -67,9 +67,21 @@ pub fn customer_did(host: &str, address: &str) -> Option<String> {
     let address = normalize_email(address);
     let (local, domain) = split_address(&address)?;
     Some(format!(
-        "did:web:{host}:{CUSTOMER_SEGMENT}:{domain}:{}",
+        "did:web:{}:{CUSTOMER_SEGMENT}:{domain}:{}",
+        encode_host(host),
         encode_local(local)
     ))
+}
+
+/// A host as a single `did:web` segment.
+///
+/// `did:web` separates path segments with `:`, so a host carrying a port
+/// has to percent-encode it — `localhost%3A8090`, per the method spec.
+/// Left raw, `did:web:localhost:8090:customer:...` reads `8090` as the
+/// first path segment, and a resolver fetches `https://localhost/8090/...`
+/// instead of the port it was meant to reach.
+pub(crate) fn encode_host(host: &str) -> String {
+    host.replace(':', "%3A")
 }
 
 /// Split a normalized address into its local part and domain at the last
@@ -131,13 +143,14 @@ pub async fn resolve<S: Store>(
     store: &S,
     did: &str,
     address: &str,
+    origin: &str,
 ) -> Result<Option<Found>, StoreError> {
     let Some(customer) = store.customer_by_email(address).await? else {
         return Ok(None);
     };
     let suspended = customer.status == CustomerStatus::Suspended;
     Ok(Some(Found {
-        document: customer_document(did, &customer, suspended),
+        document: customer_document(did, &customer, suspended, origin),
         status: status_of(customer.status),
     }))
 }

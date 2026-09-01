@@ -302,7 +302,37 @@
                 // already-active worker whose activate event happened earlier.
                 if (!priorController) {
                     if (!navigator.serviceWorker.controller) {
-                        registration.active?.postMessage({ type: "claim" });
+                        // On a genuinely FIRST install the worker is still
+                        // `installing` when register() resolves, so
+                        // `registration.active` is null and a claim sent
+                        // now goes nowhere — and activation deliberately
+                        // does not claim by itself. Ask the moment the
+                        // worker reaches `activated`, whichever slot it is
+                        // in; a claim from any earlier state is refused by
+                        // the browser. Without this, a cleared-storage
+                        // first visit sat uncontrolled forever: the shell
+                        // reached "starting…", every /api/* fetch fell
+                        // through to the asset server, and only a manual
+                        // reload — a navigation under the by-then-active
+                        // registration — unwedged it.
+                        const claimWhenActivated = (worker) => {
+                            if (!worker) return;
+                            if (worker.state === "activated") {
+                                worker.postMessage({ type: "claim" });
+                                return;
+                            }
+                            worker.addEventListener("statechange", () => {
+                                if (worker.state === "activated") {
+                                    worker.postMessage({ type: "claim" });
+                                }
+                            });
+                        };
+                        claimWhenActivated(registration.active);
+                        claimWhenActivated(registration.waiting);
+                        claimWhenActivated(registration.installing);
+                        registration.addEventListener?.("updatefound", () =>
+                            claimWhenActivated(registration.installing),
+                        );
                         await controlled;
                     }
                     navigator.serviceWorker.removeEventListener(

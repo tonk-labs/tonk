@@ -424,7 +424,12 @@ async fn it_answers_a_refusal_with_its_typed_reason(
         .issuer(Signer::from(device.clone()))
         .audience(&space.did())
         .subject(&space.did())
-        .command(vec!["archive".to_string(), "get".to_string()])
+        .command(vec![
+            "use".to_string(),
+            "get".to_string(),
+            "archive".to_string(),
+            "block".to_string(),
+        ])
         .arguments(std::collections::BTreeMap::new())
         .proofs(vec![grant.to_cid()])
         .try_build()
@@ -529,7 +534,12 @@ async fn it_cuts_off_a_holder_whose_grant_was_revoked(
                 .issuer(Signer::from(guest))
                 .audience(&space.did())
                 .subject(&space.did())
-                .command(vec!["archive".to_string(), "get".to_string()])
+                .command(vec![
+                    "use".to_string(),
+                    "get".to_string(),
+                    "archive".to_string(),
+                    "block".to_string(),
+                ])
                 .arguments(arguments)
                 .proofs(chain.proof_cids().to_vec())
                 .try_build()
@@ -645,7 +655,12 @@ async fn it_cuts_off_a_device_that_revoked_its_own_grant(
                 .issuer(Signer::from(device))
                 .audience(&root.did())
                 .subject(&root.did())
-                .command(vec!["archive".to_string(), "get".to_string()])
+                .command(vec![
+                    "use".to_string(),
+                    "get".to_string(),
+                    "archive".to_string(),
+                    "block".to_string(),
+                ])
                 .arguments(arguments)
                 .proofs(chain.proof_cids().to_vec())
                 .try_build()
@@ -771,7 +786,12 @@ async fn it_denies_a_revoked_device_at_every_service_it_reaches(
                 .issuer(Signer::from(device))
                 .audience(&root.did())
                 .subject(&root.did())
-                .command(vec!["archive".to_string(), "get".to_string()])
+                .command(vec![
+                    "use".to_string(),
+                    "get".to_string(),
+                    "archive".to_string(),
+                    "block".to_string(),
+                ])
                 .arguments(arguments)
                 .proofs(chain.proof_cids().to_vec())
                 .try_build()

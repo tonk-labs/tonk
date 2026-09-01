@@ -128,6 +128,17 @@ pub(crate) async fn request_webauthn(
     client: &crate::router::ClientId,
     request: tonk_worker_api::WebAuthnKind,
 ) -> Result<(), crate::TonkWorkerError> {
+    request_webauthn_with(client, request, None).await
+}
+
+/// [`request_webauthn`], carrying what the worker will do once the page
+/// has answered.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_webauthn_with(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    enrollment: Option<tonk_worker_api::Enrollment>,
+) -> Result<(), crate::TonkWorkerError> {
     use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -150,6 +161,7 @@ pub(crate) async fn request_webauthn(
     let message = tonk_worker_api::WebAuthnRequest {
         message_type: tonk_worker_api::WEBAUTHN.to_string(),
         request,
+        enrollment,
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
