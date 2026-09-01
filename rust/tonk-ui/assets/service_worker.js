@@ -1093,7 +1093,10 @@ self.onfetch = event => {
     retireIfSuperseded(event);
     // Answered from this glue, never the wasm worker: health must be
     // readable precisely when the worker cannot answer for itself.
-    if (path === "/api/health") {
+    if (
+        path === "/api/health" &&
+        (event.request.method === "GET" || event.request.method === "HEAD")
+    ) {
         event.respondWith(healthResponse());
         return;
     }

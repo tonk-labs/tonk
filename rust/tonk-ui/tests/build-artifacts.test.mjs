@@ -133,6 +133,18 @@ test("the final Cloudflare browser tree is stamped after guide and Storybook ove
   );
 });
 
+test("the browser harness serves stamped directory aliases from their own index", () => {
+  const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
+  const packageStart = flake.indexOf("tonk-ui-test-server =");
+  const server = flake.slice(packageStart);
+
+  assert.match(
+    server,
+    /try_files \{path\} \{path\}\/index\.html \/index\.html/,
+    "directory URLs such as /guide/ must not fall through to the root SPA document",
+  );
+});
+
 test("tonk-code source identity changes when its TypeScript configuration changes", () => {
   const root = mkdtempSync(join(tmpdir(), "tonk-code-fingerprint-"));
   try {
