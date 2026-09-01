@@ -643,16 +643,28 @@
             };
 
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
+            const INSTALL_PROGRESS_CHANNEL =
+                "tonk-sw-install-progress-v1";
 
-            navigator.serviceWorker.addEventListener("message", (event) => {
-                const message = event.data;
+            const noteInstallProgress = (message) => {
                 if (
                     message?.type === "tonk-install-progress" &&
                     message?.build === globalThis.tonkBuild
                 ) {
                     self.tonkBootLife?.();
                 }
-            });
+            };
+            navigator.serviceWorker.addEventListener("message", (event) =>
+                noteInstallProgress(event.data),
+            );
+            try {
+                const installProgress = new BroadcastChannel(
+                    INSTALL_PROGRESS_CHANNEL,
+                );
+                installProgress.addEventListener("message", (event) =>
+                    noteInstallProgress(event.data),
+                );
+            } catch {}
 
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Every caller receives this exact promise, so the
