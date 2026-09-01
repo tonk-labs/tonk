@@ -88,7 +88,10 @@
             hash = posthogCliRelease.hash;
           };
           nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
           installPhase = ''
             runHook preInstall
             install -Dm755 posthog-cli $out/bin/posthog-cli
