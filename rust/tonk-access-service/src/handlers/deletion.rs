@@ -47,6 +47,12 @@ pub async fn handle_customer(body: &[u8], env: &worker::Env) -> worker::Result<w
         match crate::deletion::delete_customer(&store, &purger, body, now).await {
             Ok(receipt) => {
                 forget_verdict(&receipt.customer, env).await;
+                // The customer-row replica goes with it; the address
+                // key is unreachable from the DID once the row is gone
+                // and rides out its own validity instead.
+                if let Some(kv) = crate::handlers::ucan::servability_kv(env) {
+                    crate::store::replica::forget(&kv, &receipt.customer).await;
+                }
                 Ok(serde_json::to_value(receipt).expect("receipt serializes"))
             }
             Err(error) => Err(error),
