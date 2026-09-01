@@ -17,6 +17,8 @@ pub struct TestEnvironment {
     /// mints its own CA, so a single `SSL_CERT_FILE` would leave
     /// concurrent runs trusting whichever one started last.
     pub ca_certificate: Option<std::path::PathBuf>,
+    /// Writable per-harness copy of the otherwise immutable service-worker script.
+    pub service_worker_script: std::path::PathBuf,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -263,6 +265,9 @@ mod native {
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
             let test_server = format!("path:{}#tonk-ui-test-server", workspace.display());
+            let service_worker_root = caddy_data.join("service-worker");
+            std::fs::create_dir_all(&service_worker_root)?;
+            let service_worker_script = service_worker_root.join("service_worker.js");
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
@@ -271,6 +276,9 @@ mod native {
                         "--",
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
+                        service_worker_root
+                            .to_str()
+                            .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
                     ])
                     // Pin Caddy's data dir so its per-run internal CA
                     // root lands at a knowable path: it rides on
@@ -389,6 +397,7 @@ mod native {
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
+                    service_worker_script,
                 },
             ))
         }

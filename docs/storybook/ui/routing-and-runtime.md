@@ -134,6 +134,30 @@ The host IO surface and route table must agree on current profile/space. A
 service-worker update or hot swap crosses an asset-version boundary and must
 not mix incompatible shell, Wasm, and guest bundles.
 
+`UI-03` uses immediate load-time alignment: every online load asks the current
+registration to update before mounting the UI. When a replacement activates,
+the update-aware document explicitly asks that successor to claim it, then
+performs one guarded reload so the mounted shell and active worker come from the
+same generation. Activation alone never claims an already-open older document;
+that page keeps its compatible controller until navigation. A failed update
+check keeps an existing active worker usable offline, and neither path clears
+IndexedDB or CacheStorage. The real-browser regressions in
+`rust/tonk-ui/src/service_worker_upgrade.rs` cover the online replacement and
+offline-return cases; full checklist execution still requires a compatible
+ChromeDriver. The real-source Node contract in
+`rust/tonk-ui/tests/service-worker-claim.test.mjs` separately pins the rollout
+boundary: activation does not claim an older page, an explicit cold-start claim
+does take control, and an update-aware page claims its activated successor
+before exactly one guarded reload.
+
+An explicit readiness rejection is a terminal boot result, not an unobserved
+stall. Before returning without an application root, the UI asks the static
+shell to show “Tonk couldn’t start. Check your connection, then reload. Your
+local data is safe.” The first terminal result wins, clears the watchdog's
+per-tab retry counter, and disables later automatic recovery. It does not
+reload, delete CacheStorage, or unregister workers. Silent boots that stop
+making progress without an error retain the bounded watchdog ladder.
+
 ### Remain in flight
 
 Boot progress, configuration fetch, service-worker control, Wasm/custom-element
@@ -250,8 +274,9 @@ avoid recording credential/passkey inputs.
   coverage before treating `/activate` as stable.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
-- Define the visible boot error/retry contract for stale service-worker assets
-  and deployment misconfiguration.
+- Run explicit readiness rejection and silent-stall recovery in a real browser;
+  the source-level watchdog regression proves the former cannot fall through
+  into automatic cache deletion or worker unregistration.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
 - Verify the inspector against a configured upstream in a real browser,

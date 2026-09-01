@@ -128,3 +128,7 @@ mod account_flow;
 /// Real-browser passkey ceremony tests.
 #[cfg(test)]
 mod identity;
+
+/// Real-browser service-worker load-time upgrade tests.
+#[cfg(test)]
+mod service_worker_upgrade;

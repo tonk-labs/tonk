@@ -467,6 +467,9 @@
             pname = "tonk-ui";
             trunkConfig = "./rust/tonk-ui/Trunk.toml";
             TONK_POSTHOG_KEY = posthogKey;
+            postFixup = ''
+              ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
+            '';
           };
 
           tonk-access-service = buildWasmCrate {
@@ -551,6 +554,24 @@
               #!${bash}/bin/bash
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
+              SERVICE_WORKER_ROOT=''${3:-}
+
+              if [ -n "$SERVICE_WORKER_ROOT" ]; then
+                  mkdir -p "$SERVICE_WORKER_ROOT"
+                  cp ${self.packages.${system}.tonk-ui}/service_worker.js \
+                      "$SERVICE_WORKER_ROOT/service_worker.js"
+                  # The package lives in the read-only Nix store and `cp`
+                  # preserves that mode. Only this per-harness fixture is
+                  # mutable: the upgrade regression rewrites its build stamp
+                  # to make the browser discover a successor worker.
+                  chmod u+w "$SERVICE_WORKER_ROOT/service_worker.js"
+                  SERVICE_WORKER_HANDLE="handle /service_worker.js {
+                      root * \"$SERVICE_WORKER_ROOT\"
+                      file_server
+                  }"
+              else
+                  SERVICE_WORKER_HANDLE=""
+              fi
 
               echo "Test server live at https://tonk.network:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
@@ -575,6 +596,7 @@
                   handle /customer/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
+                  $SERVICE_WORKER_HANDLE
                   handle {
                       root * ${self.packages.${system}.tonk-ui}
                       try_files {path} /index.html
