@@ -5871,6 +5871,19 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Entries the first result row folds together under `field` — an
+    /// open collection query returns ONE row per entity, its entries
+    /// keyed inside the field's dictionary.
+    async fn entry_count(state: &AppState, repo: &str, query: &str, field: &str) -> usize {
+        rows(state, repo, query)
+            .await
+            .first()
+            .and_then(|row| row.get(field))
+            .and_then(|value| value.as_object())
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
     /// Run a query document and return its result rows, as JSON.
     async fn rows(
         state: &AppState,
@@ -5932,7 +5945,7 @@ mod tests {
 
         let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             3,
             "the seed places three blocks"
         );
@@ -5944,7 +5957,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             4,
             "a placement adds an entry under its key"
         );
@@ -5966,7 +5979,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             3,
             "a removal retracts the entry"
         );
