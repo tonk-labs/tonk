@@ -77,10 +77,36 @@ jobs:
           set -euo pipefail
           resolve() {
             local database="$1"
+            local migrations_dir="${2:-}"
             local id
             id="$({
               nix --accept-flake-config develop .#ci --command wrangler d1 list --json
             } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+            # A preview database whose applied migration history names a
+            # file this branch no longer carries cannot migrate forward:
+            # wrangler tracks migrations by filename, so a rewritten
+            # chain means the next apply runs against a schema it does
+            # not expect ("no such column"). The database is disposable
+            # per-PR state, so recreate it and let the branch's own
+            # chain apply from scratch.
+            if [ -n "$id" ] && [ -n "$migrations_dir" ]; then
+              local applied divergent name
+              applied="$({
+                nix --accept-flake-config develop .#ci --command \
+                  wrangler d1 execute "$database" --remote --json \
+                    --command "SELECT name FROM d1_migrations"
+              } 2>/dev/null | jq -r '.[0].results[]?.name' || true)"
+              divergent=""
+              for name in $applied; do
+                [ -f "$migrations_dir/$name" ] || divergent="$name"
+              done
+              if [ -n "$divergent" ]; then
+                echo "::warning::$database applied '$divergent', which this branch does not carry; recreating the preview database" >&2
+                nix --accept-flake-config develop .#ci --command \
+                  wrangler d1 delete "$database" --skip-confirmation >&2
+                id=""
+              fi
+            fi
             if [ -z "$id" ]; then
               nix --accept-flake-config develop .#ci --command \
                 wrangler d1 create "$database" --location weur >&2
@@ -126,8 +152,8 @@ jobs:
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
-          control_id="$(resolve "$control")"
-          ingest_id="$(resolve "$ingest")"
+          control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
+          ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           cp wrangler.toml "$config"
           sed -i \
