@@ -268,7 +268,13 @@ mod web {
         let (status, body) = fetch_bytes(request).await?;
         if status != 200 {
             let detail = String::from_utf8_lossy(&body);
-            anyhow::bail!("the access service refused the custody invocation ({status}): {detail}");
+            // The gate already knows the whole situation, so the client
+            // does not re-derive it from a second request: the refusal is
+            // read into its reason here and travels as that, which is what
+            // lets a caller say "open the link in your email" instead of
+            // "we couldn't log you in".
+            return Err(anyhow::Error::new(super::CustodyDenial::parse(&detail)))
+                .with_context(|| format!("the custody request was refused ({status})"));
         }
         serde_ipld_dagcbor::from_slice(&body).context("the permit did not decode")
     }
@@ -340,12 +346,231 @@ mod web {
     }
 }
 
+/// Why the access service refused a custody request.
+///
+/// The gate's answer is structured -- `{"kind":"Declined","recourse":…,
+/// "reason":…}` -- and this is that answer as a type, so every caller
+/// above decides on a variant instead of matching the service's prose.
+/// Matching sentences made the wording load-bearing: a reworded refusal
+/// silently downgraded "open the link in your email" to "check your
+/// connection", with nothing failing to say so.
+///
+/// Travels as an `anyhow` payload, so a caller that cares downcasts and
+/// the ones that do not keep printing the message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CustodyDenial {
+    /// The account registered but nobody has opened the emailed link.
+    /// Waiting clears it: the same request succeeds once it is opened,
+    /// on this device or any other.
+    #[error("the account is awaiting email confirmation")]
+    AwaitingActivation,
+    /// The account is suspended. Waiting does not clear it.
+    #[error("the account is suspended: {0}")]
+    Suspended(String),
+    /// Nobody pays for this subject, so nothing serves it.
+    #[error("the custody space is not provisioned: {0}")]
+    NotProvisioned(String),
+    /// A refusal none of the above describe, kept whole.
+    #[error("the access service refused the custody invocation: {0}")]
+    Other(String),
+}
+
+impl CustodyDenial {
+    /// Read a refusal body into the reason it carries.
+    ///
+    /// Parsed, not matched: `recourse` says whether waiting helps and is
+    /// the only field a client may depend on, while `reason` is prose
+    /// this classifies once, here, rather than in every caller. A body
+    /// that does not parse is [`CustodyDenial::Other`] holding it whole,
+    /// so nothing is lost when the shape changes.
+    pub fn parse(body: &str) -> Self {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+            return Self::Other(body.to_owned());
+        };
+        let reason = value
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(body);
+        let retryable = value
+            .get("recourse")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|recourse| recourse == "Retry");
+        // Both halves matter. `Retry` alone also covers a suspension that
+        // lifts at a deadline, which no email confirms; the reason alone
+        // would match a permanent refusal that merely mentions activation.
+        if retryable && reason.contains("awaits email activation") {
+            return Self::AwaitingActivation;
+        }
+        if reason.contains("is suspended") {
+            return Self::Suspended(reason.to_owned());
+        }
+        if reason.contains("is not provisioned") {
+            return Self::NotProvisioned(reason.to_owned());
+        }
+        Self::Other(reason.to_owned())
+    }
+
+    /// The stable tag this refusal crosses a JS boundary as.
+    ///
+    /// The worker answers the page through `postMessage`, which carries
+    /// no Rust types, so the variant travels as this string and is read
+    /// back by [`CustodyDenial::from_code`]. Values are API: the page
+    /// branches on them.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AwaitingActivation => "awaiting-activation",
+            Self::Suspended(_) => "suspended",
+            Self::NotProvisioned(_) => "not-provisioned",
+            Self::Other(_) => "denied",
+        }
+    }
+
+    /// The variant a `code` names, for the far side of that boundary.
+    ///
+    /// `None` for anything unrecognised, which a caller reports as the
+    /// ordinary failure it cannot say more about.
+    pub fn from_code(code: &str, reason: &str) -> Option<Self> {
+        match code {
+            "awaiting-activation" => Some(Self::AwaitingActivation),
+            "suspended" => Some(Self::Suspended(reason.to_owned())),
+            "not-provisioned" => Some(Self::NotProvisioned(reason.to_owned())),
+            "denied" => Some(Self::Other(reason.to_owned())),
+            _ => None,
+        }
+    }
+}
+
+/// The denial inside an error, whatever it was wrapped in on the way up.
+///
+/// `anyhow` keeps the whole chain, so a `bail!` several frames below is
+/// still reachable after the layers above have added their own context.
+pub fn denial_of(error: &anyhow::Error) -> Option<&CustodyDenial> {
+    error.chain().find_map(|cause| cause.downcast_ref())
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web::{publish_secret, resolve_secret, submit_publish};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refusal a second device meets while the email is unconfirmed
+    /// reads as the step that clears it.
+    #[dialog_common::test]
+    fn it_reads_a_refusal_that_confirming_the_email_would_clear() {
+        assert_eq!(
+            CustodyDenial::parse(
+                r#"{"kind":"Declined","recourse":"Retry","reason":"the provider of did:key:zCustody awaits email activation"}"#
+            ),
+            CustodyDenial::AwaitingActivation
+        );
+    }
+
+    /// Refusals that waiting does NOT clear read as themselves. Reporting
+    /// one as "check your email" would send someone to a link that fixes
+    /// nothing.
+    #[dialog_common::test]
+    fn it_tells_the_other_refusals_apart() {
+        assert_eq!(
+            CustodyDenial::parse(
+                r#"{"kind":"Declined","recourse":"None","reason":"did:key:zCustody is not provisioned"}"#
+            ),
+            CustodyDenial::NotProvisioned("did:key:zCustody is not provisioned".to_owned())
+        );
+        assert_eq!(
+            CustodyDenial::parse(
+                r#"{"kind":"Declined","recourse":"Retry","reason":"the subscription for did:key:zCustody is suspended: unpaid"}"#
+            ),
+            CustodyDenial::Suspended(
+                "the subscription for did:key:zCustody is suspended: unpaid".to_owned()
+            )
+        );
+    }
+
+    /// A body that is not the gate's answer at all is kept whole rather
+    /// than guessed at: an upstream failure is not an unconfirmed email.
+    #[dialog_common::test]
+    fn it_keeps_an_unparseable_refusal_whole() {
+        assert_eq!(
+            CustodyDenial::parse("upstream is down"),
+            CustodyDenial::Other("upstream is down".to_owned())
+        );
+    }
+
+    /// A suspension is retryable when it lifts at a deadline, so
+    /// `recourse` alone cannot mean "confirm your email". Both halves are
+    /// required, which is what keeps a timed suspension from telling
+    /// someone to open a link that will not help.
+    #[dialog_common::test]
+    fn it_does_not_read_every_retryable_refusal_as_an_unconfirmed_email() {
+        assert_ne!(
+            CustodyDenial::parse(
+                r#"{"kind":"Declined","recourse":"Retry","reason":"the subscription for did:key:zCustody is suspended: unpaid"}"#
+            ),
+            CustodyDenial::AwaitingActivation
+        );
+    }
+
+    /// The variant survives the JS boundary, which carries no Rust types.
+    #[dialog_common::test]
+    fn it_carries_the_reason_across_a_string_boundary() {
+        for denial in [
+            CustodyDenial::AwaitingActivation,
+            CustodyDenial::Suspended("unpaid".to_owned()),
+            CustodyDenial::NotProvisioned("nobody pays".to_owned()),
+            CustodyDenial::Other("something else".to_owned()),
+        ] {
+            let recovered = CustodyDenial::from_code(denial.code(), &denial.to_string());
+            assert_eq!(
+                recovered.map(|value| value.code()),
+                Some(denial.code()),
+                "{denial:?} crosses as its own code"
+            );
+        }
+        assert!(
+            CustodyDenial::from_code("something-new", "").is_none(),
+            "an unrecognised code is not guessed at"
+        );
+    }
+
+    /// The whole prefix the worker sends over the bridge, round-tripped.
+    ///
+    /// The link this pins is the one nothing else covers: a refusal
+    /// raised deep in `resolve_secret` has to survive `?` through
+    /// `LoadAccount`, the wrapping the worker adds, the split back into
+    /// `(code, message)`, and the rebuild on the page. Every hop is
+    /// simple; the path through all of them is what was broken.
+    #[dialog_common::test]
+    fn it_survives_the_whole_trip_to_the_page() {
+        // As raised, several frames down.
+        let raised = anyhow::Error::new(CustodyDenial::parse(
+            r#"{"kind":"Declined","recourse":"Retry","reason":"the provider of did:key:zC awaits email activation"}"#,
+        ))
+        .context("the custody request was refused (403)")
+        .context("the custody cell did not open");
+
+        // As the worker reads it back out and puts it on the wire.
+        let found = denial_of(&raised).expect("the denial survives the wrapping");
+        let (code, message) = (found.code(), found.to_string());
+
+        // As the page rebuilds it.
+        assert_eq!(
+            CustodyDenial::from_code(code, &message),
+            Some(CustodyDenial::AwaitingActivation),
+            "the page reads back the reason the service gave"
+        );
+    }
+
+    /// The denial is reachable after the layers above have wrapped it.
+    #[dialog_common::test]
+    fn it_finds_the_denial_under_the_context_added_above_it() {
+        let error = anyhow::Error::new(CustodyDenial::AwaitingActivation)
+            .context("the custody request was refused (403)")
+            .context("the custody cell did not open");
+        assert_eq!(denial_of(&error), Some(&CustodyDenial::AwaitingActivation));
+        assert_eq!(denial_of(&anyhow::anyhow!("no denial here")), None);
+    }
     use dialog_credentials::Ed25519Signer;
     use dialog_ucan_core::promise::Promised;
 

@@ -31,6 +31,16 @@ impl AccountDisplayName {
     }
 }
 
+/// `status` URI for an account that enrolled and has gone no further.
+pub const REGISTERED: &str = "case:registered";
+/// `status` URI for an account the service serves.
+pub const ACTIVE: &str = "case:active";
+/// `status` URI for an account the service withdrew from.
+pub const SUSPENDED: &str = "case:suspended";
+/// `status` URI for a locally custodied account, held until a real one
+/// replaces it.
+pub const ONBOARDING: &str = "case:onboarding";
+
 /// The account enrolled an address with an access service, keyed by the
 /// immutable account subject.
 ///
@@ -58,16 +68,29 @@ pub struct AccountRegistered {
     pub registered_at: RegisteredAt,
     /// The address enrollment named.
     pub email: CustomerEmail,
+    /// Where this account syncs: the UCAN endpoint its spaces attach their
+    /// remotes to. Known at enrollment and unchanged by activation, so a
+    /// client can attach its remote immediately and let the gate answer —
+    /// which is what makes activation observable (403 while unconfirmed,
+    /// 200 once the emailed link is opened) without asking a status
+    /// endpoint.
+    pub provider: ProviderAddress,
 }
 
 impl AccountRegistered {
     /// Record that `account` enrolled `email` at `at`.
-    pub fn new(account: Entity, email: String, at: u64) -> Self {
+    pub fn new(account: Entity, email: String, provider: String, at: u64) -> Self {
         Self {
             this: account,
             registered_at: RegisteredAt(at),
             email: CustomerEmail(email),
+            provider: ProviderAddress(provider),
         }
+    }
+
+    /// Where this account syncs.
+    pub fn provider(&self) -> &str {
+        &self.provider.0
     }
 }
 
@@ -80,28 +103,19 @@ impl AccountRegistered {
 pub struct AccountActive {
     /// The immutable account subject.
     pub this: Entity,
-    /// When activation was observed, unix seconds.
+    /// When activation was observed, unix seconds. Its presence is the
+    /// whole signal — where the account syncs is on the registration,
+    /// since that is where it was known.
     pub activated_at: ActivatedAt,
-    /// The access service serving this account: the UCAN endpoint its
-    /// spaces attach their remotes to. Known only at activation, which is
-    /// exactly when this fact is written — so unlike a status field it is
-    /// never absent on a row that claims to be served.
-    pub provider: ProviderAddress,
 }
 
 impl AccountActive {
-    /// Record that `account` activated at `at`, served by `provider`.
-    pub fn new(account: Entity, provider: String, at: u64) -> Self {
+    /// Record that `account` activated at `at`.
+    pub fn new(account: Entity, at: u64) -> Self {
         Self {
             this: account,
             activated_at: ActivatedAt(at),
-            provider: ProviderAddress(provider),
         }
-    }
-
-    /// The provider serving this account.
-    pub fn provider(&self) -> &str {
-        &self.provider.0
     }
 }
 
@@ -278,6 +292,7 @@ mod tests {
             .assert(AccountRegistered::new(
                 account.clone(),
                 "person@example.com".into(),
+                "https://service.example/ucan/".into(),
                 100,
             ))
             .commit()
@@ -290,19 +305,24 @@ mod tests {
                 this: Term::from(account.clone()),
                 registered_at: Term::var("registered_at"),
                 email: Term::var("email"),
+                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()
             .await?;
         assert_eq!(registered.len(), 1);
         assert_eq!(registered[0].email.0, "person@example.com");
+        assert_eq!(
+            registered[0].provider(),
+            "https://service.example/ucan/",
+            "enrollment names where the account syncs"
+        );
 
         let active: Vec<AccountActive> = branch
             .query()
             .select(Query::<AccountActive> {
                 this: Term::from(account.clone()),
                 activated_at: Term::var("activated_at"),
-                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()
@@ -312,11 +332,7 @@ mod tests {
         // Activation ADDS a row; it does not overwrite the registration.
         branch
             .transaction()
-            .assert(AccountActive::new(
-                account.clone(),
-                "https://service.example/ucan/".into(),
-                200,
-            ))
+            .assert(AccountActive::new(account.clone(), 200))
             .commit()
             .perform(&operator)
             .await?;
@@ -326,13 +342,12 @@ mod tests {
             .select(Query::<AccountActive> {
                 this: Term::from(account.clone()),
                 activated_at: Term::var("activated_at"),
-                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()
             .await?;
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].provider(), "https://service.example/ucan/");
+        assert!(active[0].activated_at.0 > 0, "and when it happened");
 
         let registered: Vec<AccountRegistered> = branch
             .query()
@@ -340,6 +355,7 @@ mod tests {
                 this: Term::from(account.clone()),
                 registered_at: Term::var("registered_at"),
                 email: Term::var("email"),
+                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()
@@ -378,7 +394,6 @@ mod tests {
             .select(Query::<AccountActive> {
                 this: Term::from(account),
                 activated_at: Term::var("activated_at"),
-                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()
@@ -402,11 +417,7 @@ mod tests {
         // status slot the second write would demote the account.
         branch
             .transaction()
-            .assert(AccountActive::new(
-                account.clone(),
-                "https://service.example/ucan/".into(),
-                200,
-            ))
+            .assert(AccountActive::new(account.clone(), 200))
             .commit()
             .perform(&operator)
             .await?;
@@ -415,6 +426,7 @@ mod tests {
             .assert(AccountRegistered::new(
                 account.clone(),
                 "person@example.com".into(),
+                "https://service.example/ucan/".into(),
                 100,
             ))
             .commit()
@@ -426,7 +438,6 @@ mod tests {
             .select(Query::<AccountActive> {
                 this: Term::from(account),
                 activated_at: Term::var("activated_at"),
-                provider: Term::var("provider"),
             })
             .perform(&operator)
             .try_vec()

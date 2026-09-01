@@ -173,7 +173,19 @@ async fn mediate_pair(
                 .and_then(|e| e.as_string())
             {
                 Some(error) => {
-                    let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(&error));
+                    // An `Error`, not a bare string: the worker says WHY
+                    // the service refused in a `code` beside the message,
+                    // and a rejection that carried only the sentence left
+                    // the page matching prose to tell "confirm your email"
+                    // from "check your connection".
+                    let failure = js_sys::Error::new(&error);
+                    if let Some(code) = Reflect::get(&data, &"code".into())
+                        .ok()
+                        .and_then(|code| code.as_string())
+                    {
+                        let _ = Reflect::set(failure.as_ref(), &"code".into(), &code.into());
+                    }
+                    let _ = reject.call1(&JsValue::NULL, failure.as_ref());
                 }
                 None => {
                     let _ = resolve.call1(&JsValue::NULL, &data);

@@ -158,6 +158,34 @@ pub(crate) fn is_custody_envelope(data: &wasm_bindgen::JsValue) -> bool {
         .is_some_and(|kind| kind == "custody")
 }
 
+/// A failed custody read, as the message to show and the reason behind it.
+///
+/// The handlers below answer `Result<_, String>` because they cross a
+/// `postMessage` boundary that carries no Rust types. That string alone
+/// lost WHY the service refused, and the page was left matching prose to
+/// tell "confirm your email" from "check your connection" -- so a
+/// reworded refusal silently became the wrong instruction. The code
+/// travels beside the message and the page branches on it instead.
+///
+/// Prefixed rather than parallel-plumbed: the alternative is retyping
+/// every handler and the dispatch between them to move one tag.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn refusal(context: &str, error: &tonk_identity::Error) -> String {
+    match tonk_identity::custody::denial_of(error) {
+        Some(denial) => format!("{}\u{1f}{denial}", denial.code()),
+        None => format!("{context}: {error:#}"),
+    }
+}
+
+/// The `(code, message)` a [`refusal`] carries, for the reply.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn split_refusal(error: &str) -> (Option<&str>, &str) {
+    match error.split_once('\u{1f}') {
+        Some((code, message)) => (Some(code), message),
+        None => (None, error),
+    }
+}
+
 /// Take the page's derivation handles, do the work that needs them, and
 /// drop them.
 ///
@@ -187,11 +215,21 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
         }
         Err(error) => {
             log!("custody: {error}");
+            let (code, message) = split_refusal(&error);
             let _ = js_sys::Reflect::set(
                 &reply,
                 &JsValue::from_str("error"),
-                &JsValue::from_str(&error),
+                &JsValue::from_str(message),
             );
+            // Present only when the service said why. The page shows the
+            // step that clears it rather than guessing from the sentence.
+            if let Some(code) = code {
+                let _ = js_sys::Reflect::set(
+                    &reply,
+                    &JsValue::from_str("code"),
+                    &JsValue::from_str(code),
+                );
+            }
         }
     }
     if let Err(error) = port.post_message(&reply) {
@@ -221,7 +259,18 @@ async fn perform(
 
     match intent {
         tonk_worker_api::CustodyIntent::Enroll(enrollment) => {
-            let account = open(&custodian).await?;
+            // Reuse before minting. A browser that already sealed an
+            // account under this passkey reaches here again on the
+            // resend path, and a fresh secret would derive a DIFFERENT
+            // account root — enrolling it would overwrite the recovery
+            // everything since the first ceremony depends on. The
+            // recorded envelope is present exactly when this browser
+            // enrolled before, so its absence is what makes creation
+            // safe.
+            let account = match recorded_account(&state, &custodian).await? {
+                Some(account) => account,
+                None => open(&custodian).await?,
+            };
             enroll(&state, &custodian, &account, enrollment.email, None).await
         }
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => {
@@ -257,7 +306,7 @@ async fn add_passkey(
         .load(addition.endpoint.clone())
         .perform(&tonk_identity::account::Crypto)
         .await
-        .map_err(|error| format!("the custody cell did not open: {error:#}"))?
+        .map_err(|error| refusal("the custody cell did not open", &error))?
         .ok_or_else(|| "that passkey has published no account".to_string())?;
 
     let root = account
@@ -303,7 +352,7 @@ async fn login(
         .load(endpoint.clone())
         .perform(&tonk_identity::account::Crypto)
         .await
-        .map_err(|error| format!("the custody cell did not open: {error:#}"))?
+        .map_err(|error| refusal("the custody cell did not open", &error))?
         .ok_or_else(|| {
             "this passkey has published no account yet; create one on the browser that holds it"
                 .to_string()
@@ -373,6 +422,66 @@ async fn open(
         .map_err(|error| format!("the account did not seal under this passkey: {error:#}"))
 }
 
+/// The account this browser already sealed under `custodian`, when it
+/// did: the recorded envelope, reopened. `None` means no enrollment ever
+/// ran here, which is the one state where minting a fresh secret is
+/// safe. An envelope that is present but will not open is an error, not
+/// a `None` — falling through to creation there would enroll a second
+/// account over the recovery of the first.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn recorded_account(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<Option<tonk_identity::account::Account>, String> {
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_varsig::Principal as _;
+    use tonk_schema::prelude::DidExt as _;
+
+    let custody = custodian
+        .signer()
+        .await
+        .map_err(|error| format!("the custody signer did not derive: {error:#}"))?
+        .did();
+
+    let tonk = state.read().await;
+    let Ok(branch) = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    else {
+        // No branch yet is a fresh browser: nothing recorded.
+        return Ok(None);
+    };
+    let rows: Vec<tonk_schema::SecretMessage> = branch
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SecretMessage> {
+            this: Term::var("this"),
+            to: Term::from(tonk_schema::domain::custody::To(custody.this())),
+            message: Term::var("message"),
+            from: Term::var("from"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| format!("the recorded envelopes did not read: {error:?}"))?;
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+
+    let envelope = tonk_identity::envelope::Envelope::decode(&row.message.0)
+        .map_err(|error| format!("the recorded envelope did not decode: {error:#}"))?;
+    let account = custodian
+        .account()
+        .import(envelope)
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the recorded envelope did not open: {error:#}"))?;
+    Ok(Some(account))
+}
+
 /// Mint the custody set this account needs and register it as a
 /// customer.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -415,6 +524,7 @@ async fn enroll(
                 .credential_id()
                 .map(hex::encode)
                 .unwrap_or_default(),
+            email.as_deref(),
         )
         .await
         .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
@@ -724,6 +834,7 @@ mod tests {
                 &hex::encode(&material.sealed),
                 None,
                 "",
+                None,
             )
             .await
             .expect("the envelope records");

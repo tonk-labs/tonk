@@ -15,6 +15,12 @@ pub struct AccountSummary {
     pub email: Option<String>,
     /// Facts Tonk recorded during passkey creation, absent for legacy roots.
     pub passkey: Option<PasskeyMetadata>,
+    /// The chosen account display name, when one was ever set. Absent
+    /// for an account nobody has named — which is how a sign-up is told
+    /// apart from a sign-in to an already-named account, so the name is
+    /// asked for once per account rather than once per device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// One hosted space associated with an account deletion review.
@@ -212,6 +218,7 @@ mod tests {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".into(),
             }),
+            display_name: None,
         })
         .unwrap();
         assert_eq!(json["email"], "person@example.com");
@@ -227,6 +234,7 @@ mod tests {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".into(),
             }),
+            display_name: None,
         })
         .unwrap();
         assert!(json["email"].is_null());

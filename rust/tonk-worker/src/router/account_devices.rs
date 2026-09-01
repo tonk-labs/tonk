@@ -190,6 +190,7 @@ fn merge_summary(
     AccountSummary {
         email,
         passkey: space.or(provider),
+        display_name: None,
     }
 }
 
@@ -210,7 +211,43 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     // them was asking for a second copy of what this branch holds.
     let email = super::customer::account_registration(state).await.email;
     let passkey = super::account_state::passkey_facts(state).await;
-    Ok(merge_summary(email, passkey, None))
+    let mut summary = merge_summary(email, passkey, None);
+    summary.display_name = account_display_name(state).await;
+    Ok(summary)
+}
+
+/// The chosen account display name, straight from the fact — `None` when
+/// nobody has named the account yet. Distinct from the roster's
+/// display name, which falls back to an auto-generated petname and so
+/// cannot say whether a person ever chose one.
+async fn account_display_name(state: &TonkState) -> Option<String> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+
+    let account = super::identity::root_did(state).await.ok()?;
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+        .ok()?;
+    let names: Vec<AccountDisplayName> = branch
+        .handle()
+        .query()
+        .select(Query::<AccountDisplayName> {
+            this: Term::from(account.this()),
+            name: Term::var("name"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names
+        .into_iter()
+        .next()
+        .map(|row| row.name.0)
+        .filter(|name| !name.trim().is_empty())
 }
 
 /// Return verified account facts authorized by this profile's active grant.

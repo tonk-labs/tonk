@@ -9,6 +9,13 @@
 //! Devices act through a subject-open `root → device` UCAN delegation;
 //! day-to-day operation never touches the root key.
 
+/// The error every fallible call here answers with.
+///
+/// Re-exported so a caller can name it -- and reach the
+/// [`custody::CustodyDenial`] inside one -- without taking `anyhow` as a
+/// dependency of its own just to spell the type.
+pub type Error = anyhow::Error;
+
 pub mod account;
 pub mod ceremony;
 pub mod clearance;

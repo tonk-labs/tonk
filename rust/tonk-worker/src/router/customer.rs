@@ -237,34 +237,92 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
     }
 }
 
-/// POST `/api/customer/activated` → record the receipt the activation
-/// page received.
+/// Runs the `account/resend-activation` command: sign the self-subjected
+/// `/customer/resend` invocation and post it.
 ///
-/// Activation happens on a page that posts the emailed invocation
-/// straight to the service's `/ucan/` endpoint, so the receipt — and
-/// with it the provider address the service names — lands somewhere the
-/// worker never sees. Without this the fact is written only when
-/// something later calls the status probe, which leaves a just-activated
-/// account creating local-only spaces because nothing recorded who
-/// serves it.
-///
-/// Takes the receipt rather than re-deriving anything: the service
-/// already said who it is, and this is where that answer is kept.
-#[wasm_compat]
-pub async fn activated(
-    State(state): State<AppState>,
-    Json(receipt): Json<Receipt>,
-) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
-    let email = load_customer(&state)
-        .await?
-        .map(|record| record.email)
-        .unwrap_or_default();
-    record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref()).await?;
-    retain_ledger(&state, &receipt).await;
-    // Anything held back while the account was unserved can run now.
-    drain_pending(&state).await;
-    Ok(Json(()))
+/// No ceremony and no custody material — the enrollment's rows stand at
+/// the service, and re-enrolling to get a mail re-runs a passkey prompt
+/// the person waiting on their inbox never asked for. Outcome is the
+/// mail itself; failures are logged, and the rate limit means a silent
+/// round is the ordinary answer to an impatient second press.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct ResendActivationHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl ResendActivationHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::ResendActivation::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_resend(facts: &crate::reactor::EntityFacts) -> bool {
+    use crate::reactor::Decode as _;
+    facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| tonk_schema::command::ResendActivation::decode(entity, facts))
+        .is_some()
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ResendActivationHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        decode_resend(facts)
+    }
+
+    fn run(
+        &self,
+        _facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        let env = env.clone();
+        Box::pin(async move {
+            let state = env.state().read().await;
+            let account = match super::identity::root_did(&state).await {
+                Ok(account) => account,
+                Err(error) => {
+                    log!("resend-activation: no account root: {error}");
+                    return;
+                }
+            };
+            let device = state.profile.signer().signer().clone();
+            let body = match tonk_identity::request::build_resend_invocation(device, &account).await
+            {
+                Ok(body) => body,
+                Err(error) => {
+                    log!("resend-activation: invocation did not build: {error:#}");
+                    return;
+                }
+            };
+            let origin = match service_origin() {
+                Ok(origin) => origin,
+                Err(error) => {
+                    log!("resend-activation: no service origin: {error}");
+                    return;
+                }
+            };
+            let endpoint = match ucan_endpoint(&origin) {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    log!("resend-activation: {error}");
+                    return;
+                }
+            };
+            if let Err(error) = post_cbor(&endpoint, &body).await {
+                log!("resend-activation: the service refused: {error}");
+            }
+        })
+    }
 }
 
 /// GET `/api/customer` → the account's registration state: the service's
@@ -434,7 +492,15 @@ pub async fn queue_custody(
     // No passkey facts on this path: the queue route carries a cell that
     // could not be published, not a ceremony's creation metadata. The
     // ceremony records its own row where it has both.
-    record_custody_cell(&state, &request.custody, &request.sealed_hex, None, "").await?;
+    record_custody_cell(
+        &state,
+        &request.custody,
+        &request.sealed_hex,
+        None,
+        "",
+        None,
+    )
+    .await?;
     let work = custody_pending_batch(&request);
     if !work.is_empty() {
         // Provision and publish are one durable ordered batch. Replaying this
@@ -454,6 +520,10 @@ pub(crate) async fn record_custody_cell(
     sealed_hex: &str,
     passkey: Option<tonk_worker_api::PasskeyMetadata>,
     credential_id: &str,
+    // What the ceremony named the credential: the address, where one was
+    // given. A passkey manager lists the entry under this, so it is what a
+    // person recognises their own passkey by.
+    name: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
     let custody: dialog_varsig::Did = custody
         .parse()
@@ -477,12 +547,17 @@ pub(crate) async fn record_custody_cell(
     // ran `credentials.create()` has the label, and only this call knows
     // which passkey it belongs to.
     if let Some(passkey) = passkey {
-        transaction = transaction.assert(tonk_schema::RecoveryPasskey::new(
+        let row = tonk_schema::RecoveryPasskey::new(
             &custody,
             credential_id,
             passkey.created_at,
             passkey.created_on,
-        ));
+        );
+        let row = match name.filter(|name| !name.trim().is_empty()) {
+            Some(name) => row.named(name, name),
+            None => row,
+        };
+        transaction = transaction.assert(row);
     }
     transaction
         .commit()
@@ -780,18 +855,73 @@ pub(crate) enum Registration {
     Suspended,
 }
 
+/// Record that this account is served, because the gate said so.
+///
+/// The remote is attached from enrollment and the provisioning gate
+/// refuses an unconfirmed customer, so a sync that succeeds IS the
+/// activation — no status endpoint is asked, and no emailed link has to
+/// be opened on THIS device for it to learn.
+///
+/// Only an account still reading `registered` is watched. Activation is a
+/// one-way transition, so once the fact is there nothing is waiting on it
+/// and there is nothing left to observe: this returns before touching the
+/// database. That is what keeps the sweep from re-asserting a
+/// cardinality-one row on every heartbeat for the life of the account,
+/// each one a transaction, a branch head and a push to record something
+/// that did not change.
+///
+/// This is also why only the device holding the account remote writes it.
+/// The others have no sync to learn from and do not guess: they wait on
+/// the fact arriving, or on their own custody read clearing.
+///
+/// Best-effort — a device is served whether or not the fact records it,
+/// and failing the sweep over a bookkeeping write would be worse than the
+/// missing row.
+pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
+    use tonk_schema::{AccountActive, prelude::DidExt as _};
+
+    let Ok(account) = super::identity::root_did(state).await else {
+        return;
+    };
+    // Registered and not yet active is the only state with a transition
+    // to observe.
+    let facts = account_registration(state).await;
+    if facts.activated || facts.email.is_none() {
+        return;
+    }
+    let at = Timestamp::now().to_unix();
+    if let Err(error) = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(AccountActive::new(account.this(), at))
+        .commit()
+        .perform(&state.operator)
+        .await
+    {
+        log!("account activation not recorded: {error}");
+    }
+}
+
 /// Read how far this account got through registering.
 ///
 /// Three independent facts answer it directly: suspension wins, then
-/// activation, then registration alone. No status string to interpret, and
-/// no "active but no address" case — activation carries the provider, so a
-/// row that says served always has somewhere to serve from.
+/// activation, then registration alone. No status string to interpret.
+/// The provider rides the REGISTRATION fact — it is known at enrollment —
+/// so its presence says where the account will sync, not that anything
+/// serves it yet: only the activation fact says that. Reading the
+/// provider alone as served reported every freshly-enrolled account as
+/// active, which wired remotes to a gate that refuses them and made the
+/// awaiting state unreachable.
 pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registration {
     let facts = account_registration(state).await;
     if facts.suspended {
         return Registration::Suspended;
     }
-    if let Some(provider) = facts.provider {
+    if facts.activated
+        && let Some(provider) = facts.provider
+    {
         return Registration::Served { provider };
     }
     match facts.email {
@@ -805,8 +935,10 @@ pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registrati
 pub(crate) struct AccountRegistrationFacts {
     /// The address enrollment named, when the account registered.
     pub email: Option<String>,
-    /// The provider serving the account, when it activated.
+    /// Where the account syncs, named at enrollment.
     pub provider: Option<String>,
+    /// Whether activation has been observed.
+    pub activated: bool,
     /// Whether the service withdrew.
     pub suspended: bool,
 }
@@ -840,13 +972,17 @@ pub(crate) async fn account_registration(
             this: Term::from(this.clone()),
             registered_at: Term::var("registered_at"),
             email: Term::var("email"),
+            provider: Term::var("provider"),
         })
         .perform(&state.operator)
         .try_vec()
         .await
     {
         let rows: Vec<AccountRegistered> = rows;
-        facts.email = rows.into_iter().next().map(|row| row.email.0);
+        if let Some(row) = rows.into_iter().next() {
+            facts.email = Some(row.email.0);
+            facts.provider = Some(row.provider.0).filter(|address| !address.is_empty());
+        }
     }
     if let Ok(rows) = branch
         .handle()
@@ -854,18 +990,13 @@ pub(crate) async fn account_registration(
         .select(Query::<AccountActive> {
             this: Term::from(this.clone()),
             activated_at: Term::var("activated_at"),
-            provider: Term::var("provider"),
         })
         .perform(&state.operator)
         .try_vec()
         .await
     {
         let rows: Vec<AccountActive> = rows;
-        facts.provider = rows
-            .into_iter()
-            .next()
-            .map(|row| row.provider.0)
-            .filter(|address| !address.is_empty());
+        facts.activated = !rows.is_empty();
     }
     if let Ok(rows) = branch
         .handle()
@@ -918,14 +1049,16 @@ pub(crate) async fn record_customer_status(
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .transaction()
-        .assert(AccountRegistered::new(account.this(), email.to_owned(), at));
-    // Activation carries the provider, so it is written only once the
-    // service has named one: a row claiming to be served with no address
-    // to serve from would be the state this shape exists to prevent.
-    if status == CustomerStatus::Active
-        && let Some(provider) = provider
-    {
-        transaction = transaction.assert(AccountActive::new(account.this(), provider, at));
+        .assert(AccountRegistered::new(
+            account.this(),
+            email.to_owned(),
+            provider.unwrap_or_default(),
+            at,
+        ));
+    // Activation is a timestamp and nothing else: where the account syncs
+    // is on the registration, since that is where it was known.
+    if status == CustomerStatus::Active {
+        transaction = transaction.assert(AccountActive::new(account.this(), at));
     }
     if status == CustomerStatus::Suspended {
         transaction = transaction.assert(AccountSuspended::new(account.this(), String::new(), at));

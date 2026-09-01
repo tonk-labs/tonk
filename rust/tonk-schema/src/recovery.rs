@@ -4,7 +4,7 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 
-use crate::domain::recovery::{CreatedAt, CreatedOn, CredentialId};
+use crate::domain::recovery::{CreatedAt, CreatedOn, CredentialId, DisplayName, Name};
 use crate::prelude::*;
 
 /// A passkey that can recover this account, keyed on the custody DID its
@@ -40,6 +40,12 @@ pub struct RecoveryPasskey {
     pub created_at: CreatedAt,
     /// Browser and operating-system label where creation ran.
     pub created_on: CreatedOn,
+    /// The WebAuthn `user.name`, when the ceremony was given one. Absent
+    /// for a credential created without an address, which the ceremony
+    /// names with an opaque random string instead.
+    pub name: Option<Name>,
+    /// The WebAuthn `user.displayName`, when one was given.
+    pub display_name: Option<DisplayName>,
 }
 
 impl RecoveryPasskey {
@@ -55,7 +61,16 @@ impl RecoveryPasskey {
             credential_id: CredentialId(credential_id.into()),
             created_at: CreatedAt(created_at),
             created_on: CreatedOn(created_on.into()),
+            name: None,
+            display_name: None,
         }
+    }
+
+    /// The same passkey, recording what a passkey manager lists it under.
+    pub fn named(mut self, name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        self.name = Some(Name(name.into()));
+        self.display_name = Some(DisplayName(display_name.into()));
+        self
     }
 
     /// Unix seconds, in the integer form the wire DTO carries.
@@ -107,6 +122,8 @@ mod tests {
                 credential_id: Term::var("credential_id"),
                 created_at: Term::var("created_at"),
                 created_on: Term::var("created_on"),
+                name: Term::var("name"),
+                display_name: Term::var("display_name"),
             })
             .perform(&operator)
             .try_vec()
@@ -156,6 +173,8 @@ mod tests {
                 credential_id: Term::var("credential_id"),
                 created_at: Term::var("created_at"),
                 created_on: Term::var("created_on"),
+                name: Term::var("name"),
+                display_name: Term::var("display_name"),
             })
             .perform(&operator)
             .try_vec()
@@ -238,6 +257,8 @@ mod tests {
                 credential_id: Term::var("credential_id"),
                 created_at: Term::var("created_at"),
                 created_on: Term::var("created_on"),
+                name: Term::var("name"),
+                display_name: Term::var("display_name"),
             })
             .perform(&operator)
             .try_vec()

@@ -152,6 +152,19 @@ pub mod recovery {
     #[domain("xyz.tonk.recovery")]
     #[cardinality(one)]
     pub struct CreatedOn(pub String);
+
+    /// The WebAuthn `user.name` this credential was created with — what a
+    /// passkey manager lists the entry under.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct Name(pub String);
+
+    /// The WebAuthn `user.displayName`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct DisplayName(pub String);
 }
 
 pub mod device {
@@ -714,6 +727,20 @@ pub mod command {
         pub struct Sealed(pub String);
     }
 
+    /// Attributes of the `account/resend-activation` command, dispatched
+    /// by the account panel's resend button while activation is pending.
+    pub mod resend {
+        use super::Attribute;
+
+        /// The click's timestamp — distinguishes one press from the
+        /// next so the transient re-fires, and gives this command an
+        /// attribute no other command carries: derived attribute
+        /// `xyz.tonk.resend-activation/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.resend-activation")]
+        pub struct At(pub u64);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -888,6 +915,32 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct SuspendedAt(pub u64);
+
+    /// The derived status label: `case:onboarding`, `case:registered`,
+    /// `case:active`, or `case:suspended`. Never written directly — the
+    /// deductive rules in `profile.yaml` conclude it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// When this device minted its onboarding account, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingMintedAt(pub u64);
+
+    /// The local keypair holding the onboarding account.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingCustodian(pub Entity);
+
+    /// When a real account took over from the onboarding one, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingRetiredAt(pub u64);
 
     /// Why the service withdrew, in words a person can act on.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]

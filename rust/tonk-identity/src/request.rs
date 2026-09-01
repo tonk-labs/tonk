@@ -294,6 +294,39 @@ pub async fn build_provider_remove_invocation(
     .await
 }
 
+/// Build the `/customer/resend` invocation: ask the service to mail the
+/// activation link again.
+///
+/// Self-subjected and proofless, because the caller cannot sign as the
+/// account they have not activated yet: the device signs as itself,
+/// about the account named in the arguments. The service verifies only
+/// that the signature is the issuer's own — the command is deliberately
+/// unauthenticated beyond that, guarded by its rate limit and by the
+/// mail going only to the address already on the row.
+pub async fn build_resend_invocation(device: impl Into<Signer>, account: &Did) -> Result<Vec<u8>> {
+    use dialog_varsig::Principal as _;
+
+    let device: Signer = device.into();
+    let device_did = device.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(device)
+        .audience(&device_did)
+        .subject(&device_did)
+        .command(vec!["customer".to_string(), "resend".to_string()])
+        .arguments(BTreeMap::from([(
+            "account".to_string(),
+            Promised::String(account.to_string()),
+        )]))
+        .proofs(Vec::<ipld_core::cid::Cid>::new())
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .context("failed to sign the resend invocation")?;
+    InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .context("failed to serialize the resend invocation")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

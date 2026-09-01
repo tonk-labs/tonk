@@ -659,6 +659,14 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     // account above is present but unusable until the access branch adopts
     // it. Runs on every sweep, and is a no-op once the upstream is set.
     adopt_account_access(tonk).await;
+    // The pull above went through, which is the gate saying this account
+    // is served. Recorded on THIS arm too, not only on first hydration:
+    // the browser that enrolled already holds the trusted marker, so it
+    // takes this path on every sweep and never took the hydrate one. Its
+    // "awaiting confirmation" row waited on a fact nothing on that device
+    // would ever write, so opening the emailed link left the screen that
+    // sent you there unchanged.
+    super::customer::record_activation(tonk).await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
     if seed_sealed_inbox(tonk).await {
@@ -761,6 +769,15 @@ pub(crate) async fn ensure_account_state_swept(
                         log!("published the account sealed-inbox address in the account space");
                     }
                     describe_own_device(tonk).await;
+                    // Hydrating IS activation, observed rather than asked
+                    // for: the account remote is attached from enrollment
+                    // and the gate refuses an unconfirmed customer, so a
+                    // pull that succeeds is the service saying the emailed
+                    // link was opened. Recording it here is what replaced
+                    // polling a status endpoint — and it works on a device
+                    // that never opened the link, since it learns from the
+                    // sync it was already doing.
+                    super::customer::record_activation(tonk).await;
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
@@ -873,6 +890,8 @@ async fn read_passkeys(
                 credential_id: Term::var("credential_id"),
                 created_at: Term::var("created_at"),
                 created_on: Term::var("created_on"),
+                name: Term::var("name"),
+                display_name: Term::var("display_name"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -1895,6 +1914,311 @@ mod tests {
         }
     }
 
+    /// Activation writes the fact the bar subscribes to.
+    ///
+    /// `account/active` resolves only when both `activated-at` and
+    /// `provider-address` are present, and the provider comes from the
+    /// service's receipt. A device that confirmed elsewhere learns it from
+    /// the status probe rather than from the activation page, so this pins
+    /// the write itself rather than either caller.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_records_the_activation_the_bar_subscribes_to() {
+        use tonk_account::customer::CustomerStatus;
+        use tonk_schema::{AccountActive, AccountRegistered};
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+
+        // Enrollment: registered, and nothing more. The service names no
+        // provider until the emailed link is opened.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Registered,
+            "person@example.com",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let registered: Vec<AccountRegistered> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.this()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+                provider: Term::var("provider"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(registered.len(), 1, "enrollment records the registration");
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(active.is_empty(), "an enrolled account is not yet served");
+
+        // Activation, as the receipt reports it.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Active,
+            "person@example.com",
+            Some("http://localhost:8080/ucan/"),
+        )
+        .await
+        .unwrap();
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1, "activation records the served fact");
+        assert!(active[0].activated_at.0 > 0, "carrying when it happened");
+
+        // Where the account syncs rides on the REGISTRATION: it is known at
+        // enrollment and unchanged by activation, so a client attaches its
+        // remote immediately and learns it was activated from the gate
+        // answering 200 instead of 403 — not from asking a status endpoint.
+        let registered: Vec<AccountRegistered> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountRegistered> {
+                this: Term::from(account.this()),
+                registered_at: Term::var("registered_at"),
+                email: Term::var("email"),
+                provider: Term::var("provider"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            registered[0].provider(),
+            "http://localhost:8080/ucan/",
+            "the registration names where to sync"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// A sweep of an ALREADY-READY account records the activation.
+    ///
+    /// The browser that enrolled holds the trusted marker from the moment
+    /// it created the account, so every later sweep takes the ready arm
+    /// and never the first-hydration one. Activation was recorded on the
+    /// hydrate arm alone, so that browser's "awaiting confirmation" row
+    /// waited on a fact nothing there would ever write: opening the
+    /// emailed link changed every other device and left the screen that
+    /// sent you there saying "awaiting confirmation" forever.
+    ///
+    /// The pull inside the sweep is the signal. It goes through only
+    /// because the gate served this account, so a sweep that completes IS
+    /// the 403 -> 200 transition, and that is what writes `activated-at`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_records_the_activation_when_a_ready_account_syncs() {
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        // The first sweep hydrates. The second is the one under test: the
+        // marker matches now, which is the enrolling browser's every sweep.
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+
+        // Enrolled and not yet confirmed: the only state with a
+        // transition to observe, and the state the browser that just
+        // signed up is actually in.
+        super::super::customer::record_customer_status(
+            &state,
+            tonk_account::customer::CustomerStatus::Registered,
+            "person@example.com",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Clear what the hydrating sweep recorded, so what is asserted
+        // below can only have come from the ready arm.
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let recorded: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        for row in recorded {
+            branch
+                .handle()
+                .transaction()
+                .retract(row)
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
+        let cleared: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(cleared.is_empty(), "nothing says served going in");
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready, "the marker matches");
+        swept.unwrap();
+
+        let active: Vec<AccountActive> = branch
+            .handle()
+            .query()
+            .select(Query::<AccountActive> {
+                this: Term::from(account.this()),
+                activated_at: Term::var("activated_at"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            active.len(),
+            1,
+            "a served sync records the fact the confirm row waits on"
+        );
+        assert!(active[0].activated_at.0 > 0, "carrying when it happened");
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// An account that is already active is not written again.
+    ///
+    /// The sweep runs on a heartbeat, so an unconditional assert would
+    /// commit a cardinality-one row it already holds every time round --
+    /// a transaction, a branch head and a push, forever, to record
+    /// something that cannot change again. Activation is one-way: once
+    /// the fact is there nobody is waiting on it, so there is nothing
+    /// left to watch for.
+    ///
+    /// Pinned on the timestamp, which is what a rewrite would move.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_stops_watching_once_the_account_is_active() {
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+
+        // Active, and recorded a while ago. The provider is the fixture's
+        // own service: naming another address would repoint the upstream
+        // and the sweeps below would fail on the network rather than on
+        // what they are here to observe.
+        super::super::customer::record_customer_status(
+            &state,
+            tonk_account::customer::CustomerStatus::Active,
+            "person@example.com",
+            Some(&remote),
+        )
+        .await
+        .unwrap();
+
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let read = || async {
+            let rows: Vec<AccountActive> = branch
+                .handle()
+                .query()
+                .select(Query::<AccountActive> {
+                    this: Term::from(account.this()),
+                    activated_at: Term::var("activated_at"),
+                })
+                .perform(&state.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            rows
+        };
+        let before = read().await;
+        assert_eq!(before.len(), 1, "active going in");
+
+        // Two more heartbeats.
+        for _ in 0..2 {
+            let (status, swept) = ensure_account_state_swept(&state).await;
+            assert_eq!(status, AccountStateStatus::Ready);
+            swept.unwrap();
+        }
+
+        let after = read().await;
+        assert_eq!(after.len(), 1, "still one row");
+        assert_eq!(
+            after[0].activated_at.0, before[0].activated_at.0,
+            "the sweep left the activation alone rather than restamping it"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
     /// A passkey's own row lands on the custody DID its envelope is
     /// addressed to, and is reachable from the account through that
     /// envelope's sender.
@@ -1932,6 +2256,7 @@ mod tests {
                 created_on: "Chrome on macOS".to_string(),
             }),
             "credential-one",
+            Some("person@example.com"),
         )
         .await
         .unwrap();
@@ -1958,6 +2283,7 @@ mod tests {
                 created_on: "Safari on iOS".to_string(),
             }),
             "credential-two",
+            Some("person@example.com"),
         )
         .await
         .unwrap();
