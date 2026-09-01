@@ -41,9 +41,10 @@ jobs:
     name: 'End-to-end account tests'
     needs: ['lints']
     runs-on: 'ubuntu-latest'
-    # A cold Nix build can take ~20 minutes before the ~30-minute suite starts.
-    # Keep a bound for wedged WebDriver or network calls while leaving headroom
-    # for runner variance.
+    # A cold build of the tests-e2e archive can take ~20 minutes before the
+    # suite starts; a warm cachix hit cuts that to a download. Keep a bound
+    # for wedged WebDriver or network calls while leaving headroom for
+    # runner variance.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

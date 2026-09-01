@@ -260,7 +260,14 @@ mod native {
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
             let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
             std::fs::create_dir_all(&caddy_data)?;
-            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            // The runner's variable wins over the compile-time constant:
+            // a binary out of the `tests-e2e` archive was compiled in the
+            // Nix sandbox, whose source path no longer exists, while
+            // `cargo nextest run --workspace-remap` points the runtime
+            // variable at the live checkout.
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+            let workspace = std::path::Path::new(&manifest_dir)
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;

@@ -6,3 +6,13 @@ serial-integration = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'test(/^.*integration_tests::/)'
 test-group = 'serial-integration'
+
+# The profile `test:e2e` runs the tonk-ui real-browser suite under, from
+# the prebuilt `tests-e2e` archive.
+[profile.e2e]
+# Every test stands up its own access service + Caddy + Chrome; two at
+# once fight over the machine, so the whole suite stays serialized.
+test-threads = 1
+# Report every failure: a fail-fast pass over an hour-long suite hides
+# everything after the first broken test.
+fail-fast = false
