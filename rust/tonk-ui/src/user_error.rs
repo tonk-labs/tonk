@@ -289,6 +289,7 @@ pub(crate) fn api_problem(action: AccountAction, error: &TonkUiError) -> Account
 
 /// Classify a dispatched destructive mutation. A missing or malformed reply
 /// cannot prove that the service did not commit the mutation.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub(crate) fn mutation_api_problem(action: AccountAction, error: &TonkUiError) -> AccountProblem {
     let problem = api_problem(action, error);
     if matches!(

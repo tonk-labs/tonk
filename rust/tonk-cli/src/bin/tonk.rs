@@ -1868,7 +1868,7 @@ async fn link_account(
             ExitCode::Success
         }
         Err(error) => {
-            if let Some(observer) = observer.as_deref_mut() {
+            if let Some(observer) = observer {
                 let classified = error
                     .downcast_ref::<tonk_cli::callback::CallbackFailure>()
                     .map(|callback| {
@@ -2238,7 +2238,7 @@ async fn account_op(
                     ExitCode::Success
                 }
                 Err(error) => {
-                    if let Some(observer) = observer.as_deref_mut() {
+                    if let Some(observer) = observer {
                         let stage = observer.last_stage();
                         let outcome = if stage == tonk_analytics::account::Stage::RemoteCommit {
                             tonk_analytics::account::AccountOutcome::unknown_commit(
