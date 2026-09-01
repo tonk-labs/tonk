@@ -86,6 +86,7 @@ features = [
     "css",
     "CustomEvent",
     "Document",
+    "DomRect",
     "Element",
     "Event",
     "HtmlButtonElement",
