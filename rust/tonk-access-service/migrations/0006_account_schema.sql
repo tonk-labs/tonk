@@ -7,12 +7,14 @@
 --
 -- Both tables change constraints (the primary key renames, `provider`
 -- becomes NOT NULL), which SQLite cannot ALTER in place, so each is
--- rebuilt and the rows carried over. Foreign keys are deferred to the
--- commit: `consumer` still references the old `customer` while the
--- tables swap, and by commit both sides of every reference are the new
--- tables.
-PRAGMA defer_foreign_keys = true;
-
+-- rebuilt and the rows carried over. The order matters: `consumer`
+-- references `customer`, so dropping `customer` while `consumer` rows
+-- still point at it counts every row as a foreign-key violation — a
+-- violation that survives to the end of the batch and makes D1 roll the
+-- whole migration back, even though `consumer` itself is dropped later.
+-- Instead the rows `consumer` contributes are parked in a keyless seed
+-- table first, the child is dropped before its parent, and
+-- `subscription` is built once the new `customer` it references exists.
 CREATE TABLE customer_next (
   account           TEXT PRIMARY KEY, -- the account DID this subscribes
   email             TEXT NOT NULL,
@@ -39,6 +41,34 @@ SELECT did, email, verified, terms_version, terms_accepted_at, status,
        stripe_customer
   FROM customer;
 
+-- `provider` was nullable and meant "not servable"; the new shape has
+-- no unservable subscription, so those rows do not carry over. Neither
+-- do rows whose deletion already finished — the new model records a
+-- finished deletion by the row's absence.
+CREATE TABLE subscription_seed (
+  consumer        TEXT,
+  provider        TEXT,
+  registered_at      INTEGER,
+  archived_at     INTEGER,
+  suspend_code    TEXT,
+  suspend_message TEXT,
+  suspend_until_at   INTEGER,
+  size            INTEGER,
+  measured_at     INTEGER,
+  deleted_at      INTEGER,
+  kind            TEXT
+);
+
+INSERT INTO subscription_seed (consumer, provider, registered_at, archived_at,
+                               suspend_code, suspend_message, suspend_until_at,
+                               size, measured_at, deleted_at, kind)
+SELECT did, provider, registered, archived_at, suspend_code,
+       suspend_message, suspend_until, size, measured_at, deleted_at, kind
+  FROM consumer
+ WHERE provider IS NOT NULL
+   AND deletion_state != 'deleted';
+
+DROP TABLE consumer;
 DROP TABLE customer;
 ALTER TABLE customer_next RENAME TO customer;
 CREATE UNIQUE INDEX customer_email ON customer(email);
@@ -58,18 +88,12 @@ CREATE TABLE subscription (
   expires_at      INTEGER            -- when this subscription lapses; null never expires
 );
 
--- `provider` was nullable and meant "not servable"; the new shape has
--- no unservable subscription, so those rows do not carry over. Neither
--- do rows whose deletion already finished — the new model records a
--- finished deletion by the row's absence.
 INSERT INTO subscription (consumer, provider, registered_at, archived_at,
                           suspend_code, suspend_message, suspend_until_at,
                           size, measured_at, deleted_at, kind)
-SELECT did, provider, registered, archived_at, suspend_code,
-       suspend_message, suspend_until, size, measured_at, deleted_at, kind
-  FROM consumer
- WHERE provider IS NOT NULL
-   AND deletion_state != 'deleted';
+SELECT consumer, provider, registered_at, archived_at, suspend_code,
+       suspend_message, suspend_until_at, size, measured_at, deleted_at, kind
+  FROM subscription_seed;
 
-DROP TABLE consumer;
+DROP TABLE subscription_seed;
 CREATE INDEX subscription_provider ON subscription(provider);
