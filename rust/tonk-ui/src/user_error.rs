@@ -1,14 +1,28 @@
 //! User-facing recovery messages for account actions.
 
 use crate::error::TonkUiError;
+use tonk_analytics::account::{AccountOutcome, FailureKind, HttpStatusClass, ServiceCode};
+
+/// One account failure projected into safe presentation and analytics fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AccountProblem {
+    /// Caller-facing recovery copy.
+    pub message: String,
+    /// Closed terminal outcome.
+    pub outcome: AccountOutcome,
+}
+
+impl AccountProblem {
+    fn new(message: String, outcome: AccountOutcome) -> Self {
+        Self { message, outcome }
+    }
+}
 
 /// The account action whose failure needs to be explained.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AccountAction {
+    OpenRegistration,
     LoadAccount,
     LoadRegistration,
     CheckEmail,
@@ -32,10 +46,29 @@ pub(crate) enum AccountAction {
     SaveInitialDisplayName,
     CopyInvite,
     FinishPreviousAction,
+    SettleAccount,
+    LoadAccountSpaces,
+    PullAccountSpace,
+    OpenAccountDeletion,
+    OpenSpaceDeletion,
+    SyncAccount,
 }
 
 /// Present an internal/browser diagnostic at an account action boundary.
 pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
+    problem_from_diagnostic(action, detail).message
+}
+
+/// Compatibility diagnostics have no typed evidence. Their prose may improve
+/// recovery copy, but analytics always sees `unknown`.
+pub(crate) fn problem_from_diagnostic(action: AccountAction, detail: &str) -> AccountProblem {
+    AccountProblem::new(
+        diagnostic_message(action, detail),
+        AccountOutcome::retryable(FailureKind::Unknown),
+    )
+}
+
+fn diagnostic_message(action: AccountAction, detail: &str) -> String {
     let original = detail.trim();
     if original
         == "Your account is ready, but this browser couldn't finish signing in. Log in to continue."
@@ -122,47 +155,175 @@ pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
 /// a dismissed prompt, an unsupported authenticator -- falls through to
 /// the ordinary diagnostic.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[allow(dead_code)]
 pub(crate) fn ceremony(
     action: AccountAction,
     error: &crate::custody_relay::CeremonyError,
 ) -> String {
+    ceremony_problem(action, error).message
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn ceremony_problem(
+    action: AccountAction,
+    error: &crate::custody_relay::CeremonyError,
+) -> AccountProblem {
     use tonk_identity::custody::CustodyDenial;
+    use tonk_identity::passkey::CeremonyRefusal;
 
     match &error.denial {
-        Some(CustodyDenial::AwaitingActivation) => {
-            "Open the confirmation link in your email to finish signing in. You can leave this page open."
-                .to_owned()
+        Some(CustodyDenial::AwaitingActivation) => AccountProblem::new(
+            "Open the confirmation link in your email to finish signing in. You can leave this page open.".to_owned(),
+            AccountOutcome::blocked(FailureKind::AwaitingActivation),
+        ),
+        Some(CustodyDenial::Suspended(_)) => AccountProblem::new(
+            "This account is suspended, so it cannot be used on this device. Contact support to restore it.".to_owned(),
+            AccountOutcome::blocked(FailureKind::Suspended),
+        ),
+        Some(CustodyDenial::NotProvisioned(_)) => AccountProblem::new(
+            "This account is not set up for syncing yet. Finish creating it on the browser that holds its passkey, then try again.".to_owned(),
+            AccountOutcome::blocked(FailureKind::NotProvisioned),
+        ),
+        Some(CustodyDenial::Other(_)) => AccountProblem::new(
+            diagnostic_message(action, &error.message),
+            AccountOutcome::terminal_failure(FailureKind::AccessDenied),
+        ),
+        None => {
+            let outcome = match error.refusal.unwrap_or(CeremonyRefusal::Other) {
+                CeremonyRefusal::NotAllowed => AccountOutcome::cancelled(),
+                CeremonyRefusal::InvalidState => AccountOutcome::terminal_failure(FailureKind::CredentialExists),
+                CeremonyRefusal::NotSupported => AccountOutcome::terminal_failure(FailureKind::PasskeyUnsupported),
+                CeremonyRefusal::Security => AccountOutcome::terminal_failure(FailureKind::SecurityContext),
+                CeremonyRefusal::NoPrf => AccountOutcome::terminal_failure(FailureKind::PrfUnsupported),
+                CeremonyRefusal::Other => AccountOutcome::retryable(FailureKind::Unknown),
+            };
+            AccountProblem::new(diagnostic_message(action, &error.message), outcome)
         }
-        Some(CustodyDenial::Suspended(_)) => {
-            "This account is suspended, so it cannot be used on this device. Contact support to restore it."
-                .to_owned()
-        }
-        Some(CustodyDenial::NotProvisioned(_)) => {
-            "This account is not set up for syncing yet. Finish creating it on the browser that holds its passkey, then try again."
-                .to_owned()
-        }
-        Some(CustodyDenial::Other(reason)) => diagnostic(action, reason.as_str()),
-        None => diagnostic(action, &error.message),
     }
 }
 
 /// Present a typed local API error at an account action boundary.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub(crate) fn api(action: AccountAction, error: &TonkUiError) -> String {
-    match error {
-        TonkUiError::Account(message) => diagnostic(action, message),
-        TonkUiError::Sync { message, .. } => message.clone(),
-        TonkUiError::ApiError(_) | TonkUiError::Analyze { .. } => {
-            diagnostic(action, &error.to_string())
+    api_problem(action, error).message
+}
+
+pub(crate) fn api_problem(action: AccountAction, error: &TonkUiError) -> AccountProblem {
+    use crate::error::AccountTransportKind;
+    let message = match error {
+        TonkUiError::AccountApi {
+            service_code: Some(code),
+            ..
+        } if action == AccountAction::ChangeDisplayName
+            && ServiceCode::from_wire(code) == ServiceCode::AccountStateUnavailable =>
+        {
+            "Please verify your email using the verification link we sent before changing your display name."
+                .to_owned()
         }
+        TonkUiError::Account(message) => diagnostic_message(action, message),
+        TonkUiError::Sync { message, .. } => message.clone(),
+        TonkUiError::AccountApi { diagnostic, .. } => diagnostic_message(action, diagnostic),
+        TonkUiError::ApiError(_) | TonkUiError::Analyze { .. } => {
+            diagnostic_message(action, &error.to_string())
+        }
+    };
+    match error {
+        TonkUiError::AccountApi {
+            transport_kind,
+            status,
+            service_code,
+            ..
+        } => {
+            let kind = match (transport_kind, status) {
+                (AccountTransportKind::Network, _) => FailureKind::Network,
+                (AccountTransportKind::Decode, None | Some(200..=299)) => {
+                    FailureKind::InvalidResponse
+                }
+                (AccountTransportKind::Local, _) => FailureKind::LocalState,
+                (AccountTransportKind::Http | AccountTransportKind::Decode, Some(404)) => {
+                    FailureKind::NotFound
+                }
+                (AccountTransportKind::Http | AccountTransportKind::Decode, Some(409)) => {
+                    FailureKind::Conflict
+                }
+                (AccountTransportKind::Http | AccountTransportKind::Decode, Some(429)) => {
+                    FailureKind::RateLimited
+                }
+                (AccountTransportKind::Http | AccountTransportKind::Decode, Some(401 | 403)) => {
+                    FailureKind::AccessDenied
+                }
+                (AccountTransportKind::Http | AccountTransportKind::Decode, Some(500..=599)) => {
+                    FailureKind::ServiceUnavailable
+                }
+                _ => FailureKind::Unknown,
+            };
+            let mut outcome = if matches!(
+                kind,
+                FailureKind::Network | FailureKind::RateLimited | FailureKind::ServiceUnavailable
+            ) {
+                AccountOutcome::retryable(kind)
+            } else {
+                AccountOutcome::terminal_failure(kind)
+            };
+            if let Some(status) = status {
+                if (400..500).contains(status) {
+                    outcome = outcome.with_http_status_class(HttpStatusClass::ClientError);
+                }
+                if (500..600).contains(status) {
+                    outcome = outcome.with_http_status_class(HttpStatusClass::ServerError);
+                }
+            }
+            if let Some(code) = service_code {
+                outcome = outcome.with_service_code(ServiceCode::from_wire(code));
+            }
+            AccountProblem::new(message, outcome)
+        }
+        TonkUiError::Sync { code, .. } => AccountProblem::new(
+            message,
+            AccountOutcome::terminal_failure(FailureKind::AccessDenied)
+                .with_service_code(ServiceCode::from_wire(code)),
+        ),
+        _ => AccountProblem::new(message, AccountOutcome::retryable(FailureKind::Unknown)),
     }
+}
+
+/// Classify a dispatched destructive mutation. A missing or malformed reply
+/// cannot prove that the service did not commit the mutation.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+pub(crate) fn mutation_api_problem(action: AccountAction, error: &TonkUiError) -> AccountProblem {
+    let problem = api_problem(action, error);
+    if matches!(
+        action,
+        AccountAction::DeleteAccount | AccountAction::DeleteSpace | AccountAction::RevokeDevice
+    ) && matches!(
+        error,
+        TonkUiError::AccountApi {
+            transport_kind: crate::error::AccountTransportKind::Network,
+            ..
+        } | TonkUiError::AccountApi {
+            transport_kind: crate::error::AccountTransportKind::Decode,
+            status: None | Some(200..=299) | Some(500..=599),
+            ..
+        } | TonkUiError::AccountApi {
+            transport_kind: crate::error::AccountTransportKind::Http,
+            status: None | Some(500..=599),
+            ..
+        }
+    ) {
+        let kind = problem
+            .outcome
+            .failure_kind()
+            .unwrap_or(FailureKind::Unknown);
+        return AccountProblem::new(problem.message, AccountOutcome::unknown_commit(kind));
+    }
+    problem
 }
 
 fn fallback(action: AccountAction) -> &'static str {
     match action {
+        AccountAction::OpenRegistration => {
+            "We couldn't open account options. Close settings and try again."
+        }
         AccountAction::LoadAccount => {
             "We couldn't load your account settings. Check your connection and reload the page."
         }
@@ -232,12 +393,28 @@ fn fallback(action: AccountAction) -> &'static str {
         AccountAction::FinishPreviousAction => {
             "You're signed in, but we couldn't finish what you started. Return to the previous page and try again."
         }
+        AccountAction::SettleAccount | AccountAction::SyncAccount => {
+            "We couldn't finish syncing your account. Check your connection and try again."
+        }
+        AccountAction::LoadAccountSpaces => {
+            "We couldn't load your account spaces. Check your connection and try again."
+        }
+        AccountAction::PullAccountSpace => {
+            "We couldn't pull this account space. Check your connection and try again."
+        }
+        AccountAction::OpenAccountDeletion => {
+            "We couldn't open account deletion. Reload settings and try again."
+        }
+        AccountAction::OpenSpaceDeletion => {
+            "We couldn't open space deletion. Reload settings and try again."
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::AccountTransportKind;
 
     #[test]
     fn it_turns_passkey_diagnostics_into_specific_recovery_steps() {
@@ -336,6 +513,117 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn it_classifies_typed_account_boundaries_without_leaking_diagnostics() {
+        let cases = [
+            (AccountTransportKind::Network, None, FailureKind::Network),
+            (
+                AccountTransportKind::Decode,
+                Some(200),
+                FailureKind::InvalidResponse,
+            ),
+            (AccountTransportKind::Local, None, FailureKind::LocalState),
+            (AccountTransportKind::Http, Some(404), FailureKind::NotFound),
+            (AccountTransportKind::Http, Some(409), FailureKind::Conflict),
+            (
+                AccountTransportKind::Http,
+                Some(429),
+                FailureKind::RateLimited,
+            ),
+            (
+                AccountTransportKind::Http,
+                Some(503),
+                FailureKind::ServiceUnavailable,
+            ),
+        ];
+        for (transport_kind, status, expected) in cases {
+            let error = TonkUiError::AccountApi {
+                transport_kind,
+                status,
+                service_code: Some("upstream_timeout".to_owned()),
+                diagnostic: "person@example.com did:key:zSensitive response body secret".to_owned(),
+            };
+            let problem = api_problem(AccountAction::LoadAccount, &error);
+            assert_eq!(problem.outcome.failure_kind(), Some(expected));
+            assert!(!problem.message.contains("person@example.com"));
+            assert!(!problem.message.contains("did:key"));
+            assert!(!problem.message.contains("response body"));
+        }
+    }
+
+    #[test]
+    fn destructive_mutations_distinguish_unknown_commit_from_proved_rejection() {
+        for transport_kind in [AccountTransportKind::Network, AccountTransportKind::Decode] {
+            let error = TonkUiError::AccountApi {
+                transport_kind,
+                status: (transport_kind == AccountTransportKind::Decode).then_some(200),
+                service_code: None,
+                diagnostic: "person@example.com response was lost after dispatch".to_owned(),
+            };
+            let problem = mutation_api_problem(AccountAction::DeleteAccount, &error);
+            assert_eq!(
+                problem.outcome.result(),
+                tonk_analytics::account::AccountResult::UnknownCommit
+            );
+            assert!(!problem.message.contains("person@example.com"));
+        }
+
+        let rejected = TonkUiError::AccountApi {
+            transport_kind: AccountTransportKind::Http,
+            status: Some(409),
+            service_code: Some("customer_active".to_owned()),
+            diagnostic: "server proved the deletion did not commit".to_owned(),
+        };
+        let problem = mutation_api_problem(AccountAction::DeleteAccount, &rejected);
+        assert_eq!(
+            problem.outcome.result(),
+            tonk_analytics::account::AccountResult::TerminalFailure
+        );
+        assert_eq!(problem.outcome.failure_kind(), Some(FailureKind::Conflict));
+
+        let unreadable_server_response = TonkUiError::AccountApi {
+            transport_kind: AccountTransportKind::Decode,
+            status: Some(503),
+            service_code: None,
+            diagnostic: "server rejected the mutation with an unreadable body".to_owned(),
+        };
+        let problem =
+            mutation_api_problem(AccountAction::DeleteAccount, &unreadable_server_response);
+        assert_eq!(
+            problem.outcome.result(),
+            tonk_analytics::account::AccountResult::UnknownCommit
+        );
+
+        let server_failure = TonkUiError::AccountApi {
+            transport_kind: AccountTransportKind::Http,
+            status: Some(503),
+            service_code: Some("upstream_unavailable".to_owned()),
+            diagnostic: "service failed after accepting the mutation".to_owned(),
+        };
+        let problem = mutation_api_problem(AccountAction::RevokeDevice, &server_failure);
+        assert_eq!(
+            problem.outcome.result(),
+            tonk_analytics::account::AccountResult::UnknownCommit
+        );
+    }
+
+    #[test]
+    fn unavailable_display_name_keeps_the_activation_recovery_copy() {
+        let error = TonkUiError::AccountApi {
+            transport_kind: AccountTransportKind::Http,
+            status: Some(503),
+            service_code: Some("account_state_unavailable".to_owned()),
+            diagnostic: "raw upstream response".to_owned(),
+        };
+        let problem = api_problem(AccountAction::ChangeDisplayName, &error);
+        assert!(problem.message.contains("verify your email"));
+        assert!(!problem.message.contains("upstream"));
+        assert_eq!(
+            problem.outcome.failure_kind(),
+            Some(FailureKind::ServiceUnavailable)
+        );
     }
 
     #[test]

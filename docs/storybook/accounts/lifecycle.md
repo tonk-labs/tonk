@@ -294,8 +294,13 @@ submit/cancel must match pointer behavior. CLI JSON state and exit codes must be
 stable and diagnostics must stay on stderr.
 
 **Privacy and telemetry.** Account email, passkey material, callbacks, UCANs,
-and argument values must not enter telemetry. Approval links contain authority
-context and should not be logged beyond what the user explicitly sees.
+and argument values must not enter telemetry. The browser and CLI emit the same
+closed `account_event` journey vocabulary, but own separate random attempt IDs;
+the callback protocol carries no analytics identifier. Cancellation, activation
+waits, unknown commits, and degraded CLI success remain distinct outcomes.
+Approval links contain authority context and are never logged or captured.
+Access-service failures use content-free aggregate Worker logs with no profile
+identity or stable join key to PostHog.
 
 ## Edge cases
 

@@ -13,6 +13,7 @@
 
 use sha2_0_10::{Digest, Sha256};
 
+pub mod account;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -21,6 +22,8 @@ pub mod web;
 /// Event names shared by every Tonk surface. Keep dashboards coherent:
 /// never capture a string literal, always one of these.
 pub mod event {
+    /// Typed account journey lifecycle shared by web and CLI.
+    pub const ACCOUNT: &str = "account_event";
     /// One CLI invocation: command, subcommand, duration, outcome.
     pub const CLI_COMMAND_RUN: &str = "cli_command_run";
     /// The web shell finished booting (service worker controlling).

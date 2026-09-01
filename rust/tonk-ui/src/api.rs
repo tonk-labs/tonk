@@ -8,6 +8,7 @@ use tonk_worker_api::{
     SaveRootRequest, SyncResponse, SyncStatusResponse,
 };
 
+use crate::error::AccountTransportKind;
 use crate::error::TonkUiError;
 
 /// Mirrors the worker's error envelope so we can decode
@@ -33,6 +34,110 @@ where
     T: std::fmt::Display,
 {
     TonkUiError::ApiError(format!("{error}"))
+}
+
+fn account_boundary_error(
+    transport_kind: AccountTransportKind,
+    status: Option<u16>,
+    service_code: Option<String>,
+    diagnostic: impl Into<String>,
+) -> TonkUiError {
+    TonkUiError::AccountApi {
+        transport_kind,
+        status,
+        service_code,
+        diagnostic: diagnostic.into(),
+    }
+}
+
+async fn send_account(
+    request: reqwest::RequestBuilder,
+    method: &'static str,
+    path: &'static str,
+) -> Result<reqwest::Response, TonkUiError> {
+    request.send().await.map_err(|error| {
+        account_boundary_error(
+            AccountTransportKind::Network,
+            None,
+            None,
+            format!("{method} {path} did not receive a response: {error}"),
+        )
+    })
+}
+
+async fn decode_account<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    method: &'static str,
+    path: &'static str,
+) -> Result<T, TonkUiError> {
+    let status = response.status();
+    let text = response.text().await.map_err(|error| {
+        account_boundary_error(
+            AccountTransportKind::Decode,
+            Some(status.as_u16()),
+            None,
+            format!("{method} {path} response body was unreadable: {error}"),
+        )
+    })?;
+    if status.is_success() {
+        return serde_json::from_str(&text).map_err(|error| {
+            account_boundary_error(
+                AccountTransportKind::Decode,
+                Some(status.as_u16()),
+                None,
+                format!("{method} {path} response did not decode: {error}"),
+            )
+        });
+    }
+    let service_code = serde_json::from_str::<ErrorBody>(&text)
+        .ok()
+        .and_then(|body| body.error.code.or(Some(body.error.kind)))
+        .map(|code| {
+            serde_json::to_value(tonk_analytics::account::ServiceCode::from_wire(&code))
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_owned())
+        });
+    Err(account_boundary_error(
+        AccountTransportKind::Http,
+        Some(status.as_u16()),
+        service_code,
+        format!("{method} {path} returned {status}: {text}"),
+    ))
+}
+
+async fn finish_account(
+    response: reqwest::Response,
+    method: &'static str,
+    path: &'static str,
+) -> Result<(), TonkUiError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let text = response.text().await.map_err(|error| {
+        account_boundary_error(
+            AccountTransportKind::Decode,
+            Some(status.as_u16()),
+            None,
+            format!("{method} {path} response body was unreadable: {error}"),
+        )
+    })?;
+    let service_code = serde_json::from_str::<ErrorBody>(&text)
+        .ok()
+        .and_then(|body| body.error.code.or(Some(body.error.kind)))
+        .map(|code| {
+            serde_json::to_value(tonk_analytics::account::ServiceCode::from_wire(&code))
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_owned())
+        });
+    Err(account_boundary_error(
+        AccountTransportKind::Http,
+        Some(status.as_u16()),
+        service_code,
+        format!("{method} {path} returned {status}: {text}"),
+    ))
 }
 
 /// Returns the page origin (`http://host:port`). Used by API
@@ -655,23 +760,25 @@ pub async fn kick_sync() -> Result<(), TonkUiError> {
 /// answer joined with the locally recorded enrollment.
 pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/customer", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    response.json().await.map_err(into_api_error)
+    let response = reqwest::Client::new().get(format!("{}/api/customer", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/customer").await?,
+        "GET",
+        "/api/customer",
+    )
+    .await
 }
 
 /// Return the current profile's persisted account-link state.
 pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/account", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    response.json().await.map_err(into_api_error)
+    let request = reqwest::Client::new().get(format!("{}/api/account", origin()));
+    decode_account(
+        send_account(request, "GET", "/api/account").await?,
+        "GET",
+        "/api/account",
+    )
+    .await
 }
 
 /// Persist a verified account-root delegation in the local profile.
@@ -693,57 +800,37 @@ pub async fn save_account_link(
             delegation_hex,
             remote,
             initialize_name,
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/attach returned {status}: {text}"
-        )))
-    }
+        });
+    decode_account(
+        send_account(response, "POST", "/api/account/attach").await?,
+        "POST",
+        "/api/account/attach",
+    )
+    .await
 }
 
 /// List the devices registered under the linked account.
 pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/account/devices", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "GET /api/account/devices returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().get(format!("{}/api/account/devices", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/account/devices").await?,
+        "GET",
+        "/api/account/devices",
+    )
+    .await
 }
 
 /// Load verified account and passkey facts for the linked account.
 pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/account/summary", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "GET /api/account/summary returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().get(format!("{}/api/account/summary", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/account/summary").await?,
+        "GET",
+        "/api/account/summary",
+    )
+    .await
 }
 
 /// Commit the authoritative display name for the active account/profile.
@@ -753,33 +840,15 @@ pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError>
         .post(format!("{}/api/account/display-name", origin()))
         .json(&tonk_worker_api::AccountDisplayNameRequest {
             name: name.to_owned(),
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response
-            .json::<tonk_worker_api::AccountDisplayNameResponse>()
-            .await
-            .map(|response| response.name)
-            .map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(display_name_error(status, &text))
-    }
-}
-
-fn display_name_error(status: reqwest::StatusCode, text: &str) -> TonkUiError {
-    match serde_json::from_str::<ErrorBody>(text) {
-        Ok(body) if body.error.kind == "account_state_unavailable" => TonkUiError::Account(
-            "Please verify your email using the verification link we sent before changing your display name."
-                .to_owned(),
-        ),
-        _ => TonkUiError::ApiError(format!(
-            "POST /api/account/display-name returned {status}: {text}"
-        )),
-    }
+        });
+    let response = send_account(response, "POST", "/api/account/display-name").await?;
+    decode_account::<tonk_worker_api::AccountDisplayNameResponse>(
+        response,
+        "POST",
+        "/api/account/display-name",
+    )
+    .await
+    .map(|response| response.name)
 }
 
 /// Register a freshly authorized device in the account service's
@@ -795,39 +864,26 @@ pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), T
         .json(&serde_json::json!({
             "custody": custody,
             "consentHex": consent_hex,
-        }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/custody/provision returned {status}: {text}"
-        )))
-    }
+        }));
+    finish_account(
+        send_account(response, "POST", "/api/custody/provision").await?,
+        "POST",
+        "/api/custody/provision",
+    )
+    .await
 }
 
 /// The work queued until the account confirms its email, so the page
 /// can run the parts only it can sign.
 pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/customer/pending", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "GET /api/customer/pending returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().get(format!("{}/api/customer/pending", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/customer/pending").await?,
+        "GET",
+        "/api/customer/pending",
+    )
+    .await
 }
 
 /// Record the complete custody handoff. The worker queues provisioning before
@@ -846,19 +902,13 @@ pub async fn queue_custody_publish(
             "consentHex": consent_hex,
             "sealedHex": sealed_hex,
             "invocationHex": invocation_hex,
-        }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/custody/queue returned {status}: {text}"
-        )))
-    }
+        }));
+    finish_account(
+        send_account(response, "POST", "/api/custody/queue").await?,
+        "POST",
+        "/api/custody/queue",
+    )
+    .await
 }
 
 /// Register a device with the account service through the worker, so a
@@ -875,19 +925,13 @@ pub async fn register_account_device(
             "did": did,
             "name": name,
             "delegationHex": delegation_hex,
-        }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/devices/register returned {status}: {text}"
-        )))
-    }
+        }));
+    decode_account(
+        send_account(response, "POST", "/api/account/devices/register").await?,
+        "POST",
+        "/api/account/devices/register",
+    )
+    .await
 }
 
 /// Revoke one of the account's devices and return the canonical publication
@@ -899,38 +943,25 @@ pub async fn revoke_account_device(
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/devices/revoke", origin()))
-        .json(&RevokeDeviceRequest { did })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/devices/revoke returned {status}: {text}"
-        )))
-    }
+        .json(&RevokeDeviceRequest { did });
+    decode_account(
+        send_account(response, "POST", "/api/account/devices/revoke").await?,
+        "POST",
+        "/api/account/devices/revoke",
+    )
+    .await
 }
 
 /// List every profile signed in (or local) on this browser.
 pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/profiles", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "GET /api/profiles returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().get(format!("{}/api/profiles", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/profiles").await?,
+        "GET",
+        "/api/profiles",
+    )
+    .await
 }
 
 /// Swap the worker onto another roster profile. The caller reloads the
@@ -939,19 +970,13 @@ pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkU
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/profiles/activate", origin()))
-        .json(&ActivateProfileRequest { profile })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/profiles/activate returned {status}: {text}"
-        )))
-    }
+        .json(&ActivateProfileRequest { profile });
+    decode_account(
+        send_account(response, "POST", "/api/profiles/activate").await?,
+        "POST",
+        "/api/profiles/activate",
+    )
+    .await
 }
 
 /// Rotate onto a fresh profile — the landing pad the account ceremony then
@@ -959,58 +984,37 @@ pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkU
 /// opening the account choice must remain reversible navigation.
 pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profiles/add", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/profiles/add returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().post(format!("{}/api/profiles/add", origin()));
+    decode_account(
+        send_account(response, "POST", "/api/profiles/add").await?,
+        "POST",
+        "/api/profiles/add",
+    )
+    .await
 }
 
 /// Sign out on this device while preserving its local profile and spaces.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .delete(format!("{}/api/account", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "DELETE /api/account returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().delete(format!("{}/api/account", origin()));
+    decode_account(
+        send_account(response, "DELETE", "/api/account").await?,
+        "DELETE",
+        "/api/account",
+    )
+    .await
 }
 
 /// Load the exact, service-authoritative destructive scope for review.
 pub async fn account_deletion_plan() -> Result<AccountDeletionPlan, TonkUiError> {
     tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/account/deletion/plan", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "GET /api/account/deletion/plan returned {status}: {text}"
-        )))
-    }
+    let response = reqwest::Client::new().get(format!("{}/api/account/deletion/plan", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/account/deletion/plan").await?,
+        "GET",
+        "/api/account/deletion/plan",
+    )
+    .await
 }
 
 /// Execute the root-signed destructive plan in service-safe order.
@@ -1020,19 +1024,13 @@ pub async fn delete_account(
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/delete", origin()))
-        .json(request)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/delete returned {status}: {text}"
-        )))
-    }
+        .json(request);
+    decode_account(
+        send_account(response, "POST", "/api/account/delete").await?,
+        "POST",
+        "/api/account/delete",
+    )
+    .await
 }
 
 /// Permanently delete one owned hosted space without deleting the account.
@@ -1042,38 +1040,13 @@ pub async fn delete_owned_space(
     tonk_host::ready::wait().await;
     let response = reqwest::Client::new()
         .post(format!("{}/api/account/spaces/delete", origin()))
-        .json(request)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/account/spaces/delete returned {status}: {text}"
-        )))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_explains_email_verification_for_an_unavailable_account_name() {
-        let error = display_name_error(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":{"kind":"account_state_unavailable","message":"Finish or retry account setup at /account before changing the linked account name"}}"#,
-        );
-        let message = error.to_string();
-
-        assert!(message.contains("verification link"));
-        assert!(message.contains("verify your email"));
-        assert!(!message.contains("503 Service Unavailable"));
-        assert!(!message.contains("account_state_unavailable"));
-    }
+        .json(request);
+    decode_account(
+        send_account(response, "POST", "/api/account/spaces/delete").await?,
+        "POST",
+        "/api/account/spaces/delete",
+    )
+    .await
 }
 
 #[cfg(test)]

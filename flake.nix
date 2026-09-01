@@ -56,6 +56,53 @@
         # the latest release
         wrangler = wrangler-flake.packages.${system}.wrangler;
 
+        # The official PostHog CLI moves faster than nixpkgs. Pin its release
+        # archives directly so `posthog-cli login` and the API client are
+        # reproducible on every system this flake supports.
+        posthogCliVersion = "0.16.0";
+        posthogCliRelease =
+          {
+            x86_64-linux = {
+              target = "x86_64-unknown-linux-gnu";
+              hash = "sha256-9ucLvHdq8B6UxLEy7BDDtlljY/UBrR+pSx/qgjNlg1w=";
+            };
+            aarch64-linux = {
+              target = "aarch64-unknown-linux-gnu";
+              hash = "sha256-zgSh26cn4Ty7IZ1Ua/yKO2JGrAk2Lmywu4VTJ03Sjgg=";
+            };
+            x86_64-darwin = {
+              target = "x86_64-apple-darwin";
+              hash = "sha256-lfG8QsSq+ywwMUkQEeUMsUbo5cKCnIr6K3obsQrKa1k=";
+            };
+            aarch64-darwin = {
+              target = "aarch64-apple-darwin";
+              hash = "sha256-J4rAW5COg4jXbvPjnEcipYN7Rc0mXEmgVURj36DqVnI=";
+            };
+          }
+          .${system};
+        posthogCli = pkgs.stdenvNoCC.mkDerivation {
+          pname = "posthog-cli";
+          version = posthogCliVersion;
+          src = pkgs.fetchurl {
+            url = "https://github.com/PostHog/posthog/releases/download/posthog-cli%2Fv${posthogCliVersion}/posthog-cli-${posthogCliRelease.target}.tar.gz";
+            hash = posthogCliRelease.hash;
+          };
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 posthog-cli $out/bin/posthog-cli
+            mkdir -p $out/lib
+            cp -R lib/. $out/lib/
+            install -Dm644 LICENSE $out/share/licenses/posthog-cli/LICENSE
+            runHook postInstall
+          '';
+          dontStrip = true;
+        };
+
         chromedriverDarwin = nixpkgs-chromedriver.legacyPackages.${system}.chromedriver;
 
         # Common build inputs for all dev shells
@@ -141,6 +188,8 @@
           # for every crate derivation, so a release tool in there would
           # change 34 hashes and force a cold cache rebuild.
           pkgs.cargo-release
+          pkgs.nodejs
+          posthogCli
           wrangler
           rustToolchain
           wasm-bindgen-cli
