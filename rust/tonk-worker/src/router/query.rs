@@ -147,35 +147,16 @@ async fn query_on_branch<'a>(
     };
 
     if want_stream {
-        // While a NEWER worker is waiting, refuse to open a long-lived
+        // Once this worker starts retiring, refuse to open a long-lived
         // stream: an SSE response is a fetch event that never settles, and
         // `skipWaiting` waits for in-flight events — one reopened stream
         // would wedge the update forever (the `updatefound` release runs
         // once, and every tab's reconnect would re-pin this worker). Serve
-        // the current snapshot as a single frame and END the stream; the
-        // consumer's clean-close reconnect lands on the NEW worker after
-        // `controllerchange`.
-        if update_pending() {
-            let wire: Vec<Conclusion> = branch
-                .query(query)
-                .perform(&tonk.operator)
-                .await
-                .map_err(reactor_to_error)?;
-            let payload = serde_json::to_vec(&wire).unwrap_or_default();
-            let mut framed = Vec::with_capacity(payload.len() + 48);
-            framed.extend_from_slice(b"data: ");
-            framed.extend_from_slice(&payload);
-            framed.extend_from_slice(b"\n\n");
-            // Signal that this drop is INTENTIONAL: the consumer should
-            // hold its reconnect for the controller change (long fallback
-            // only) instead of dialing the outgoing worker on a timer.
-            framed.extend_from_slice(b"data: {\"control\":\"update-pending\"}\n\n");
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/event-stream")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .body(Body::from(framed))
-                .expect("response builder failed"));
+        // A live `waiting` check closes the race before the Rust retirement
+        // hook runs; the worker-owned latch keeps the refusal terminal after
+        // the successor activates and `registration.waiting` becomes empty.
+        if update_pending() || tonk.is_retiring() {
+            return Ok(retry_later());
         }
 
         let mut subscribe = branch.subscribe(query.clone());
@@ -229,6 +210,17 @@ async fn query_on_branch<'a>(
         };
         Ok(Json(wire).into_response())
     }
+}
+
+/// Tell a query consumer to hold its reconnect for `controllerchange` rather
+/// than handing it a response body that can pin this worker again.
+fn retry_later() -> Response {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::RETRY_AFTER, "5")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"control":"update-pending"}"#))
+        .expect("response builder failed")
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {

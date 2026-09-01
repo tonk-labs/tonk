@@ -133,6 +133,8 @@ function withGlobals({ fetchImpl, registration } = {}) {
  * Load the shipped SW with a chosen build id + wasm hash and export the
  * named internals. Keeps each test's setup to one call.
  */
+let loadSerial = 0;
+
 async function loadWith({
   buildId = "testbuild",
   wasmHash = "0000000000000000",
@@ -156,7 +158,9 @@ async function loadWith({
       /^import init, \{ activate \} from "\.\/worker\.js";$/m,
       `const init = async () => {}; const activate = ${activateSource};`,
     );
-  const withExports = body + `\nexport { ${exports.join(", ")} };\n`;
+  const withExports =
+    body +
+    `\n// isolated test module ${loadSerial++}\nexport { ${exports.join(", ")} };\n`;
   return import(
     "data:text/javascript;base64," + Buffer.from(withExports).toString("base64")
   );
@@ -1327,11 +1331,11 @@ describe("immutable generation caches", () => {
 
   test("an evicted shell fails closed instead of loading a new generation under the old controller", async () => {
     for (const waiting of [null, {}]) {
-      let fetches = 0;
+      const fetches = [];
       withGlobals({
         registration: { waiting, installing: null, addEventListener() {} },
-        fetchImpl: async () => {
-          fetches += 1;
+        fetchImpl: async (input) => {
+          fetches.push(new URL(typeof input === "string" ? input : input.url).pathname);
           return new Response("LIVE SHELL", { status: 200 });
         },
       });
@@ -1345,7 +1349,11 @@ describe("immutable generation caches", () => {
 
       assert.equal(response.status, 503);
       assert.match(await response.text(), /retained Tonk version.*reload/i);
-      assert.equal(fetches, 0);
+      assert.equal(
+        fetches.filter((path) => path === "/").length,
+        0,
+        "the navigation must not accept the live stable-name shell",
+      );
       assert.equal(
         caches.caches.has(mod.SHELL_CACHE),
         false,
@@ -1444,6 +1452,25 @@ describe("periodic revocation check", () => {
     await Promise.all(pending);
 
     assert.equal(probes, 1, "the interval gate collapses a burst to one probe");
+  });
+
+  test("a navigation forces a fresh check inside the periodic interval", async () => {
+    let probes = 0;
+    withGlobals({
+      fetchImpl: async () => {
+        probes += 1;
+        return new Response(JSON.stringify({ revoked: [] }), { status: 200 });
+      },
+    });
+    const mod = await loadWith({ exports: ["maybeCheckKillSwitch"] });
+    const pending = [];
+    const event = { waitUntil: (promise) => pending.push(promise) };
+
+    mod.maybeCheckKillSwitch(event);
+    mod.maybeCheckKillSwitch(event, true);
+    await Promise.all(pending);
+
+    assert.equal(probes, 2, "an explicit navigation bypasses the interval gate");
   });
 });
 

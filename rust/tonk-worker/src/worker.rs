@@ -2,7 +2,10 @@
 //!
 //! This module defines all JavaScript-visible bindings for the Tonk service worker.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{
     LspHub,
@@ -13,7 +16,7 @@ use crate::{
 use axum::{
     Router,
     body::Body,
-    http::{HeaderValue, header::HeaderName},
+    http::{HeaderValue, Method, StatusCode, header::HeaderName},
 };
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::Storage;
@@ -27,6 +30,14 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
+
+/// Request headers an opaque-origin caller is allowed to send.
+///
+/// A sandboxed guest has the serialized origin `null`, so any non-simple
+/// header triggers a browser preflight even when the target URL is Tonk's own
+/// origin. Keep this list in lockstep with every request-side header consumed
+/// by the worker routes and with the trusted context stamped by the portal.
+const ALLOWED_REQUEST_HEADERS: &str = "content-type, if-none-match, accept, x-tonk-site, x-tonk-path, x-tonk-hash, x-tonk-build, x-tonk-blob-name, x-tonk-lsp-client";
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -214,11 +225,19 @@ async fn handle_via_router(
     // aren't serialized behind one global lock. Holding the lock across
     // `.call().await` would queue every request behind the slowest one (e.g. a
     // network-bound `sync/status`).
-    let mut router = router.lock().await.clone();
-    let mut response = router
-        .call(request)
-        .await
-        .expect_throw("Failed to handle API request");
+    let mut response = if let Some(response) = preflight_response(&method) {
+        // Axum has no route-specific OPTIONS handlers. A browser preflight
+        // must succeed before the real opaque-origin request can reach those
+        // routes, so answer it at the common worker boundary where the CORS
+        // policy is applied.
+        response
+    } else {
+        let mut router = router.lock().await.clone();
+        router
+            .call(request)
+            .await
+            .expect_throw("Failed to handle API request")
+    };
 
     let headers = response.headers_mut();
 
@@ -228,6 +247,33 @@ async fn handle_via_router(
         headers.insert(HeaderName::from_static("x-tonk-client-id"), value);
     }
 
+    apply_cors_headers(headers);
+
+    let status = response.status();
+    match Response::try_from(ResponseConversion::new(method.clone(), response)) {
+        Ok(response) => Ok(JsValue::from(response)),
+        Err(_) => {
+            log!(
+                "response conversion failed: method={} path={} status={}",
+                method,
+                path,
+                status.as_u16()
+            );
+            conversion_failure_response()
+        }
+    }
+}
+
+fn preflight_response(method: &Method) -> Option<axum::http::Response<Body>> {
+    (method == Method::OPTIONS).then(|| {
+        axum::http::Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .expect("preflight response builder failed")
+    })
+}
+
+fn apply_cors_headers(headers: &mut axum::http::HeaderMap) {
     // CORS: sandboxed iframes have an opaque origin and send
     // `Origin: null`, so cross-origin rules apply even though
     // the iframe and the SW share an origin. Send permissive
@@ -243,26 +289,12 @@ async fn handle_via_router(
     );
     headers.insert(
         HeaderName::from_static("access-control-allow-headers"),
-        HeaderValue::from_static("content-type, if-none-match, accept"),
+        HeaderValue::from_static(ALLOWED_REQUEST_HEADERS),
     );
     headers.insert(
         HeaderName::from_static("access-control-expose-headers"),
         HeaderValue::from_static("x-tonk-client-id"),
     );
-
-    let status = response.status();
-    match Response::try_from(ResponseConversion::new(method.clone(), response)) {
-        Ok(response) => Ok(JsValue::from(response)),
-        Err(_) => {
-            log!(
-                "response conversion failed: method={} path={} status={}",
-                method,
-                path,
-                status.as_u16()
-            );
-            conversion_failure_response()
-        }
-    }
 }
 
 /// Return a fixed response when an Axum response cannot be represented by Fetch.
@@ -381,6 +413,10 @@ pub struct TonkState {
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::Reactor,
+    /// Terminal lifecycle latch for this worker generation. Once a verified
+    /// successor installs, no later query reconnect may recreate an SSE stream
+    /// on the outgoing worker, even after `registration.waiting` clears.
+    pub(crate) retiring: AtomicBool,
     /// View-iframe bindings keyed by service-worker Client ID.
     /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
@@ -413,6 +449,101 @@ pub struct TonkState {
     /// without re-deriving where the registry lives — and so tests can
     /// point it at a scratch registry instead of the real one.
     pub(crate) registry: crate::device::Registry,
+}
+
+impl TonkState {
+    /// Enter the one-way retiring state and release every query stream.
+    pub(crate) fn retire(&self) {
+        self.retiring.store(true, Ordering::Release);
+        self.reactor.shutdown();
+    }
+
+    /// Whether this worker generation has terminally begun retirement.
+    pub(crate) fn is_retiring(&self) -> bool {
+        self.retiring.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::{ALLOWED_REQUEST_HEADERS, apply_cors_headers, preflight_response};
+    use axum::http::{HeaderMap, Method, StatusCode};
+
+    /// Every `x-tonk-*` header this crate reads from an incoming request.
+    ///
+    /// The source scan is intentionally coupled to the route implementations:
+    /// adding another literal header read without updating the allow-list turns
+    /// this test red before an opaque guest encounters a browser-only failure.
+    fn headers_the_routes_read() -> Vec<String> {
+        let mut found = Vec::new();
+        for source in [
+            include_str!("router/session.rs"),
+            include_str!("router/blob.rs"),
+            include_str!("router/lsp.rs"),
+        ] {
+            for (index, _) in source.match_indices("\"x-tonk-") {
+                let rest = &source[index + 1..];
+                let Some(end) = rest.find('"') else {
+                    continue;
+                };
+                let name = &rest[..end];
+                if !found.iter().any(|seen| seen == name) {
+                    found.push(name.to_owned());
+                }
+            }
+        }
+        for name in [
+            tonk_worker_api::PAGE_BUILD_HEADER,
+            tonk_worker_api::LSP_CLIENT_HEADER,
+        ] {
+            if !found.iter().any(|seen| seen == name) {
+                found.push(name.to_owned());
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn it_allows_every_tonk_header_the_routes_read() {
+        let allowed: Vec<&str> = ALLOWED_REQUEST_HEADERS.split(", ").collect();
+        let missing: Vec<String> = headers_the_routes_read()
+            .into_iter()
+            .filter(|name| !allowed.contains(&name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "request headers read by routes but absent from the opaque-origin CORS policy: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn it_keeps_response_only_headers_out_of_the_allow_list() {
+        assert!(
+            !ALLOWED_REQUEST_HEADERS
+                .split(", ")
+                .any(|name| name == "x-tonk-client-id")
+        );
+    }
+
+    #[test]
+    fn it_answers_preflight_successfully_with_the_route_header_contract() {
+        let mut response = preflight_response(&Method::OPTIONS).expect("OPTIONS is preflight");
+        apply_cors_headers(response.headers_mut());
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()["access-control-allow-headers"],
+            ALLOWED_REQUEST_HEADERS
+        );
+        assert_eq!(response.headers()["access-control-allow-origin"], "*");
+        assert!(preflight_response(&Method::POST).is_none());
+
+        let mut ordinary = HeaderMap::new();
+        apply_cors_headers(&mut ordinary);
+        assert_eq!(
+            ordinary["access-control-expose-headers"],
+            "x-tonk-client-id"
+        );
+    }
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -1742,6 +1873,7 @@ pub(crate) async fn boot_state(
         session_expires_at: session.expires_at,
         profile_name,
         reactor,
+        retiring: AtomicBool::new(false),
         view_bindings: Default::default(),
         bridges: Default::default(),
         commands: crate::router::command_registry(),
@@ -1922,7 +2054,7 @@ impl TonkServiceWorker {
             // body; dropping the sender ends the body so the fetch
             // settles.
             let tonk = state.read().await;
-            tonk.reactor.shutdown();
+            tonk.retire();
             log!("Streams are released");
             Ok(JsValue::UNDEFINED)
         })

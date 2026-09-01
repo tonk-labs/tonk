@@ -5,6 +5,7 @@
     any(feature = "integration-tests", feature = "web-integration-tests")
 ))]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io::Write as _;
     use std::path::Path;
     use std::process::Command;
@@ -202,6 +203,153 @@ mod tests {
         Ok(build.to_owned())
     }
 
+    #[derive(Debug)]
+    struct GenerationContract {
+        build: String,
+        /// Stable-URL members whose bytes must stay coherent with the
+        /// document/worker build. Values are their manifest SHA-256 digests.
+        probes: BTreeMap<String, String>,
+        /// Worker-owned members are deliberately absent from the shell
+        /// manifest: the browser pins the imported glue while the worker
+        /// verifies and caches its Wasm. Keep their exact fixture bytes so the
+        /// two-generation test still proves that A and B differ at this layer.
+        worker_members: BTreeMap<String, Vec<u8>>,
+    }
+
+    fn generation_contract(root: &Path) -> Result<GenerationContract> {
+        let build = worker_build_id(&root.join("service_worker.js"))?;
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(root.join("asset-manifest.json"))?)?;
+        ensure!(manifest["build"] == build, "manifest/worker build mismatch");
+        let assets = manifest["assets"]
+            .as_object()
+            .ok_or_else(|| anyhow!("asset manifest has no asset map"))?;
+
+        let select_one =
+            |label: &str, predicate: &dyn Fn(&str) -> bool| -> Result<(String, String)> {
+                let found = assets
+                    .iter()
+                    .filter(|(path, _)| predicate(path))
+                    .collect::<Vec<_>>();
+                ensure!(
+                    found.len() == 1,
+                    "expected one {label} probe, found {found:?}"
+                );
+                let (path, digest) = found[0];
+                let digest = digest
+                    .as_str()
+                    .ok_or_else(|| anyhow!("{label} digest is not a string"))?;
+                Ok((path.clone(), digest.to_owned()))
+            };
+
+        let mut probes = BTreeMap::new();
+        for (path, digest) in [
+            select_one("document", &|path| path == "/")?,
+            select_one("UI Wasm", &|path| {
+                path.starts_with("/ui-") && path.ends_with("_bg.wasm")
+            })?,
+            select_one("guest glue", &|path| {
+                path.starts_with("/guest/guest-") && path.ends_with(".js")
+            })?,
+            select_one("guest Wasm", &|path| {
+                path.starts_with("/guest/guest_bg-") && path.ends_with(".wasm")
+            })?,
+        ] {
+            probes.insert(path, digest);
+        }
+        let worker_members = ["service_worker.js", "worker.js", "worker_bg.wasm"]
+            .into_iter()
+            .map(|path| {
+                Ok((
+                    path.to_owned(),
+                    std::fs::read(root.join(path))
+                        .with_context(|| format!("read worker member {path}"))?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(GenerationContract {
+            build,
+            probes,
+            worker_members,
+        })
+    }
+
+    fn encode_u32_leb(mut value: u32) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            encoded.push(byte);
+            if value == 0 {
+                return encoded;
+            }
+        }
+    }
+
+    /// Append a valid custom section. Engines ignore custom sections, so B's
+    /// Wasm remains executable while being byte-distinct from A.
+    fn append_wasm_generation_marker(path: &Path) -> Result<()> {
+        let name = b"tonk-integration-generation-b";
+        let mut payload = encode_u32_leb(name.len() as u32);
+        payload.extend_from_slice(name);
+        let mut section = vec![0];
+        section.extend_from_slice(&encode_u32_leb(payload.len() as u32));
+        section.extend_from_slice(&payload);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)?
+            .write_all(&section)?;
+        Ok(())
+    }
+
+    fn distinguish_generation_b(root: &Path) -> Result<()> {
+        fn visit(path: &Path) -> Result<()> {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    visit(&path)?;
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) == Some("wasm") {
+                    append_wasm_generation_marker(&path)?;
+                }
+            }
+            Ok(())
+        }
+        visit(root)?;
+
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(root.join("index.html"))?,
+            "<!-- integration generation B: index.html -->"
+        )?;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(root.join("worker.js"))?,
+            "// integration generation B worker glue"
+        )?;
+        let guest_glue = std::fs::read_dir(root.join("guest"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("guest-") && name.ends_with(".js"))
+            })
+            .ok_or_else(|| anyhow!("generation has no guest glue"))?;
+        writeln!(
+            std::fs::OpenOptions::new().append(true).open(guest_glue)?,
+            "// integration generation B guest glue"
+        )?;
+        Ok(())
+    }
+
     fn copy_artifact_tree(source: &Path, destination: &Path) -> Result<()> {
         std::fs::create_dir(destination)
             .with_context(|| format!("create generation {}", destination.display()))?;
@@ -232,7 +380,9 @@ mod tests {
         Ok(())
     }
 
-    fn prepare_second_generation(env: &TestEnvironment) -> Result<(String, String)> {
+    fn prepare_second_generation(
+        env: &TestEnvironment,
+    ) -> Result<(GenerationContract, GenerationContract)> {
         let generation_a = env.deployment_root.join("generation-a");
         let generation_b = env.deployment_root.join("generation-b");
         ensure!(
@@ -240,17 +390,12 @@ mod tests {
             "second generation already exists at {}",
             generation_b.display()
         );
-        let build_a = worker_build_id(&generation_a.join("service_worker.js"))?;
+        let generation_a_contract = generation_contract(&generation_a)?;
         copy_artifact_tree(&generation_a, &generation_b)?;
 
-        // Change a member of the published graph, then run the real publisher.
-        // Merely rewriting the worker marker would create an invalid generation
-        // and would not exercise the atomic complete-artifact contract.
-        let index_path = generation_b.join("index.html");
-        writeln!(
-            std::fs::OpenOptions::new().append(true).open(&index_path)?,
-            "<!-- integration generation B -->"
-        )?;
+        // Make every load-bearing layer byte-distinct while keeping each Wasm
+        // module valid, then run the real publisher over the complete graph.
+        distinguish_generation_b(&generation_b)?;
         let stamp = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("scripts")
             .join("stamp-service-worker.sh");
@@ -265,9 +410,38 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        let build_b = worker_build_id(&generation_b.join("service_worker.js"))?;
-        ensure!(build_a != build_b, "A and B must have distinct build ids");
-        Ok((build_a, build_b))
+        let generation_b_contract = generation_contract(&generation_b)?;
+        ensure!(
+            generation_a_contract.build != generation_b_contract.build,
+            "A and B must have distinct build ids"
+        );
+        ensure!(
+            generation_a_contract
+                .probes
+                .keys()
+                .eq(generation_b_contract.probes.keys()),
+            "A and B must expose the same stable probe URLs"
+        );
+        for (path, digest_a) in &generation_a_contract.probes {
+            ensure!(
+                generation_b_contract.probes.get(path) != Some(digest_a),
+                "generation probe {path} is byte-identical across A and B"
+            );
+        }
+        ensure!(
+            generation_a_contract
+                .worker_members
+                .keys()
+                .eq(generation_b_contract.worker_members.keys()),
+            "A and B must expose the same worker-owned members"
+        );
+        for (path, bytes_a) in &generation_a_contract.worker_members {
+            ensure!(
+                generation_b_contract.worker_members.get(path) != Some(bytes_a),
+                "worker-owned generation member {path} is byte-identical across A and B"
+            );
+        }
+        Ok((generation_a_contract, generation_b_contract))
     }
 
     #[cfg(unix)]
@@ -399,26 +573,38 @@ mod tests {
             if let Ok(state) = driver
                 .execute_async(
                     r##"
+                    const expectedBuild = arguments[0];
                     const done = arguments[arguments.length - 1];
-                    Promise.all([
-                        navigator.serviceWorker.getRegistration(),
-                        fetch("/api/health").then(response => response.json()),
-                        caches.keys(),
-                        fetch("/asset-manifest.json", { cache: "no-store" }).then(response => response.json()),
-                    ]).then(([registration, health, cacheNames, manifest]) => done({
-                        health,
-                        manifest,
-                        cacheNames,
-                        documentBuild: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
-                        controlled: !!navigator.serviceWorker.controller,
-                        active: registration?.active?.state || null,
-                        installing: registration?.installing?.state || null,
-                        waiting: registration?.waiting?.state || null,
-                        mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
-                        guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
-                    })).catch(error => done({ error: String(error) }));
+                    (async () => {
+                        const registration = await navigator.serviceWorker.getRegistration();
+                        const documentBuild = document.querySelector('meta[name="tonk-worker-build"]')?.content || null;
+                        const lifecycle = {
+                            documentBuild,
+                            controlled: !!navigator.serviceWorker.controller,
+                            active: registration?.active?.state || null,
+                            installing: registration?.installing?.state || null,
+                            waiting: registration?.waiting?.state || null,
+                            mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
+                            guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
+                        };
+                        // Polling the retiring worker's fetch boundary can
+                        // itself keep that worker alive and prevent Chrome
+                        // from advancing an installed successor. Wait on only
+                        // registration/document state until B is actually the
+                        // document, then verify its data plane and manifest.
+                        if (documentBuild !== expectedBuild) {
+                            done(lifecycle);
+                            return;
+                        }
+                        const [health, cacheNames, manifest] = await Promise.all([
+                            fetch("/api/health").then(response => response.json()),
+                            caches.keys(),
+                            fetch("/asset-manifest.json", { cache: "no-store" }).then(response => response.json()),
+                        ]);
+                        done({ ...lifecycle, health, cacheNames, manifest });
+                    })().catch(error => done({ error: String(error) }));
                     "##,
-                    vec![],
+                    vec![build.into()],
                 )
                 .await
             {
@@ -437,6 +623,168 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    async fn wait_for_successor_while_controller_is_held(
+        driver: &WebDriver,
+        incumbent: &str,
+        successor: &str,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let mut last = Value::Null;
+        loop {
+            if let Ok(state) = driver
+                .execute_async(
+                    r#"
+                    const done = arguments[arguments.length - 1];
+                    Promise.all([
+                        navigator.serviceWorker.getRegistration(),
+                        fetch("/api/health").then(response => response.json()),
+                        fetch("/version.json", { cache: "no-store" }).then(response => response.json()),
+                    ]).then(([registration, health, discovery]) => done({
+                        health,
+                        discovery,
+                        controlled: !!navigator.serviceWorker.controller,
+                        active: registration?.active?.state || null,
+                        installing: registration?.installing?.state || null,
+                        waiting: registration?.waiting?.state || null,
+                        documentBuild: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
+                    })).catch(error => done({ error: String(error) }));
+                    "#,
+                    vec![],
+                )
+                .await
+            {
+                last = state.json().clone();
+                if last["health"]["build"] == incumbent
+                    && last["documentBuild"] == incumbent
+                    && last["discovery"]["build"] == successor
+                    && last["active"] == "activated"
+                    && last["controlled"] == true
+                {
+                    return Ok(last);
+                }
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for successor {successor} while controller {incumbent} was held: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn fetched_asset_digests(
+        driver: &WebDriver,
+        expected: &BTreeMap<String, String>,
+    ) -> Result<Value> {
+        let paths = expected.keys().cloned().collect::<Vec<_>>();
+        let result = driver
+            .execute_async(
+                r#"
+                const paths = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const digests = {};
+                    for (const path of paths) {
+                        const response = await fetch(path);
+                        if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+                        const bytes = await response.arrayBuffer();
+                        const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+                        digests[path] = Array.from(hash, byte => byte.toString(16).padStart(2, "0")).join("");
+                    }
+                    done({ digests });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::to_value(paths)?],
+            )
+            .await?;
+        ensure!(
+            result.json()["digests"] == serde_json::to_value(expected)?,
+            "generation asset digests were incoherent: expected={expected:?} actual={}",
+            result.json()
+        );
+        Ok(result.json().clone())
+    }
+
+    async fn opaque_origin_build_probe(driver: &WebDriver, build: &str) -> Result<Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const build = arguments[0];
+                const done = arguments[arguments.length - 1];
+                const token = `tonk-cors-${crypto.randomUUID()}`;
+                const iframe = document.createElement("iframe");
+                iframe.setAttribute("sandbox", "allow-scripts");
+                const finish = value => {
+                    window.removeEventListener("message", receive);
+                    iframe.remove();
+                    done(value);
+                };
+                const timeout = setTimeout(
+                    () => finish({ error: "opaque relay timed out" }),
+                    10000,
+                );
+                const receive = async event => {
+                    if (event.source !== iframe.contentWindow || event.data?.token !== token) return;
+                    if (event.data.type === "request") {
+                        try {
+                            // Exercise the actual browser-to-worker OPTIONS
+                            // response. Opaque author code cannot itself be a
+                            // controlled client; Tonk's trusted parent relay
+                            // owns this fetch and stamps the build.
+                            const preflight = await fetch("/api/health", {
+                                method: "OPTIONS",
+                            });
+                            const response = await fetch("/api/health", {
+                                headers: { "x-tonk-build": build },
+                            });
+                            iframe.contentWindow.postMessage({
+                                token,
+                                type: "result",
+                                preflightStatus: preflight.status,
+                                allowed: preflight.headers.get("access-control-allow-headers"),
+                                status: response.status,
+                                body: await response.json(),
+                            }, "*");
+                        } catch (error) {
+                            iframe.contentWindow.postMessage({
+                                token,
+                                type: "result",
+                                error: String(error),
+                            }, "*");
+                        }
+                        return;
+                    }
+                    if (event.data.type === "outcome") {
+                        clearTimeout(timeout);
+                        finish({ ...event.data, opaqueOrigin: event.origin === "null" });
+                    }
+                };
+                window.addEventListener("message", receive);
+                iframe.srcdoc = `<script>
+                    addEventListener("message", event => {
+                        if (event.data?.token !== ${JSON.stringify(token)} || event.data?.type !== "result") return;
+                        parent.postMessage({ ...event.data, type: "outcome" }, "*");
+                    });
+                    parent.postMessage({ token: ${JSON.stringify(token)}, type: "request" }, "*");
+                <\/script>`;
+                document.body.appendChild(iframe);
+                "#,
+                vec![build.into()],
+            )
+            .await?;
+        ensure!(
+            result.json()["opaqueOrigin"] == true
+                && result.json()["preflightStatus"] == 204
+                && result.json()["allowed"]
+                    .as_str()
+                    .is_some_and(|allowed| allowed.split(", ").any(|name| name == "x-tonk-build"))
+                && result.json()["status"] == 200
+                && result.json()["body"]["build"] == build,
+            "opaque relay did not preserve build provenance through the browser CORS boundary: {}",
+            result.json()
+        );
+        Ok(result.json().clone())
     }
 
     async fn install_document_probe(driver: &WebDriver) -> Result<()> {
@@ -475,15 +823,37 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = env.driver().await?;
-        let health_a = worker_health(&driver).await?;
-        let (build_a, build_b) = prepare_second_generation(&env)?;
-        assert_eq!(health_a["body"]["build"], build_a, "{health_a}");
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let build_a = &generation_a.build;
+        let build_b = &generation_b.build;
+        let initial = wait_for_mounted_build(&driver, build_a).await?;
+        assert_eq!(
+            initial["health"]["build"].as_str(),
+            Some(build_a.as_str()),
+            "{initial}"
+        );
+        fetched_asset_digests(&driver, &generation_a.probes).await?;
         create_state_sentinels(&driver).await?;
         install_document_probe(&driver).await?;
+        // Hold the old page/controller across publication so requests issued
+        // while B is live must still resolve as one coherent A graph.
+        set_update_hold(&driver, true).await?;
         promote_second_generation(&env)?;
         request_registration_update(&driver).await?;
+        let held = wait_for_successor_while_controller_is_held(&driver, build_a, build_b).await?;
+        assert_eq!(
+            held["health"]["build"].as_str(),
+            Some(build_a.as_str()),
+            "{held}"
+        );
+        fetched_asset_digests(&driver, &generation_a.probes).await?;
 
-        let state = wait_for_mounted_build(&driver, &build_b).await?;
+        set_update_hold(&driver, false).await?;
+        // This is the user's explicit adoption reload. The still-coherent A
+        // document observes the already-installed B worker during boot, nudges
+        // activation, and performs at most one guarded alignment reload.
+        driver.refresh().await?;
+        let state = wait_for_mounted_build(&driver, build_b).await?;
         assert_eq!(state["controlled"], true, "{state}");
         assert_eq!(state["active"], "activated", "{state}");
         assert!(state["installing"].is_null(), "{state}");
@@ -502,10 +872,164 @@ mod tests {
                 .any(|name| name == &format!("TONK_SHELL_{build_b}"))),
             "the successor generation cache must be complete: {state}"
         );
+        fetched_asset_digests(&driver, &generation_b.probes).await?;
 
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
         assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_answers_browser_preflight_and_relays_opaque_build_provenance(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = env.driver().await?;
+        let build = worker_build_id(&env.service_worker_script)?;
+        wait_for_mounted_build(&driver, &build).await?;
+        opaque_origin_build_probe(&driver, &build).await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_releases_a_waiting_successor_after_old_streams_try_to_reconnect(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = env.driver().await?;
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let build_a = generation_a.build;
+        let build_b = generation_b.build;
+        wait_for_mounted_build(&driver, &build_a).await?;
+        set_update_hold(&driver, true).await?;
+
+        let query = tonk_worker::helpers::named_concept_wire_query();
+        let opened = driver
+            .execute_async(
+                r#"
+                const query = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const queryResponse = await fetch("/api/profile/branch/main/query", {
+                        method: "POST",
+                        headers: {
+                            "content-type": "application/json",
+                            "accept": "text/event-stream",
+                        },
+                        body: JSON.stringify(query),
+                    });
+                    const queryReader = queryResponse.body.getReader();
+                    const first = await queryReader.read();
+                    const lspResponse = await fetch("/api/profile/tonk/branch/main/language-server", {
+                        headers: { "accept": "text/event-stream" },
+                    });
+                    const lspReader = lspResponse.body.getReader();
+                    globalThis.__tonkRetirementStreams = { queryReader, lspReader };
+                    done({
+                        queryStatus: queryResponse.status,
+                        queryFirstDone: first.done,
+                        lspStatus: lspResponse.status,
+                    });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![query.clone()],
+            )
+            .await?;
+        ensure!(
+            opened.json()["queryStatus"] == 200
+                && opened.json()["queryFirstDone"] == false
+                && opened.json()["lspStatus"] == 200,
+            "failed to open incumbent query/LSP streams: {}",
+            opened.json()
+        );
+
+        promote_second_generation(&env)?;
+        request_registration_update(&driver).await?;
+        wait_for_successor_while_controller_is_held(&driver, &build_a, &build_b).await?;
+
+        let refused = driver
+            .execute_async(
+                r#"
+                const query = arguments[0];
+                const done = arguments[arguments.length - 1];
+                const probe = async (url, init) => {
+                    const response = await fetch(url, init);
+                    const type = response.headers.get("content-type");
+                    const body = type?.includes("text/event-stream")
+                        ? (await response.body.cancel(), null)
+                        : await response.json();
+                    return { status: response.status, type, body };
+                };
+                Promise.all([
+                    probe("/api/profile/branch/main/query", {
+                        method: "POST",
+                        headers: {
+                            "content-type": "application/json",
+                            "accept": "text/event-stream",
+                        },
+                        body: JSON.stringify(query),
+                    }),
+                    probe("/api/profile/tonk/branch/main/language-server", {
+                        headers: { "accept": "text/event-stream" },
+                    }),
+                ]).then(([query, lsp]) => done({ query, lsp }))
+                  .catch(error => done({ error: String(error) }));
+                "#,
+                vec![query.clone()],
+            )
+            .await?;
+        for stream in ["query", "lsp"] {
+            assert_eq!(refused.json()[stream]["status"], 503, "{refused:?}");
+            assert_eq!(
+                refused.json()[stream]["body"]["control"],
+                "update-pending",
+                "{refused:?}"
+            );
+            assert!(
+                !refused.json()[stream]["type"]
+                    .as_str()
+                    .is_some_and(|content_type| content_type.contains("text/event-stream")),
+                "{refused:?}"
+            );
+        }
+
+        set_update_hold(&driver, false).await?;
+        driver.refresh().await?;
+        wait_for_mounted_build(&driver, &build_b).await?;
+        let successor = driver
+            .execute_async(
+                r#"
+                const query = arguments[0];
+                const done = arguments[arguments.length - 1];
+                const open = async (url, init) => {
+                    const response = await fetch(url, init);
+                    const status = response.status;
+                    const type = response.headers.get("content-type");
+                    await response.body.cancel();
+                    return { status, type };
+                };
+                Promise.all([
+                    open("/api/profile/branch/main/query", {
+                        method: "POST",
+                        headers: {
+                            "content-type": "application/json",
+                            "accept": "text/event-stream",
+                        },
+                        body: JSON.stringify(query),
+                    }),
+                    open("/api/profile/tonk/branch/main/language-server", {
+                        headers: { "accept": "text/event-stream" },
+                    }),
+                ]).then(([query, lsp]) => done({ query, lsp }))
+                  .catch(error => done({ error: String(error) }));
+                "#,
+                vec![query],
+            )
+            .await?;
+        assert_eq!(successor.json()["query"]["status"], 200, "{successor:?}");
+        assert_eq!(successor.json()["lsp"]["status"], 200, "{successor:?}");
 
         driver.quit().await?;
         Ok(())
@@ -517,7 +1041,9 @@ mod tests {
     ) -> Result<()> {
         let driver = env.driver().await?;
         let primary = driver.window().await?;
-        let (build_a, build_b) = prepare_second_generation(&env)?;
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let build_a = generation_a.build;
+        let build_b = generation_b.build;
         let initial = wait_for_mounted_build(&driver, &build_a).await?;
         assert_eq!(initial["health"]["build"], build_a, "{initial}");
         create_state_sentinels(&driver).await?;
@@ -544,6 +1070,7 @@ mod tests {
 
         driver.switch_to_window(primary.clone()).await?;
         set_update_hold(&driver, false).await?;
+        driver.refresh().await?;
         let primary_b = wait_for_mounted_build(&driver, &build_b).await?;
         assert_eq!(primary_b["health"]["build"], build_b, "{primary_b}");
         driver.switch_to_window(sibling).await?;

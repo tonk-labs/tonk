@@ -72,6 +72,36 @@ mod native {
         }
     }
 
+    fn copy_artifact_tree(source: &std::path::Path, destination: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                copy_artifact_tree(&source_path, &destination_path)?;
+            } else if file_type.is_file() {
+                std::fs::copy(&source_path, &destination_path)?;
+                let mut permissions = std::fs::metadata(&destination_path)?.permissions();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    permissions.set_mode(permissions.mode() | 0o200);
+                }
+                #[cfg(not(unix))]
+                permissions.set_readonly(false);
+                std::fs::set_permissions(&destination_path, permissions)?;
+            } else {
+                return Err(anyhow!(
+                    "unsupported test artifact member {}",
+                    source_path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     impl TestEnvironment {
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
@@ -285,29 +315,34 @@ mod native {
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
-            // Use the Git worktree view so ignored build products (`target`,
-            // linked worktrees, benchmark runs) are not copied into the Nix
-            // store every time an integration test starts its web server.
-            // Newly added test source must be staged, just as it must be for
-            // the committed CI revision that ultimately runs this harness.
-            let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
             let deployment_root = caddy_data.join("deployments");
             std::fs::create_dir_all(&deployment_root)?;
             let service_worker_script = deployment_root
                 .join("generation-a")
                 .join("service_worker.js");
+            let mut test_server = if let Some(test_server) = std::env::var_os("TONK_UI_TEST_SERVER")
+            {
+                std::process::Command::new(test_server)
+            } else {
+                // Use the Git worktree view so ignored build products (`target`,
+                // linked worktrees, benchmark runs) are not copied into the Nix
+                // store every time an integration test starts its web server.
+                // Newly added test source must be staged, just as it must be for
+                // the committed CI revision that ultimately runs this harness.
+                let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
+                let mut command = std::process::Command::new("nix");
+                command.args(["run", &test_server, "--"]);
+                command
+            };
+            test_server.args([
+                &format!("{web_port}"),
+                &format!("{access_service_port}"),
+                deployment_root
+                    .to_str()
+                    .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
+            ]);
             let mut web_server = ManagedChild::new(
-                std::process::Command::new("nix")
-                    .args([
-                        "run",
-                        &test_server,
-                        "--",
-                        &format!("{web_port}"),
-                        &format!("{access_service_port}"),
-                        deployment_root
-                            .to_str()
-                            .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
-                    ])
+                test_server
                     // Pin Caddy's data dir so its per-run internal CA
                     // root lands at a knowable path: it rides on
                     // `TestEnvironment::ca_certificate`, and each native
@@ -334,6 +369,12 @@ mod native {
                 if line.contains("Test server live at") {
                     break;
                 }
+            }
+            if let Some(artifact) = std::env::var_os("TONK_UI_TEST_ARTIFACT") {
+                let artifact = std::path::PathBuf::from(artifact);
+                let generation_a = deployment_root.join("generation-a");
+                std::fs::remove_dir_all(&generation_a)?;
+                copy_artifact_tree(&artifact, &generation_a)?;
             }
             let mut listening = false;
             for _ in 0..100 {

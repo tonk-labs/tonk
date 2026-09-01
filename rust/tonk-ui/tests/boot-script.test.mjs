@@ -216,9 +216,9 @@ describe("boot script contract with the worker", () => {
     // reload just triggered. Announcing on that event made two tabs
     // ping-pong: reload A, B prompts; reload B, A prompts; forever.
     //
-    // Gating on `registration.waiting` did not fix it either: the
-    // worker calls `skipWaiting()`, so a successor goes
-    // `installing -> activating` and barely touches that slot.
+    // Gating the announcement on `registration.waiting` does not fix it
+    // either: waiting is registration-global state, not proof that this
+    // particular document is stale.
     //
     // The honest question is a state each tab answers for itself: is
     // the served build different from the one this page loaded?
