@@ -6,43 +6,46 @@
  * how the registration cluster came up ringed in near-white while
  * nothing else in the app was.
  *
- * Values are the fabb studies' own (`~/Projects/gooey/fabb`), both
- * twins. `--ring` is translucent ink rather than a grey border token,
- * which is what gives every block its edge.
+ * Aliases over the Web Awesome theme, not a palette of their own: the
+ * stone-ink material in `:where(.wa-theme-default)` below is the app's
+ * one colorset, and these short names re-express it for the surfaces
+ * built on the fabb studies (the ceremony cluster, the account pages,
+ * the inspector). Restating the values here is how the login ceremony
+ * drifted greenish while everything else read eggplant. Deriving keeps
+ * both themes in step — `.wa-dark` swaps the `--wa-*` values and
+ * everything here follows, so there is no dark block for the derived
+ * names. The `var()` fallbacks are the light values, for the beat
+ * before the theme class lands. `--ring` is translucent ink rather
+ * than a grey border token, which is what gives every block its edge.
  */
 :root {
-    --page: #ececec;
-    --ink: #131313;
-    --on-ink: #fbfaef;
-    --soft: #55544f;
-    --ring: rgb(19 19 19 / 85%);
-    --sep: rgb(19 19 19 / 28%);
-    --frost-solid: #fafafa;
-    --panel: #d2d2d2;
-    --wash: rgb(19 19 19 / 6%);
-    --wash-2: rgb(19 19 19 / 12%);
-    --wash-p: rgb(251 250 239 / 16%);
-    --card: #fff;
-    --dim: rgb(16 16 12 / 32%);
+    --page: var(--wa-color-surface-default, #e8e6e4);
+    --ink: var(--wa-color-text-normal, #38182a);
+    --on-ink: var(--wa-color-neutral-on-loud, #f7f6f5);
+    --soft: var(--wa-color-text-quiet, #5b4953);
+    --ring: color-mix(in srgb, var(--ink) 85%, transparent);
+    --sep: var(--wa-color-neutral-border-normal, rgb(56 24 42 / 28%));
+    --frost-solid: var(--wa-color-neutral-on-loud, #f7f6f5);
+    --panel: var(--wa-color-neutral-fill-normal, #d0ccc8);
+    --wash: color-mix(in srgb, var(--ink) 6%, transparent);
+    --wash-2: color-mix(in srgb, var(--ink) 12%, transparent);
+    --wash-p: color-mix(in srgb, var(--on-ink) 16%, transparent);
+    --card: var(--wa-color-surface-raised, #fcfbfb);
+    --dim: color-mix(in srgb, var(--ink) 32%, transparent);
     --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
     --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
     --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
+/* Only the ratios that differ in the dark theme; the colors themselves
+   follow the `--wa-*` swap. The dim goes to true black — translucent
+   dark ink over a dark page separates nothing. */
 :root.wa-dark {
-    --page: #161613;
-    --ink: #e9e6d6;
-    --on-ink: #22221c;
-    --soft: #cdcaba;
-    --ring: rgb(233 230 214 / 55%);
-    --sep: rgb(233 230 214 / 28%);
-    --frost-solid: #1e1e19;
-    --panel: #3b3a34;
-    --wash: rgb(251 250 239 / 9%);
-    --wash-2: rgb(251 250 239 / 15%);
-    --wash-p: rgb(19 19 19 / 14%);
-    --card: #26251f;
+    --ring: color-mix(in srgb, var(--ink) 55%, transparent);
+    --wash: color-mix(in srgb, var(--ink) 9%, transparent);
+    --wash-2: color-mix(in srgb, var(--ink) 15%, transparent);
+    --wash-p: color-mix(in srgb, var(--on-ink) 14%, transparent);
     --dim: rgb(0 0 0 / 45%);
 }
 

@@ -191,13 +191,16 @@ fn confirmation(message: &str) -> String {
 <style>
   :root {{
     color-scheme: light dark;
-    --page: #ececec;
-    --ink: #131313;
-    --on-ink: #fbfaef;
-    --soft: #55544f;
-    --ring: rgb(19 19 19 / 85%);
-    --frost-solid: #fafafa;
-    --wash-p: rgb(251 250 239 / 16%);
+    /* The app's stone-ink colorset (tonk-ui styles.css), restated as
+       literals because this page is served on its own with no shared
+       stylesheet to derive from. */
+    --page: #e8e6e4;
+    --ink: #38182a;
+    --on-ink: #f7f6f5;
+    --soft: #5b4953;
+    --ring: rgb(56 24 42 / 85%);
+    --frost-solid: #f7f6f5;
+    --wash-p: rgb(247 246 245 / 16%);
     --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
     --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
   }}
@@ -314,13 +317,13 @@ fn confirmation(message: &str) -> String {
 
   @media (prefers-color-scheme: dark) {{
     :root {{
-      --page: #161613;
-      --ink: #e9e6d6;
-      --on-ink: #22221c;
-      --soft: #cdcaba;
-      --ring: rgb(233 230 214 / 55%);
-      --frost-solid: #1e1e19;
-      --wash-p: rgb(19 19 19 / 14%);
+      --page: #161313;
+      --ink: #e2dfdd;
+      --on-ink: #221c1d;
+      --soft: #c8c3bf;
+      --ring: rgb(226 223 221 / 55%);
+      --frost-solid: #221c1d;
+      --wash-p: rgb(34 28 29 / 14%);
     }}
   }}
 
@@ -438,8 +441,8 @@ mod tests {
         assert!(page.contains("command-line access"));
         assert!(page.contains(r#"role="status""#));
         assert!(page.contains("Authorized. You can return to your terminal."));
-        assert!(page.contains("--page: #ececec"));
-        assert!(page.contains("--page: #161613"));
+        assert!(page.contains("--page: #e8e6e4"));
+        assert!(page.contains("--page: #161313"));
         assert!(page.contains("width: min(432px, 100%)"));
         assert!(page.contains("min-height: 44px"));
         assert!(page.contains("@media (max-width: 463px)"));

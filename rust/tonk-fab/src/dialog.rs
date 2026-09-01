@@ -26,7 +26,7 @@ use crate::shadow::{self, Bound};
 const CSS: &str = r#"
 dialog{ background:transparent; border:0; padding:0; max-width:26rem; width:calc(100% - 40px); overflow:visible; }
 :host([wide]) dialog{ max-width:36rem; }
-dialog::backdrop{ background:rgba(16,16,12,.32); }
+dialog::backdrop{ background:var(--fabb-dim, rgba(56,24,42,.32)); }
 .stack{ display:flex; flex-direction:column; gap:7px; }
 .hrow{ display:flex; gap:7px; }
 .blk{ background:var(--_panel); box-shadow:var(--_ring); }
