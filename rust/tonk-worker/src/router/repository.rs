@@ -1087,7 +1087,7 @@ async fn run_invite(
         // answer. A link minted anyway points at a space the service
         // will not serve — the recipient meets "you don't have this
         // space" — so the share is refused with the reason instead.
-        Err(error)
+        Err(error @ TonkWorkerError::Upstream { .. })
             if remote_is_own_service(remote_execution.access_url.as_str())
                 && !super::customer::is_retryable(&error) =>
         {
@@ -2938,17 +2938,25 @@ pub(crate) async fn provision_space_consumer(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<(), TonkWorkerError> {
-    let mut prefix = space_root_prefix(tonk, subject).await?;
-    if let Ok(root) = super::identity::root_did(tonk).await
-        && prefix.audience() != &root
-    {
-        log!("{subject}: consent audienced to a retired account; re-issuing before provisioning");
-        super::rotation::rotate_from_onboarding(tonk).await;
-        match space_root_prefix(tonk, subject).await {
-            Ok(fresh) => prefix = fresh,
-            Err(error) => log!("{subject}: consent not re-issued: {error}"),
+    let held = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => match super::identity::root_did(tonk).await {
+            Ok(root) if prefix.audience() != &root => None,
+            _ => Some(prefix),
+        },
+        // A space created before sign-in may have persisted no prefix at
+        // all — there was no account to delegate to. The rotation sweep
+        // below mints and installs it from the sealed seed.
+        Err(TonkWorkerError::NotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    let prefix = match held {
+        Some(current) => current,
+        None => {
+            log!("{subject}: consent missing or audienced to a retired account; re-issuing");
+            super::rotation::rotate_from_onboarding(tonk).await;
+            space_root_prefix(tonk, subject).await?
         }
-    }
+    };
     super::customer::provision_consumer(tonk, subject, &prefix, None).await
 }
 
