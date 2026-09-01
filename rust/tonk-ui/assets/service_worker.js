@@ -244,6 +244,7 @@ async function fetchVerifiedAssetManifest() {
 }
 
 let installProgressReportedAt = 0;
+const INSTALL_PROGRESS_CHANNEL = "tonk-sw-install-progress-v1";
 
 /// Keep the uncontrolled bootstrap document's stall watchdog informed while
 /// this worker verifies and seals a large production graph. Progress is a
@@ -253,6 +254,20 @@ async function reportInstallProgress(phase, completed, total, force = false) {
     const now = Date.now();
     if (!force && now - installProgressReportedAt < 5_000) return;
     installProgressReportedAt = now;
+    try {
+        const channel = new BroadcastChannel(INSTALL_PROGRESS_CHANNEL);
+        channel.postMessage({
+            type: "tonk-install-progress",
+            build: BUILD_ID,
+            phase,
+            completed,
+            total,
+        });
+        channel.close();
+    } catch {
+        // The client-message path below covers browsers without a worker-side
+        // BroadcastChannel implementation.
+    }
     try {
         const windows = await self.clients.matchAll({
             type: "window",
@@ -268,8 +283,8 @@ async function reportInstallProgress(phase, completed, total, force = false) {
             });
         }
     } catch {
-        // This signal exists only to distinguish a slow verified install from
-        // a silent stall; install correctness never depends on delivery.
+        // Progress exists only to distinguish a slow verified install from a
+        // silent stall; install correctness never depends on delivery.
     }
 }
 

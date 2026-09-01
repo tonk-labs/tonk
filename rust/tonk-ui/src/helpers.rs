@@ -160,6 +160,13 @@ mod native {
                         serde_json::json!({
                             "source": r#"
                                 globalThis.__tonkTestErrors = [];
+                                globalThis.__tonkTestInstallProgress = [];
+                                try {
+                                    const progress = new BroadcastChannel("tonk-sw-install-progress-v1");
+                                    progress.addEventListener("message", event => {
+                                        globalThis.__tonkTestInstallProgress.push(event.data);
+                                    });
+                                } catch {}
                                 const describe = value => {
                                     if (value instanceof Error) return `${value.name}: ${value.message}`;
                                     if (typeof value === "string") return value;

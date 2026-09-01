@@ -96,6 +96,7 @@ describe("boot script module scoping", () => {
     "Map", "Set", "URL", "URLSearchParams", "CustomEvent", "Event", "Response",
     "Request", "Headers", "Blob", "FormData", "TextDecoder", "TextEncoder",
     "AbortController", "IntersectionObserver", "MutationObserver", "matchMedia",
+    "BroadcastChannel",
     "getComputedStyle", "structuredClone", "reject", "resolve", "if", "for",
     "while", "switch", "catch", "return", "typeof", "await", "import",
     "requestIdleCallback", "reportError", "btoa", "atob", "parseInt",

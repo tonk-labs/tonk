@@ -587,6 +587,7 @@ mod tests {
                             mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
                             testErrors: globalThis.__tonkTestErrors || [],
+                            testInstallProgress: (globalThis.__tonkTestInstallProgress || []).slice(-5),
                         };
                         // Polling the retiring worker's fetch boundary can
                         // itself keep that worker alive and prevent Chrome
