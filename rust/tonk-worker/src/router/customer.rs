@@ -676,7 +676,13 @@ pub(crate) async fn provision_consumer(
     let origin = service_origin()?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => {
-            record_space_provider(state, consumer).await;
+            // Only a SPACE lands in the directory. A custody namespace
+            // is provisioned through the same command, but it is not a
+            // directory row, and stamping one would hang provider facts
+            // on an entity nothing lists.
+            if matches!(kind, None | Some("space")) {
+                record_space_provider(state, consumer).await;
+            }
             Ok(())
         }
         Err(HttpError::Upstream(failure))
