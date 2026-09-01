@@ -1115,6 +1115,10 @@ async fn install_revision(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to adopt the installed branch: {error}"))
         })?;
+    // Deliver the fresh snapshot the refresh scheduled for any
+    // subscriptions the rebind carried over — a live view left waiting
+    // for the next commit waits forever on a branch nothing edits.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
 }

@@ -1819,6 +1819,7 @@ mod tests {
     /// marker in place — while `false` stops at `Registered`, which is
     /// the state a browser that just signed up is actually in: enrolled,
     /// refused by the gate, and never yet hydrated.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn linked_account_state(
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
         activated: bool,

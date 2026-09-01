@@ -310,11 +310,20 @@ impl Reactor {
 
         // Swap under the branches lock so a concurrent subscribe can't
         // land on the discarded state between the adopt and the insert.
-        let mut branches = repo_state.branches().write();
-        if let Some(old) = branches.get(branch) {
-            fresh.adopt_subscriptions_from(old);
+        {
+            let mut branches = repo_state.branches().write();
+            if let Some(old) = branches.get(branch) {
+                fresh.adopt_subscriptions_from(old);
+            }
+            branches.insert(branch.to_owned(), Arc::clone(&fresh));
         }
-        branches.insert(branch.to_owned(), fresh);
+        // The adopted subscriptions need that fresh snapshot DELIVERED:
+        // nothing else is going to poll on their behalf. The rebind used
+        // to leave them waiting for whatever commit happened to come
+        // next — and on a quiet branch none does, so a live view sat on
+        // its loading state indefinitely after its space was wired to a
+        // remote. The caller's next `run_scheduled_polls` drains this.
+        self.schedule_poll(fresh);
         Ok(())
     }
 

@@ -4380,6 +4380,10 @@ where
                 })?;
         }
     }
+    // Deliver the fresh snapshots the refresh scheduled for the rebound
+    // subscriptions: without this drain a live view over a just-wired
+    // branch waits for a commit that a quiet space never makes.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(effective)
 }
@@ -5916,7 +5920,7 @@ mod tests {
         // Register a subscription on the cached `main` and note which
         // `BranchState` it landed on. Hold the subscriber so its receiver
         // (and the paired sender in the state) stays connected.
-        let subscriber;
+        let mut subscriber;
         let before_ptr;
         {
             let guard = state.read().await;
@@ -5932,6 +5936,9 @@ mod tests {
                 .expect("subscribe");
             before_ptr = Arc::as_ptr(&session.state);
         }
+        // Drain whatever subscribing itself delivered, so anything that
+        // arrives next can only be the refresh's own doing.
+        while subscriber.receiver.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -5951,6 +5958,15 @@ mod tests {
             session.state.subscriptions().lock().len(),
             1,
             "the live subscription must survive the refresh",
+        );
+        // Surviving is not enough: the rebound subscription's retained
+        // result was discarded with the old engine, so it must be handed
+        // a fresh snapshot NOW. Left waiting for the next commit, a live
+        // view over a just-wired quiet space showed its loading state
+        // indefinitely — the share flow's infinite loader.
+        assert!(
+            subscriber.receiver.try_recv().is_ok(),
+            "the rebound subscription must be handed a fresh snapshot",
         );
         drop(subscriber);
     }
