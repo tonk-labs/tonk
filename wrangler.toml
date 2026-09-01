@@ -28,7 +28,7 @@ bucket_name = "tonk-spaces"
 
 # Control state for customer registration: customers, consumers, and
 # plans. Registration commands answer 500 while this binding is absent or
-# empty; the presign path never touches it.
+# empty; the presign path reads it only on a servability-cache miss.
 #
 # Ships empty: the id is minted once at bootstrap via `wrangler d1 create
 # tonk-access-control` and filled in here. Wrangler refuses to deploy
@@ -62,6 +62,15 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 [[kv_namespaces]]
 binding = "REVOCATIONS_KV"
 id = "04f72780ec4541318e768ec26d9cc5e4"
+
+# Servability verdicts derived from control, read on the presign hot
+# path so it does not query D1 per request (plan/Access metering.md
+# §11). Registration commands write the fresh verdict through after
+# their D1 commit. A missing binding degrades to per-request D1 reads
+# rather than refusing.
+[[kv_namespaces]]
+binding = "SERVABILITY_KV"
+id = "a4904c12fa6e4090870a5dab61898e58"
 
 # Lookup rate limit: the email lookup answers an unauthenticated GET, and
 # the address it resolves is in the URL, so the endpoint is a registration
@@ -110,6 +119,10 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 [[env.staging.kv_namespaces]]
 binding = "REVOCATIONS_KV"
 id = "02b830113c7f47879b3a839a52f643df"
+
+[[env.staging.kv_namespaces]]
+binding = "SERVABILITY_KV"
+id = "480460e06995424e8122b774cdcac697"
 
 [[env.staging.ratelimits]]
 name = "LOOKUP_LIMITER"
@@ -165,6 +178,10 @@ migrations_dir = "rust/tonk-access-service/migrations-ingest"
 [[env.preview.kv_namespaces]]
 binding = "REVOCATIONS_KV"
 id = "REPLACED-PER-PULL-REQUEST"
+
+[[env.preview.kv_namespaces]]
+binding = "SERVABILITY_KV"
+id = "SERVABILITY-REPLACED-PER-PULL-REQUEST"
 
 [[env.preview.ratelimits]]
 name = "LOOKUP_LIMITER"

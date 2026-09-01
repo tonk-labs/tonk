@@ -151,10 +151,12 @@ jobs:
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
+          servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
+          servability_id="$(resolve_kv "$servability")"
           cp wrangler.toml "$config"
           sed -i \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
@@ -162,12 +164,14 @@ jobs:
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
+            -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
             "$config"
           if ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
-            || ! grep -Fq "id = \"$revocations_id\"" "$config"; then
+            || ! grep -Fq "id = \"$revocations_id\"" "$config" \
+            || ! grep -Fq "id = \"$servability_id\"" "$config"; then
             echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
             exit 1
           fi

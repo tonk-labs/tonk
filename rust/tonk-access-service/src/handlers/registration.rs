@@ -50,11 +50,72 @@ impl crate::email::EmailSender for MaybeEmail {
 #[cfg(target_arch = "wasm32")]
 pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Response> {
     match handle_inner(body, req, env).await {
-        Ok(receipt) => Response::from_json(&receipt),
+        Ok(receipt) => {
+            replicate_verdicts(&receipt, env).await;
+            Response::from_json(&receipt)
+        }
         Err(err) => {
             let response = Response::from_json(&serde_json::json!({ "error": err }))?;
             Ok(response.with_status(err.status()))
         }
+    }
+}
+
+/// Write the fresh servability verdicts for every subject a completed
+/// registration command changed, so the change propagates to the
+/// presign path as itself rather than waiting out a cached entry's
+/// validity. `/provider/add` touches the provisioned consumer;
+/// `/customer/enroll` and `/customer/activate` touch the customer and
+/// every consumer it funds. Best-effort: a failed write costs at most
+/// one stale validity window, which the verdicts are sized for.
+#[cfg(target_arch = "wasm32")]
+async fn replicate_verdicts(answer: &crate::registration::Answer, env: &Env) {
+    use worker::Date;
+
+    use crate::handlers::ucan::{derive_verdict, servability_kv};
+    use crate::registration::Answer;
+    use crate::store::Store;
+    use crate::store::d1::D1Store;
+
+    let customer = match answer {
+        Answer::Subscription(receipt) => {
+            let now = Date::now().as_millis() / 1_000;
+            let _ = derive_verdict(
+                receipt.consumer.as_str(),
+                now,
+                env,
+                servability_kv(env).as_ref(),
+            )
+            .await;
+            return;
+        }
+        Answer::Customer(receipt) => receipt.customer.as_str().to_string(),
+        // The operator commands answer nothing; their consumer rides
+        // out the cached verdict's validity instead.
+        Answer::Done => return,
+    };
+    let mut subjects = vec![customer.clone()];
+    match env.d1("CONTROL") {
+        Ok(control) => match D1Store::new(control)
+            .subscriptions_by_provider(&customer)
+            .await
+        {
+            Ok(subscriptions) => subjects.extend(
+                subscriptions
+                    .into_iter()
+                    .map(|subscription| subscription.consumer)
+                    .filter(|consumer| *consumer != customer),
+            ),
+            Err(err) => {
+                worker::console_error!("verdicts for {customer}'s consumers not refreshed: {err}");
+            }
+        },
+        Err(err) => worker::console_error!("verdicts not refreshed, no CONTROL binding: {err}"),
+    }
+    let kv = servability_kv(env);
+    let now = Date::now().as_millis() / 1_000;
+    for subject in subjects {
+        let _ = derive_verdict(&subject, now, env, kv.as_ref()).await;
     }
 }
 
