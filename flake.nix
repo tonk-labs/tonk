@@ -684,7 +684,7 @@
                   TONK_UI_ROOT=${self.packages.${system}.tonk-ui}
               fi
 
-              echo "Test server live at https://tonk.network:$PORT"
+              echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then
               # cannot orphan a grandchild. Stdin avoids leaking a temp config.
@@ -696,7 +696,7 @@
                       protocols h1 h2
                   }
               }
-              https://tonk.network:$PORT {
+              https://tonk.network:$PORT, https://localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
