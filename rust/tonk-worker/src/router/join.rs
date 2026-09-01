@@ -626,9 +626,23 @@ pub(crate) struct JoinOutcome {
 /// at any earlier stage leaves the recipient's profile, repository list,
 /// roster, and claim backup exactly as they were.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
+    // Per-phase wall clock, logged on success: the staging phase is the
+    // network-bound one (pull + validation + roster reads against the
+    // remote), so a slow join in the field can be attributed to the
+    // network or to local work without reproducing it.
+    let started = web_time::Instant::now();
     let prepared = prepare_join(tonk, url).await?;
+    let prepared_at = web_time::Instant::now();
     let staged = stage_join(tonk, prepared).await?;
-    commit_join(tonk, staged).await
+    let staged_at = web_time::Instant::now();
+    let outcome = commit_join(tonk, staged).await?;
+    log!(
+        "join: prepared {}ms, staged {}ms, committed {}ms",
+        prepared_at.duration_since(started).as_millis(),
+        staged_at.duration_since(prepared_at).as_millis(),
+        staged_at.elapsed().as_millis()
+    );
+    Ok(outcome)
 }
 
 /// Parse the invite, verify it is addressed to this identity, and build
@@ -1441,18 +1455,63 @@ async fn claim_changes<Env: BranchEnv>(
 ) -> Result<(Changes, bool), JoinFailure> {
     let membership = Membership::new(member.clone(), subject.clone());
 
-    let stamps: Vec<InvitedVia> = branch
-        .query()
-        .select(Query::<InvitedVia> {
-            this: Term::var("this"),
-            invitation: Term::var("invitation"),
-        })
-        .perform(env)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("invited-via query failed: {error:?}"))
-        })?;
+    // The three roster reads land in three separate index regions, and on
+    // a staged (network-backed) branch each one descends the tree cold —
+    // paying its round trips in full. Run them concurrently so a join
+    // pays one descent of latency instead of three back to back; the
+    // reads are independent and read-only, so ordering carries nothing.
+    // On the already-claimed early return below the role/name results go
+    // unused — that is the renewal re-claim path, where the staged branch
+    // was seeded from the local head and the extra reads are warm.
+    let stamps_read = async {
+        branch
+            .query()
+            .select(Query::<InvitedVia> {
+                this: Term::var("this"),
+                invitation: Term::var("invitation"),
+            })
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("invited-via query failed: {error:?}"))
+            })
+    };
+    let roles_read = async {
+        branch
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("member-role query failed: {error:?}"))
+            })
+    };
+    // Guard the name too: a linked device may resolve a different local
+    // display name, but a later sequential join must not overwrite an
+    // existing roster rename. This read-then-write guard is intentionally
+    // not a linearizable first-writer lock for concurrent claims.
+    let names_read = async {
+        branch
+            .query()
+            .select(Query::<MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("member-name query failed: {error:?}"))
+            })
+    };
+    let (stamps, roles, names): (Vec<InvitedVia>, Vec<MemberRole>, Vec<MemberName>) =
+        futures_util::try_join!(stamps_read, roles_read, names_read)?;
+
     let already_stamped = stamps.iter().any(|stamp| stamp.this == *membership.this());
     let already_claimed = stamps
         .iter()
@@ -1461,36 +1520,7 @@ async fn claim_changes<Env: BranchEnv>(
         return Ok((Changes::new(), true));
     }
 
-    let roles: Vec<MemberRole> = branch
-        .query()
-        .select(Query::<MemberRole> {
-            this: Term::var("this"),
-            role: Term::var("role"),
-        })
-        .perform(env)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("member-role query failed: {error:?}"))
-        })?;
     let already_roled = roles.iter().any(|role| role.this == *membership.this());
-
-    // Guard the name too: a linked device may resolve a different local
-    // display name, but a later sequential join must not overwrite an
-    // existing roster rename. This read-then-write guard is intentionally
-    // not a linearizable first-writer lock for concurrent claims.
-    let names: Vec<MemberName> = branch
-        .query()
-        .select(Query::<MemberName> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-        })
-        .perform(env)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("member-name query failed: {error:?}"))
-        })?;
     let already_named = membership_has_name(&names, &membership);
 
     // A member claiming their own invite is not provenance.
