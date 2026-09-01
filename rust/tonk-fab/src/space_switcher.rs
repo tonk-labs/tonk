@@ -9,21 +9,17 @@
 //! scaffolding's `space`-attribute default, proving that seam accepts either
 //! shape.
 //!
-//! Reads `xyz.tonk.replica/{subject,kind,status}` through ONE inline
-//! directory-mode predicate (`this` unbound, so every replica record returns
-//! as a row) — see [`crate::logic::space_list_query_body`]. `name` is
-//! deliberately absent: each row renders the target space's OWN repo name via
-//! a nested `<ui-space-name space={subject}>`, since the profile-side replica
-//! name goes stale (`profile.yaml` states this trade for the active-space
-//! chip; the same trade applies here). No concept is named, so nothing seeded
-//! on the profile branch is consulted.
+//! Reads `xyz.tonk.space/{subject,name,status}` through ONE inline
+//! directory-mode predicate (`this` unbound, so every account-level directory
+//! entry returns as a row) — see [`crate::logic::space_list_query_body`]. The
+//! mirrored `name` is available even when this device has not replicated the
+//! target space, and the rename command keeps it current.
 //!
-//! Filtering mirrors the deleted seeded `fab-menu` view: the profile's own
-//! self-replica (`kind == "tonk:profile"`) never renders as a row, and the
-//! active space (this element's `exclude` attribute) is skipped too — so the
-//! switcher never offers to navigate to the space you're already on. A
-//! surviving row stamps `data-status` from the replica's sync status so the
-//! existing CSS can dim a still-seeding spot.
+//! Account directory entries contain real spaces only. The active space (this
+//! element's `exclude` attribute) is skipped, so the switcher never offers to
+//! navigate to the space you're already on. A surviving row stamps
+//! `data-status` from the directory status so existing CSS can dim a
+//! still-seeding space.
 //!
 //! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
 //! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
@@ -35,7 +31,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use js_sys::Reflect;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlElement, window};
+use web_sys::HtmlElement;
 
 use crate::logic::{reset_keyed_rows, space_list_query_body};
 use crate::stack_rows;
@@ -47,30 +43,27 @@ const SUB_TAG: &str = "ui-space-switcher";
 /// attribute on this element.
 const PROFILE_WITH: &str = "main@profile:tonk";
 
-/// The replica kind marking the profile's own self-replica row, hidden from
-/// the switcher (there is nothing to switch TO by navigating to yourself).
-const PROFILE_KIND: &str = "tonk:profile";
-
 /// How many spaces fly out before `more ↖` takes over. A stack is a glance,
 /// not a directory; past this the Hub is the better answer.
 const MAX_ROWS: usize = 7;
 
-/// One replica row: the fields the switcher needs to decide whether to skip
-/// it and what to render if it doesn't.
+/// Vintage directory rows can predate the account-level name mirror.
+const UNTITLED: &str = "Untitled";
+
+/// One account-directory row: the fields the switcher needs to render it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
     subject: String,
-    kind: String,
+    name: Option<String>,
     status: String,
 }
 
 #[derive(Default)]
 pub struct UiSpaceSwitcherElement {
     scaffold: subscribing::Scaffold,
-    /// The live replica set, keyed by each row's entity `this` (NOT
-    /// `subject` — `this` is the row's own unique id) so an `update` delta
-    /// can upsert/retract individual rows without a full snapshot. Order is
-    /// insertion order.
+    /// The live directory, keyed by each row's entity `this`, so an `update`
+    /// delta can upsert/retract individual rows without a full snapshot.
+    /// Order is insertion order.
     rows: Rc<RefCell<Vec<(String, Row)>>>,
 }
 
@@ -82,7 +75,7 @@ impl CustomElement for UiSpaceSwitcherElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &["exclude"]
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
@@ -92,13 +85,30 @@ impl CustomElement for UiSpaceSwitcherElement {
         self.scaffold.connect(this, behaviour);
     }
 
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if name != "exclude" || old == new {
+            return;
+        }
+        // The profile subscription can settle before the outer bar's routed
+        // `space` attribute. Re-filter the rows already delivered when that
+        // active subject lands; the profile query itself has not changed and
+        // must stay open.
+        render_menu(this, &self.rows.borrow());
+    }
+
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         self.scaffold.disconnect();
     }
 }
 
 /// This element's [`subscribing::Subscribing`] behaviour: the fixed PROFILE
-/// routing context, the directory-mode replica-list query, and rendering
+/// routing context, the account-directory query, and rendering
 /// delivered frames as switcher rows.
 struct SpaceSwitcherBehaviour {
     rows: Rc<RefCell<Vec<(String, Row)>>>,
@@ -161,10 +171,9 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
     }
 }
 
-/// Read `(row.this, Row { subject, kind, status })` off a raw subscription
-/// row. `None` for a missing/empty row, a missing entity id, or any missing
-/// field — mirroring the query's requirement that all three fields (and so
-/// the row's `this`) are present for a row to appear at all.
+/// Read `(row.this, Row { subject, name?, status })` off a raw subscription
+/// row. `None` for a missing/empty row, a missing entity id, or a missing
+/// required field. `name` is optional so pre-mirror entries remain reachable.
 fn read_row(row: &JsValue) -> Option<(String, Row)> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -174,9 +183,9 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
     let subject = Reflect::get(&fields, &"subject".into())
         .ok()
         .and_then(|v| v.as_string())?;
-    let kind = Reflect::get(&fields, &"kind".into())
+    let name = Reflect::get(&fields, &"name".into())
         .ok()
-        .and_then(|v| v.as_string())?;
+        .and_then(|v| v.as_string());
     let status = Reflect::get(&fields, &"status".into())
         .ok()
         .and_then(|v| v.as_string())?;
@@ -184,18 +193,18 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
         this_id,
         Row {
             subject,
-            kind,
+            name,
             status,
         },
     ))
 }
 
-/// Rebuild the host's children: one `<tonk-mi>` per surviving space, each
-/// naming that space through a nested read-only `<ui-space-name>`.
+/// Rebuild the host's children: one `<tonk-mi>` per surviving space, named
+/// from the account directory so an unreplicated target is still legible.
 ///
 /// No action rows. The stack that hosts this flyout already carries `new +`
 /// and `more ↖` (see `markup::STACKS_HTML`); emitting them here as well is
-/// what put a second, unstyled "+new" and "all spots" inside the open menu.
+/// what put a second, unstyled "+new" and "all spaces" inside the open menu.
 ///
 /// The list is capped at [`MAX_ROWS`]: up to seven spaces fly out, and `more
 /// ↖` — the stack's own last row — is the way to the rest. The active space
@@ -206,7 +215,7 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
 
     for (_, row) in rows
         .iter()
-        .filter(|(_, row)| row.kind != PROFILE_KIND && row.subject != exclude)
+        .filter(|(_, row)| row.subject != exclude)
         .take(MAX_ROWS)
     {
         let Some(item) = stack_rows::new_row(SUB_TAG) else {
@@ -216,14 +225,7 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
         // is deliberately NOT `chrome`.
         let _ = item.set_attribute("data-space", &row.subject);
         let _ = item.set_attribute("data-status", &row.status);
-
-        if let Some(document) = window().and_then(|w| w.document())
-            && let Ok(name) = document.create_element("ui-space-name")
-        {
-            let _ = name.set_attribute("space", &row.subject);
-            let _ = name.set_attribute("readonly", "");
-            let _ = item.append_child(&name);
-        }
+        item.set_text_content(Some(row.name.as_deref().unwrap_or(UNTITLED)));
         stack_rows::insert_row(host, &item);
     }
 }

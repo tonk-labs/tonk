@@ -136,7 +136,7 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
 /// A drop persists the nearest one: the vertical half of the viewport picks
 /// top vs bottom, the horizontal half picks left vs right.
 ///
-/// The resting spot is expressed as two CSS classes on `<tonk-fab>` — a vertical
+/// The resting position is expressed as two CSS classes on `<tonk-fab>` — a vertical
 /// one (`fab-dock-top` / `fab-dock-bottom`) and a horizontal one
 /// (`fab-dock-left` / `fab-dock-right`) — and the actual pixel placement + the
 /// submenu open-direction live in the view's stylesheet (profile.yaml). This
@@ -1090,7 +1090,7 @@ pub enum ShareState {
     /// A mint is in flight. The clipboard write is already pending on a
     /// promise this state is waiting to resolve.
     Copying,
-    /// The mint was refused because the spot has no shareable sync remote.
+    /// The mint was refused because the space has no shareable sync remote.
     /// The prompt offering to attach one is up; unlike `Copied`/`Failed` this
     /// does not revert on a timer, because the user is being asked a question.
     Blocked,
@@ -1353,21 +1353,20 @@ mod member_roster {
 
 /// The subscribe body for the profile's space list.
 ///
-/// Reads the PROFILE branch's replica records by raw attribute. `name` is
-/// deliberately absent: each row renders the space's OWN repo name via
-/// `<ui-space-name>`, since the profile-side replica name goes stale.
-/// Directory mode (`this` unbound), so every replica record returns as a row.
+/// Reads the PROFILE branch's account-level space directory by raw attribute.
+/// Directory mode (`this` unbound), so every convergent space entry returns as
+/// a row. `name` is optional for vintage entries that predate the mirror.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "subject": { "the": "xyz.tonk.replica/subject", "as": "Entity", "cardinality": "one" },
-            "kind":    { "the": "xyz.tonk.replica/kind",    "as": "Entity", "cardinality": "one" },
-            "status":  { "the": "xyz.tonk.replica/status",  "as": "Entity", "cardinality": "one" }
+            "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
+            "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
+            "status":  { "the": "xyz.tonk.space/status",  "as": "Entity", "cardinality": "one" }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
             "subject": { "?": { "name": "subject" } },
-            "kind":    { "?": { "name": "kind" } },
+            "name":    { "?": { "name": "name" } },
             "status":  { "?": { "name": "status" } }
         }
     })
@@ -1394,30 +1393,37 @@ mod space_list {
     use super::*;
 
     #[test]
-    fn it_queries_the_profile_space_list_by_raw_attribute() {
+    fn it_queries_the_account_space_directory_by_raw_attribute() {
         let body = space_list_query_body();
-        assert!(body.contains("xyz.tonk.replica/subject"));
-        assert!(body.contains("xyz.tonk.replica/kind"));
-        assert!(body.contains("xyz.tonk.replica/status"));
-        // Directory mode over every replica record.
+        assert!(body.contains("xyz.tonk.space/subject"));
+        assert!(body.contains("xyz.tonk.space/name"));
+        assert!(body.contains("xyz.tonk.space/status"));
+        assert!(
+            !body.contains("xyz.tonk.replica/"),
+            "the account directory replaced per-device replica rows: {body}"
+        );
+        // Directory mode over every account space entry.
         assert!(body.contains("\"this\":{\"?\""));
-        // No concept named — nothing seeded is consulted.
-        assert!(!body.contains("tonk:space"));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["predicate"]["with"]["name"]["optional"], true,
+            "a vintage directory entry without a name must remain listable"
+        );
     }
 
     #[test]
-    fn a_reset_keeps_one_row_per_replica_entity() {
+    fn a_reset_keeps_one_row_per_directory_entity() {
         let mut rows = vec![("stale".to_owned(), "stale")];
 
         reset_keyed_rows(
             &mut rows,
             [
-                ("replica:space".to_owned(), "first"),
-                ("replica:space".to_owned(), "latest"),
+                ("directory:space".to_owned(), "first"),
+                ("directory:space".to_owned(), "latest"),
             ],
         );
 
-        assert_eq!(rows, vec![("replica:space".to_owned(), "latest")]);
+        assert_eq!(rows, vec![("directory:space".to_owned(), "latest")]);
     }
 }
 
@@ -1560,7 +1566,7 @@ mod create_space {
     ///
     /// `remote` is gone for a second reason: the page supplying one made
     /// every create look like a deliberate choice of this server, so a
-    /// spot created before anyone registered was wired to a service that
+    /// space created before anyone registered was wired to a service that
     /// refuses to serve it. The worker resolves it from the account.
     #[test]
     fn it_declares_only_the_field_the_form_carries() {
@@ -1624,7 +1630,7 @@ mod profile_rename {
         // "…dataset/rename" also matches "…dataset/rename-repository", so a
         // marker silently pointed at the repo-rename attribute would still
         // pass. That collision is not hypothetical — both commands once
-        // derived `dataset/rename` and every spot rename also renamed the
+        // derived `dataset/rename` and every space rename also renamed the
         // profile, because decoding matches on which attributes are present
         // and never on their values. `dialog-reactor`'s
         // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
@@ -1724,7 +1730,7 @@ pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64)
                 "predicate": {
                     "kind": "transient",
                     "concept": {
-                        "description": "Attach a sync remote to a spot, and share it.",
+                        "description": "Attach a sync remote to a space, and share it.",
                         "with": with
                     }
                 },
@@ -1796,9 +1802,9 @@ mod invite_link {
 ///
 /// An INLINE predicate over the raw `xyz.tonk.share/*` attributes, for the
 /// same reason [`invite_link_query_body`] is inline: rules and views are
-/// frozen at whatever `core.yaml` seeded a spot with, so reading raw
-/// attributes depends on nothing seeded and works on spots that predate this
-/// feature. `this` binds to the spot's subject DID, the entity the worker
+/// frozen at whatever `core.yaml` seeded a space with, so reading raw
+/// attributes depends on nothing seeded and works on spaces that predate this
+/// feature. `this` binds to the space's subject DID, the entity the worker
 /// keys the refusal by.
 /// Whether this profile's account is registered and served.
 ///
@@ -1808,18 +1814,24 @@ mod invite_link {
 /// on connect is stale by then — the bar kept offering to log in to
 /// someone who just had.
 ///
-/// `provider` is required here (as it is on the concept), so an account
-/// that enrolled but has no provider yet does not resolve at all. That
-/// is the intent: "has a provider" means "finished registering", so the
-/// absence is the answer.
+/// Subscribes to the REGISTRATION fact: an account that enrolled has one,
+/// whatever happened after. Resolving at all is what tells the bar an
+/// account exists — the old query required a provider, so a just-enrolled
+/// account read as no account and the bar went on offering "log in to
+/// share" to someone who had just registered.
+///
+/// Whether that account is SERVED is a separate fact
+/// (`xyz.tonk.account/activated-at`), read by whoever needs it. There is no
+/// status string to compare against in either case.
 pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "status": {
-                "the": "xyz.tonk.account/customer-status", "as": "Text", "cardinality": "one"
+            "registered_at": {
+                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "cardinality": "one"
             },
-            "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
+            "email": {
+                "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one"
             }
         } },
         "terms": {
@@ -1834,12 +1846,46 @@ pub fn account_customer_query_body() -> String {
             // is not known here; there is one customer row per profile,
             // so whatever binds is it.
             "this": { "?": { "name": "account" } },
-            "status": { "?": { "name": "status" } },
-            "provider": { "?": { "name": "provider" } }
+            "registered_at": { "?": { "name": "registered_at" } },
+            "email": { "?": { "name": "email" } }
         }
     })
     .to_string()
 }
+
+/// Whether this account is SERVED: the activation fact, whose presence is
+/// the whole answer.
+///
+/// A separate subscription from the registration one because the two
+/// resolve independently — an enrolled account has a registration row and
+/// no activation row, and a query requiring both would resolve for neither
+/// (the join-status lesson). No status string is compared in either.
+pub fn account_active_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            ACTIVATION_FIELD: {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": { "?": { "name": "account" } },
+            ACTIVATION_FIELD: { "?": { "name": ACTIVATION_FIELD } },
+        }
+    })
+    .to_string()
+}
+
+/// The frame field whose presence says the account activated.
+///
+/// Named once because the subscription that asks for it
+/// ([`account_active_query_body`]) and the banner reader that looks for
+/// it (`activation::apply`) must agree. They drifted once — the query
+/// moved from carrying a `provider` to the bare activation timestamp and
+/// the reader kept probing `provider` — so every activation frame read
+/// as not-yet-active and the pending banner lingered for the life of the
+/// page after the account was served.
+pub const ACTIVATION_FIELD: &str = "activated_at";
 
 /// The share control's single subscription: where this space's invite
 /// has got to.
@@ -1937,6 +1983,10 @@ mod enable_sync_claim {
         assert_eq!(app["parameters"]["share"], "tonk:share");
         assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
+        assert_eq!(
+            app["predicate"]["concept"]["description"],
+            "Attach a sync remote to a space, and share it."
+        );
 
         // The `with` declaration is what the worker actually matches on: a
         // typo here compiles and passes every assertion on `parameters`
@@ -1984,8 +2034,8 @@ mod account_state_query {
             parsed["terms"]["this"].is_object(),
             "`this` must be bound, got {body}",
         );
-        assert!(body.contains("xyz.tonk.account/customer-status"));
-        assert!(body.contains("xyz.tonk.account/provider-address"));
+        assert!(body.contains("xyz.tonk.account/registered-at"));
+        assert!(body.contains("xyz.tonk.account/customer-email"));
     }
 }
 
@@ -2047,6 +2097,31 @@ mod share_blocked_query {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(share_blocked_query_body("").is_err());
+    }
+
+    /// The activation subscription asks for the field its reader checks.
+    ///
+    /// Two halves of one contract, held together only by this test. They
+    /// came apart once: the query moved from carrying a `provider` to
+    /// the bare activation timestamp, the banner reader kept probing
+    /// `provider`, and because a field that is not requested is simply
+    /// absent from every frame, activation was never noticed — the
+    /// pending banner lingered for the life of the page after the
+    /// account was served.
+    #[test]
+    fn it_reads_the_field_the_activation_subscription_asks_for() {
+        let body: serde_json::Value =
+            serde_json::from_str(&account_active_query_body()).expect("the query body is JSON");
+        assert!(
+            body["predicate"]["with"][ACTIVATION_FIELD].is_object(),
+            "the subscription must request `{ACTIVATION_FIELD}`, which is what the \
+             banner reader checks; got {}",
+            body["predicate"]["with"],
+        );
+        assert!(
+            body["terms"][ACTIVATION_FIELD].is_object(),
+            "`{ACTIVATION_FIELD}` must be bound in `terms` or it never reaches a frame",
+        );
     }
 }
 

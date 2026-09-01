@@ -175,6 +175,13 @@ forward would leave every device believing it still syncs. The waiting screen
 therefore notices a confirmation opened on another device, which is where these
 links are usually opened.
 
+While confirmation is pending, the account remains an account on every
+surface. Settings says it is waiting for email confirmation, Hub keeps the
+account entry, and an open space shows the confirmation banner and “confirm
+your email to share.” None of those surfaces may offer Create, Log in, or “link
+an account” for that profile. Local space work remains available; only sync and
+sharing are waiting on confirmation.
+
 > Technical note: for a client to act on a refusal it has to say which state it
 > names. dialog `tonk-2026-08-27` adds `AuthorizeError::Declined { recourse,
 > reason }`, where the reason stays the responder's own opaque words and the
@@ -256,6 +263,30 @@ must not duplicate a device; cross-account reuse must not borrow authority.
 **Output, errors, and recovery.** Errors must name which stage failed and which
 state remains. “Try again” is unsafe when the remote may have committed;
 status/reconcile must precede mutation replay.
+
+Browser account errors translate diagnostics at the action boundary. A message
+names the failed action and a next step; HTTP routes and statuses, DIDs,
+invocations, delegations, account-repository hydration, and browser exception
+text remain in the console. Passkey cancellation asks the person to retry the
+prompt, missing authenticator security capability asks for another passkey or
+device, and an unavailable browser ceremony asks for a reload or another
+supported browser/device.
+
+Failures that used to leave the registration ceremony blank or falsely
+successful are visible too. Email lookup and account-option watcher failures
+say to check the connection and retry the dialog. If activation cannot update
+the standing ceremony, it directs the person through the email link and back
+to settings. A display name that could not be saved leaves the account ready
+and points to settings; a ready invite that could not reach the clipboard says
+to retry sharing instead of claiming it was copied.
+
+An account waiting for its activation email is not a generic synchronization
+failure. Settings keeps authoritative account edits disabled, continues
+probing through the enrollment settling window, and says to open the emailed
+verification link. If the email is already verified while the account
+repository is still loading, settings says setup is finishing and allows a
+reload; if verification status itself cannot be checked, it says to check the
+connection and reload.
 
 **Accessibility, TTY, and machine output.** Browser busy state must be
 announced, focus must remain trapped only in active confirmations, and keyboard

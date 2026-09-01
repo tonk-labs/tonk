@@ -16,8 +16,7 @@ use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
 use tonk_account::{
-    AccountRepositoryDescriptorV1, AccountStateStatus, CreateGenesis, RemotePresence,
-    probe_remote_main, publish_genesis_if_absent,
+    AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_schema::{Replica, prelude::DidExt as _};
 
@@ -71,40 +70,58 @@ async fn marker(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<O
 async fn save_marker(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
 ) -> Result<()> {
     profile
         .credential()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-        .save(descriptor.content_hash().to_vec())
+        .save(subject.as_str().as_bytes().to_vec())
         .perform(operator)
         .await
         .context("failed to save account trusted-base marker")
 }
 
-fn marker_matches(marker: Option<&[u8]>, descriptor: &AccountRepositoryDescriptorV1) -> bool {
-    marker == Some(descriptor.content_hash().as_slice())
+/// Whether the trusted base already recorded names this account.
+fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
+    marker == Some(subject.as_str().as_bytes())
 }
 
-/// The descriptor this profile is configured with, absent when the local link
-/// is missing or is still a legacy raw delegation.
-async fn descriptor(
+/// The account this profile is linked to, absent when unlinked.
+async fn linked_account(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-) -> Result<Option<AccountRepositoryDescriptorV1>> {
+) -> Result<Option<dialog_varsig::Did>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
-    descriptor_in(profile, operator, &store).await
+    linked_account_in(profile, operator, &store).await
 }
 
-/// [`descriptor`] against a caller-supplied store.
-async fn descriptor_in(
+/// [`linked_account`] against a caller-supplied store.
+async fn linked_account_in(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
-) -> Result<Option<AccountRepositoryDescriptorV1>> {
+) -> Result<Option<dialog_varsig::Did>> {
+    if crate::account::stored_provider_in(profile, operator, store)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
+        return Ok(None);
+    };
+    Ok(Some(root.root_did.parse()?))
+}
+
+/// Where the linked account syncs, when the link named it.
+async fn account_remote_in(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<String>> {
     Ok(crate::account::stored_provider_in(profile, operator, store)
         .await?
-        .and_then(|provider| provider.descriptor().cloned()))
+        .and_then(|provider| provider.remote().map(ToOwned::to_owned)))
 }
 
 /// Read durable native account-state status without contacting the remote.
@@ -128,10 +145,10 @@ pub(crate) async fn status_with_operator_in(
     operator: &Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<AccountStateStatus> {
-    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
+    let Some(subject) = linked_account_in(profile, operator, store).await? else {
         return Ok(AccountStateStatus::Unconfigured);
     };
-    if marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+    if marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         Ok(AccountStateStatus::Ready)
     } else {
         Ok(AccountStateStatus::Unhydrated)
@@ -161,13 +178,12 @@ pub async fn adopt_account_access_in(
     operator: &Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<bool> {
-    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
+    let Some(subject) = linked_account_in(profile, operator, store).await? else {
         return Ok(false);
     };
-    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(false);
     }
-    let subject = descriptor.account_subject().clone();
     let repository = Repository::from(profile);
     let access = repository
         .branch(dialog_repository::ACCESS_BRANCH)
@@ -179,7 +195,10 @@ pub async fn adopt_account_access_in(
     // A remote resolved against the ACCOUNT's DID. A local upstream would
     // resolve against this profile's own subject and could only name a
     // sibling branch, never the account's.
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let Some(remote) = account_remote_in(profile, operator, store).await? else {
+        return Ok(false);
+    };
+    let address = SiteAddress::from(UcanAddress::new(remote.as_str()));
     let remote = match repository
         .remote(ACCOUNT_ACCESS_REMOTE)
         .load()
@@ -244,14 +263,17 @@ pub async fn open_account_branch_in(
     store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_repository::Branch>> {
     trace("open: start");
-    let Some(descriptor) = descriptor_in(profile, operator, store).await? else {
+    let Some(subject) = linked_account_in(profile, operator, store).await? else {
         return Ok(None);
     };
-    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(None);
     }
     trace("open: marker matches, mounting");
-    let repository = mount(profile, operator, &descriptor).await?;
+    let remote = account_remote_in(profile, operator, store)
+        .await?
+        .context("the linked account names no remote")?;
+    let repository = mount(profile, operator, &subject, &remote).await?;
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -394,10 +416,10 @@ pub async fn migrate_delegations(
     // Without a hydrated account there is nowhere to retain, which is an
     // ordinary state rather than a failure: the certificate migration above
     // still stands on its own.
-    let Some(descriptor) = descriptor(profile, operator).await? else {
+    let Some(subject) = linked_account(profile, operator).await? else {
         return Ok(outcome);
     };
-    if !marker_matches(marker(profile, operator).await?.as_deref(), &descriptor) {
+    if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(outcome);
     }
     let account_root = match crate::identity::local_root_with_operator(profile, operator).await? {
@@ -407,13 +429,14 @@ pub async fn migrate_delegations(
             .context("stored root DID is invalid")?,
         None => return Ok(outcome),
     };
-    if account_repository_readability(store, descriptor.account_subject())
-        == tonk_account::Readability::Legacy
-    {
+    if account_repository_readability(store, &subject) == tonk_account::Readability::Legacy {
         outcome.account_legacy = true;
         return Ok(outcome);
     }
-    let repository = mount(profile, operator, &descriptor).await?;
+    let remote = account_remote_in(profile, operator, store)
+        .await?
+        .context("the linked account names no remote")?;
+    let repository = mount(profile, operator, &subject, &remote).await?;
     let branch = repository
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -599,13 +622,14 @@ async fn repoint_remote(
 async fn mount(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
+    remote: &str,
 ) -> Result<Repository<dialog_credentials::SignerCredential>> {
-    let subject = descriptor.account_subject().clone();
+    let subject = subject.clone();
     let repository = Repository::from(profile);
 
     trace("mount: loading remote record");
-    let address = SiteAddress::from(UcanAddress::new(descriptor.remote().as_str()));
+    let address = SiteAddress::from(UcanAddress::new(remote));
     let remote = match repository
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
@@ -739,7 +763,7 @@ async fn hydrate(
 async fn converge_account_union(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
-    descriptor: &AccountRepositoryDescriptorV1,
+    subject: &dialog_varsig::Did,
     branch: &dialog_repository::Branch,
 ) -> Result<bool> {
     let local_root = crate::identity::local_root_with_operator(profile, operator)
@@ -749,11 +773,11 @@ async fn converge_account_union(
         .root_did
         .parse()
         .context("stored account root DID is invalid")?;
-    if &root_did != descriptor.account_subject() {
+    if &root_did != subject {
         bail!(
             "stored account root {} does not match repository {}",
             root_did,
-            descriptor.account_subject()
+            subject
         );
     }
     let grant_bytes = hex::decode(&local_root.delegation_hex)
@@ -761,7 +785,7 @@ async fn converge_account_union(
     let inbound = crate::account::validate_account_grant(profile, &grant_bytes)
         .await
         .context("stored account-to-profile grant is invalid")?;
-    if inbound.issuer() != descriptor.account_subject()
+    if inbound.issuer() != subject
         || inbound.proof_cids()[0].to_string() != local_root.delegation_cid
     {
         bail!("stored account-to-profile grant does not match the local root");
@@ -848,14 +872,17 @@ pub async fn ensure_with_operator_and_store(
     store: crate::space::SpaceStore,
 ) -> Result<EnsureOutcome> {
     trace("ensure: start");
-    let Some(descriptor) = descriptor_in(profile, &operator, &store).await? else {
+    let Some(subject) = linked_account_in(profile, &operator, &store).await? else {
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Unconfigured,
             warning: None,
         });
     };
     trace("ensure: descriptor read");
-    let repository = mount(profile, &operator, &descriptor).await?;
+    let remote = account_remote_in(profile, &operator, &store)
+        .await?
+        .context("the linked account names no remote")?;
+    let repository = mount(profile, &operator, &subject, &remote).await?;
     trace("ensure: mounted");
     let operator =
         crate::account_authority::wrap(operator, profile.clone(), store.clone(), true).await?;
@@ -868,7 +895,7 @@ pub async fn ensure_with_operator_and_store(
         .context("failed to open account main branch")?;
     let already_ready = marker_matches(
         marker(profile, operator.local()).await?.as_deref(),
-        &descriptor,
+        &subject,
     );
     let mut warnings = Vec::new();
     let (status, may_push) = if already_ready {
@@ -891,7 +918,7 @@ pub async fn ensure_with_operator_and_store(
         match hydrate(&repository, &branch, &operator).await {
             Ok(()) => {
                 trace("ensure: first hydration finished");
-                save_marker(profile, operator.local(), &descriptor).await?;
+                save_marker(profile, operator.local(), &subject).await?;
                 trace("ensure: trusted-base marker saved");
                 (AccountStateStatus::Ready, true)
             }
@@ -913,9 +940,7 @@ pub async fn ensure_with_operator_and_store(
     }
     trace("ensure: account-access adoption finished");
 
-    if let Err(error) =
-        converge_account_union(profile, operator.local(), &descriptor, &branch).await
-    {
+    if let Err(error) = converge_account_union(profile, operator.local(), &subject, &branch).await {
         warnings.push(format!("account authority convergence failed: {error:#}"));
     }
 
@@ -969,17 +994,14 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_requires_the_exact_descriptor_hash() {
+        use dialog_varsig::Principal as _;
+
         let root = Ed25519Signer::import(&[7; 32]).await.unwrap();
-        let descriptor =
-            AccountRepositoryDescriptorV1::sign(&root, "https://accounts.example/ucan/")
-                .await
-                .unwrap();
-        assert!(marker_matches(
-            Some(&descriptor.content_hash()),
-            &descriptor
-        ));
-        assert!(!marker_matches(Some(&[8; 32]), &descriptor));
-        assert!(!marker_matches(None, &descriptor));
+        let subject = root.did();
+        let other = Ed25519Signer::import(&[8; 32]).await.unwrap().did();
+        assert!(marker_matches(Some(subject.as_str().as_bytes()), &subject));
+        assert!(!marker_matches(Some(other.as_str().as_bytes()), &subject));
+        assert!(!marker_matches(None, &subject));
     }
 
     /// Relinking must survive the provider address changing (local dev
@@ -1021,9 +1043,6 @@ mod tests {
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
         );
-        let live_descriptor = AccountRepositoryDescriptorV1::sign(&root, &live_remote)
-            .await
-            .unwrap();
         let root_did = root.did();
         let delegation =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did())
@@ -1049,18 +1068,12 @@ mod tests {
             store: &crate::space::SpaceStore,
             profile_name: &str,
             profile_dir: &Directory,
-            root_did: &dialog_varsig::Did,
-            descriptor_bytes: &[u8],
+            remote: &str,
             at: u64,
         ) {
-            let attachment = tonk_account::AccountProviderRecord::attach(
-                "https://accounts.example",
-                descriptor_bytes,
-                root_did,
-                at,
-            )
-            .await
-            .unwrap();
+            let attachment =
+                tonk_account::AccountProviderRecord::attach("https://accounts.example", remote, at)
+                    .unwrap();
             let operator = account_operator(profile, store, profile_name, profile_dir).await;
             profile
                 .credential()
@@ -1093,8 +1106,7 @@ mod tests {
             &store,
             &profile_name,
             &profile_dir,
-            &root_did,
-            live_descriptor.bytes(),
+            &live_remote,
             1,
         )
         .await;
@@ -1111,20 +1123,15 @@ mod tests {
             outcome.warning
         );
 
-        // The link moves to an unreachable provider address. The mount
-        // must follow the descriptor — the old strict-equality check
-        // errored here, permanently.
-        let moved_descriptor =
-            AccountRepositoryDescriptorV1::sign(&root, "http://127.0.0.1:9/ucan/")
-                .await
-                .unwrap();
+        // The link moves to an unreachable address. The mount must
+        // follow it — the old strict-equality check errored here,
+        // permanently.
         attach(
             &profile,
             &store,
             &profile_name,
             &profile_dir,
-            &root_did,
-            moved_descriptor.bytes(),
+            "http://127.0.0.1:9/ucan/",
             2,
         )
         .await;
@@ -1134,17 +1141,24 @@ mod tests {
         )
         .await
         .expect("a moved link must repoint, not refuse to mount");
-        assert_eq!(outcome.status, AccountStateStatus::Unhydrated);
+        // Still Ready: the trusted base names the account, and the
+        // account did not change — only where it syncs. What this test
+        // guards is that the remote repoints at all, which the assert
+        // below confirms by moving back to a live one and pulling.
+        assert_eq!(
+            outcome.status,
+            AccountStateStatus::Ready,
+            "ensure warning: {:?}",
+            outcome.warning
+        );
 
-        // Moving back to the live address recovers to Ready: the cell
-        // follows the descriptor in both directions.
+        // Moving back to the live address still mounts and pulls.
         attach(
             &profile,
             &store,
             &profile_name,
             &profile_dir,
-            &root_did,
-            live_descriptor.bytes(),
+            &live_remote,
             3,
         )
         .await;
@@ -1195,9 +1209,6 @@ mod tests {
             "{}/",
             service.address.access_service_url.trim_end_matches('/')
         );
-        let descriptor = AccountRepositoryDescriptorV1::sign(&root, &remote)
-            .await
-            .unwrap();
         let root_did = {
             use dialog_varsig::Principal as _;
             root.did()
@@ -1240,14 +1251,9 @@ mod tests {
             .perform(&account_operator)
             .await
             .unwrap();
-        let attachment = tonk_account::AccountProviderRecord::attach(
-            "https://accounts.example",
-            descriptor.bytes(),
-            &root_did,
-            1,
-        )
-        .await
-        .unwrap();
+        let attachment =
+            tonk_account::AccountProviderRecord::attach("https://accounts.example", &remote, 1)
+                .unwrap();
         profile
             .credential()
             .site(crate::account::ACCOUNT_LINK_SITE)
@@ -1256,12 +1262,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            super::descriptor(&profile, &account_operator)
+            super::linked_account(&profile, &account_operator)
                 .await
                 .unwrap()
-                .expect("a linked profile reads back the descriptor it stored")
-                .bytes(),
-            descriptor.bytes(),
+                .expect("a linked profile reads back the account it stored"),
+            root_did,
         );
 
         let ensure_operator = operator_with_profile(

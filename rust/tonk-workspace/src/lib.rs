@@ -45,6 +45,8 @@ mod ui_hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_mode_switch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod ui_space_remove;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_sync_status;
 
 /// `<tonk-sheet-binder>`, `<tonk-page>`, `<tonk-origin>`,
@@ -63,6 +65,7 @@ pub fn register() {
     ui_mode_switch::register();
     ui_copy_link::register();
     ui_hub_account::register();
+    ui_space_remove::register();
     default_remote::register();
     editable::register();
     join_retry::register();

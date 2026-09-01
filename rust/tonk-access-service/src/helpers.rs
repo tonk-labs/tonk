@@ -104,25 +104,29 @@ impl AccessServiceAddress {
     ) -> anyhow::Result<()> {
         use dialog_varsig::Principal as _;
 
-        let service = self
-            .service_did
-            .parse()
-            .map_err(|error| anyhow::anyhow!("the test service DID does not parse: {error:?}"))?;
         let device = dialog_credentials::Ed25519Signer::generate()
             .await
             .map_err(|error| anyhow::anyhow!("device signer: {error:?}"))?;
         let link =
             tonk_identity::delegation::mint_device_delegation(customer.clone(), &device.did())
                 .await?;
-        // The ceremony hands these back hex-encoded, for the JS bridge;
-        // the invocation builder takes the bytes themselves.
-        let deposits = tonk_identity::ceremony::mint_service_deposits(customer, &service)
-            .await?
-            .iter()
-            .map(hex::decode)
-            .collect::<Result<Vec<_>, _>>()?;
-        let container = tonk_identity::request::build_enroll_invocation_with_deposits(
-            device, &link, email, &deposits,
+        // No ceremony here, so the harness mints its own custody set:
+        // every enrollment must present one, and these tests are about
+        // the customer lifecycle rather than custody itself.
+        let custody_key = dialog_credentials::Ed25519Signer::generate()
+            .await
+            .map_err(|error| anyhow::anyhow!("custody signer: {error:?}"))?;
+        let custody = tonk_identity::request::mint_custody_material(
+            &custody_key,
+            &customer.did(),
+            b"sealed-account-secret".to_vec(),
+        )
+        .await?;
+        let container = tonk_identity::request::build_enroll_invocation(
+            device,
+            &link,
+            email,
+            &custody.borrow(),
         )
         .await?;
 
@@ -145,8 +149,10 @@ impl AccessServiceAddress {
 
     /// The confirmation half: present the invocation the activation email
     /// carries. It is complete and service-signed, so presenting it is
-    /// activating and no key is needed here.
-    async fn confirm_email(&self, email: &str) -> anyhow::Result<()> {
+    /// activating and no key is needed here. Public so a lifecycle test
+    /// can confirm at a chosen moment — "another device opened the
+    /// link" — rather than only as part of [`Self::activate_customer`].
+    pub async fn confirm_email(&self, email: &str) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
         let endpoint = self.ucan_endpoint();
         let inbox: Vec<(String, String)> = client

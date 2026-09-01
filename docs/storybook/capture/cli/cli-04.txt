@@ -6,7 +6,7 @@ Usage: tonk account [OPTIONS] [COMMAND]
 
 Commands:
   status   Show whether this device is signed in, and to which account
-  sync     Pull the account so devices, spots, and names read current facts
+  sync     Pull the account so devices, spaces, and names read current facts
   login    Sign in to your account with a synced passkey in the browser
   logout   Sign out of the account on this device
   delete   Review and permanently delete this account in the browser

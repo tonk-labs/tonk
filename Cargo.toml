@@ -4,7 +4,6 @@ members = [
   "rust/dialog-reactor",
   "rust/tonk-access-service",
   "rust/tonk-account",
-  "rust/tonk-account-service",
   "rust/tonk-analytics",
   "rust/tonk-analyzer",
   "rust/tonk-board",
@@ -40,7 +39,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.8"
+version = "0.6.10"
 authors = ["Tonk Labs"]
 edition = "2024"
 license = "MIT"
@@ -51,7 +50,6 @@ tracing-log = "0.2.0"
 dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
-tonk-account-service = { path = "./rust/tonk-account-service" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
 tonk-board = { path = "./rust/tonk-board" }
@@ -193,22 +191,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-28b" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-08-31" }
 
 [profile.dev]
 opt-level = 1

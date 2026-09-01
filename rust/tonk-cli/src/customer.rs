@@ -31,15 +31,15 @@ pub async fn access_origin_in(
     else {
         return Ok(None);
     };
-    let Some(descriptor) = provider.descriptor() else {
+    let Some(remote) = provider.remote() else {
         return Ok(None);
     };
-    let origin: Url = descriptor
-        .remote()
+    let remote: Url = remote.parse().context("the account remote is not a URL")?;
+    let origin: Url = remote
         .origin()
         .ascii_serialization()
         .parse()
-        .context("the account repository remote has no origin")?;
+        .context("the account remote has no origin")?;
     Ok(Some(origin))
 }
 

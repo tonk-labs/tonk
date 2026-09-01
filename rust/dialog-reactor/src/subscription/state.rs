@@ -13,7 +13,6 @@ use std::sync::Arc;
 use dialog_common::Blake3Hash;
 use dialog_query::ConceptQuery;
 use dialog_query::Parameters;
-use dialog_repository::Branch;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -125,10 +124,6 @@ pub struct Subscription {
     /// the poll runs it without a guard held across the `await` (see
     /// [`EngineSlot`]).
     pub engine: EngineSlot,
-    /// The plan the engine evaluates. Retained so replacing a cached branch
-    /// handle can rebuild the engine against the fresh handle rather than
-    /// moving an engine that still reads the discarded branch.
-    pub plan: tonk_schema::concept::QueryPlan,
     /// The query's term bindings, retained for
     /// [`project`](tonk_schema::conclusion::project)
     /// — the delta / snapshot rows are `ConceptConclusion`s that
@@ -139,17 +134,6 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Rebuild the evaluation engine against `branch` while keeping the open
-    /// downstream channels. Every subscriber becomes pending so the first poll
-    /// on the fresh handle sends a coherent snapshot rather than a delta based
-    /// on the discarded engine's retained results.
-    pub fn rebind(&mut self, branch: &Branch) {
-        self.engine = Arc::new(AsyncMutex::new(Some(branch.subscribe(self.plan.clone()))));
-        for subscriber in &mut self.subscribers {
-            subscriber.status = Status::Pending;
-        }
-    }
-
     /// Fan a poll's result out to every subscriber, advancing each to
     /// [`Established`](Status::Established) once served.
     ///

@@ -46,6 +46,25 @@ This is a source-derived presentation decision for `COLLAB-01`, `WEB-04`, and
 `WEB-05`, pinned to `a3f8657d3`. No FABB screenshot was recaptured, so the
 existing images retain their older visual provenance.
 
+### Space-switcher and absent-space presentation decision
+
+The FABB space switcher reads the convergent account space directory, not the
+device-specific replica index. It lists each non-active directory entry once,
+uses the directory's mirrored name so an unreplicated space is still legible,
+and keeps the existing seven-row limit with `more` as the path to the complete
+Hub directory.
+
+Opening a space that is neither local nor accessible leaves the FABB available
+as the route to those other spaces and replaces the old generic centered alert
+with the same stone/ink edge wall used by the join ceremony. The state carries
+the Tonk wordmark, a plainly worded explanation, and a 40px desktop/44px compact
+join action; light/dark palette, keyboard focus, reduced motion, and tactile
+press behavior follow the surrounding Rust UI contract.
+
+This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
+`WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
+cover the authored contract; running-product browser evidence remains distinct.
+
 ## The interaction, event by event
 
 ```mermaid
@@ -79,9 +98,15 @@ local onboarding account. A valid active account selects passkey-account
 ownership, but customer/provider readiness still controls whether hosting
 settles immediately.
 
-`space link` resolves one local-only registered space and the one active
-account. Already-owned, joined, foreign-owned, missing, or signed-out targets
-are rejected before ownership mutation.
+`space link` resolves one registered space and the active account for that
+space's exact profile. The profile must report the same registered account root
+as the local account record. A space already owned by that root is a resumable
+link; joined, foreign-owned, missing, signed-out, or mismatched-account targets
+are rejected before ownership mutation. Before the first ownership transition,
+recorded invitations for the exact repository and durable non-owner members
+also block linking. Once same-account ownership and authority agree, later
+shares do not prevent an interrupted link from resuming, but an upstream for a
+different content service still does.
 
 Invite creation resolves the selected repository, its upstream and named
 remotes, invite kind, link origin, remote embedding, and shortening policy.
@@ -91,9 +116,11 @@ name, and collisions before registration.
 ### Exit early
 
 List, status, help, dry-run, and notation-preview paths do not mutate the space.
-`space rm` confirmation decline, `space unbind` with no exact binding, identical
-data writes, already-configured idempotent migrations, and rejected ownership
-changes finish without unrelated writes.
+`space rm` confirmation decline, Hub removal cancellation, `space unbind` with
+no exact binding, identical data writes, already-configured idempotent
+migrations, and rejected ownership changes finish without unrelated writes. In
+the Hub, Escape closes the confirmation and restores focus to the remove action
+for the same row.
 
 Invalid names, missing selection, stale bindings, ambiguous account-space
 names, invalid invite URLs/DIDs, wrong recipients, absent upstreams, and
@@ -112,6 +139,12 @@ configure remote/upstream, and synchronize. Remote acceptance can precede a
 lost response. Retry must recognize the same repository subject and never
 create a second logical space or transfer foreign ownership.
 
+> **Technical note:** If the profile that created a local repository is no
+> longer available, link recovery may derive the account-root delegation only
+> from that repository's retained Ed25519 signer. Tonk validates and persists
+> the recovered prefix before using it for provisioning; a repository without
+> its signer remains un-linkable through this recovery path.
+
 Invite minting crosses an authority boundary when the delegation is minted and
 may cross remote boundaries when it pushes the repository or shortens the URL.
 Joining crosses a boundary when the recipient redelegates/retains the claim and
@@ -119,9 +152,10 @@ registers the repository locally. Revocation crosses when the immutable
 revocation is published, not when a local UI row disappears.
 
 Local `space rm` crosses a filesystem boundary; `--keep-data` deliberately
-crosses only registry/binding boundaries. Hosted-space deletion crosses an
-account-service boundary for an exact repository subject and is described with
-account deletion review.
+crosses only registry/binding boundaries. The Hub crosses the same local
+removal boundary only when the confirmation action for that row is submitted.
+Hosted-space deletion crosses an account-service boundary for an exact
+repository subject and is described with account deletion review.
 
 ### Remain in flight
 
@@ -142,7 +176,9 @@ locks and compare the target repository/head rather than display name alone.
 
 Local creation settles with one site, one registration, and the intended
 binding. Account-owned creation or link settles only when ownership is durable
-and any deferred hosting/sync state is explicit. Another device must be able to
+and any deferred hosting/sync state is explicit. A same-account retry continues
+the idempotent provisioning, custody, sync, and account-directory work even if
+an invite was minted after ownership committed. Another device must be able to
 discover the exact repository subject through the account directory.
 
 Join settles with authority addressed to the local onboarding account and a
@@ -158,7 +194,8 @@ not permission to rewrite refs.
 Unbind settles with data and registration unchanged. `rm --keep-data` settles
 with an adoptable, unregistered site. Destructive local removal settles only
 after data and registry/binding state agree, or reports an explicit partial
-state that recovery can inspect.
+state that recovery can inspect. A successful Hub confirmation removes the
+exact subject from the profile listing and then removes its row from the Hub.
 
 ## Modifiers
 
@@ -225,6 +262,9 @@ URLs, DIDs, data, or argument values.
 - Signed-in new space while customer activation is pending: ownership can be
   durable before hosting is available.
 - `space link` retries after ownership committed but provider response was lost.
+- The creating profile is gone, but the local repository retains its signer.
+- An invite is minted after ownership commits but before account publication
+  settles; retry must preserve the invite and finish publication.
 - Same local label maps to a different repository subject in an account.
 - Account directory has duplicate display names; pull by name is ambiguous.
 - Pull fetches data but crashes before registry/binding creation.

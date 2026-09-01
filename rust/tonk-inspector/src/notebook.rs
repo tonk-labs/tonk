@@ -423,7 +423,7 @@ fn mount(
         {
             return;
         }
-        let Some((repo, branch)) = resolve_context(this) else {
+        let Some(context) = resolve_context(this) else {
             this.set_inner_html(
                 "<div class=\"tonk-notebook\">\
                    <section class=\"error\">no repository in context \
@@ -500,8 +500,8 @@ fn mount(
         let notebook = Rc::new(Notebook {
             host: this.clone(),
             prose,
-            repo,
-            branch,
+            repo: context.repo,
+            branch: context.branch,
             closures: closures.clone(),
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),

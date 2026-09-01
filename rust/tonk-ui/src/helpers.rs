@@ -9,8 +9,6 @@ pub struct TestEnvironment {
     pub tonk_web: Url,
     /// URL of the ChromeDriver server.
     pub chromedriver: Url,
-    /// Base URL of the live native account service.
-    pub account_service: Url,
     /// Base URL of the live native access service, reached directly
     /// (unproxied) for test inspection such as captured activation emails.
     pub access_service: Url,
@@ -19,6 +17,8 @@ pub struct TestEnvironment {
     /// mints its own CA, so a single `SSL_CERT_FILE` would leave
     /// concurrent runs trusting whichever one started last.
     pub ca_certificate: Option<std::path::PathBuf>,
+    /// Writable per-harness copy of the otherwise immutable service-worker script.
+    pub service_worker_script: std::path::PathBuf,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,7 +36,6 @@ mod native {
         CapabilitiesHelper, ChromiumLikeCapabilities, DesiredCapabilities, WebDriver,
     };
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
-    use tonk_account_service::helpers::AccountServer;
     use tonk_worker_api::DeploymentConfig;
     use url::Url;
 
@@ -231,31 +230,24 @@ mod native {
         chromedriver: ManagedChild,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
-        account_service: Option<AccountServer>,
     }
 
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
         ///
         /// Startup order:
-        /// 1. Start the account service
-        /// 2. Start the access service with deployment discovery configured
-        /// 3. Start Caddy web server with access service port
-        /// 4. Start ChromeDriver
+        /// 1. Start the access service with deployment discovery configured
+        /// 2. Start Caddy web server with access service port
+        /// 3. Start ChromeDriver
         pub async fn start() -> Result<(Self, TestEnvironment)> {
-            let account_service = AccountServer::start().await;
-            let account_service_url = Url::parse(&account_service.endpoint)?;
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
             // access service's own port.
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
             let settings = AccessServiceSettings {
-                deployment: Some(DeploymentConfig {
-                    account_service_url: account_service_url.clone(),
-                    // Filled in by the server with its own generated identity.
-                    service_did: None,
-                }),
+                // The identity is filled in by the server itself.
+                deployment: Some(DeploymentConfig::default()),
                 public_origin: Some(format!("https://tonk.network:{web_port}")),
                 ..Default::default()
             };
@@ -268,14 +260,25 @@ mod native {
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
             let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
             std::fs::create_dir_all(&caddy_data)?;
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(std::path::Path::parent)
+                .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
+            let test_server = format!("path:{}#tonk-ui-test-server", workspace.display());
+            let service_worker_root = caddy_data.join("service-worker");
+            std::fs::create_dir_all(&service_worker_root)?;
+            let service_worker_script = service_worker_root.join("service_worker.js");
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
                         "run",
-                        ".#tonk-ui-test-server",
+                        &test_server,
                         "--",
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
+                        service_worker_root
+                            .to_str()
+                            .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
                     ])
                     // Pin Caddy's data dir so its per-run internal CA
                     // root lands at a knowable path: it rides on
@@ -388,14 +391,13 @@ mod native {
                     web_server,
                     chromedriver,
                     access_service: Some(access_service),
-                    account_service: Some(account_service),
                 },
                 TestEnvironment {
                     tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
-                    account_service: account_service_url,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
+                    service_worker_script,
                 },
             ))
         }
@@ -409,9 +411,6 @@ mod native {
             } else {
                 Ok(())
             };
-            if let Some(account_service) = self.account_service.take() {
-                account_service.stop().await;
-            }
             web_result?;
             chromedriver_result?;
             access_result?;
@@ -426,7 +425,6 @@ mod native {
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
-            self.account_service.take();
         }
     }
 

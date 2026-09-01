@@ -1,47 +1,128 @@
-//! [`CustodiedSeed`] — a space or invite seed sealed to an account.
+//! Sealed material: a message only its recipient can open, and a
+//! principal whose seed one of those messages carries.
 
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::custody::{Account, Cell, Kind, Recipient, Sealed, Subject};
+use crate::domain::custody::{Kind, Message, Seed, Sender, To};
 use crate::prelude::*;
 
-/// A seed sealed to one recipient for one subject, in the account space.
+/// Ciphertext only its recipient can open.
 ///
-/// The `this` entity is content-derived from the `(subject, recipient)`
-/// pair, so re-sealing the same seed to the same account converges on
-/// one row, while rotation adds a row for the new recipient and retracts
-/// the old one rather than overwriting in place. Sealing a space seed to
-/// another account (an admin as recovery custodian) is another row with
-/// another recipient, no schema change.
+/// The entity is derived from the MESSAGE itself, not from the parties.
+/// Sealing is randomized — a fresh ephemeral key and nonce per call — so
+/// sealing the same plaintext twice yields different bytes and therefore a
+/// different entity. That is deliberate: the row identifies THIS envelope,
+/// so a re-seal adds a row rather than silently replacing what it
+/// supersedes, and rotation retracts the old one explicitly.
 ///
-/// `subject`, `kind`, and `recipient` repeat the hash inputs as
-/// queryable attributes: rotation enumerates everything sealed to the
-/// old recipient, and a recovering device finds the seed for a space
-/// without knowing the entity. The sealed bytes are a
-/// `tonk_identity::sealed::Sealed` envelope, which binds the recipient
-/// and subject DIDs as associated data, so a row cannot be re-pointed.
+/// Deliberately general — nothing here is about accounts or seeds. What a
+/// particular envelope CONTAINS is said by whatever points at it: a
+/// [`SecretPrincipal`] names its seed this way.
 ///
-/// The seed sits beside the ownership delegation rather than on it: the
-/// delegation says who may act for the space, the seed says how to
-/// re-issue it. Design: `plan/authority-facts.md`, "Wrapped keys".
+/// The bytes are a `tonk_identity::sealed::Sealed` envelope, which binds
+/// the recipient and subject DIDs as associated data, so an envelope cannot
+/// be re-pointed at another recipient by moving the row.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustodiedSeed {
-    /// The row's entity. Derived from `(subject, recipient)`.
+pub struct SecretMessage {
+    /// The row's entity. Derived from the sealed bytes.
     pub this: Entity,
-    /// The DID the seed derives.
-    pub subject: Subject,
-    /// What the subject is: [`SeedKind::Space`] or [`SeedKind::Invite`].
-    pub kind: Kind,
-    /// The X25519 `did:key` the seed is sealed to.
-    pub recipient: Recipient,
-    /// The sealed envelope bytes.
-    pub sealed: Sealed,
+    /// Who can open it: the X25519 `did:key` the bytes were sealed to.
+    pub to: To,
+    /// The sealed bytes.
+    pub message: Message,
+    /// Who sealed it, when that is known. Optional because most sealing
+    /// has no meaningful sender: a seed sealed to a recipient is just
+    /// custody, and naming a sender would invent an author the seal does
+    /// not bind. Description, never authority — the seal itself binds
+    /// recipient and subject as associated data.
+    pub from: Option<Sender>,
 }
 
-/// What a custodied seed derives.
+/// Hash input for [`SecretMessage::this`]. Single-variant enum tags the
+/// CBOR encoding with the concept name so equal field data under a
+/// different concept hashes differently.
+#[derive(Debug, Clone, Serialize)]
+enum This<'a> {
+    SecretMessage { message: &'a [u8] },
+}
+
+impl SecretMessage {
+    /// A message sealed to `to`, carrying `message`.
+    pub fn new(to: &Did, message: Vec<u8>) -> Self {
+        Self {
+            this: Entity::of(&This::SecretMessage { message: &message }),
+            to: To(to.this()),
+            message: Message(message),
+            from: None,
+        }
+    }
+
+    /// The same message, recording who sealed it.
+    pub fn sealed_by(mut self, from: &Did) -> Self {
+        self.from = Some(Sender(from.this()));
+        self
+    }
+
+    /// The row's entity.
+    pub fn this(&self) -> &Entity {
+        &self.this
+    }
+}
+
+impl AsRef<Entity> for SecretMessage {
+    fn as_ref(&self) -> &Entity {
+        &self.this
+    }
+}
+
+/// A principal whose ed25519 seed is held sealed, so it can be re-derived.
+///
+/// The entity is the principal's own DID. One row per principal, which is
+/// the thing being described: `seed` points at the [`SecretMessage`]
+/// carrying it, and that message already names its recipient. Sealing the
+/// same seed to a second recipient (an admin as recovery custodian) adds a
+/// second message and a second row here — the entity carries no recipient,
+/// so nothing collides.
+///
+/// The seed sits beside the ownership delegation rather than on it: the
+/// delegation says who may act for the space, the seed says how to re-issue
+/// it. Design: `plan/authority-facts.md`, "Wrapped keys".
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SecretPrincipal {
+    /// The principal's DID.
+    pub this: Entity,
+    /// What this principal is: [`SeedKind::Space`] or [`SeedKind::Invite`].
+    pub kind: Kind,
+    /// The [`SecretMessage`] whose plaintext is this principal's seed.
+    pub seed: Seed,
+}
+
+impl SecretPrincipal {
+    /// Record that `subject`'s seed is carried by the message at `seed`.
+    pub fn new(subject: &Did, kind: SeedKind, seed: &Entity) -> Self {
+        Self {
+            this: subject.this(),
+            kind: kind.kind(),
+            seed: Seed(seed.clone()),
+        }
+    }
+
+    /// The principal's entity.
+    pub fn this(&self) -> &Entity {
+        &self.this
+    }
+}
+
+impl AsRef<Entity> for SecretPrincipal {
+    fn as_ref(&self) -> &Entity {
+        &self.this
+    }
+}
+
+/// What a sealed seed derives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedKind {
     /// A space's signing key.
@@ -69,43 +150,14 @@ impl SeedKind {
     pub fn kind(self) -> Kind {
         Kind(self.uri().parse().expect("a constant kind URI parses"))
     }
-}
 
-/// Hash input for [`CustodiedSeed::this`]. Single-variant enum tags the
-/// CBOR encoding with the concept name so equal field data under a
-/// different concept hashes differently.
-#[derive(Debug, Clone, Serialize)]
-enum This<'a> {
-    CustodiedSeed {
-        subject: &'a Did,
-        recipient: &'a Did,
-    },
-}
-
-impl CustodiedSeed {
-    /// A seed for `subject`, sealed to `recipient`.
-    pub fn new(subject: Did, kind: SeedKind, recipient: Did, sealed: Vec<u8>) -> Self {
-        Self {
-            this: Entity::of(&This::CustodiedSeed {
-                subject: &subject,
-                recipient: &recipient,
-            }),
-            subject: Subject(subject.this()),
-            kind: kind.kind(),
-            recipient: Recipient(recipient.this()),
-            sealed: Sealed(sealed),
+    /// The kind a stored URI names.
+    pub fn parse(uri: &str) -> Option<Self> {
+        match uri {
+            Self::SPACE => Some(Self::Space),
+            Self::INVITE => Some(Self::Invite),
+            _ => None,
         }
-    }
-
-    /// The row's entity.
-    pub fn this(&self) -> &Entity {
-        &self.this
-    }
-}
-
-impl AsRef<Entity> for CustodiedSeed {
-    fn as_ref(&self) -> &Entity {
-        &self.this
     }
 }
 
@@ -121,133 +173,152 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// The message's entity is its bytes, so identical ciphertext is one
+    /// row and different ciphertext is two — even to the same recipient.
     #[dialog_common::test]
-    fn it_derives_the_same_entity_for_the_same_subject_and_recipient() {
-        let a = CustodiedSeed::new(did!("test:s"), SeedKind::Space, did!("test:r"), vec![1]);
-        let b = CustodiedSeed::new(did!("test:s"), SeedKind::Space, did!("test:r"), vec![2]);
-        assert_eq!(a.this, b.this);
+    fn it_keys_a_message_on_its_bytes() {
+        let to = did!("test:r");
+        let a = SecretMessage::new(&to, vec![1, 2, 3]);
+        let b = SecretMessage::new(&to, vec![1, 2, 3]);
+        let c = SecretMessage::new(&to, vec![4, 5, 6]);
+        assert_eq!(a.this, b.this, "the same envelope is one row");
+        assert_ne!(a.this, c.this, "a different envelope is another row");
     }
 
+    /// A principal is keyed on its own DID, so re-sealing its seed to a
+    /// new recipient re-points one row rather than adding a second.
     #[dialog_common::test]
-    fn it_derives_different_entities_per_recipient_and_subject() {
-        let base = CustodiedSeed::new(did!("test:s"), SeedKind::Space, did!("test:r1"), vec![]);
-        let other_recipient =
-            CustodiedSeed::new(did!("test:s"), SeedKind::Space, did!("test:r2"), vec![]);
-        let other_subject =
-            CustodiedSeed::new(did!("test:s2"), SeedKind::Space, did!("test:r1"), vec![]);
-        assert_ne!(base.this, other_recipient.this);
-        assert_ne!(base.this, other_subject.this);
+    fn it_keys_a_principal_on_its_did() {
+        let subject = did!("test:s");
+        let first = SecretMessage::new(&did!("test:r1"), vec![1]);
+        let second = SecretMessage::new(&did!("test:r2"), vec![2]);
+        let a = SecretPrincipal::new(&subject, SeedKind::Space, first.this());
+        let b = SecretPrincipal::new(&subject, SeedKind::Space, second.this());
+        assert_eq!(a.this, subject.this());
+        assert_eq!(a.this, b.this, "one principal is one row");
+        assert_ne!(a.seed.0, b.seed.0, "each names its own message");
     }
 
+    /// The pair round-trips: a principal is found by its DID, and the
+    /// message it names is found by the entity it points at.
     #[dialog_common::test]
-    fn it_reflects_the_inputs_as_attributes() {
-        let row = CustodiedSeed::new(
-            did!("test:space"),
-            SeedKind::Invite,
-            did!("test:recipient"),
-            vec![7, 8],
-        );
-        assert_eq!(row.subject.0.to_string(), "did:test:space");
-        assert_eq!(row.recipient.0.to_string(), "did:test:recipient");
-        assert_eq!(row.kind.0.to_string(), SeedKind::INVITE);
-        assert_eq!(row.sealed.0, vec![7, 8]);
-    }
-
-    #[dialog_common::test]
-    async fn it_round_trips_through_a_branch_and_finds_rows_by_recipient() -> Result<()> {
+    async fn it_finds_a_principals_seed_through_the_message_it_names() -> Result<()> {
         let (operator, profile) = helpers::test_operator_with_profile().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
+        let subject = did!("test:space");
+        let recipient = did!("test:recipient");
 
-        let old = did!("test:old-recipient");
-        let new = did!("test:new-recipient");
+        let message = SecretMessage::new(&recipient, vec![9, 9, 9]);
         branch
             .transaction()
-            .assert(CustodiedSeed::new(
-                did!("test:space-a"),
+            .assert(message.clone())
+            .assert(SecretPrincipal::new(
+                &subject,
                 SeedKind::Space,
-                old.clone(),
-                vec![1],
-            ))
-            .assert(CustodiedSeed::new(
-                did!("test:space-b"),
-                SeedKind::Space,
-                old.clone(),
-                vec![2],
-            ))
-            .assert(CustodiedSeed::new(
-                did!("test:space-a"),
-                SeedKind::Space,
-                new.clone(),
-                vec![3],
+                message.this(),
             ))
             .commit()
             .perform(&operator)
             .await?;
 
-        let sealed_to_old: Vec<CustodiedSeed> = branch
+        let principals: Vec<SecretPrincipal> = branch
             .query()
-            .select(Query::<CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::var("subject"),
+            .select(Query::<SecretPrincipal> {
+                this: Term::from(subject.this()),
                 kind: Term::var("kind"),
-                recipient: Term::from(Recipient(old.this())),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&operator)
             .try_vec()
             .await?;
-        let mut subjects: Vec<String> = sealed_to_old
-            .iter()
-            .map(|row| row.subject.0.to_string())
-            .collect();
-        subjects.sort();
-        assert_eq!(subjects, vec!["did:test:space-a", "did:test:space-b"]);
+        assert_eq!(principals.len(), 1);
+        assert_eq!(principals[0].kind.0.to_string(), SeedKind::SPACE);
 
-        let for_space_a: Vec<CustodiedSeed> = branch
+        let messages: Vec<SecretMessage> = branch
             .query()
-            .select(Query::<CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::from(Subject(did!("test:space-a").this())),
-                kind: Term::var("kind"),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+            .select(Query::<SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
             })
             .perform(&operator)
             .try_vec()
             .await?;
-        assert_eq!(for_space_a.len(), 2, "one row per recipient");
+        assert_eq!(messages.len(), 1, "the principal names a real message");
+        assert_eq!(messages[0].message.0, vec![9, 9, 9]);
+        assert_eq!(messages[0].to.0, recipient.this());
         Ok(())
     }
-}
 
-/// A passkey's custody cell, recorded in the account space beside the
-/// vault copy.
-///
-/// The cell is the account secret sealed under one passkey's KEK
-/// (`tonk_identity::envelope::Envelope`) — ciphertext only a fresh
-/// assertion of that passkey can open. The vault copy bootstraps a
-/// brand-new browser, which has no profile branch yet; this row rides
-/// the account's own sync, so every device already holding the profile
-/// carries the recovery envelope too.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustodyCell {
-    /// The custody space's DID — the passkey-derived principal.
-    pub this: Entity,
-    /// The account this cell recovers.
-    pub account: Account,
-    /// The sealed envelope bytes.
-    pub cell: Cell,
-}
+    /// Everything addressed to one recipient is enumerable without
+    /// knowing which principals they belong to — the query rotation runs.
+    #[dialog_common::test]
+    async fn it_lists_every_message_sealed_to_one_recipient() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let mine = did!("test:mine");
+        let theirs = did!("test:theirs");
 
-impl CustodyCell {
-    /// Record `cell` as `custody`'s envelope for `account`.
-    pub fn new(custody: Did, account: Did, cell: Vec<u8>) -> Self {
-        Self {
-            this: custody.this(),
-            account: Account(account.this()),
-            cell: Cell(cell),
-        }
+        branch
+            .transaction()
+            .assert(SecretMessage::new(&mine, vec![1]))
+            .assert(SecretMessage::new(&mine, vec![2]))
+            .assert(SecretMessage::new(&theirs, vec![3]))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let rows: Vec<SecretMessage> = branch
+            .query()
+            .select(Query::<SecretMessage> {
+                this: Term::var("this"),
+                to: Term::from(To(mine.this())),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let mut got: Vec<Vec<u8>> = rows.into_iter().map(|row| row.message.0).collect();
+        got.sort();
+        assert_eq!(got, vec![vec![1], vec![2]], "only what is sealed to me");
+        Ok(())
+    }
+
+    /// Sealing the same seed to a second recipient adds a second message
+    /// and a second principal row — the recovery-custodian case. The
+    /// principal entity carries no recipient, so nothing collides.
+    #[dialog_common::test]
+    async fn it_seals_one_seed_to_two_recipients() -> Result<()> {
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository.branch("main").open().perform(&operator).await?;
+        let subject = did!("test:space");
+
+        let to_me = SecretMessage::new(&did!("test:me"), vec![1]);
+        let to_admin = SecretMessage::new(&did!("test:admin"), vec![2]);
+        branch
+            .transaction()
+            .assert(to_me.clone())
+            .assert(to_admin.clone())
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        assert_ne!(
+            to_me.this, to_admin.this,
+            "two seals of one seed are two messages"
+        );
+        assert_eq!(
+            SecretPrincipal::new(&subject, SeedKind::Space, to_me.this()).this,
+            SecretPrincipal::new(&subject, SeedKind::Space, to_admin.this()).this,
+            "and one principal, whichever message it currently names"
+        );
+        Ok(())
     }
 }
 
@@ -270,32 +341,33 @@ pub enum RotateError {
     Read(String),
 }
 
-/// Rotate every custodied seed sealed to `old` onto `new`, on `branch`.
+/// Rotate every sealed seed addressed to `old` onto `new`, on `branch`.
 ///
 /// This is the shared rotation core: the worker runs it when a passkey
 /// account arrives on a device that onboarded locally, and the CLI runs
 /// it at `tonk account login` — one implementation, so the two adapters
 /// cannot drift. Per seed the core opens with the old key, derives and
 /// verifies the signer, seals to the new recipient, and hands the
-/// adapter both the derived signer and the exact row replacement (the
-/// old row to retract, the new row to assert). The adapter re-issues —
-/// chains, prefixes, retention, provisioning — and commits the
-/// replacement through its own branch handle, because its re-issue
-/// writes advance the branch underneath any handle the core could hold.
+/// adapter both the derived signer and the exact replacement rows (the
+/// old message to retract, the new message and principal to assert). The
+/// adapter re-issues — chains, prefixes, retention, provisioning — and
+/// commits the replacement through its own branch handle, because its
+/// re-issue writes advance the branch underneath any handle the core
+/// could hold.
 ///
 /// Best-effort per seed: a seed that fails to open, verify, or reissue
 /// is recorded in [`Rotation::failures`] and left sealed to the old
 /// recipient, so a later pass resumes exactly where this one stopped.
 pub async fn rotate<Env>(
     branch: &dialog_repository::Branch,
-    old: &tonk_identity::sealed::EncryptionKey,
-    new: &tonk_identity::sealed::RecipientKey,
+    old: tonk_identity::sealed::AccountSecretKey<'_>,
+    new: impl Into<tonk_identity::sealed::AccountSeal>,
     env: &Env,
     mut reissue: impl AsyncFnMut(
         SeedKind,
         dialog_credentials::Ed25519Signer,
-        &CustodiedSeed,
-        CustodiedSeed,
+        &SecretMessage,
+        Replacement,
     ) -> Result<(), String>,
 ) -> Result<Rotation, RotateError>
 where
@@ -314,16 +386,32 @@ where
         + 'static,
 {
     use dialog_query::{Output as _, Query, Term};
+    use dialog_varsig::Principal as _;
 
-    let old_recipient = old.recipient().did();
-    let rows: Vec<CustodiedSeed> = branch
+    let new = new.into();
+    let old_recipient = old.did();
+
+    // Every principal whose seed is carried by a message addressed to the
+    // old recipient. Two queries rather than one join: a principal names
+    // its message, and the message names who can open it.
+    let principals: Vec<SecretPrincipal> = branch
         .query()
-        .select(Query::<CustodiedSeed> {
+        .select(Query::<SecretPrincipal> {
             this: Term::var("this"),
-            subject: Term::var("subject"),
             kind: Term::var("kind"),
-            recipient: Term::from(Recipient(old_recipient.this())),
-            sealed: Term::var("sealed"),
+            seed: Term::var("seed"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| RotateError::Read(format!("{error:?}")))?;
+    let messages: Vec<SecretMessage> = branch
+        .query()
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::from(To(old_recipient.this())),
+            message: Term::var("message"),
+            from: Term::var("from"),
         })
         .perform(env)
         .try_vec()
@@ -331,18 +419,22 @@ where
         .map_err(|error| RotateError::Read(format!("{error:?}")))?;
 
     let mut rotation = Rotation::default();
-    for row in rows {
-        let subject: Did = match row.subject.0.to_string().parse() {
+    for principal in principals {
+        let Some(message) = messages.iter().find(|row| row.this == principal.seed.0) else {
+            // Its seed is sealed to someone else; not this pass's work.
+            continue;
+        };
+        let subject: Did = match principal.this.to_string().parse() {
             Ok(subject) => subject,
             Err(error) => {
                 rotation.failures.push((
                     old_recipient.clone(),
-                    format!("custodied subject is not a DID: {error}"),
+                    format!("sealed principal is not a DID: {error}"),
                 ));
                 continue;
             }
         };
-        match rotate_seed(old, new, &mut reissue, &subject, &row).await {
+        match rotate_seed(old, new, &mut reissue, &subject, &principal, message).await {
             Ok(()) => rotation.rotated.push(subject),
             Err(reason) => rotation.failures.push((subject, reason)),
         }
@@ -350,40 +442,55 @@ where
     Ok(rotation)
 }
 
+/// The rows that replace one rotated seed: a message sealed to the new
+/// recipient, and the principal naming it.
+///
+/// Both are asserted together — a principal pointing at a message that was
+/// never written would be a seed nothing can open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replacement {
+    /// The re-sealed message.
+    pub message: SecretMessage,
+    /// The principal, re-pointed at that message.
+    pub principal: SecretPrincipal,
+}
+
 async fn rotate_seed(
-    old: &tonk_identity::sealed::EncryptionKey,
-    new: &tonk_identity::sealed::RecipientKey,
+    old: tonk_identity::sealed::AccountSecretKey<'_>,
+    new: tonk_identity::sealed::AccountSeal,
     reissue: &mut impl AsyncFnMut(
         SeedKind,
         dialog_credentials::Ed25519Signer,
-        &CustodiedSeed,
-        CustodiedSeed,
+        &SecretMessage,
+        Replacement,
     ) -> Result<(), String>,
     subject: &Did,
-    row: &CustodiedSeed,
+    principal: &SecretPrincipal,
+    message: &SecretMessage,
 ) -> Result<(), String> {
     use dialog_varsig::Principal as _;
 
-    let kind = match row.kind.0.to_string().as_str() {
-        SeedKind::SPACE => SeedKind::Space,
-        SeedKind::INVITE => SeedKind::Invite,
-        other => return Err(format!("unknown seed kind {other}")),
-    };
-    let sealed =
-        tonk_identity::sealed::Sealed::decode(&row.sealed.0).map_err(|error| error.to_string())?;
+    let kind = SeedKind::parse(&principal.kind.0.to_string())
+        .ok_or_else(|| format!("unknown seed kind {}", principal.kind.0))?;
+    let sealed = tonk_identity::sealed::Sealed::decode(&message.message.0)
+        .map_err(|error| error.to_string())?;
     let seed = old
-        .open(&sealed, subject)
+        .reveal(&sealed, subject)
         .map_err(|error| error.to_string())?;
     let signer = dialog_credentials::Ed25519Signer::import(&*seed)
         .await
         .map_err(|error| format!("{error:?}"))?;
     if signer.did() != *subject {
-        return Err(format!("the custodied seed derives {}", signer.did()));
+        return Err(format!("the sealed seed derives {}", signer.did()));
     }
     let resealed = new
-        .seal(&seed, subject)
+        .conceal(&seed, subject)
         .map_err(|error| format!("reseal: {error}"))?
         .encode();
-    let replacement = CustodiedSeed::new(subject.clone(), kind, new.did(), resealed);
-    reissue(kind, signer, row, replacement).await
+    let replacement_message = SecretMessage::new(&new.did(), resealed);
+    let replacement = Replacement {
+        principal: SecretPrincipal::new(subject, kind, replacement_message.this()),
+        message: replacement_message,
+    };
+    reissue(kind, signer, message, replacement).await
 }

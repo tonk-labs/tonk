@@ -1,6 +1,6 @@
 //! Returning a signed-in user to where they came from.
 //!
-//! The account page is a top-document route, so opening it leaves the spot
+//! The account page is a top-document route, so opening it leaves the space
 //! the user was on. Whoever sends them there carries `next`, a host-relative
 //! path to return to; the account element reads it back through
 //! [`requested_next`] once its ceremony completes.

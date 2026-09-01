@@ -501,7 +501,7 @@ enum AccountCommand {
         json: bool,
     },
 
-    /// Pull the account so devices, spots, and names read current facts
+    /// Pull the account so devices, spaces, and names read current facts
     ///
     /// Read commands answer instantly from what this device already
     /// knows; this is the one that fetches what other devices changed.
@@ -1173,7 +1173,16 @@ fn uses_active_space(command: &Command) -> bool {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) if error.to_string().to_ascii_lowercase().contains("spot") => {
+            eprintln!(
+                "error: a retired space command or option was supplied; use `tonk space --help`"
+            );
+            std::process::exit(ExitCode::ParseError.into_raw());
+        }
+        Err(error) => error.exit(),
+    };
     let Some(command) = cli.command else {
         print!("{CLI_INDEX}");
         return;
@@ -1183,7 +1192,9 @@ async fn main() {
         ("TONK_SPOTS_STATE", "TONK_SPACES_STATE"),
     ] {
         if std::env::var_os(retired).is_some() {
-            eprintln!("error: {retired} was removed; use {replacement}");
+            eprintln!(
+                "error: a retired space environment variable is set; unset it and use {replacement}"
+            );
             std::process::exit(ExitCode::ParseError.into_raw());
         }
     }
@@ -1676,12 +1687,9 @@ async fn link_account(
     .await
     {
         Ok(outcome) => {
-            // Matched against the provider the page delivered rather than
-            // the flag: the ceremony records whichever service its own
-            // deployment named, while the flag's default says production
-            // wherever it ran.
-            let discovery =
-                tonk_cli::deployment::discover(&ceremony_page, &outcome.service_url).await;
+            // The deployment that served the ceremony page is the one
+            // whose endpoints this account uses.
+            let discovery = tonk_cli::deployment::discover(&ceremony_page).await;
             let record = tonk_cli::deployment::account_record(
                 &outcome.root_did,
                 &ceremony_page,
@@ -2044,7 +2052,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             // provisioned, pushed, and listed for the account's other
             // devices. Signed out, it is local-only until `tonk space link`
             // says otherwise.
-            let account = match account_for_new_space(&store) {
+            let account = match account_for_new_space(&store).await {
                 Ok(account) => account,
                 Err(exit) => return exit,
             };
@@ -2198,7 +2206,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
 /// a quiet fallback to local-only: creating a local space when the user
 /// expects an account-owned one is exactly the surprise `tonk space link`
 /// exists to undo.
-fn account_for_new_space(
+async fn account_for_new_space(
     store: &tonk_cli::space::SpaceStore,
 ) -> Result<Option<tonk_cli::space::AccountRecord>, ExitCode> {
     let account = match store.account() {
@@ -2208,8 +2216,12 @@ fn account_for_new_space(
     let Some(account) = account else {
         return Ok(None);
     };
-    match tonk_cli::account::sign_in_phase(store) {
-        Ok(tonk_cli::account::SignInPhase::Active) => {}
+    let profile = match identity::open().await {
+        Ok(profile) => profile,
+        Err(error) => return Err(print_failure(error)),
+    };
+    match tonk_cli::account::status_in(&profile, store).await {
+        Ok(account::AccountStatus::Registered { root_did, .. }) if root_did == account.root => {}
         Ok(_) => {
             return Err(print_error(format!(
                 "this device is signed out of {}; run `tonk account login`",
@@ -4364,6 +4376,64 @@ mod account_spaces_parser_tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn view_add_rejects_the_removed_name_and_anchor_spellings() {
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--anchor",
+                "note-card",
+                "--template",
+                "<p>{title}</p>",
+            ])
+            .is_err(),
+            "a view has no entity of its own to anchor"
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--name",
+                "note-card",
+                "--template",
+                "<p>{title}</p>",
+            ])
+            .is_err(),
+            "the removed view-specific --name spelling must be rejected"
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "join",
+                "https://example/#invite",
+                "--name",
+                "shared"
+            ])
+            .is_ok(),
+            "unrelated --name flags remain available"
+        );
+    }
+
+    #[test]
+    fn account_help_uses_space_terminology() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("account")
+            .expect("account command")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("devices, spaces, and names"), "{help}");
+        assert!(!help.contains("spot"), "{help}");
     }
 
     #[test]

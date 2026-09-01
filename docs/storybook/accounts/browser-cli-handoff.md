@@ -136,6 +136,16 @@ invite seed needs rotation, the CLI names that browser-only action on stderr
 and retains the onboarding account; login itself remains active and a later
 reconciliation can retry the unfinished subject.
 
+The current account page supplies a same-origin settings redirect, so the
+browser normally returns there and reports the command-line device result. If
+an older or custom authorization page omits that redirect, or supplies a
+malformed or cross-origin target, the loopback callback settles on a
+self-contained Tonk confirmation instead. It shows the command-line access
+outcome and a keyboard-operable close action; the copy remains complete when a
+browser refuses to close a tab it did not open. The compact layout, 44 px action,
+and light/dark color schemes preserve the account ceremony presentation without
+loading remote assets.
+
 Decline or pre-approval Ctrl-C settles signed out. A post-approval failure must
 not casually claim signed out: the remote device may exist and some local
 credentials may already be durable. Recovery must inspect both sides and either
@@ -186,10 +196,15 @@ must not restore it.
 **Output, errors, and recovery.** Errors need stage names and a next action.
 “Cancelled” is valid only before remote registration. After that, status and
 device lists are the recovery tools.
+The browser never echoes a callback-supplied message. If the terminal does not
+receive the account link, the browser directs the person back to the terminal
+to start login again while retaining the exact diagnostic in the console.
 
 **Accessibility, TTY, and machine output.** The approval panel must name the
 device, expose keyboard approve/decline, and maintain focus. CLI signals, exit
 codes, stdout URL, and stderr diagnostics need stable contracts.
+The loopback fallback exposes its outcome as status content under a named
+command-line access region and keeps its close action at least 44 px high.
 
 **Privacy and telemetry.** Callback URLs, delegation bytes, descriptors,
 credential IDs, attachment IDs, and passkey results are sensitive and must not
@@ -206,6 +221,9 @@ from loopback browser history before the bridge creates or submits form fields.
   preserve the bodyless GET and allow the local bridge to deliver once.
 - The bridge loads without a delivery fragment or with JavaScript disabled; it
   must not consume the waiting callback or invent an authorization outcome.
+- A callback form omits its redirect or supplies a malformed/cross-origin
+  target; the browser shows the local fallback and never follows the unsafe
+  target, while the terminal receives the same authorization outcome.
 - Callback payload JSON is readable but hex, descriptor, audience, proof, or
   signature is invalid.
 - Account service URL from the page differs from the CLI default; the page's
@@ -233,6 +251,8 @@ from loopback browser history before the bridge creates or submits form fields.
 - Verify the fragment bridge and exact loopback-origin constraints in Safari,
   Chrome, and Firefox, including the HTTPS-to-HTTP warning path and reload.
 - Add fault points after every post-approval write and assert restart state.
+- The fallback confirmation presentation was checked in isolated Chrome at
+  Tonk commit `d85cb4234`; the broader handoff audit remains pinned below.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.

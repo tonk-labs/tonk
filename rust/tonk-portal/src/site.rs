@@ -380,7 +380,7 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
             None => return,
         };
         let tag = JsValue::from_str("site-heal");
-        match consumer::subscribe(&probe, &body, Some(&tag)) {
+        match consumer::subscribe_claimed(&probe, &body, Some(&tag)).await {
             Ok(subscription) => *slot.borrow_mut() = Some(subscription),
             Err(error) => {
                 tonk_common::log!("tonk-site: heal subscribe failed: {error:?}");

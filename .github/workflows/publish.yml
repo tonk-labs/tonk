@@ -64,91 +64,12 @@ jobs:
         run: |
           nix build --accept-flake-config .#tonk-cloudflare-artifacts
 
-      # A pull request gets the whole deployment, not just the access worker.
-      # The browser reads its account provider from the access worker's
-      # `/.well-known/tonk`, so previewing one against the released other tests
-      # a pairing that does not exist anywhere. Both go to the disposable
-      # `preview` environment, account worker first, because the access worker
-      # has to be told where that one landed.
+      # A pull request gets its own deployment in the disposable
+      # `preview` environment.
       #
       # Every PR needs its own D1 database. A shared database cannot safely
       # serve immutable worker versions from branches with different migration
       # histories: a newer PR schema can make an older PR's queries fail.
-      - name: Prepare preview account database
-        if: github.event_name == 'pull_request'
-        id: account-database
-        run: |
-          set -euo pipefail
-          database="tonk-accounts-pr-${{ github.event.pull_request.number }}"
-          # Wrangler resolves `main` and `migrations_dir` relative to the
-          # config file, so the generated config must stay in the repository
-          # root rather than `$RUNNER_TEMP`.
-          config="$PWD/wrangler.account.preview.toml"
-          database_id="$({
-            nix --accept-flake-config develop .#ci --command wrangler d1 list --json
-          } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
-          if [ -z "$database_id" ]; then
-            nix --accept-flake-config develop .#ci --command \
-              wrangler d1 create "$database" --location weur
-            database_id="$({
-              nix --accept-flake-config develop .#ci --command wrangler d1 list --json
-            } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
-          fi
-          if [ -z "$database_id" ]; then
-            echo "::error::Could not resolve the D1 database id for $database"
-            exit 1
-          fi
-          cp wrangler.account.toml "$config"
-          sed -i \
-            -e "s/database_name = \"tonk-accounts-preview\"/database_name = \"$database\"/" \
-            -e "s/database_id = \"323cb440-c356-4d1d-b238-2ffd11abedcc\"/database_id = \"$database_id\"/" \
-            "$config"
-          if ! grep -Fq "database_name = \"$database\"" "$config" \
-            || ! grep -Fq "database_id = \"$database_id\"" "$config"; then
-            echo "::error::Could not bind the account preview config to $database"
-            exit 1
-          fi
-          echo "database=$database" >> "$GITHUB_OUTPUT"
-          echo "config=$config" >> "$GITHUB_OUTPUT"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Apply preview account migrations
-        if: github.event_name == 'pull_request'
-        run: |
-          nix --accept-flake-config develop .#ci --command \
-            wrangler d1 migrations apply \
-              "${{ steps.account-database.outputs.database }}" --remote \
-              --env preview -c "${{ steps.account-database.outputs.config }}"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Deploy account preview
-        if: github.event_name == 'pull_request'
-        id: account-preview
-        run: |
-          set -o pipefail
-          preview_alias="pr-${{ github.event.pull_request.number }}"
-          log="$RUNNER_TEMP/account-preview.log"
-          nix --accept-flake-config develop .#ci --command \
-            wrangler versions upload --env preview \
-              -c "${{ steps.account-database.outputs.config }}" \
-              --preview-alias "$preview_alias" 2>&1 | tee "$log"
-          url="$(grep -Eo "https://$preview_alias-tonk-account-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
-          if [ -z "$url" ]; then
-            echo "::error::wrangler printed no preview alias URL for the account worker; refusing to point the access preview at an unknown registry"
-            exit 1
-          fi
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      # The access worker's control database follows the same per-PR shape
-      # as the account worker's, and for the same reason: divergent
-      # migration histories cannot share a database.
       - name: Prepare preview access databases
         if: github.event_name == 'pull_request'
         id: access-database
@@ -156,10 +77,36 @@ jobs:
           set -euo pipefail
           resolve() {
             local database="$1"
+            local migrations_dir="${2:-}"
             local id
             id="$({
               nix --accept-flake-config develop .#ci --command wrangler d1 list --json
             } | jq -r --arg name "$database" '.[] | select(.name == $name) | .uuid' | head -n 1)"
+            # A preview database whose applied migration history names a
+            # file this branch no longer carries cannot migrate forward:
+            # wrangler tracks migrations by filename, so a rewritten
+            # chain means the next apply runs against a schema it does
+            # not expect ("no such column"). The database is disposable
+            # per-PR state, so recreate it and let the branch's own
+            # chain apply from scratch.
+            if [ -n "$id" ] && [ -n "$migrations_dir" ]; then
+              local applied divergent name
+              applied="$({
+                nix --accept-flake-config develop .#ci --command \
+                  wrangler d1 execute "$database" --remote --json \
+                    --command "SELECT name FROM d1_migrations"
+              } 2>/dev/null | jq -r '.[0].results[]?.name' || true)"
+              divergent=""
+              for name in $applied; do
+                [ -f "$migrations_dir/$name" ] || divergent="$name"
+              done
+              if [ -n "$divergent" ]; then
+                echo "::warning::$database applied '$divergent', which this branch does not carry; recreating the preview database" >&2
+                nix --accept-flake-config develop .#ci --command \
+                  wrangler d1 delete "$database" --skip-confirmation >&2
+                id=""
+              fi
+            fi
             if [ -z "$id" ]; then
               nix --accept-flake-config develop .#ci --command \
                 wrangler d1 create "$database" --location weur >&2
@@ -205,8 +152,8 @@ jobs:
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
-          control_id="$(resolve "$control")"
-          ingest_id="$(resolve "$ingest")"
+          control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
+          ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           cp wrangler.toml "$config"
           sed -i \
@@ -246,23 +193,17 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The account service URL is the only configuration that cannot be
-      # checked in, because an alias URL exists only once its upload returns.
-      # Command line vars merge over the environment's, so the rest of
-      # `[env.preview]` still applies.
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
         run: |
           set -o pipefail
           preview_alias="pr-${{ github.event.pull_request.number }}"
-          account="${{ steps.account-preview.outputs.url }}"
           log="$RUNNER_TEMP/access-preview.log"
           nix --accept-flake-config develop .#ci --command \
             wrangler versions upload --env preview \
               -c "${{ steps.access-database.outputs.config }}" \
-              --preview-alias "$preview_alias" \
-              --var "ACCOUNT_SERVICE_URL:$account" 2>&1 | tee "$log"
+              --preview-alias "$preview_alias" 2>&1 | tee "$log"
           url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
             echo "::error::wrangler printed no preview alias URL for the access worker"
@@ -271,10 +212,6 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
           {
             echo 'command-output<<WRANGLER_OUTPUT_EOF'
-            echo '--- account worker ---'
-            cat "$RUNNER_TEMP/account-preview.log"
-            echo
-            echo '--- access worker ---'
             cat "$log"
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
@@ -282,30 +219,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # Both workers ship together, exactly as a pull request previews them.
-      # Only the preview path used to deploy the account worker, so every
-      # release moved the access worker against whichever account worker was
-      # last pushed by hand: routes the CLI depends on could be absent from
-      # the released service for as long as nobody noticed. Migrations run
-      # first, because code that queries a column the database does not have
-      # yet fails every request until the schema catches up.
-      - name: Apply staging account migrations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-        run: |
-          nix --accept-flake-config develop --command \
-            wrangler d1 migrations apply tonk-accounts-staging --remote \
-              --env staging -c wrangler.account.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Deploy account staging
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-        run: nix --accept-flake-config develop --command wrangler deploy --env staging -c wrangler.account.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
+      # Migrations run first, because code that queries a column the
+      # database does not have yet fails every request until the schema
+      # catches up.
       - name: Apply staging access migrations
         if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
         run: |
@@ -322,23 +238,6 @@ jobs:
       - name: Deploy staging
         if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
         run: nix --accept-flake-config develop --command wrangler deploy --env staging -c wrangler.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Apply production account migrations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
-        run: |
-          nix --accept-flake-config develop --command \
-            wrangler d1 migrations apply tonk-accounts --remote \
-              -c wrangler.account.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Deploy account production
-        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
-        run: nix --accept-flake-config develop --command wrangler deploy -c wrangler.account.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -375,7 +274,6 @@ jobs:
 
             ```
             tonk account login \
-              --service-url ${{ steps.account-preview.outputs.url }} \
               --via ${{ steps.deploy-preview.outputs.url }}/account/link
             ```
 
@@ -387,7 +285,7 @@ jobs:
 
             </details>
 
-  cleanup-account-preview:
+  cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     permissions:
@@ -402,7 +300,6 @@ jobs:
         run: |
           set -euo pipefail
           for database in \
-            "tonk-accounts-pr-${{ github.event.pull_request.number }}" \
             "tonk-access-control-pr-${{ github.event.pull_request.number }}" \
             "tonk-access-ingest-pr-${{ github.event.pull_request.number }}"; do
             database_id="$({

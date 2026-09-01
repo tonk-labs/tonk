@@ -166,6 +166,14 @@ mod tests {
         Ok(())
     }
 
+    /// Enter the seeded view inside the space shell's own sealed frame.
+    async fn enter_space_view(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        let frame = element(driver, "tonk-site > iframe").await?;
+        frame.enter_frame().await?;
+        Ok(())
+    }
+
     async fn wait_for_displayed(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -181,6 +189,51 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    async fn wait_for_absent(driver: &WebDriver, selector: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match driver.find_all(By::Css(selector.to_string())).await {
+                Ok(found) if found.is_empty() => return Ok(()),
+                Ok(_) => {}
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error).with_context(|| {
+                        format!("timed out waiting for `{selector}` to disappear")
+                    });
+                }
+                Err(_) => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for `{selector}` to disappear"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn registration_motion_styles(driver: &WebDriver) -> Result<serde_json::Value> {
+        driver
+            .execute(
+                r#"const action = document.querySelector('.obtn');
+                   action.classList.add('wait', 'flash');
+                   const read = selector => {
+                     const style = getComputedStyle(document.querySelector(selector));
+                     return {
+                       animation: style.animationName,
+                       transition: style.transitionDuration
+                     };
+                   };
+                   return {
+                     cluster: read('.tonk-cluster'),
+                     row: read('.orow'),
+                     action: read('.obtn'),
+                     cursor: read('.cur')
+                   };"#,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .map_err(Into::into)
     }
 
     /// The latest activation link the access service captured for `email`.
@@ -277,6 +330,52 @@ mod tests {
         }
     }
 
+    /// A second browser holding the same passkey: a different device, the
+    /// same person.
+    ///
+    /// The virtual authenticator is per-driver — it is created over CDP on
+    /// one browser — so a second driver cannot be handed the first's. What
+    /// CDP does allow is reading the credentials out of one authenticator
+    /// and adding them to another, which is what a passkey synced through
+    /// a platform keychain looks like from the page's side.
+    async fn second_device_with_same_passkey(
+        env: &TestEnvironment,
+        first: &WebDriver,
+        first_authenticator: &str,
+    ) -> Result<(WebDriver, String)> {
+        let source = ChromeDevTools::new(first.handle.clone());
+        let credentials = source
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": first_authenticator }),
+            )
+            .await?;
+        let credentials = credentials["credentials"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))?;
+        if credentials.is_empty() {
+            return Err(anyhow!(
+                "the first device registered no passkey, so there is none to carry over"
+            ));
+        }
+
+        let (second, authenticator) = driver_with_prf_authenticator(env).await?;
+        let devtools = ChromeDevTools::new(second.handle.clone());
+        for credential in credentials {
+            devtools
+                .execute_cdp_with_params(
+                    "WebAuthn.addCredential",
+                    serde_json::json!({
+                        "authenticatorId": authenticator,
+                        "credential": credential,
+                    }),
+                )
+                .await?;
+        }
+        Ok((second, authenticator))
+    }
+
     async fn credential_count(driver: &WebDriver, authenticator_id: &str) -> Result<usize> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         let result = devtools
@@ -289,6 +388,30 @@ mod tests {
             .as_array()
             .map(Vec::len)
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
+    }
+
+    async fn emulate_phone(driver: &WebDriver, width: u32, height: u32) -> Result<()> {
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Emulation.setDeviceMetricsOverride",
+                serde_json::json!({
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": 2,
+                    "mobile": true,
+                    "screenWidth": width,
+                    "screenHeight": height
+                }),
+            )
+            .await?;
+        devtools
+            .execute_cdp_with_params(
+                "Emulation.setTouchEmulationEnabled",
+                serde_json::json!({ "enabled": true, "maxTouchPoints": 5 }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Create an account and confirm its email, leaving it able to host
@@ -432,6 +555,134 @@ mod tests {
         element(driver, "#activate-done").await?;
         driver.close_window().await?;
         driver.switch_to_window(ceremony).await?;
+        Ok(())
+    }
+
+    /// Present `email`'s activation invocation to the access service
+    /// over plain HTTP — what another device's activation page does, as
+    /// far as this browser can tell: nothing in it handles the link.
+    async fn activate_over_http(env: &TestEnvironment, email: &str) -> Result<()> {
+        use base64::Engine as _;
+        let link = activation_link(env, email).await?;
+        let encoded = link
+            .split("ucan=")
+            .nth(1)
+            .ok_or_else(|| anyhow!("the activation link names no invocation"))?;
+        let invocation = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)?;
+        let response = reqwest::Client::new()
+            .post(env.access_service.join("ucan/")?)
+            .header("content-type", "application/cbor")
+            .body(invocation)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "activation was refused: {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    /// Copy every credential from one virtual authenticator to another:
+    /// what a passkey manager's sync does, over CDP.
+    async fn copy_credentials(
+        from: &WebDriver,
+        from_id: &str,
+        to: &WebDriver,
+        to_id: &str,
+    ) -> Result<()> {
+        let from_tools = ChromeDevTools::new(from.handle.clone());
+        let to_tools = ChromeDevTools::new(to.handle.clone());
+        let held = from_tools
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": from_id }),
+            )
+            .await?;
+        let credentials = held["credentials"].as_array().cloned().unwrap_or_default();
+        anyhow::ensure!(
+            !credentials.is_empty(),
+            "the first device holds a credential to copy"
+        );
+        for credential in credentials {
+            to_tools
+                .execute_cdp_with_params(
+                    "WebAuthn.addCredential",
+                    serde_json::json!({ "authenticatorId": to_id, "credential": credential }),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Activation opened somewhere this browser cannot see still reaches
+    /// the waiting ceremony, and QUICKLY: the gate stops refusing the
+    /// account sweep, the sweep the ceremony itself is driving gets
+    /// served, and THIS browser records the fact its subscription flips
+    /// on. The cross-tab variant cannot pin this — an activating tab
+    /// shares the worker and does the recording itself — and this exact
+    /// seam is where the live flow broke: the reactor's cached branch
+    /// session predated the upstream wiring, so every post-activation
+    /// sweep failed `Branch main has no upstream`, forever.
+    #[dialog_common::test]
+    async fn it_notices_activation_performed_on_another_device(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, "confirmed-elsewhere@example.com").await?;
+
+        activate_over_http(&env, "confirmed-elsewhere@example.com").await?;
+
+        // The waiting row resolves from the sweep alone — inside the
+        // helper's one-minute patience, where the ceremony's own nudge
+        // cadence is seconds.
+        await_row_value(&driver, "email", "verified").await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The whole three-device story. Device A starts registration and
+    /// waits. Device B signs in with the same passkey while the email
+    /// is unopened — parked on the same awaiting row, not an error.
+    /// Device C (here: plain HTTP) opens the link. Both A and B then
+    /// finish ON THEIR OWN: A's sweep is served and records the fact,
+    /// and B's worker kept the assertion's derivation handles and
+    /// completes the parked login — no second passkey tap.
+    #[dialog_common::test]
+    async fn it_finishes_both_waiting_devices_when_a_third_confirms(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let email = "three-devices@example.com";
+        let (device_a, authenticator_a) = driver_with_prf_authenticator(&env).await?;
+        enroll_only(&device_a, &env, email).await?;
+
+        // Device B: a separate browser holding the same passkey.
+        let (device_b, authenticator_b) = driver_with_prf_authenticator(&env).await?;
+        copy_credentials(&device_a, &authenticator_a, &device_b, &authenticator_b).await?;
+        goto(&device_b, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&device_b, "tonk-account[data-mode=\"choice\"]").await?;
+        element(&device_b, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(&device_b).await?;
+        type_into_register_dialog(&device_b, email).await?;
+        await_register_action(&device_b, "log in with your passkey").await?;
+        click_register_action(&device_b).await?;
+        // Refused by the gate, and parked rather than failed.
+        await_row_value(&device_b, "email", "awaiting confirmation").await?;
+
+        // Device C.
+        activate_over_http(&env, email).await?;
+
+        // Device A's ceremony resolves from its own sweep.
+        await_row_value(&device_a, "email", "verified").await?;
+        // Device B's parked login finishes silently: verified, with the
+        // passkey row the completed sign-in shows — and nothing asked
+        // for a second assertion.
+        await_row_value(&device_b, "email", "verified").await?;
+        await_settled_row(&device_b, "passkey").await?;
+
+        device_a.quit().await?;
+        device_b.quit().await?;
         Ok(())
     }
 
@@ -750,7 +1001,7 @@ mod tests {
             assert_eq!(geometry["logoVisible"], true);
         }
 
-        driver.set_window_rect(0, 0, 390, 844).await?;
+        emulate_phone(&driver, 390, 844).await?;
         let compact = driver
             .execute(
                 r#"const settings = document.querySelector('.account__settings');
@@ -764,10 +1015,15 @@ mod tests {
                       body: Math.round(body.getBoundingClientRect().width),
                       viewport: innerWidth,
                       overflow: document.documentElement.scrollWidth > innerWidth,
-                      undersized: visible.filter(el => {
+                      undersized: visible.flatMap(el => {
                         const rect = el.getBoundingClientRect();
-                        return Math.max(rect.width, rect.height) < 44;
-                      }).map(el => el.id || el.textContent.trim())
+                        if (rect.width >= 44 && rect.height >= 44) return [];
+                        return [{
+                          selector: el.id ? `#${el.id}` : el.tagName.toLowerCase(),
+                          width: rect.width,
+                          height: rect.height
+                        }];
+                      })
                     };"#,
                 Vec::new(),
             )
@@ -781,6 +1037,81 @@ mod tests {
         assert_eq!(compact["undersized"], serde_json::json!([]));
 
         driver.quit().await?;
+        Ok(())
+    }
+
+    /// Signing in on a second device before the emailed link is opened
+    /// waits, rather than failing.
+    ///
+    /// The regression this pins: `existing` meant "an account exists for
+    /// this address", and the ceremony read it as "the account is
+    /// activated" — so a second device closed the ceremony, could not
+    /// hydrate the account branch, and showed "We couldn't finish logging
+    /// you in" with nothing to act on. What it is actually waiting for is
+    /// an email someone has not opened yet, on a device that may not be
+    /// this one.
+    ///
+    /// Two things had to be true for the wait to work at all, and both are
+    /// exercised here:
+    ///
+    /// - the passkey's custody space must be PROVISIONED even though the
+    ///   customer is unconfirmed, or the gate refuses with "not
+    ///   provisioned" and `Recourse::None` — a dead end
+    /// - the gate's refusal must be readable as "waiting on the email",
+    ///   which is what turns it into a row instead of an error
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_waits_for_the_email_when_a_second_device_signs_in(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "second-device@example.com";
+
+        // First device: enrol, and stop. The link is never opened, so the
+        // customer stays unconfirmed for the whole test.
+        let (first, authenticator) = driver_with_prf_authenticator(&env).await?;
+        enroll_only(&first, &env, EMAIL).await?;
+
+        // A second device holding the same passkey. A fresh profile is
+        // what makes it a different device; the shared virtual
+        // authenticator is what makes it the same person.
+        let (second, _second_authenticator) =
+            second_device_with_same_passkey(&env, &first, &authenticator).await?;
+        wait_for_service_worker(&second).await?;
+        goto(&second, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&second, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&second, "#account-choose-link").await?;
+        await_register_dialog(&second).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        // The address is taken, so the offer is to sign in rather than
+        // create — that much already worked.
+        await_register_action(&second, "log in with your passkey").await?;
+        click_register_action(&second).await?;
+
+        // What this test exists for: a row naming the outstanding step,
+        // not a failure. The ceremony stays up, because the thing it
+        // waits on has not happened yet.
+        let row = element(&second, "#tonk-register-confirm-row").await?;
+        let text = row.text().await?;
+        assert!(
+            text.contains("awaiting confirmation"),
+            "a second device should wait on the email, got {text:?}"
+        );
+
+        let status = element(&second, "#tonk-register-status")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            !status.contains("couldn't finish"),
+            "and must not report a failure for a wait: {status:?}"
+        );
+        assert!(
+            status.contains("confirmation link"),
+            "it should name the step that finishes this: {status:?}"
+        );
+
+        first.quit().await?;
+        second.quit().await?;
         Ok(())
     }
 
@@ -812,44 +1143,272 @@ mod tests {
             "opening the emailed link should be the only requested next step: {notice:?}"
         );
 
-        // The rest is about the DASHBOARD's display-name field, which
-        // is behind the standing ceremony — WebDriver refuses to type
-        // into it, exactly as a person cannot. Take the ceremony down
-        // the way it offers, which is also what puts the panel back.
-        dismiss_register_dialog(&driver).await?;
+        // Navigate the way a person following a settings link would while
+        // the emailed confirmation is still unopened. The customer command
+        // can still be settling here; the dashboard must keep probing until
+        // it can replace its temporary unhydrated fallback with the actual
+        // prerequisite.
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
 
-        let display_name = element(&driver, "#account-display-name").await?;
-        let select_all = if cfg!(target_os = "macos") {
-            Key::Meta + "a"
-        } else {
-            Key::Control + "a"
-        };
-        display_name.send_keys(select_all).await?;
-        display_name.send_keys("Pending Name").await?;
-        display_name.send_keys(Key::Enter).await?;
-
-        wait_for_text_containing(&driver, "#account-display-name-error", "verification link")
-            .await?;
-        let error = element(&driver, "#account-display-name-error")
-            .await?
-            .text()
-            .await?;
+        wait_for_text_containing(&driver, "#account-error", "verification link").await?;
+        let dashboard_error = element(&driver, "#account-error").await?.text().await?;
         assert!(
-            error.contains("verify your email"),
-            "display-name failure should explain the required account step: {error:?}"
+            dashboard_error.contains("verify your email"),
+            "settings should name the pending email step: {dashboard_error:?}"
         );
         for technical in [
-            "Error from local API",
-            "503 Service Unavailable",
-            "account_state_unavailable",
+            "not synchronized",
+            "hydration",
+            "reload /settings",
+            "account state",
+            "HTTP",
         ] {
             assert!(
-                !error.contains(technical),
-                "display-name failure should not expose {technical:?}: {error:?}"
+                !dashboard_error
+                    .to_lowercase()
+                    .contains(&technical.to_lowercase()),
+                "settings should not expose {technical:?}: {dashboard_error:?}"
             );
         }
 
+        let display_name = element(&driver, "#account-display-name").await?;
+        assert!(
+            !display_name.is_enabled().await?,
+            "authoritative account fields must stay disabled until verification lets shared account state load"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_scopes_registration_focus_and_restores_the_opener(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+
+        let opener = element(&driver, "#account-choose-link").await?;
+        opener.click().await?;
+        await_register_dialog(&driver).await?;
+
+        let focus_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let state = loop {
+            let state = driver
+                .execute(
+                    r#"const dialog = document.querySelector('#tonk-register');
+                       return {
+                         tag: dialog?.tagName,
+                         open: dialog?.open,
+                         status: (document.querySelector('#tonk-register-status')?.textContent || '').trim(),
+                         focusedInside: dialog?.contains(document.activeElement)
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            if state.json()["focusedInside"] == true {
+                break state;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < focus_deadline,
+                "registration did not move initial focus inside the dialog: {}",
+                state.json()
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let state = state.json();
+        assert_eq!(state["tag"], "DIALOG");
+        assert_eq!(state["open"], true);
+        assert_eq!(state["focusedInside"], true);
+        assert!(
+            state["status"]
+                .as_str()
+                .is_some_and(|status| !status.is_empty()),
+            "registration must narrate its initial step: {state}"
+        );
+
+        assert!(
+            opener.click().await.is_err(),
+            "the modal top layer must make background actions non-interactable"
+        );
+        for _ in 0..8 {
+            driver.action_chain().send_keys(Key::Tab).perform().await?;
+            let focus = driver
+                .execute(
+                    r#"const dialog = document.querySelector('#tonk-register');
+                       return {
+                         inside: dialog.contains(document.activeElement),
+                         active: document.activeElement?.id || document.activeElement?.tagName
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            assert_eq!(
+                focus.json()["inside"],
+                true,
+                "Tab escaped the registration dialog: {}",
+                focus.json()
+            );
+        }
+
+        driver
+            .action_chain()
+            .send_keys(Key::Escape)
+            .perform()
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let closed = driver
+                .execute(
+                    r#"return {
+                         gone: !document.querySelector('#tonk-register'),
+                         active: document.activeElement?.id || ''
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            if closed.json()["gone"] == true {
+                let focus_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    let active = driver
+                        .execute(r#"return document.activeElement?.id || '';"#, Vec::new())
+                        .await?;
+                    if active.json() == "account-choose-link" {
+                        break;
+                    }
+                    anyhow::ensure!(
+                        tokio::time::Instant::now() < focus_deadline,
+                        "closing registration did not restore the Settings opener: {}",
+                        active.json()
+                    );
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "registration remained after Escape"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_restores_registration_focus_to_the_guest_opener(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+
+        enter_hub(&driver).await?;
+        let opener = wait_for_displayed(&driver, "[data-account-trigger]").await?;
+        opener.click().await?;
+        await_register_dialog(&driver).await?;
+
+        driver.enter_default_frame().await?;
+        driver
+            .action_chain()
+            .send_keys(Key::Escape)
+            .perform()
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if driver.find(By::Css("#tonk-register")).await.is_err() {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "registration remained after Escape"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let focus_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let outer = driver
+                .execute(
+                    r#"return document.activeElement?.matches('tonk-site > iframe') || false;"#,
+                    Vec::new(),
+                )
+                .await?;
+            if outer.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < focus_deadline,
+                "focus did not return through the sealed Hub frame"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        enter_hub(&driver).await?;
+        loop {
+            let guest = driver
+                .execute(
+                    r#"return document.activeElement?.matches('[data-account-trigger]') || false;"#,
+                    Vec::new(),
+                )
+                .await?;
+            if guest.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < focus_deadline,
+                "focus did not return to the exact Hub account trigger"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_removes_registration_motion_when_reduced_motion_is_requested(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+
+        let normal = registration_motion_styles(&driver).await?;
+        assert!(
+            normal["row"]["transition"]
+                .as_str()
+                .is_some_and(|duration| duration != "0s"),
+            "normal mode retains the authored row transition: {normal}"
+        );
+
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "Emulation.setEmulatedMedia",
+                serde_json::json!({
+                    "features": [{ "name": "prefers-reduced-motion", "value": "reduce" }]
+                }),
+            )
+            .await?;
+        let reduced = registration_motion_styles(&driver).await?;
+        for selector in ["cluster", "row", "action"] {
+            assert_eq!(
+                reduced[selector]["transition"], "0s",
+                "{selector} transition must stop in reduced motion: {reduced}"
+            );
+        }
+        for selector in ["action", "cursor"] {
+            assert_eq!(
+                reduced[selector]["animation"], "none",
+                "{selector} animation must stop in reduced motion: {reduced}"
+            );
+        }
         driver.quit().await?;
         Ok(())
     }
@@ -942,10 +1501,15 @@ mod tests {
                       ceremonyWidth: Math.round(ceremony.width),
                       logoWidth: Math.round(document.querySelector('.account__logo').getBoundingClientRect().width),
                       overflow: document.documentElement.scrollWidth > innerWidth,
-                      undersized: visible.filter(el => {
+                      undersized: visible.flatMap(el => {
                         const rect = el.getBoundingClientRect();
-                        return Math.max(rect.width, rect.height) < 44;
-                      }).map(el => el.id || el.textContent.trim())
+                        if (rect.width >= 44 && rect.height >= 44) return [];
+                        return [{
+                          selector: el.id ? `#${el.id}` : el.tagName.toLowerCase(),
+                          width: rect.width,
+                          height: rect.height
+                        }];
+                      })
                     };"#,
                 Vec::new(),
             )
@@ -968,6 +1532,74 @@ mod tests {
         assert_eq!(compact["logoWidth"], 98);
         assert_eq!(compact["overflow"], false);
         assert_eq!(compact["undersized"], serde_json::json!([]));
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_join_targets_accessible_at_phone_sizes(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+
+        for (width, height) in [(320_u32, 568_u32), (390, 844)] {
+            emulate_phone(&driver, width, height).await?;
+            goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
+            enter_guest(&driver).await?;
+            element(&driver, ".join-view").await?;
+
+            for dark in [false, true] {
+                let geometry = driver
+                    .execute(
+                        r#"const dark = arguments[0];
+                           document.documentElement.classList.toggle('wa-dark', dark);
+                           document.documentElement.classList.toggle('wa-light', !dark);
+                           const visible = [...document.querySelectorAll('a,button,input:not([type=hidden])')]
+                             .filter(el => el.getClientRects().length > 0);
+                           const mast = document.querySelector('.edge-mast').getBoundingClientRect();
+                           const wordmark = document.querySelector('.edge-mast img').getBoundingClientRect();
+                           const input = document.querySelector('.edge-input');
+                           return {
+                             width: innerWidth,
+                             height: innerHeight,
+                             overflow: document.documentElement.scrollWidth > innerWidth,
+                             mast: { width: mast.width, height: mast.height },
+                             wordmark: { width: wordmark.width, height: wordmark.height },
+                             inputFont: getComputedStyle(input).fontSize,
+                             undersized: visible.flatMap(el => {
+                               const rect = el.getBoundingClientRect();
+                               if (rect.width >= 44 && rect.height >= 44) return [];
+                               return [{
+                                 selector: el.className || el.id || el.tagName.toLowerCase(),
+                                 width: rect.width,
+                                 height: rect.height
+                               }];
+                             })
+                           };"#,
+                        vec![serde_json::json!(dark)],
+                    )
+                    .await?;
+                let geometry = geometry.json();
+                assert_eq!(geometry["width"], width);
+                assert_eq!(geometry["height"], height);
+                assert_eq!(geometry["overflow"], false);
+                assert_eq!(geometry["undersized"], serde_json::json!([]));
+                assert_eq!(geometry["inputFont"], "16px");
+                assert_eq!(geometry["mast"]["width"], 98.0);
+                assert!(
+                    geometry["mast"]["height"].as_f64().unwrap_or_default() >= 44.0,
+                    "the wordmark link needs a 44px hit area: {geometry}"
+                );
+                assert_eq!(geometry["wordmark"]["width"], 98.0);
+                assert!(
+                    geometry["wordmark"]["height"]
+                        .as_f64()
+                        .is_some_and(|height| height < 44.0),
+                    "the visual wordmark must keep its existing scale: {geometry}"
+                );
+            }
+            driver.enter_default_frame().await?;
+        }
 
         driver.quit().await?;
         Ok(())
@@ -1062,6 +1694,177 @@ mod tests {
             0,
             "changing the address must not have minted anything either",
         );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_begins_only_one_registration_action_per_offered_step(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+        type_into_register_dialog(&driver, "one-action@example.com").await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        driver
+            .execute(
+                r#"const action = document.querySelector('#tonk-register-action');
+                   const email = document.querySelector('#tonk-register-email');
+                   action.click();
+                   email.dispatchEvent(new KeyboardEvent('keydown', {
+                     key: 'Enter', bubbles: true, cancelable: true
+                   }));"#,
+                Vec::new(),
+            )
+            .await?;
+        await_credential_count(&driver, &authenticator, 1).await?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            credential_count(&driver, &authenticator).await?,
+            1,
+            "click and Enter in one turn must begin one passkey ceremony"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_retries_the_committed_address_after_a_failed_passkey_ceremony(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+
+        driver
+            .execute(
+                r#"window.__registerCreateCalls = 0;
+                   Object.defineProperty(navigator.credentials, 'create', {
+                     configurable: true,
+                     value: () => {
+                       window.__registerCreateCalls += 1;
+                       return Promise.reject(new DOMException(
+                         'controlled passkey rejection', 'NotAllowedError'
+                       ));
+                     }
+                   });"#,
+                Vec::new(),
+            )
+            .await?;
+
+        let email = "retry-committed@example.com";
+        type_into_register_dialog(&driver, email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+        click(&driver, "#tonk-register-action").await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        let first = driver
+            .execute(
+                r#"return {
+                     calls: window.__registerCreateCalls,
+                     row: (document.querySelector('#tonk-register-email-row')?.textContent || '').trim(),
+                     status: (document.querySelector('#tonk-register-status')?.textContent || '').trim()
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(first.json()["calls"], 1);
+        assert!(
+            first.json()["row"]
+                .as_str()
+                .is_some_and(|row| row.contains(email)),
+            "the committed email receipt must remain visible: {}",
+            first.json()
+        );
+
+        driver
+            .execute(
+                r#"const action = document.querySelector('#tonk-register-action');
+                   action.click();
+                   action.click();"#,
+                Vec::new(),
+            )
+            .await?;
+        await_register_action(&driver, "create a passkey").await?;
+        let retried = driver
+            .execute(
+                r#"return {
+                     calls: window.__registerCreateCalls,
+                     row: (document.querySelector('#tonk-register-email-row')?.textContent || '').trim(),
+                     status: (document.querySelector('#tonk-register-status')?.textContent || '').trim()
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            retried.json()["calls"],
+            2,
+            "a sequential retry must run once, while its duplicate pending click is ignored"
+        );
+        assert!(
+            retried.json()["row"]
+                .as_str()
+                .is_some_and(|row| row.contains(email)),
+            "the retry must retain the original address receipt: {}",
+            retried.json()
+        );
+        assert_ne!(
+            retried.json()["status"],
+            "Enter the address you want to use.",
+            "retry must read the committed address after the live input is gone"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_submits_activation_once_while_the_request_is_pending(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let mut activation = env.tonk_web.join("activate")?;
+        activation.set_query(Some("ucan=AA"));
+        goto(&driver, activation.as_str()).await?;
+        element(&driver, "#activate-accept").await?;
+
+        let count = driver
+            .execute_async(
+                r#"const done = arguments[arguments.length - 1];
+                   const original = window.fetch;
+                   let requests = 0;
+                   window.fetch = (...args) => {
+                     const url = String(args[0]?.url || args[0]);
+                     if (url.includes('/ucan/')) {
+                       requests += 1;
+                       return new Promise(() => {});
+                     }
+                     return original(...args);
+                   };
+                   const accept = document.querySelector('#activate-accept');
+                   accept.click();
+                   accept.click();
+                   queueMicrotask(() => done({
+                     requests,
+                     disabled: accept.disabled,
+                     busy: document.querySelector('#activate-confirm')?.getAttribute('aria-busy')
+                   }));"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(count.json()["requests"], 1, "activation must post once");
+        assert_eq!(count.json()["disabled"], true);
+        assert_eq!(count.json()["busy"], "true");
 
         driver.quit().await?;
         Ok(())
@@ -1213,6 +2016,59 @@ mod tests {
         FromThePage,
     }
 
+    const LINK_ERROR_DIAGNOSTIC: &str = "tonk:test:link-error";
+
+    /// Preserve the account panel's exact LinkCli diagnostic across the
+    /// activation detour. The visible copy is deliberately safe/generic; this
+    /// test-only probe makes a failed real-browser run identify which async
+    /// boundary failed without changing production UI or logging broadly.
+    async fn install_link_error_probe(driver: &WebDriver) -> Result<()> {
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({
+                    "source": r#"
+                        (() => {
+                            if (globalThis.__tonkLinkErrorProbe) return;
+                            globalThis.__tonkLinkErrorProbe = true;
+                            const original = console.error.bind(console);
+                            console.error = (...args) => {
+                                try {
+                                    const message = args[0];
+                                    if (
+                                        typeof message === "string" &&
+                                        message.startsWith("account LinkCli failed:")
+                                    ) {
+                                        const scrubbed = message
+                                            .replace(/\b[A-Za-z0-9+/_=-]{48,}\b/g, "[redacted]")
+                                            .slice(0, 1000);
+                                        sessionStorage.setItem("tonk:test:link-error", scrubbed);
+                                    }
+                                } catch {}
+                                original(...args);
+                            };
+                        })();
+                    "#,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn link_error_diagnostic(driver: &WebDriver) -> Option<String> {
+        driver
+            .execute(
+                "return sessionStorage.getItem(arguments[0]);",
+                vec![serde_json::json!(LINK_ERROR_DIAGNOSTIC)],
+            )
+            .await
+            .ok()?
+            .json()
+            .as_str()
+            .map(str::to_owned)
+    }
+
     async fn link_cli(driver: &WebDriver, env: &TestEnvironment) -> Result<LinkedCli> {
         link_cli_with(driver, env, false).await
     }
@@ -1243,7 +2099,7 @@ mod tests {
             env.tonk_web.join("settings/link")?.as_str(),
         ]);
         if service == AccountService::Named {
-            command.args(["--service-url", env.account_service.as_str()]);
+            command.args(["--service-url", env.access_service.as_str()]);
         }
         command
             .stdout(Stdio::piped())
@@ -1278,6 +2134,10 @@ mod tests {
                 .is_some_and(|callback| callback.starts_with("http://127.0.0.1")),
             "approval URL must carry the loopback callback"
         );
+
+        if register_first {
+            install_link_error_probe(driver).await?;
+        }
 
         goto(driver, approval_url.as_str()).await?;
         if register_first {
@@ -1328,8 +2188,10 @@ mod tests {
                 Err(_) => String::new(),
             };
             let url = driver.current_url().await?;
+            let diagnostic = link_error_diagnostic(driver).await.unwrap_or_default();
             return Err(wait_error).context(format!(
-                "approval stopped in mode {mode:?} at {url}; error={error:?}; status={working:?}"
+                "approval stopped in mode {mode:?} at {url}; error={error:?}; \
+                 status={working:?}; diagnostic={diagnostic:?}"
             ));
         }
         wait_for_text(
@@ -1378,7 +2240,7 @@ mod tests {
                     "account",
                     "devices",
                     "--service-url",
-                    env.account_service.as_str(),
+                    env.access_service.as_str(),
                     "--json",
                 ])
                 .env("TONK_TRACE", "1")
@@ -1618,19 +2480,19 @@ mod tests {
         }
     }
 
-    /// The Hub's own wizard creates a local-only spot before anyone
+    /// The Hub's own wizard creates a local-only space before anyone
     /// registers.
     ///
     /// Every other test here builds the claim in Rust, which skips the
     /// form entirely — so a hidden input that prefills a remote is
     /// invisible to them. This one submits the real wizard, which is how
     /// `<tonk-default-remote auto>` went on wiring `origin + /ucan/`
-    /// onto spots created with no account: the form supplied a remote,
+    /// onto spaces created with no account: the form supplied a remote,
     /// the worker honoured it as a deliberate choice, and the gate that
-    /// keeps a spot local never got a say. The spot then synced to a
+    /// keeps a space local never got a say. The space then synced to a
     /// service that refuses to serve it.
     #[dialog_common::test]
-    async fn it_creates_a_local_only_spot_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
+    async fn it_creates_a_local_only_space_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
         // The authenticator id comes along so the ceremony can be
         // observed: a passkey either got minted or it did not.
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
@@ -1655,7 +2517,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the wizard never created a spot; before={before:?} now={now:?}",
+                "the wizard never created a space; before={before:?} now={now:?}",
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
@@ -1664,12 +2526,12 @@ mod tests {
         // "no remote" means it declined rather than that we looked early.
         tokio::time::sleep(Duration::from_secs(3)).await;
         let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        let info = successful_body("read the spot configuration", &info);
+        let info = successful_body("read the space configuration", &info);
         assert!(
             info["remote"]
                 .as_object()
                 .is_none_or(serde_json::Map::is_empty),
-            "a spot created before registering must wire no remote, got {}",
+            "a space created before registering must wire no remote, got {}",
             info["remote"],
         );
         assert!(
@@ -1678,7 +2540,7 @@ mod tests {
             info["branch"]["main"]["upstream"],
         );
 
-        // The spot is local-only, which is what makes sharing it
+        // The space is local-only, which is what makes sharing it
         // refuse. Walk the rest of the flow from that refusal, asserting
         // at each step on WHAT THE USER SEES rather than on the fact
         // behind it.
@@ -1753,9 +2615,166 @@ mod tests {
         click_register_action(&driver).await?;
 
         // ...and THEN the share it interrupted finishes, which is the
-        // feature: the spot gains the remote it refused to share
+        // feature: the space gains the remote it refused to share
         // without, and the invite link arrives.
         await_share_link(&driver, &key).await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_agent_link_progress_with_the_share_refusal(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard(&driver).await?;
+        let key = await_new_space(&driver, &before).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+        enter_space_view(&driver).await?;
+
+        wait_for_displayed(&driver, ".local-invite-notice").await?;
+        let canvas = element(&driver, ".blank-canvas__deeplink")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            canvas.contains("sharing unavailable"),
+            "the settled refusal needs a neutral label: {canvas:?}"
+        );
+        assert!(
+            !canvas.contains("Generating link"),
+            "pending progress must disappear when refusal settles: {canvas:?}"
+        );
+        assert!(
+            !canvas.contains("condition banner"),
+            "the refusal must not point to absent UI: {canvas:?}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_removes_a_space_without_letting_focus_escape_the_sealed_guest(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard(&driver).await?;
+        let key = await_new_space(&driver, &before).await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let row = wait_for_displayed(&driver, ".srow-wrap").await?;
+        driver
+            .action_chain()
+            .move_to_element_center(&row)
+            .perform()
+            .await?;
+        let opener = wait_for_displayed(&driver, "[data-space-remove-open]").await?;
+        opener.click().await?;
+        wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
+
+        for _ in 0..8 {
+            driver.action_chain().send_keys(Key::Tab).perform().await?;
+            driver.enter_default_frame().await?;
+            let outer = driver
+                .execute(
+                    r#"return document.activeElement?.matches('tonk-site > iframe') || false;"#,
+                    Vec::new(),
+                )
+                .await?;
+            assert_eq!(
+                outer.json(),
+                true,
+                "Tab must not escape the sealed Hub while removal stays open"
+            );
+
+            enter_hub(&driver).await?;
+            let guest = driver
+                .execute(
+                    r#"const dialog = document.querySelector('tonk-dialog[data-space-remove-dialog]');
+                       const active = document.activeElement;
+                       return {
+                         open: dialog?.open || false,
+                         inside: !!dialog && (active === dialog || dialog.contains(active))
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            assert_eq!(guest.json()["open"], true);
+            assert_eq!(
+                guest.json()["inside"],
+                true,
+                "Tab focus left the open removal dialog: {}",
+                guest.json()
+            );
+        }
+
+        driver
+            .action_chain()
+            .send_keys(Key::Escape)
+            .perform()
+            .await?;
+        let restored = driver
+            .execute(
+                r#"return {
+                     open: document.querySelector('tonk-dialog[data-space-remove-dialog]')?.open || false,
+                     opener: document.activeElement?.matches('[data-space-remove-open]') || false
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(restored.json()["open"], false);
+        assert_eq!(
+            restored.json()["opener"],
+            true,
+            "Escape must restore the remove opener"
+        );
+
+        click(&driver, "[data-space-remove-open]").await?;
+        wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
+        let association = driver
+            .execute(
+                r#"const button = document.querySelector('.m-go');
+                   const form = document.querySelector('form[data-remove]');
+                   return {
+                     attribute: button?.getAttribute('form') || null,
+                     associated: button?.form?.id || null,
+                     expected: form?.id || null
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let expected_form = association.json()["expected"]
+            .as_str()
+            .ok_or_else(|| anyhow!("the rendered remove form has no id: {}", association.json()))?;
+        assert_eq!(
+            association.json()["associated"].as_str(),
+            Some(expected_form),
+            "the rendered remove button must submit its row's form: {}",
+            association.json()
+        );
+        click(&driver, ".m-go").await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let spaces = space_keys(&driver).await?;
+            if !spaces.contains(&key) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "removed space {key:?} remained in the profile listing: {spaces:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_absent(&driver, ".srow-wrap").await?;
 
         driver.quit().await?;
         Ok(())
@@ -1947,19 +2966,14 @@ mod tests {
             // asserts the same shape from the other side.
             serde_json::json!({
                 "predicate": { "with": {
-                    "status": {
-                        "the": "xyz.tonk.account/customer-status",
-                        "as": "Text", "cardinality": "one"
-                    },
-                    "provider": {
-                        "the": "xyz.tonk.account/provider-address",
-                        "as": "Text", "cardinality": "one"
+                    "activated_at": {
+                        "the": "xyz.tonk.account/activated-at",
+                        "as": "UnsignedInteger", "cardinality": "one"
                     }
                 } },
                 "terms": {
                     "this": { "?": { "name": "account" } },
-                    "status": { "?": { "name": "status" } },
-                    "provider": { "?": { "name": "provider" } }
+                    "activated_at": { "?": { "name": "activated_at" } },
                 }
             }),
         )
@@ -1970,16 +2984,17 @@ mod tests {
             !rows.is_empty(),
             "an activated account must resolve, got {rows:?}",
         );
-        assert_eq!(
-            rows[0]["fields"]["status"], "Active",
-            "and say so: {rows:?}",
-        );
+        // Presence, not a status string: the row resolves only when the
+        // account has an activation fact, so a row arriving at all is the
+        // answer. The bar reads it the same way.
         assert!(
-            rows[0]["fields"]["provider"]
-                .as_str()
-                .is_some_and(|p| !p.is_empty()),
-            "with the provider the service named: {rows:?}",
+            rows[0]["fields"]["activated_at"].as_u64().is_some(),
+            "and carry when it activated: {rows:?}",
         );
+        // Where the account syncs is on the REGISTRATION, not here: it is
+        // known at enrollment and unchanged by activation, which is what
+        // lets a client attach its remote before the emailed link is
+        // opened and learn it was activated from the gate answering 200.
 
         driver.quit().await?;
         Ok(())
@@ -2419,7 +3434,7 @@ mod tests {
     ///
     /// Read from the SPACE's branch, keyed by the space, because that is
     /// where the mint writes: `enable-sync` attaches the remote and
-    /// asserts `xyz.tonk.invite/url` on the spot it shared. Profile main
+    /// asserts `xyz.tonk.invite/url` on the space it shared. Profile main
     /// never carries it, so asking there answers `[]` for a share that
     /// worked — which is exactly the report this used to give. The
     /// dialog reads the same row to fill the clipboard, so this is the
@@ -2810,6 +3825,7 @@ mod tests {
         name: &str,
         expect_remote: bool,
     ) -> Result<String> {
+        wait_for_service_worker(driver).await?;
         let before = space_keys(driver).await?;
         // `name` alone: where a space syncs is the worker's to resolve
         // from the account's registration, and template seeding went
@@ -3035,6 +4051,64 @@ mod tests {
         Ok(report.rows)
     }
 
+    /// The callback roundtrip is settled only when the linked CLI sees both
+    /// sides of the handoff. The CLI self-describes its own row locally, so a
+    /// terminal-only list is an intermediate state, not proof that the
+    /// signing browser's account facts have converged.
+    fn callback_device_rows_ready(rows: &[CliDeviceRow]) -> bool {
+        let browser = rows
+            .iter()
+            .any(|row| row.status == "active" && row.name.starts_with("Chrome on "));
+        let terminal = rows
+            .iter()
+            .any(|row| row.status == "active" && row.name == "e2e terminal" && row.this_device);
+        browser && terminal
+    }
+
+    async fn wait_for_callback_device_rows(
+        profile: &TempDir,
+        env: &TestEnvironment,
+    ) -> Result<(CliOutput, Vec<CliDeviceRow>)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let output = devices(profile, env).await?;
+            if !output.status.success() {
+                return Err(anyhow!("devices failed: {}", output.stderr));
+            }
+            let rows = device_rows(&output.stdout)?;
+            if callback_device_rows_ready(&rows) {
+                return Ok((output, rows));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the callback device list never converged to the signing browser and linked terminal: {}\n--- devices stderr ---\n{}",
+                    output.stdout,
+                    output.stderr
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    #[test]
+    fn callback_device_readiness_rejects_the_terminal_only_intermediate_state() {
+        let terminal = CliDeviceRow {
+            status: "active".into(),
+            name: "e2e terminal".into(),
+            did: "did:key:zTerminal".into(),
+            this_device: true,
+        };
+        assert!(!callback_device_rows_ready(std::slice::from_ref(&terminal)));
+
+        let browser = CliDeviceRow {
+            status: "active".into(),
+            name: "Chrome on Linux".into(),
+            did: "did:key:zBrowser".into(),
+            this_device: false,
+        };
+        assert!(callback_device_rows_ready(&[terminal, browser]));
+    }
+
     fn account_space_subjects(output: &str) -> Result<Vec<String>> {
         let report: JsonRows<CliAccountSpaceRow> =
             serde_json::from_str(output).context("account space output was not valid JSON")?;
@@ -3125,6 +4199,72 @@ mod tests {
         assert!(
             upstream.is_null(),
             "main must track nothing before activation, got {upstream}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// An enrolled account stays an account everywhere while its email is
+    /// still unconfirmed.
+    ///
+    /// The account customer row has no provider until activation. The FABB
+    /// used to require that optional field in its query, so this exact state
+    /// resolved as no row: the space offered "log in to share" and raised the
+    /// signup ceremony even though the account already existed.
+    #[dialog_common::test]
+    async fn it_names_pending_activation_consistently_in_a_space(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "pending-space@example.com";
+        enroll_only(&driver, &env, email).await?;
+        dismiss_register_dialog(&driver).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        wait_for_text(
+            &driver,
+            "#account-registration-value",
+            "Waiting for email confirmation",
+        )
+        .await?;
+
+        let key = create_space(&driver, "Waiting for Email").await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        enter_guest(&driver).await?;
+        let banner = wait_for_displayed(&driver, "#fabb-activation-banner").await?;
+        let banner_text = banner.text().await?;
+        assert!(
+            banner_text.contains(email) && banner_text.contains("waiting for email confirmation"),
+            "the space must name the existing account's pending step: {banner_text:?}",
+        );
+        driver.enter_default_frame().await?;
+
+        open_share_stack(&driver).await?;
+        await_share_row(&driver, "link").await?;
+        enter_guest(&driver).await?;
+        let share_copy = driver
+            .execute(
+                r#"const bar = document.querySelector('tonk-fab');
+                   return {
+                     accountHidden: bar?.querySelector('[data-share-account]')?.hasAttribute('hidden'),
+                     link: (bar?.querySelector('[data-share-link]')?.textContent || '').trim()
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            share_copy.json()["accountHidden"],
+            true,
+            "a pending account must not offer login or signup: {}",
+            share_copy.json(),
+        );
+        assert!(
+            share_copy.json()["link"]
+                .as_str()
+                .is_some_and(|text| text.contains("confirm your email to share")),
+            "the share row must name activation as the missing step: {}",
+            share_copy.json(),
         );
 
         driver.quit().await?;
@@ -3275,7 +4415,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_backs_up_a_claimed_spot_for_another_account_device(
+    async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,
     ) -> Result<()> {
         let creator = driver_with_prf(&env).await?;
@@ -3444,6 +4584,104 @@ mod tests {
     /// hosted space, and both account-level finalizations. Only the
     /// passkey user-verification gesture is UI-side and out of scope;
     /// everything destructive runs here exactly as in production.
+    #[dialog_common::test]
+    async fn it_keeps_destructive_dialog_controls_inside_a_short_mobile_viewport(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "short-mobile@example.com";
+        sign_up(&driver, &env, email).await?;
+
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        driver.set_window_rect(0, 0, 320, 568).await?;
+        click(&driver, "#account-delete-review").await?;
+        wait_for_displayed(&driver, "#account-delete-arming").await?;
+
+        // The number of owned spaces varies by account. Fill the real plan list
+        // to its maximum-height state so this remains a geometry regression,
+        // rather than depending on a costly remote-space fixture.
+        driver
+            .execute(
+                r#"const list = document.querySelector('#account-delete-spaces');
+                   for (let index = list.children.length; index < 8; index += 1) {
+                     const item = document.createElement('li');
+                     item.textContent = `owned space ${index + 1} with a deliberately long name`;
+                     list.append(item);
+                   }"#,
+                Vec::new(),
+            )
+            .await?;
+        element(&driver, "#account-delete-email")
+            .await?
+            .send_keys(email)
+            .await?;
+        element(&driver, "#account-delete-understood")
+            .await?
+            .click()
+            .await?;
+
+        for (width, height) in [(320, 568), (390, 844)] {
+            driver.set_window_rect(0, 0, width, height).await?;
+            let geometry = driver
+                .execute(
+                    r#"const dialog = document.querySelector('.account__dialog');
+                   dialog.scrollTop = dialog.scrollHeight;
+                   const bounds = dialog.getBoundingClientRect();
+                   const inspect = selector => {
+                     const element = document.querySelector(selector);
+                     const rect = element.getBoundingClientRect();
+                     element.focus();
+                     return {
+                       top: rect.top,
+                       bottom: rect.bottom,
+                       visible: rect.top >= 0 && rect.bottom <= innerHeight,
+                       focused: document.activeElement === element,
+                       disabled: element.disabled
+                     };
+                   };
+                   return {
+                     top: bounds.top,
+                     bottom: bounds.bottom,
+                     viewport: innerHeight,
+                     cancel: inspect('#account-confirm-cancel'),
+                     submit: inspect('#account-delete-submit')
+                   };"#,
+                    Vec::new(),
+                )
+                .await?;
+            let geometry = geometry.json();
+            let top = geometry["top"].as_f64().unwrap_or(f64::NEG_INFINITY);
+            let bottom = geometry["bottom"].as_f64().unwrap_or(f64::INFINITY);
+            let viewport = geometry["viewport"].as_f64().unwrap_or_default();
+            assert!(
+                top >= 0.0,
+                "dialog starts above the {width}x{height} viewport: {geometry}"
+            );
+            assert!(
+                bottom <= viewport,
+                "dialog ends below the {width}x{height} viewport: {geometry}"
+            );
+            for action in ["cancel", "submit"] {
+                assert_eq!(
+                    geometry[action]["visible"], true,
+                    "{action} must remain visible at {width}x{height}: {geometry}"
+                );
+                assert_eq!(
+                    geometry[action]["focused"], true,
+                    "{action} must remain focusable at {width}x{height}: {geometry}"
+                );
+                assert_eq!(
+                    geometry[action]["disabled"], false,
+                    "{action} must be enabled in the armed state: {geometry}"
+                );
+            }
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_deletes_the_account_and_releases_its_email_and_profile(
         env: TestEnvironment,
@@ -3796,34 +5034,17 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.account_service);
+        assert_eq!(url::Url::parse(provider)?, env.access_service);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
         // account branch best-effort before it delivers the grant; a push
-        // that loses the race to the CLI's own bounded pull leaves the
-        // row for the next sync sweep. Each `devices` call pulls again, so
-        // wait for the row rather than reading the list once.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let (devices, device_rows) = loop {
-            let devices = devices(&linked.profile, &env).await?;
-            assert!(
-                devices.status.success(),
-                "devices failed: {}",
-                devices.stderr
-            );
-            let rows = device_rows(&devices.stdout)?;
-            if rows.iter().any(|row| row.name == "e2e terminal") {
-                break (devices, rows);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "the linked terminal never appeared in the device list: {}\n--- devices stderr ---\n{}",
-                    devices.stdout, devices.stderr
-                );
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        };
+        // that loses the race to the CLI's own bounded pull leaves one side
+        // for the next sync sweep. The CLI also self-describes locally, so
+        // its terminal row can appear before the signing browser's remote
+        // row. Each `devices` call pulls again: wait for BOTH sides rather
+        // than exiting on that guaranteed local row.
+        let (devices, device_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         assert!(
             device_rows
                 .iter()
@@ -3900,7 +5121,7 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.account_service);
+        assert_eq!(url::Url::parse(provider)?, env.access_service);
 
         // The endpoints are what `space new` and `space link` need; the
         // registry is where they are read from, and status does not print
@@ -4310,9 +5531,10 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
         let linked = link_cli(&driver, &env).await?;
-        let listed = devices(&linked.profile, &env).await?;
-        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let listed_rows = device_rows(&listed.stdout)?;
+        // Cache the complete callback view before revocation. The CLI creates
+        // its own row locally, so a terminal-only list does not prove it has
+        // pulled the browser row that must remain visible in its stale cache.
+        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
         let cli_did = did_for_device(&listed_rows, "e2e terminal")
             .context("CLI device was absent from the account device list")?
             .to_string();
@@ -4387,7 +5609,7 @@ mod tests {
                 "#,
                 vec![
                     serde_json::json!(device_did),
-                    serde_json::json!(env.account_service.as_str()),
+                    serde_json::json!(env.access_service.as_str()),
                 ],
             )
             .await?
@@ -4415,7 +5637,7 @@ mod tests {
             driver,
             "/api/account/attach",
             serde_json::json!({
-                "provider": env.account_service.as_str(),
+                "provider": env.access_service.as_str(),
                 "rootDid": ceremony["ceremony"]["rootDid"],
                 "credentialId": ceremony["ceremony"]["credentialId"],
                 "delegationHex": ceremony["ceremony"]["delegationHex"],

@@ -184,6 +184,49 @@ pub fn subscribe(
     subscribe_with_route(consumer, query_body, tag, None, None, false)
 }
 
+/// [`subscribe`], retrying while no host has claimed the event yet.
+///
+/// A subscription is installed by dispatching a DOM event some host's
+/// document-level listener must claim, and boots race: a guest coming
+/// up while its host installs — or while a service-worker swap restarts
+/// everything — dispatches into silence, and the one-shot failure left
+/// the view subscribed to NOTHING. That is the wedge a reload "fixed":
+/// the element sat on its loading state forever while a calmer boot
+/// subscribed fine. Bounded, so a genuinely hostless document still
+/// fails, loudly, after a few seconds.
+pub async fn subscribe_claimed(
+    consumer: &Element,
+    query_body: &JsValue,
+    tag: Option<&JsValue>,
+) -> Result<Subscription, ErrorDetail> {
+    subscribe_claimed_with_route(consumer, query_body, tag, None, None, false).await
+}
+
+/// [`subscribe_with_route`], with the same claim-retry as
+/// [`subscribe_claimed`].
+pub async fn subscribe_claimed_with_route(
+    consumer: &Element,
+    query_body: &JsValue,
+    tag: Option<&JsValue>,
+    space: Option<&str>,
+    branch: Option<&str>,
+    profile: bool,
+) -> Result<Subscription, ErrorDetail> {
+    let mut unclaimed = None;
+    for attempt in 0..12u32 {
+        if attempt > 0 {
+            crate::ops::wait_ms(250 * attempt.min(4) as i32).await;
+        }
+        match subscribe_with_route(consumer, query_body, tag, space, branch, profile) {
+            Ok(subscription) => return Ok(subscription),
+            Err(error) if error.message.contains("no host claimed") => unclaimed = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(unclaimed
+        .unwrap_or_else(|| ErrorDetail::new(ErrorKind::Network, "tonk-subscribe: never claimed")))
+}
+
 /// Like [`subscribe`], but with an explicit cross-repo route (`space`/`branch`).
 /// See [`query_with_route`] / `apply_route` for the routing semantics. With
 /// `space = None` this is identical to [`subscribe`].

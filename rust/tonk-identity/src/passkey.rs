@@ -42,6 +42,62 @@ pub struct CustodyCredential {
     pub evaluation: Option<CustodyEvaluation>,
 }
 
+/// Why a passkey ceremony did not produce a credential.
+///
+/// The browser answers with a `DOMException` whose `name` is the whole
+/// story — `NotAllowedError` for a cancelled prompt, `InvalidStateError`
+/// for a credential this authenticator already holds — and a caller
+/// wanting to distinguish them should not be matching on prose. The
+/// name becomes a variant; what the browser actually said is kept
+/// alongside it, because the name alone rarely explains the failure.
+#[derive(Debug, thiserror::Error)]
+#[error("{context}: {detail}")]
+pub struct CeremonyError {
+    /// Which ceremony was refused.
+    pub context: String,
+    /// Why, as far as the browser named it.
+    pub reason: CeremonyRefusal,
+    /// What the browser said, verbatim.
+    pub detail: String,
+}
+
+/// The `DOMException` name a ceremony was refused with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CeremonyRefusal {
+    /// The user dismissed the prompt, or it timed out. The ordinary way
+    /// a ceremony ends when someone changes their mind.
+    NotAllowed,
+    /// This authenticator already holds a credential the request
+    /// excluded. Creation only.
+    InvalidState,
+    /// The request named something this browser or authenticator does
+    /// not implement.
+    NotSupported,
+    /// The origin may not act for this relying party — usually a
+    /// mismatched `rp.id` or an insecure context.
+    Security,
+    /// The ceremony ran and the authenticator evaluated no PRF, so this
+    /// platform cannot hold custody at all.
+    NoPrf,
+    /// Anything else the browser reported.
+    Other,
+}
+
+impl CeremonyRefusal {
+    /// The `DOMException` name this refusal came back as, for handing
+    /// across the JS boundary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAllowed => "NotAllowedError",
+            Self::InvalidState => "InvalidStateError",
+            Self::NotSupported => "NotSupportedError",
+            Self::Security => "SecurityError",
+            Self::NoPrf => "NoPrfError",
+            Self::Other => "Error",
+        }
+    }
+}
+
 fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
     let property = |name: &str| {
         Reflect::get(&value, &name.into())
@@ -60,7 +116,19 @@ fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
         }
     };
     let detail: String = detail.chars().take(512).collect();
-    anyhow!("{context}: {detail}")
+    let reason = match property("name").as_deref() {
+        Some("NotAllowedError") => CeremonyRefusal::NotAllowed,
+        Some("InvalidStateError") => CeremonyRefusal::InvalidState,
+        Some("NotSupportedError") => CeremonyRefusal::NotSupported,
+        Some("SecurityError") => CeremonyRefusal::Security,
+        _ => CeremonyRefusal::Other,
+    };
+    CeremonyError {
+        context: context.to_string(),
+        reason,
+        detail,
+    }
+    .into()
 }
 
 fn credentials() -> Result<CredentialsContainer> {
@@ -84,13 +152,21 @@ fn custody_extensions() -> AuthenticationExtensionsClientInputs {
     extensions
 }
 
-/// The stable user handle for a custody passkey: a hash of the account
-/// DID. Same account, same handle — so re-enrolling at the same
-/// provider overwrites instead of accumulating duplicates — and the
-/// DID is already public, so unlike an address the handle riding every
-/// assertion leaks nothing.
-pub fn custody_user_id(account_did: &str) -> [u8; 32] {
-    blake3::hash(account_did.as_bytes()).into()
+/// A fresh user handle, one per credential.
+///
+/// Not derived from the account, which is what it used to be. An
+/// authenticator holding a discoverable credential for the same
+/// `(rp.id, user.id)` **replaces** it — that is the spec, and there is
+/// no delete API to undo it. So an account-derived handle meant that
+/// adding a passkey on a device that already had one destroyed the
+/// first, and if its custody cell was the only way in, the account with
+/// it.
+///
+/// Random means credentials never collide and nothing is ever silently
+/// destroyed. The cost is that a passkey manager lists them separately
+/// rather than grouped, which `name` and `display_name` are for.
+fn fresh_user_id() -> [u8; 16] {
+    rand::random()
 }
 
 /// The origin that owns tonk passkeys. The RP ID is the root-key custody
@@ -122,29 +198,37 @@ fn current_rp_id() -> Option<&'static str> {
 /// user-verified credential, with both custody salts requested and the
 /// stable account-derived user handle — see [`custody_user_id`].
 fn custody_creation_options(
-    label: Option<&str>,
-    account_did: &str,
+    name: Option<&str>,
+    display_name: Option<&str>,
 ) -> Result<PublicKeyCredentialCreationOptions> {
-    let mut user_id = custody_user_id(account_did);
-    let options = creation_options_shell(label, &mut user_id)?;
+    let options = creation_options_shell(name, display_name, &fresh_user_id())?;
     options.set_extensions(&custody_extensions());
     Ok(options)
 }
 
 fn creation_options_shell(
-    label: Option<&str>,
-    user_id: &mut [u8; 32],
+    name: Option<&str>,
+    display_name: Option<&str>,
+    user_id: &[u8; 16],
 ) -> Result<PublicKeyCredentialCreationOptions> {
     let mut challenge = rand::random::<[u8; 32]>();
     let rp = PublicKeyCredentialRpEntity::new("tonk");
     if let Some(id) = current_rp_id() {
         rp.set_id(id);
     }
+    // What a passkey manager shows. With per-credential handles these
+    // are the only thing telling two entries apart, so a caller that
+    // has something distinguishing should pass it.
     let opaque_name = hex::encode(rand::random::<[u8; 16]>());
+    // A copy per entity: `new_with_u8_slice` keeps a view on the buffer
+    // it is handed rather than copying it, so two entities built from
+    // one slice end up sharing a handle — which is exactly the
+    // collision the random id exists to avoid.
+    let mut handle = *user_id;
     let user = PublicKeyCredentialUserEntity::new_with_u8_slice(
-        label.unwrap_or(&opaque_name),
-        label.unwrap_or("Tonk identity"),
-        user_id,
+        name.unwrap_or(&opaque_name),
+        display_name.or(name).unwrap_or("Tonk identity"),
+        &mut handle,
     );
     let params = Array::new();
     for algorithm in COSE_ALGORITHMS {
@@ -189,11 +273,11 @@ fn extract_custody(credential: &PublicKeyCredential) -> Option<CustodyEvaluation
 /// evaluate PRF on a follow-up assertion, so `evaluation` may be
 /// absent — chase it with [`evaluate_custody_passkey`].
 pub async fn create_custody_passkey(
-    label: Option<&str>,
-    account_did: &str,
+    name: Option<&str>,
+    display_name: Option<&str>,
 ) -> Result<CustodyCredential> {
     let creation = CredentialCreationOptions::new();
-    creation.set_public_key(&custody_creation_options(label, account_did)?);
+    creation.set_public_key(&custody_creation_options(name, display_name)?);
     let promise = credentials()?
         .create_with_options(&creation)
         .map_err(|e| ceremony_error("credentials.create was rejected", e))?;
@@ -282,7 +366,13 @@ pub async fn evaluate_custody_passkey(credential_id: Option<&[u8]>) -> Result<Cu
         .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
     let id = Uint8Array::new(&credential.raw_id()).to_vec();
     let evaluation = extract_custody(&credential).ok_or_else(|| {
-        anyhow!("the authenticator returned no PRF outputs; this platform cannot unlock custody")
+        anyhow::Error::from(CeremonyError {
+            context: "custody assertion failed".to_string(),
+            reason: CeremonyRefusal::NoPrf,
+            detail: "the authenticator returned no PRF outputs; this platform cannot unlock \
+                         custody"
+                .to_string(),
+        })
     })?;
     Ok(CustodyCredential {
         id,
@@ -297,6 +387,46 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// A `DOMException` name becomes a variant, so a caller can tell a
+    /// dismissed prompt from a real failure without reading prose.
+    #[dialog_common::test]
+    fn it_names_the_reason_a_ceremony_was_refused() {
+        let refusal = |name: &str| {
+            let error = js_sys::Error::new("the operation was refused");
+            error.set_name(name);
+            ceremony_error("test ceremony", error.into())
+        };
+
+        let reason = |name: &str| {
+            refusal(name)
+                .downcast_ref::<CeremonyError>()
+                .expect("a ceremony refusal")
+                .reason
+        };
+        assert_eq!(reason("NotAllowedError"), CeremonyRefusal::NotAllowed);
+        assert_eq!(reason("InvalidStateError"), CeremonyRefusal::InvalidState);
+        assert_eq!(reason("NotSupportedError"), CeremonyRefusal::NotSupported);
+        assert_eq!(reason("SecurityError"), CeremonyRefusal::Security);
+    }
+
+    /// Anything unrecognised keeps what the browser said rather than
+    /// being flattened into one opaque failure.
+    #[dialog_common::test]
+    fn it_keeps_the_detail_of_an_unrecognised_refusal() {
+        let error = js_sys::Error::new("something novel went wrong");
+        error.set_name("SomeFutureError");
+        let refusal = ceremony_error("test ceremony", error.into());
+        let refusal = refusal
+            .downcast_ref::<CeremonyError>()
+            .expect("a ceremony refusal");
+        assert_eq!(refusal.reason, CeremonyRefusal::Other);
+        assert!(
+            refusal.detail.contains("something novel went wrong"),
+            "{}",
+            refusal.detail
+        );
+    }
+
     #[dialog_common::test]
     fn it_requests_both_custody_salts() {
         let extensions = custody_extensions();
@@ -308,23 +438,22 @@ mod tests {
         assert_eq!(Uint8Array::new(&second).to_vec(), CUSTODY_KEK_CONTEXT);
     }
 
+    /// Every credential gets its own handle.
+    ///
+    /// It used to be `blake3(account_did)`, which meant two passkeys
+    /// for one account on one authenticator shared
+    /// `(rp.id, user.id)` — and the spec says the second **replaces**
+    /// the first. There is no delete API to undo that, so adding a
+    /// passkey could destroy the one already there, and with it the
+    /// account if that passkey's cell was the only way in.
     #[dialog_common::test]
-    fn it_derives_a_stable_custody_user_handle() {
-        let handle = custody_user_id("did:key:z6MkExample");
-        assert_eq!(handle, custody_user_id("did:key:z6MkExample"));
-        assert_ne!(handle, custody_user_id("did:key:z6MkOther"));
-    }
-
-    /// A custody passkey's handle is account-derived, not random, so
-    /// re-enrolling at the same provider overwrites the stale entry
-    /// instead of accumulating duplicates.
-    #[dialog_common::test]
-    fn it_pins_the_custody_user_handle_to_the_account() {
-        let options =
-            custody_creation_options(Some("someone@example.com"), "did:key:z6MkExample").unwrap();
-        assert_eq!(
-            user_handle(&options),
-            custody_user_id("did:key:z6MkExample").to_vec(),
+    fn it_gives_every_credential_its_own_handle() {
+        let one = custody_creation_options(Some("someone@example.com"), None).unwrap();
+        let two = custody_creation_options(Some("someone@example.com"), None).unwrap();
+        assert_ne!(
+            user_handle(&one),
+            user_handle(&two),
+            "two credentials for the same person never collide"
         );
     }
 
@@ -339,11 +468,9 @@ mod tests {
         );
     }
 
-    const DID: &str = "did:key:z6MkExample";
-
     #[dialog_common::test]
     fn it_requires_a_discoverable_user_verified_credential() {
-        let options = custody_creation_options(None, DID).unwrap();
+        let options = custody_creation_options(None, None).unwrap();
         let selection = Reflect::get(&options, &"authenticatorSelection".into()).unwrap();
         let resident = Reflect::get(&selection, &"residentKey".into()).unwrap();
         assert_eq!(resident.as_string().as_deref(), Some("required"));
@@ -372,11 +499,11 @@ mod tests {
     /// `name`, not `displayName`.
     #[dialog_common::test]
     fn it_labels_the_user_entity_with_the_account_address() {
-        let unlabelled = custody_creation_options(None, DID).unwrap();
+        let unlabelled = custody_creation_options(None, None).unwrap();
         assert!(!user_field(&unlabelled, "name").contains('@'));
         assert_eq!(user_field(&unlabelled, "displayName"), "Tonk identity");
 
-        let options = custody_creation_options(Some("someone@example.com"), DID).unwrap();
+        let options = custody_creation_options(Some("someone@example.com"), None).unwrap();
         assert_eq!(user_field(&options, "name"), "someone@example.com");
         assert_eq!(user_field(&options, "displayName"), "someone@example.com");
     }
@@ -399,7 +526,7 @@ mod tests {
     fn it_leaves_the_rp_id_unset_off_apex() {
         // wasm tests run on a localhost origin, which is off-apex, so the
         // creation options must carry no id and requests no rpId.
-        let options = custody_creation_options(None, DID).unwrap();
+        let options = custody_creation_options(None, None).unwrap();
         let rp = Reflect::get(&options, &"rp".into()).unwrap();
         assert!(
             Reflect::get(&rp, &"id".into()).unwrap().is_undefined(),

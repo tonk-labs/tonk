@@ -374,7 +374,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_posts_json_with_an_explicit_media_type() {
         let (endpoint, request) =
-            server(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-tonk-account-spots: v1\r\nconnection: close\r\n\r\n{}");
+            server(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-tonk-account-spaces: v1\r\nconnection: close\r\n\r\n{}");
         let response = post_json(&endpoint, br#"{"ok":true}"#).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{}");

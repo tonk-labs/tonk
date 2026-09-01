@@ -342,7 +342,7 @@ view!:
 # below derives it so the agent-prompt view can template the repo name and
 # the invite URL from one model. It resolves only once the invitation's
 # both halves (durable authorization + overlay credential) exist, so the
-# canvas shows "Generating link…" until the mint lands.
+# canvas shows "Generating link…" until the mint lands or a refusal replaces it.
 concept!: &tonk/agent-invite
   this: tonk:agent-invite
   description: A live invite joined with the repo's display name, for the agent prompt.
@@ -376,8 +376,8 @@ concept!: &tonk/agent-invite
 # A refused invite mint, asserted into the session overlay by the worker.
 # The empty-canvas and empty-sheet agent-link panels use it as the fallback
 # behind `tonk:agent-invite`: while neither exists they show a short pending
-# label; if minting is refused they replace that label with the reason and the
-# action that makes a link possible.
+# label; if minting is refused they replace that label with the worker-owned
+# reason sentence.
 concept!: &share/blocked
   this: tonk:share/blocked
   description: Why the latest invite request could not produce a shareable link.
@@ -444,8 +444,8 @@ view!:
             text-wrap: pretty;
           }
         </style>
-        <span class="local-invite-notice__label">local spot &middot; no sync remote</span>
-        <p>{detail} Use connect in the condition banner, then create the agent link again.</p>
+        <span class="local-invite-notice__label">sharing unavailable</span>
+        <p>{detail}</p>
       </div>
 
 # Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
@@ -767,7 +767,7 @@ concept!: &tonk/repository
 
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
-# with the spot rather than belonging to one filesystem checkout or replica.
+# with the space rather than belonging to one filesystem checkout or replica.
 attribute!: &tonk/agents-markdown
   the: xyz.tonk.repo/agents
   description: >
@@ -832,7 +832,7 @@ view!:
         value={name}
         data-subject={this}
         onchange=tonk/rename-repository
-        aria-label="Spot name"
+        aria-label="Space name"
       ></tonk-editable>
 
 # ============================================================

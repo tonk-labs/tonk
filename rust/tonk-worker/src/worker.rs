@@ -1866,7 +1866,7 @@ impl TonkServiceWorker {
                 // and a failure there (an unhydrated account, a closed
                 // page) must not strand seeds until the next link.
                 crate::router::rotation::rotate_from_onboarding(&tonk).await;
-                // Overlay locality stamps for the Hub's hollow-spot
+                // Overlay locality stamps for the Hub's hollow-card
                 // styling — device-local, re-stamped every boot.
                 crate::router::adopt::stamp_local_spaces(&tonk).await;
             });
@@ -1924,10 +1924,11 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Called from the JS shim's `self.onactivate` after
-    /// `clients.claim()` has resolved. Drops every shell cache
-    /// from older SW versions so the first fetch under the new
-    /// worker doesn't race against stale entries.
+    /// Called from the JS shim's `self.onactivate`. Drops every shell cache
+    /// from older SW versions before this worker serves a controlled fetch.
+    /// Client adoption is page-directed: compatible pages explicitly ask the
+    /// activated worker to claim them, while older pages retain their current
+    /// controller until navigation.
     #[wasm_bindgen(js_name = "onactivate")]
     pub fn on_activate(&self) -> Promise {
         // A worker that is activating is the one now serving the page, so it is
@@ -2070,6 +2071,15 @@ impl TonkServiceWorker {
         let ports = event.ports();
 
         future_to_promise(async move {
+            // A custody envelope carries two `CryptoKey` handles, which
+            // are not JSON: reading it through `serde_wasm_bindgen`
+            // would silently drop them. So it is recognised on the raw
+            // value, before anything parses.
+            if crate::router::custody::is_custody_envelope(&data) {
+                crate::router::custody::receive(state, data, ports).await;
+                return Ok(JsValue::UNDEFINED);
+            }
+
             let envelope: serde_json::Value = match serde_wasm_bindgen::from_value(data) {
                 Ok(v) => v,
                 Err(e) => {
@@ -2359,8 +2369,8 @@ async fn pending_local_work(state: &AppState) -> usize {
 /// `matchAll()` also defaults to `includeUncontrolled: false`, so during
 /// the claim window — this worker activated in a previous session and the
 /// current document is not yet controlled — it returns `[]` for a page
-/// that plainly is visible. That misread self-heals within one loop tick,
-/// once `clients.claim()` lands, and until then it costs the page nothing:
+/// that plainly is visible. That misread self-heals once a compatible page's
+/// explicit claim lands, and until then it costs the page nothing:
 /// a fetch only reaches `onfetch` from a client this worker already
 /// controls, so an uncontrolled document generates no drains for the
 /// misread to hold off. Widening the query to uncontrolled clients would

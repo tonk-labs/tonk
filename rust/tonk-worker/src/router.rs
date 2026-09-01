@@ -183,7 +183,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
-        .route("/api/customer/activated", post(customer::activated))
         .route("/api/customer/pending", get(customer::get_pending))
         .route("/api/custody/provision", post(customer::provision_custody))
         .route("/api/custody/queue", post(customer::queue_custody))
@@ -620,8 +619,7 @@ pub mod tests {
         let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
             zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
         )
-        .encryption_key()
-        .recipient()
+        .secret()
         .did();
         super::identity::persist_root(
             state,
@@ -639,7 +637,7 @@ pub mod tests {
             .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
             .transaction()
-            .assert(tonk_schema::AccountEncryptionKey::new(
+            .assert(tonk_schema::AccountSealedInbox::new(
                 root_did.this(),
                 recipient.this(),
             ))
@@ -862,7 +860,7 @@ pub mod tests {
 
     /// The stable code the page routes the account gate off, for both shapes
     /// of "not signed in": no root at all, and a root with no account behind
-    /// it. Neither may create a spot — one that exists without an account is
+    /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
@@ -945,7 +943,7 @@ pub mod tests {
         );
     }
 
-    /// An attached account is the whole precondition — a spot creates the
+    /// An attached account is the whole precondition — a space creates the
     /// moment one exists.
     ///
     /// Through `PUT /api/repository/{label}` rather than `POST /api/spaces`,
@@ -1453,7 +1451,7 @@ pub mod tests {
     }
 
     /// The FAB dispatches enable-sync through the profile branch even though
-    /// its result is written to the named spot. A standing spot subscription
+    /// its result is written to the named space. A standing space subscription
     /// must receive that link when dispatch drains the command's writes;
     /// otherwise the share control has nothing to settle its clipboard promise
     /// with and times out.
@@ -1477,7 +1475,7 @@ pub mod tests {
         assert_eq!(
             snapshot["conclusions"].as_array().map(Vec::len),
             Some(0),
-            "local-only spot starts without a credential link",
+            "local-only space starts without a credential link",
         );
 
         let command = serde_json::json!({
@@ -1551,10 +1549,12 @@ pub mod tests {
                 .expect("SSE-framed body"),
         )
         .expect("delta is JSON");
-        // Refreshing the branch handle deliberately rebinds its subscription
-        // engine, so this is a replacement snapshot; an ordinary mint on an
-        // unchanged handle is an incremental `asserted` delta. The FAB accepts
-        // both frame kinds.
+        // An ordinary mint on a quiet handle broadcasts an incremental
+        // `asserted` delta; a snapshot (`conclusions`) arrives when a poll
+        // serves a pending subscriber instead. The FAB accepts both frame
+        // kinds, so this does too. (The in-place `refresh_branch` no longer
+        // rebinds the engine mid-flow, so no empty replacement snapshot can
+        // race in front of the invite delta — that was a CI flake.)
         let rows = delta["conclusions"]
             .as_array()
             .or_else(|| delta["asserted"].as_array())

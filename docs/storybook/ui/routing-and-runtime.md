@@ -6,7 +6,8 @@ The browser shell boots the host/service-worker environment and mounts exactly
 one top-level surface based on the URL. `/settings*` mounts account settings,
 legacy `/account*` redirects there, `/activate*` mounts the emailed customer
 activation page, and every other route mounts `<tonk-site>`, whose profile route
-table brings up Hub, space chrome, and sealed guest content.
+table brings up Hub, space chrome, and sealed guest content. A named space's
+`/inspector` route also exposes read-only branch diagnostics above the notebook.
 
 This boundary is small but load-bearing. A route can render correctly in a
 headless renderer while still failing to become the browser home. Account and
@@ -24,6 +25,12 @@ profile and account lifecycle. At `/activate?ucan=...`, it mounts
 `<tonk-activate>` without requiring a logged-in profile. At `/`, a space route,
 or another content path, it mounts one `<tonk-site>` and the current profile's
 route table selects Hub or content.
+
+At a named space's `/inspector` route, the inspector starts with one compact,
+full-width diagnostics summary above the notebook. It identifies the current
+branch, revision, and whether the branch is local-only or has an upstream. The
+profile inspector keeps its notebook-only surface because it has no named-space
+repository boundary to diagnose.
 
 Navigation and reload reproduce the same canonical route. A service-worker
 update cannot strand the user between old HTML and new Wasm/assets; an offline
@@ -45,6 +52,29 @@ This is a source-derived presentation decision for `UI-01`, `UI-02`, `UI-04`,
 `WEB-01`, `WEB-03`, and `WEB-06`, pinned to `a3f8657d3`. No browser image was
 recaptured for this decision; the existing artifacts remain evidence only for
 the visual commit recorded in `screens.json`.
+
+### Inspector branch diagnostics decision
+
+Branch diagnostics are disclosure-on-demand rather than a permanent dashboard.
+The collapsed row spans the top of the named-space inspector and keeps the
+notebook as the dominant surface. Expanding it shows the exact space, route,
+branch, revision, upstream, remote, repository, profile, and operator values.
+Long identifiers wrap without forcing horizontal page overflow; compact and
+zoomed layouts retain the same values and actions.
+
+Local metadata loads without contacting the upstream. **Refresh** rereads that
+local metadata. **Probe remote** appears only for a configured upstream and is
+the explicit network action; its result augments rather than replaces the last
+local facts. Each copyable row owns its feedback: the pressed **copy** button
+changes to **copied**, while a clipboard failure changes that same button into a
+retry affordance. Refresh and probe errors stay inside the panel and do not
+replace or block the inspector notebook.
+
+The panel is read-only. It never changes branch, pulls, pushes, repairs, or
+configures a remote, and it does not expose diagnostics on the profile
+inspector. This is a source-derived contract for `UI-04`, pinned to implementation
+commit `efe638c41`. Desktop and compact local-only layouts were exercised at
+that commit; a live configured-upstream probe was not available.
 
 ## The interaction, event by event
 
@@ -78,6 +108,10 @@ activation route reads one base64url `ucan`. Content routes are interpreted by
 the profile's route table inside `tonk-site`, not by a second top-document
 framework.
 
+The `/inspector` content route distinguishes a named-space repository from the
+profile repository. Only the former resolves branch metadata and mounts the
+diagnostics disclosure.
+
 ### Exit early
 
 A legacy route redirects before mounting an account element at the old URL.
@@ -100,6 +134,30 @@ The host IO surface and route table must agree on current profile/space. A
 service-worker update or hot swap crosses an asset-version boundary and must
 not mix incompatible shell, Wasm, and guest bundles.
 
+`UI-03` uses immediate load-time alignment: every online load asks the current
+registration to update before mounting the UI. When a replacement activates,
+the update-aware document explicitly asks that successor to claim it, then
+performs one guarded reload so the mounted shell and active worker come from the
+same generation. Activation alone never claims an already-open older document;
+that page keeps its compatible controller until navigation. A failed update
+check keeps an existing active worker usable offline, and neither path clears
+IndexedDB or CacheStorage. The real-browser regressions in
+`rust/tonk-ui/src/service_worker_upgrade.rs` cover the online replacement and
+offline-return cases; full checklist execution still requires a compatible
+ChromeDriver. The real-source Node contract in
+`rust/tonk-ui/tests/service-worker-claim.test.mjs` separately pins the rollout
+boundary: activation does not claim an older page, an explicit cold-start claim
+does take control, and an update-aware page claims its activated successor
+before exactly one guarded reload.
+
+An explicit readiness rejection is a terminal boot result, not an unobserved
+stall. Before returning without an application root, the UI asks the static
+shell to show “Tonk couldn’t start. Check your connection, then reload. Your
+local data is safe.” The first terminal result wins, clears the watchdog's
+per-tab retry counter, and disables later automatic recovery. It does not
+reload, delete CacheStorage, or unregister workers. Silent boots that stop
+making progress without an error retain the bounded watchdog ladder.
+
 ### Remain in flight
 
 Boot progress, configuration fetch, service-worker control, Wasm/custom-element
@@ -110,6 +168,11 @@ path. Console errors alone are insufficient.
 Navigation during boot must resolve the final URL without mounting multiple
 top-level elements or leaking document listeners. Back/forward and history
 replacement for canonical account routes must preserve safe query intent.
+
+An inspector metadata refresh or remote probe may still be in flight when the
+user edits the notebook or navigates away. The panel disables duplicate actions
+while busy, preserves its disclosure state across rerenders, and must ignore
+work whose element is no longer current.
 
 Account/profile switching can reload the page. When it does, the new profile's
 route state must win; stale asynchronous work from the previous element must
@@ -124,7 +187,9 @@ error for the verified path.
 
 Settings settles in a named account mode. Activation settles in confirmation,
 done, or a specific link/service error. Content settles in Hub, a configured
-space home, an explicit route, or a visible route/authority error.
+space home, an explicit route, or a visible route/authority error. A named-space
+inspector settles with an interactive notebook even when diagnostics cannot be
+loaded; successful diagnostics remain collapsed until the user opens them.
 
 ## Modifiers
 
@@ -197,6 +262,9 @@ avoid recording credential/passkey inputs.
 - Profile switch reloads from an account confirmation or space route.
 - Blank home after installing a view versus explicit home selection.
 - Revoked/deleted space route while a retained local replica exists.
+- Named-space inspector with no upstream, a configured but unavailable remote,
+  a remote response that differs from local metadata, or clipboard denial.
+- Profile inspector must not infer or display named-space branch metadata.
 - Compact 390 px viewport, zoom, reduced motion, keyboard only, and screen
   reader during busy/error transitions.
 
@@ -206,10 +274,14 @@ avoid recording credential/passkey inputs.
   coverage before treating `/activate` as stable.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
-- Define the visible boot error/retry contract for stale service-worker assets
-  and deployment misconfiguration.
+- Run explicit readiness rejection and silent-stall recovery in a real browser;
+  the source-level watchdog regression proves the former cannot fall through
+  into automatic cache deletion or worker unregistration.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
+- Verify the inspector against a configured upstream in a real browser,
+  including probe failure, navigation during a probe, keyboard disclosure, and
+  clipboard denial.
 - Run signed-out/provider-free, customer suspended, service offline, revoked,
   and deleted states through the real Hub/content shell.
 

@@ -85,6 +85,30 @@ async fn it_links_a_local_space_into_the_signed_in_account(
 }
 
 #[dialog_common::test]
+async fn it_links_a_signed_repository_after_its_creating_profile_is_gone(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    let store = fixture.store.clone();
+    let mut recovery_config = fixture.config.clone();
+    recovery_config.profile_name = format!("space-link-recovery-{}", rand::random::<u64>());
+    recovery_config.require_account = false;
+    recovery_config.provision_account_spaces = false;
+    local_space(&store, &recovery_config, "garden").await?;
+
+    fixture.activate_with(&env).await?;
+    let account = signed_in(&fixture, &env)?;
+    store.set_account(Some(account.clone()))?;
+
+    let outcome = tonk_cli::space_link::execute(&store, &fixture.config, "garden").await?;
+
+    assert_eq!(outcome.account, account.root);
+    assert!(!outcome.already_linked);
+    Ok(())
+}
+
+#[dialog_common::test]
 async fn it_reports_an_already_linked_space_without_relinking_it(
     env: AccessServiceAddress,
 ) -> Result<()> {
@@ -103,6 +127,36 @@ async fn it_reports_an_already_linked_space_without_relinking_it(
     assert!(again.already_linked);
     assert_eq!(again.subject, first.subject);
     assert_eq!(std::fs::read(store.registry_path())?, after_first);
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn it_finishes_an_already_linked_space_after_an_invite_was_minted(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let store = fixture.store.clone();
+    let config = fixture.config.clone();
+    local_space(&store, &config, "garden").await?;
+    store.set_account(Some(signed_in(&fixture, &env)?))?;
+    let first = tonk_cli::space_link::execute(&store, &config, "garden").await?;
+    let entry = store.load()?.spaces["garden"].clone();
+    let site = TonkSite::open_with(&entry.site, config.clone()).await?;
+    tonk_cli::invite::mint_with_relay(&site, None, None, None).await?;
+
+    let again = tonk_cli::space_link::execute(&store, &config, "garden").await?;
+
+    assert!(again.already_linked);
+    assert_eq!(again.subject, first.subject);
+    let listed = tonk_cli::account_spaces::list(&fixture.profile, &store).await?;
+    assert!(
+        listed
+            .iter()
+            .any(|row| row.subject == first.subject && row.local_name.is_some()),
+        "the account directory should still list the linked space: {listed:?}"
+    );
     Ok(())
 }
 

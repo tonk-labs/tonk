@@ -519,7 +519,7 @@ pub async fn save_root(
 /// routeless dispatch because a portal pins its context; nothing pins
 /// one here.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result<(), TonkUiError> {
+pub async fn enroll_customer(email: Option<&str>) -> Result<(), TonkUiError> {
     use wasm_bindgen::JsValue;
 
     tonk_host::ready::wait().await;
@@ -527,7 +527,7 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
         .and_then(|window| window.document())
         .and_then(|document| document.document_element())
         .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
-    let request = js_sys::JSON::parse(&enroll_claim(email, deposits).to_string())
+    let request = js_sys::JSON::parse(&enroll_claim(email).to_string())
         .map_err(|error| TonkUiError::ApiError(format!("enroll claim did not parse: {error:?}")))?;
     tonk_host::consumer::claim_with_route(
         &consumer,
@@ -541,15 +541,20 @@ pub async fn enroll_customer(email: Option<&str>, deposits: &[String]) -> Result
     .map_err(|error| TonkUiError::ApiError(format!("enrollment was not dispatched: {error:?}")))
 }
 
+/// The custody material an enrollment carries, as the ceremony hands it
+/// back.
+///
+/// Four values the worker cannot produce for itself: two of them are
+/// signatures by the custody key, which exists only inside a live
+/// passkey assertion in this page. They ride the command so the worker
+/// can present them to the access service, which writes the cell.
 /// The `TransactRequest` body for the `tonk:enroll` command.
 ///
 /// Both fields are always present because a concept resolves only when
 /// every one of them is, so "unset" is the empty string: no address means
-/// the account's recorded one, and no deposits mean the worker mints a
-/// device-chained set. The deposits join with commas rather than riding
-/// as a list, because a command's fields are scalars.
+/// the account's recorded one.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
+fn enroll_claim(email: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "claims": [{
             "op": "assert",
@@ -559,18 +564,91 @@ fn enroll_claim(email: Option<&str>, deposits: &[String]) -> serde_json::Value {
                     "concept": {
                         "description": "Register this account as a customer of the access service.",
                         "with": {
-                            "email": { "the": "xyz.tonk.enroll/email", "cardinality": "one", "as": "Text" },
-                            "deposits": { "the": "xyz.tonk.enroll/deposits", "cardinality": "one", "as": "Text" }
+                            "email": { "the": "xyz.tonk.enroll/email", "cardinality": "one", "as": "Text" }
                         }
                     }
                 },
                 "parameters": {
-                    "email": email.unwrap_or_default(),
-                    "deposits": deposits.join(",")
+                    "email": email.unwrap_or_default()
                 }
             }
         }]
     })
+}
+
+/// The `account/resend-activation` claim: ask the worker to have the
+/// service mail the activation link again. No address and no ceremony —
+/// the enrollment's rows stand, so the worker signs the resend
+/// invocation with its own device key and nothing prompts for a passkey.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn resend_activation_claim(at: f64) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Send this account's activation link again.",
+                        "with": {
+                            "at": { "the": "xyz.tonk.resend-activation/at", "cardinality": "one", "as": "UnsignedInteger" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "at": at as u64
+                }
+            }
+        }]
+    })
+}
+
+/// Dispatch the resend-activation command.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn resend_activation() -> Result<(), TonkUiError> {
+    use wasm_bindgen::JsValue;
+
+    tonk_host::ready::wait().await;
+    let consumer = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
+    let request = js_sys::JSON::parse(&resend_activation_claim(js_sys::Date::now()).to_string())
+        .map_err(|error| TonkUiError::ApiError(format!("resend claim did not parse: {error:?}")))?;
+    tonk_host::consumer::claim_with_route(
+        &consumer,
+        &request,
+        None,
+        Some(tonk_account::MAIN_BRANCH),
+        true,
+    )
+    .await
+    .map(|_: JsValue| ())
+    .map_err(|error| TonkUiError::ApiError(format!("resend was not dispatched: {error:?}")))
+}
+
+/// Ask the worker for a sync drain now.
+///
+/// The registering ceremony's activation signal is the account sweep's
+/// own pull turning from refused to served, so its freshness is the
+/// drain cadence. While the ceremony waits it calls this on its own
+/// clock instead of the background heartbeat's; the drain coalesces
+/// concurrent requests, so an extra ask costs nothing.
+pub async fn kick_sync() -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/sync", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/sync returned {}",
+            response.status()
+        )))
+    }
 }
 
 /// The account's customer registration state: the access service's live
@@ -602,7 +680,7 @@ pub async fn save_account_link(
     root_did: String,
     credential_id: String,
     delegation_hex: String,
-    descriptor_hex: String,
+    remote: String,
     initialize_name: bool,
 ) -> Result<AccountStatus, TonkUiError> {
     tonk_host::ready::wait().await;
@@ -613,7 +691,7 @@ pub async fn save_account_link(
             root_did,
             credential_id,
             delegation_hex,
-            descriptor_hex,
+            remote,
             initialize_name,
         })
         .send()
@@ -752,10 +830,11 @@ pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkU
     }
 }
 
-/// Queue a custody cell that could not be published yet, so it is
-/// republished once provisioning and email activation let it through.
+/// Record the complete custody handoff. The worker queues provisioning before
+/// any deferred publish in one durable write, then drains both in order.
 pub async fn queue_custody_publish(
     custody: &str,
+    consent_hex: &str,
     sealed_hex: &str,
     invocation_hex: &str,
 ) -> Result<(), TonkUiError> {
@@ -764,6 +843,7 @@ pub async fn queue_custody_publish(
         .post(format!("{}/api/custody/queue", origin()))
         .json(&serde_json::json!({
             "custody": custody,
+            "consentHex": consent_hex,
             "sealedHex": sealed_hex,
             "invocationHex": invocation_hex,
         }))
@@ -849,31 +929,6 @@ pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
             "GET /api/profiles returned {status}: {text}"
-        )))
-    }
-}
-
-/// Record an activation receipt with the worker.
-///
-/// The activation page posts the emailed invocation straight to the
-/// service, so the receipt — and the provider address it names — never
-/// passes through the worker. This hands it over, so the registration
-/// fact reflects activation the moment it happens.
-pub async fn report_activation(receipt: &serde_json::Value) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/customer/activated", origin()))
-        .json(receipt)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/customer/activated returned {status}: {text}"
         )))
     }
 }
@@ -1002,133 +1057,9 @@ pub async fn delete_owned_space(
     }
 }
 
-/// The account service's error body: `{"error":{"code":…,"message":…}}`.
-/// Distinct from [`ErrorBody`], whose `kind` the account service does not
-/// emit.
-#[derive(Deserialize)]
-struct AccountErrorBody {
-    error: AccountErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct AccountErrorDetail {
-    message: String,
-}
-
-/// Turn a failed account-service response into an error the account
-/// panel can show verbatim.
-///
-/// The service already curates these messages for display ("an account
-/// already exists for this email address"), so the message alone is what
-/// belongs in front of someone — not the JSON envelope, and not the HTTP
-/// status. An unparseable body falls back to the raw text, which is only
-/// reachable if the service returned something other than its own error
-/// shape.
-fn account_service_error(path: &str, status: reqwest::StatusCode, text: &str) -> TonkUiError {
-    match serde_json::from_str::<AccountErrorBody>(text) {
-        Ok(body) => TonkUiError::Account(body.error.message),
-        Err(_) => TonkUiError::ApiError(format!("POST {path} returned {status}: {text}")),
-    }
-}
-
-/// Ask the account service to email a verification code.
-pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!("{}/codes", service.trim_end_matches('/')))
-        .json(&serde_json::json!({ "email": email }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(account_service_error("/codes", status, &text))
-    }
-}
-
-/// Verify control of an available account email before starting WebAuthn.
-pub async fn preflight_account(service: &str, email: &str, code: &str) -> Result<(), TonkUiError> {
-    let path = "/accounts/preflight";
-    let response = reqwest::Client::new()
-        .post(format!("{}{}", service.trim_end_matches('/'), path))
-        .json(&serde_json::json!({ "email": email, "code": code }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    let status = response.status();
-    let text = response.text().await.map_err(into_api_error)?;
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(account_service_error(path, status, &text))
-    }
-}
-
-/// Submit a signed ceremony container to the account service.
-pub async fn submit_account_ceremony(
-    service: &str,
-    path: &str,
-    invocation_hex: &str,
-) -> Result<serde_json::Value, TonkUiError> {
-    let body = hex::decode(invocation_hex)
-        .map_err(|error| TonkUiError::ApiError(format!("invalid invocation bytes: {error}")))?;
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/{}",
-            service.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        ))
-        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
-        .body(body)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(account_service_error(path, status, &text))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The account panel shows whatever string comes back, so the
-    /// service's curated sentence has to survive on its own — without the
-    /// JSON envelope, the HTTP status, or the "local API" label that
-    /// [`TonkUiError::ApiError`] adds.
-    #[test]
-    fn it_shows_only_the_services_message() {
-        let error = account_service_error(
-            "/accounts",
-            reqwest::StatusCode::CONFLICT,
-            r#"{"error":{"code":"CONFLICT","message":"an account already exists for this email address"}}"#,
-        );
-        assert_eq!(
-            error.to_string(),
-            "an account already exists for this email address"
-        );
-    }
-
-    /// A body that isn't the service's error shape keeps the diagnostic
-    /// context, since there is no curated message to show instead.
-    #[test]
-    fn it_falls_back_to_the_raw_body_for_an_unknown_shape() {
-        let error = account_service_error(
-            "/accounts",
-            reqwest::StatusCode::BAD_GATEWAY,
-            "<html>upstream is down</html>",
-        );
-        assert_eq!(
-            error.to_string(),
-            "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
-        );
-    }
 
     #[test]
     fn it_explains_email_verification_for_an_unavailable_account_name() {
@@ -1149,15 +1080,13 @@ mod tests {
 mod enrollment_claim {
     use super::enroll_claim;
 
-    /// Both fields ride even when unset, because a concept resolves
+    /// The field rides even when unset, because a concept resolves
     /// only when every field is present: a claim that omitted `email`
     /// would never decode, and the command would silently not run.
     #[dialog_common::test]
-    fn it_sends_both_fields_even_when_neither_was_given() {
-        let claim = enroll_claim(None, &[]);
-        let parameters = &claim["claims"][0]["application"]["parameters"];
-        assert_eq!(parameters["email"], "");
-        assert_eq!(parameters["deposits"], "");
+    fn it_sends_the_field_even_when_no_address_was_given() {
+        let claim = enroll_claim(None);
+        assert_eq!(claim["claims"][0]["application"]["parameters"]["email"], "");
     }
 
     /// Empty means "the account's recorded address", which is what the
@@ -1165,21 +1094,10 @@ mod enrollment_claim {
     /// an address that was given.
     #[dialog_common::test]
     fn it_carries_an_address_when_one_was_given() {
-        let claim = enroll_claim(Some("a@example.com"), &[]);
+        let claim = enroll_claim(Some("a@example.com"));
         assert_eq!(
             claim["claims"][0]["application"]["parameters"]["email"],
             "a@example.com"
-        );
-    }
-
-    /// Deposits join with commas because a command's fields are
-    /// scalars, and the worker splits them back apart.
-    #[dialog_common::test]
-    fn it_joins_ceremony_deposits_into_one_field() {
-        let claim = enroll_claim(None, &["ab".to_string(), "cd".to_string()]);
-        assert_eq!(
-            claim["claims"][0]["application"]["parameters"]["deposits"],
-            "ab,cd"
         );
     }
 
@@ -1187,7 +1105,7 @@ mod enrollment_claim {
     /// swept at the commit, never persisted.
     #[dialog_common::test]
     fn it_asserts_a_transient() {
-        let claim = enroll_claim(None, &[]);
+        let claim = enroll_claim(None);
         assert_eq!(claim["claims"][0]["op"], "assert");
         assert_eq!(
             claim["claims"][0]["application"]["predicate"]["kind"],

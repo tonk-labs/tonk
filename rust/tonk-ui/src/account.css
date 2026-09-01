@@ -464,6 +464,7 @@ tonk-account[data-mode="success"] .account__working {
 }
 
 .account__link {
+    min-width: 44px;
     min-height: 44px;
     color: var(--ink);
     font-family: var(--cond);
@@ -602,10 +603,11 @@ tonk-account[data-mode="success"] .account__working {
    cancel and confirm unreachable there. The head gives up its close-
    button overhang in this mode — the overhang is horizontal overflow,
    and a scroll container would answer it with a second scrollbar. */
-@media (max-height: 700px) {
+@media (max-height: 720px) {
     .account__dialog {
-        top: 16px;
-        max-height: calc(100vh - 32px);
+        top: max(16px, env(safe-area-inset-top));
+        max-height: calc(100vh - max(16px, env(safe-area-inset-top)) - 16px);
+        max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 16px);
         overflow-y: auto;
         overflow-x: hidden;
     }
@@ -834,6 +836,30 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
         height: min(408px, 60vh);
     }
 
+    .account__ceremony-head,
+    .account__run,
+    .account__editor-row,
+    .account__row,
+    .account__rail button,
+    .account__details summary,
+    .account__ghost,
+    .account__dialog-foot button,
+    .account__dialog-go {
+        min-height: 44px;
+    }
+
+    .account__ceremony-head,
+    .account__rail button {
+        height: 44px;
+    }
+
+    .account__editor-row input,
+    .account__row--field input,
+    .account__confirm-field input {
+        min-height: 44px;
+        font-size: 16px;
+    }
+
     .account__profile-row,
     .account__device-row {
         grid-template-columns: 1fr;
@@ -866,6 +892,9 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
         margin-bottom: 32px;
     }
 
+}
+
+@media (max-width: 463px) and (min-height: 701px) {
     .account__dialog {
         top: max(12vh, calc(env(safe-area-inset-top) + 48px));
     }

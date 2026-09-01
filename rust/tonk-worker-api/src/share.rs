@@ -11,7 +11,7 @@
 //! only by luck, and a disagreement is silent: the bar would fall through to
 //! its terminal branch and report a refusal it could have repaired.
 
-/// The spot has no upstream, so an invite would land its recipient in a spot
+/// The space has no upstream, so an invite would land its recipient in a space
 /// that can never fill. Repairable: the bar offers to attach this server.
 pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 
@@ -20,11 +20,17 @@ pub const BLOCKED_NOT_SYNCED: &str = "not-synced";
 /// than minting from a transient local profile.
 pub const BLOCKED_ACCOUNT_REQUIRED: &str = "account-required";
 
-/// The spot's sync server cannot be shared (a local-only or non-UCAN remote).
+/// The space's sync server cannot be shared (a local-only or non-UCAN remote).
 /// Terminal: nothing the user can do from the bar.
 pub const BLOCKED_UNSHAREABLE_REMOTE: &str = "unshareable-remote";
 
-/// The spot has no upstream and this device has no account registered
+/// The service refused to provision this space under the account, so a
+/// link would point at a space the service will not serve. Terminal
+/// from the bar: the refusal names its reason in `detail`, and sharing
+/// again after it is addressed re-runs provisioning.
+pub const BLOCKED_NOT_PROVISIONED: &str = "not-provisioned";
+
+/// The space has no upstream and this device has no account registered
 /// with a provider, so there is nothing to attach it to. Repairable, but
 /// not by attaching a remote: the bar asks the user to register.
 ///

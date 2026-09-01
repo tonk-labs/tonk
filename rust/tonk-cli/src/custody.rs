@@ -4,9 +4,10 @@
 //! A space's signing seed must survive this machine: any device on the
 //! account can then re-issue the space after a passkey ceremony opens
 //! the seed. The account publishes an X25519 recipient
-//! ([`AccountEncryptionKey`]) exactly so that sealing needs no passkey —
+//! ([`AccountSealedInbox`]) exactly so that sealing needs no passkey —
 //! the CLI reads the public half from the account branch it already
-//! syncs, seals, and records a [`CustodiedSeed`] row beside the
+//! syncs, seals, and records a [`SecretMessage`] and the
+//! [`SecretPrincipal`] naming it beside the
 //! directory entries it writes today. Only a ceremony holding the
 //! account secret can ever open the row again.
 
@@ -17,7 +18,9 @@ use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use tonk_identity::sealed::RecipientKey;
-use tonk_schema::{AccountEncryptionKey, CustodiedSeed, SeedKind, prelude::DidExt as _};
+use tonk_schema::{
+    AccountSealedInbox, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
+};
 use zeroize::Zeroizing;
 
 /// The account's published X25519 recipient, read from the account
@@ -28,24 +31,26 @@ pub async fn account_recipient(
     root: &Did,
     operator: &Operator<NativeSpace>,
 ) -> Result<Option<Did>> {
-    let rows: Vec<AccountEncryptionKey> = account
+    let rows: Vec<AccountSealedInbox> = account
         .query()
-        .select(Query::<AccountEncryptionKey> {
+        .select(Query::<AccountSealedInbox> {
             this: Term::from(root.this()),
-            key: Term::var("key"),
+            address: Term::var("address"),
         })
         .perform(operator)
         .try_vec()
         .await
-        .map_err(|error| anyhow::anyhow!("failed to read the account encryption key: {error:?}"))?;
+        .map_err(|error| {
+            anyhow::anyhow!("failed to read the account sealed-inbox address: {error:?}")
+        })?;
     rows.into_iter()
         .next()
         .map(|row| {
-            row.key
+            row.address
                 .0
                 .to_string()
                 .parse()
-                .context("the published account encryption key is not a DID")
+                .context("the published sealed-inbox address is not a DID")
         })
         .transpose()
 }
@@ -62,19 +67,23 @@ pub async fn custody_space_seed(
     seed: &Zeroizing<[u8; 32]>,
     operator: &Operator<NativeSpace>,
 ) -> Result<()> {
-    let key = RecipientKey::from_did(recipient)
-        .map_err(|error| anyhow::anyhow!("the account encryption key is unusable: {error}"))?;
+    let key = RecipientKey::try_from(recipient).map_err(|error| {
+        anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
+    })?;
     let sealed = key
-        .seal(seed, subject)
+        .secret()
+        .conceal(seed, subject)
         .map_err(|error| anyhow::anyhow!("failed to seal the space seed: {error}"))?
         .encode();
+    // Two rows: the envelope, and the principal whose seed it carries.
+    let message = SecretMessage::new(recipient, sealed);
     account
         .transaction()
-        .assert(CustodiedSeed::new(
-            subject.clone(),
+        .assert(message.clone())
+        .assert(SecretPrincipal::new(
+            subject,
             SeedKind::Space,
-            recipient.clone(),
-            sealed,
+            message.this(),
         ))
         .commit()
         .perform(operator)
@@ -108,19 +117,17 @@ pub async fn has_custody(
     subject: &Did,
     operator: &Operator<NativeSpace>,
 ) -> Result<bool> {
-    let rows: Vec<CustodiedSeed> = account
+    let rows: Vec<SecretPrincipal> = account
         .query()
-        .select(Query::<CustodiedSeed> {
-            this: Term::var("this"),
-            subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+        .select(Query::<SecretPrincipal> {
+            this: Term::from(subject.this()),
             kind: Term::var("kind"),
-            recipient: Term::var("recipient"),
-            sealed: Term::var("sealed"),
+            seed: Term::var("seed"),
         })
         .perform(operator)
         .try_vec()
         .await
-        .map_err(|error| anyhow::anyhow!("failed to read custodied seeds: {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("failed to read sealed principals: {error:?}"))?;
     Ok(!rows.is_empty())
 }
 
@@ -235,7 +242,7 @@ async fn rotate_site(
     let recipient = account_recipient(&account, account_root, &operator)
         .await?
         .context(
-            "the account has not published its encryption key yet; \
+            "the account has not published its sealed-inbox address yet; \
              open /account in a signed-in browser once, then run `tonk account status`",
         )?;
 
@@ -290,7 +297,7 @@ pub async fn rotate_from_onboarding(
     let Some(secret) = crate::onboarding::read_if_openable_in(&profile, &operator).await? else {
         return Ok(Vec::new());
     };
-    let old_key = secret.encryption_key();
+
     let branch =
         match crate::account_state::open_account_branch_in(&profile, &operator, store).await? {
             Some(branch) => branch,
@@ -299,16 +306,18 @@ pub async fn rotate_from_onboarding(
     let new_recipient = account_recipient(&branch, &account_root, &operator)
         .await?
         .context(
-            "the account has not published its encryption key yet; \
+            "the account has not published its sealed-inbox address yet; \
              open /account in a signed-in browser once, then run `tonk account status`",
         )?;
-    let new_key = tonk_identity::sealed::RecipientKey::from_did(&new_recipient)
-        .map_err(|error| anyhow::anyhow!("the account encryption key is unusable: {error}"))?;
+    let new_key =
+        tonk_identity::sealed::RecipientKey::try_from(&new_recipient).map_err(|error| {
+            anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
+        })?;
 
     let outcome = tonk_schema::custody::rotate(
         &branch,
-        &old_key,
-        &new_key,
+        secret.secret(),
+        new_key,
         &operator,
         async |kind, signer, row, replacement| match kind {
             SeedKind::Space => {
@@ -352,7 +361,8 @@ pub async fn rotate_from_onboarding(
                 commit_branch
                     .transaction()
                     .retract(row.clone())
-                    .assert(replacement)
+                    .assert(replacement.message)
+                    .assert(replacement.principal)
                     .commit()
                     .perform(&operator)
                     .await

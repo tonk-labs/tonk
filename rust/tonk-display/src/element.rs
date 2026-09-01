@@ -879,7 +879,7 @@ async fn run(
     check_generation(&state, generation)?;
     let model_body = to_body(&model_q)?;
     let model_tag = JsValue::from_str("model");
-    let model_sub = host_consumer::subscribe(host, &model_body, Some(&model_tag))?;
+    let model_sub = host_consumer::subscribe_claimed(host, &model_body, Some(&model_tag)).await?;
     {
         let mut s = state.borrow_mut();
         if s.generation != generation {
@@ -971,12 +971,13 @@ async fn start_downstream(
         None
     } else {
         let view_tag = JsValue::from_str("view");
-        Some(host_consumer::subscribe(host, &view_body, Some(&view_tag))?)
+        Some(host_consumer::subscribe_claimed(host, &view_body, Some(&view_tag)).await?)
     };
     check_downstream(&state, downstream_generation)?;
 
     let entity_tag = JsValue::from_str("entity");
-    let entity_sub = host_consumer::subscribe(host, &entity_body, Some(&entity_tag))?;
+    let entity_sub =
+        host_consumer::subscribe_claimed(host, &entity_body, Some(&entity_tag)).await?;
 
     {
         let mut s = state.borrow_mut();
@@ -1840,6 +1841,8 @@ fn handle_entity_frame(
         // no-entity diagnostic can name the concept's required attributes
         // and probe which ones the entity is actually missing.
         let descriptor = s.resolved_model.as_ref().map(|(_, value)| value.clone());
+        let diagnostic_serial = s.entity_serial;
+        let diagnostic_state = state.clone();
         // A directory view with zero instances still renders chrome that may
         // read {dom.host/*} (the FAB reads {dom.host/data-space}); feed a
         // synthetic host-only conclusion so those resolve. Single mode keeps
@@ -1861,7 +1864,7 @@ fn handle_entity_frame(
             // report which are missing — then show that as the notation.
             let host = host.clone();
             spawn_local(async move {
-                diagnose_no_entity(&host, descriptor).await;
+                diagnose_no_entity(&host, descriptor, &diagnostic_state, diagnostic_serial).await;
             });
         }
         return;
@@ -1933,7 +1936,12 @@ fn handle_entity_frame(
 /// on top, the raw present facts as notation below. A descriptor that
 /// isn't available (or has no `with:` map) falls back to the bare
 /// `model: / this:` notation — there is nothing to diff against.
-async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value>) {
+async fn diagnose_no_entity(
+    host: &Element,
+    descriptor: Option<serde_json::Value>,
+    state: &Rc<RefCell<Inner>>,
+    entity_serial: u64,
+) {
     let model = host.get_attribute("model").unwrap_or_default();
     let entity = host.get_attribute("entity").unwrap_or_default();
 
@@ -1944,6 +1952,9 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
         .and_then(|d| d.get("with"))
         .and_then(|w| w.as_object());
     let Some(with) = with else {
+        if diagnostic_was_superseded(state, entity_serial) {
+            return;
+        }
         state::set_absence(
             host,
             State::NoEntity,
@@ -2015,6 +2026,9 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
         }
     }
 
+    if diagnostic_was_superseded(state, entity_serial) {
+        return;
+    }
     state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing, &mistyped);
 }
 
@@ -2076,6 +2090,11 @@ fn type_spelling(ty: &str) -> String {
         "Symbol" => "symbol".into(),
         other => other.to_owned(),
     }
+}
+
+fn diagnostic_was_superseded(state: &Rc<RefCell<Inner>>, entity_serial: u64) -> bool {
+    let state = state.borrow();
+    state.disposed || state.entity_serial != entity_serial
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -2975,6 +2994,45 @@ mod tests {
             state.borrow().last_frame.is_empty(),
             "a plain empty frame clears as before"
         );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_discards_a_no_entity_diagnostic_superseded_by_a_ready_frame() {
+        let (host, state, content) = rendered_display();
+        let no_entity = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .create_element("span")
+            .unwrap();
+        no_entity.set_attribute("slot", "no-entity").unwrap();
+        no_entity.set_attribute("hidden", "").unwrap();
+        host.append_child(&no_entity).unwrap();
+
+        handle_entity_frame(&host, &state, Vec::new(), false);
+        let stale_serial = state.borrow().entity_serial;
+        handle_entity_frame(
+            &host,
+            &state,
+            vec![Conclusion {
+                this: "e:ready".to_owned(),
+                fields: BTreeMap::new(),
+            }],
+            false,
+        );
+        diagnose_no_entity(&host, None, &state, stale_serial).await;
+
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("ready"));
+        assert!(
+            no_entity.has_attribute("hidden"),
+            "a stale diagnostic must not reveal the no-entity slot"
+        );
+        assert!(
+            content.is_connected(),
+            "the ready frame must remain mounted"
+        );
+        host.remove();
     }
 
     /// An authorization refusal is a real failure: the loud path replaces

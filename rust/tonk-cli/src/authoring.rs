@@ -454,6 +454,7 @@ mod tests {
             assert!(doc.contains("this: note"), "{doc}");
         }
     }
+
     fn fields(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
     }

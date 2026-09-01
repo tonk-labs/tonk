@@ -22,7 +22,17 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 fn js_error(error: anyhow::Error) -> JsValue {
-    JsValue::from_str(&format!("{error:#}"))
+    // A ceremony refusal carries its DOM error name as a variant; hand
+    // that back as a `name` property so a caller can tell a dismissed
+    // prompt from a real failure without matching on prose.
+    let name = error
+        .downcast_ref::<crate::passkey::CeremonyError>()
+        .map(|refusal| refusal.reason.as_str());
+    let value = js_sys::Error::new(&format!("{error:#}"));
+    if let Some(name) = name {
+        value.set_name(name);
+    }
+    value.into()
 }
 
 /// An optional string property: absent, empty, or not a string all read as
@@ -39,6 +49,165 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
         .as_string()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
+}
+
+/// `createPasskey({ name?, displayName? })` → `{ credentialId }`.
+///
+/// Creates a custody passkey, evaluates its PRF, and hands the service
+/// worker the two derivation handles. Nothing but the credential id
+/// comes back to the caller: the handles go straight to the worker,
+/// which is the only place that mints anything.
+async fn create_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let name = optional_string_property(&input, "name");
+    let display_name = optional_string_property(&input, "displayName");
+    let custodian = crate::webcrypto_kek::Custodian::create(name, display_name)
+        .perform(&crate::webcrypto_kek::Page)
+        .await
+        .map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate(custodian, request).await
+}
+
+/// `addPasskey({ name?, displayName?, request })` → `{ credentialId }`.
+///
+/// Two ceremonies in one call: assert the passkey that already holds
+/// the account, then create the one being added. Both sets of handles
+/// go to the worker, which is the only place the account secret is
+/// opened and re-sealed.
+async fn add_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let holder = crate::webcrypto_kek::Custodian::choose()
+        .perform(&crate::webcrypto_kek::Page)
+        .await
+        .map_err(js_error)?;
+    let name = optional_string_property(&input, "name");
+    let display_name = optional_string_property(&input, "displayName");
+    let added = crate::webcrypto_kek::Custodian::create(name, display_name)
+        .perform(&crate::webcrypto_kek::Page)
+        .await
+        .map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate_pair(added, Some(holder), request).await
+}
+
+/// `usePasskey({ credentialId? })` → `{ credentialId }`.
+///
+/// One assertion against an existing passkey — a picker when no
+/// `credentialId` is given — then the same handoff [`create_passkey`]
+/// does.
+async fn use_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let credential_id = match optional_string_property(&input, "credentialId") {
+        Some(encoded) => Some(
+            hex::decode(&encoded)
+                .map_err(|error| JsValue::from_str(&format!("invalid credentialId: {error}")))?,
+        ),
+        None => None,
+    };
+    let custodian = match credential_id {
+        Some(id) => crate::webcrypto_kek::Custodian::load(id),
+        None => crate::webcrypto_kek::Custodian::choose(),
+    }
+    .perform(&crate::webcrypto_kek::Page)
+    .await
+    .map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate(custodian, request).await
+}
+
+/// Hand a custodian's two derivation handles to the service worker and
+/// wait for it to finish.
+///
+/// The page's whole job. `structuredClone` — which is what
+/// `postMessage` runs — carries a non-extractable `CryptoKey` intact,
+/// so the worker receives derivation capability without either side
+/// ever holding bytes.
+///
+/// A fresh `MessageChannel` per call carries the reply. The worker
+/// drops the handles as soon as it is done, so the page must know when
+/// that is; a port answers exactly one request and needs no correlation
+/// id to do it.
+async fn mediate(
+    custodian: crate::webcrypto_kek::Custodian,
+    request: JsValue,
+) -> Result<JsValue, JsValue> {
+    mediate_pair(custodian, None, request).await
+}
+
+/// [`mediate`], optionally carrying a second custodian: the passkey
+/// that already holds the account, for work that must open it before
+/// sealing under the first.
+async fn mediate_pair(
+    custodian: crate::webcrypto_kek::Custodian,
+    holder: Option<crate::webcrypto_kek::Custodian>,
+    request: JsValue,
+) -> Result<JsValue, JsValue> {
+    let (key, kek) = custodian.handles();
+    let channel = web_sys::MessageChannel::new()?;
+
+    let message = Object::new();
+    Reflect::set(&message, &"type".into(), &"custody".into())?;
+    Reflect::set(
+        &message,
+        &"credentialId".into(),
+        &hex::encode(&custodian.credential_id).into(),
+    )?;
+    Reflect::set(&message, &"key".into(), key)?;
+    Reflect::set(&message, &"kek".into(), kek)?;
+    Reflect::set(&message, &"request".into(), &request)?;
+    if let Some(holder) = &holder {
+        let (holder_key, holder_kek) = holder.handles();
+        Reflect::set(
+            &message,
+            &"holderCredentialId".into(),
+            &hex::encode(&holder.credential_id).into(),
+        )?;
+        Reflect::set(&message, &"holderKey".into(), holder_key)?;
+        Reflect::set(&message, &"holderKek".into(), holder_kek)?;
+    }
+
+    let answer = js_sys::Promise::new(&mut |resolve, reject| {
+        let port = channel.port1();
+        let on_message = Closure::once_into_js(move |event: web_sys::MessageEvent| {
+            let data = event.data();
+            match Reflect::get(&data, &"error".into())
+                .ok()
+                .and_then(|e| e.as_string())
+            {
+                Some(error) => {
+                    // An `Error`, not a bare string: the worker says WHY
+                    // the service refused in a `code` beside the message,
+                    // and a rejection that carried only the sentence left
+                    // the page matching prose to tell "confirm your email"
+                    // from "check your connection".
+                    let failure = js_sys::Error::new(&error);
+                    if let Some(code) = Reflect::get(&data, &"code".into())
+                        .ok()
+                        .and_then(|code| code.as_string())
+                    {
+                        let _ = Reflect::set(failure.as_ref(), &"code".into(), &code.into());
+                    }
+                    let _ = reject.call1(&JsValue::NULL, failure.as_ref());
+                }
+                None => {
+                    let _ = resolve.call1(&JsValue::NULL, &data);
+                }
+            }
+        });
+        port.set_onmessage(Some(on_message.unchecked_ref()));
+    });
+
+    let worker = web_sys::window()
+        .ok_or_else(|| JsValue::from_str("no window"))?
+        .navigator()
+        .service_worker()
+        .controller()
+        .ok_or_else(|| JsValue::from_str("no service worker controls this page"))?;
+    let transfer = js_sys::Array::new();
+    transfer.push(&channel.port2());
+    worker.post_message_with_transferable(&message, &transfer)?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(answer).await?;
+    channel.port1().set_onmessage(None);
+    Ok(result)
 }
 
 /// `signRevocation({ delegationCid, pathHex, endpoint })` →
@@ -106,164 +275,6 @@ async fn verify_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(JsValue::UNDEFINED)
 }
 
-fn root_result(ceremony: crate::ceremony::RootCeremony) -> Result<JsValue, JsValue> {
-    let result = Object::new();
-    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
-    Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
-    Reflect::set(
-        &result,
-        &"credentialId".into(),
-        &ceremony.credential_id.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"delegationCid".into(),
-        &ceremony.delegation_cid.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"delegationHex".into(),
-        &ceremony.delegation_hex.into(),
-    )?;
-    if let Some(passkey) = ceremony.passkey {
-        let metadata = Object::new();
-        Reflect::set(
-            &metadata,
-            &"createdAt".into(),
-            &JsValue::from_f64(passkey.created_at as f64),
-        )?;
-        Reflect::set(&metadata, &"createdOn".into(), &passkey.created_on.into())?;
-        Reflect::set(&result, &"passkey".into(), &metadata)?;
-    }
-    if let Some(encryption_key) = ceremony.encryption_key {
-        Reflect::set(&result, &"encryptionKey".into(), &encryption_key.into())?;
-    }
-    Ok(result.into())
-}
-
-fn ceremony_result(ceremony: crate::ceremony::AccountCeremony) -> Result<JsValue, JsValue> {
-    let result = Object::new();
-    Reflect::set(&result, &"rootDid".into(), &ceremony.root_did.into())?;
-    Reflect::set(&result, &"deviceDid".into(), &ceremony.device_did.into())?;
-    Reflect::set(
-        &result,
-        &"delegationHex".into(),
-        &ceremony.delegation_hex.into(),
-    )?;
-    if let Some(descriptor_hex) = ceremony.descriptor_hex {
-        Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
-    }
-    Reflect::set(
-        &result,
-        &"invocationHex".into(),
-        &ceremony.invocation_hex.into(),
-    )?;
-    Ok(result.into())
-}
-
-/// Parse the optional access-service DID a ceremony mints deposits for.
-fn service_did_property(input: &JsValue) -> Result<Option<dialog_varsig::Did>, JsValue> {
-    optional_string_property(input, "serviceDid")
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|error| JsValue::from_str(&format!("invalid serviceDid: {error}")))
-        })
-        .transpose()
-}
-
-/// Attach hex-encoded deposits to a ceremony result as `depositsHex`.
-fn set_deposits(result: &JsValue, deposits: &[String]) -> Result<(), JsValue> {
-    let array = js_sys::Array::new();
-    for deposit in deposits {
-        array.push(&JsValue::from_str(deposit));
-    }
-    Reflect::set(result, &"depositsHex".into(), &array)?;
-    Ok(())
-}
-
-/// `createAccount({ email, deviceDid, deviceName, remote, endpoint,
-/// createdOn?, serviceDid? })` → the account-creation artifacts plus
-/// `custodyDid` and `consentHex` for provisioning the custody space.
-/// One ceremony: secret, custody passkey, published cell, signed
-/// creation request.
-async fn create_account(input: JsValue) -> Result<JsValue, JsValue> {
-    let email = string_property(&input, "email")?;
-    let device_did = string_property(&input, "deviceDid")?
-        .parse()
-        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
-    let device_name = string_property(&input, "deviceName")?;
-    let remote = string_property(&input, "remote")?;
-    let created_on = optional_string_property(&input, "createdOn");
-    let service = service_did_property(&input)?;
-    let ceremony = crate::ceremony::create_custody_account(
-        email,
-        device_did,
-        device_name,
-        remote,
-        created_on.as_deref(),
-        service.as_ref(),
-    )
-    .await
-    .map_err(js_error)?;
-    let result = root_result(ceremony.root)?;
-    Reflect::set(
-        &result,
-        &"invocationHex".into(),
-        &ceremony.account.invocation_hex.into(),
-    )?;
-    if let Some(descriptor_hex) = ceremony.account.descriptor_hex {
-        Reflect::set(&result, &"descriptorHex".into(), &descriptor_hex.into())?;
-    }
-    set_deposits(&result, &ceremony.deposits_hex)?;
-    Reflect::set(&result, &"custodyDid".into(), &ceremony.custody_did.into())?;
-    Reflect::set(&result, &"consentHex".into(), &ceremony.consent_hex.into())?;
-    Reflect::set(&result, &"sealedHex".into(), &ceremony.sealed_hex.into())?;
-    Reflect::set(
-        &result,
-        &"publishInvocationHex".into(),
-        &ceremony.publish_invocation_hex.into(),
-    )?;
-    Ok(result)
-}
-
-/// `enrollCustodyPasskey({ accountDid, label?, endpoint })` →
-/// `{ custodyDid, credentialId, consentHex, sealedHex? }`. Creates the
-/// custody passkey and seals the secret under its KEK. The caller
-/// provisions the custody DID with the consent; `sealedHex` is present
-/// when the cell could not be published yet — the new custody DID is
-/// nobody's consumer until that provisioning lands — and the caller
-/// queues those bytes to publish afterwards.
-async fn enroll_custody_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let account_did = string_property(&input, "accountDid")?;
-    let label = optional_string_property(&input, "label");
-    let endpoint = string_property(&input, "endpoint")?;
-    let enrollment = crate::ceremony::enroll_custody(&account_did, label.as_deref(), &endpoint)
-        .await
-        .map_err(js_error)?;
-    let result = Object::new();
-    Reflect::set(
-        &result,
-        &"custodyDid".into(),
-        &enrollment.custody_did.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"credentialId".into(),
-        &enrollment.credential_id.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"consentHex".into(),
-        &enrollment.consent_hex.into(),
-    )?;
-    Reflect::set(&result, &"sealedHex".into(), &enrollment.sealed_hex.into())?;
-    if let Some(invocation) = enrollment.publish_invocation_hex {
-        Reflect::set(&result, &"publishInvocationHex".into(), &invocation.into())?;
-    }
-    Ok(result.into())
-}
-
 /// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
 /// one assertion — pinned to `credentialId` (hex) when the root record
 /// carries one — and the account's X25519 recipient. The page saves it
@@ -287,35 +298,6 @@ fn credential_id_property(input: &JsValue) -> Result<Option<Vec<u8>>, JsValue> {
                 .map_err(|error| JsValue::from_str(&format!("credentialId is not hex: {error}")))
         })
         .transpose()
-}
-
-/// `unlockWithPasskey({ deviceDid, deviceName, endpoint, serviceDid? })`
-/// → the `linkDevice` result shape. One assertion, one presigned GET,
-/// and the unwrapped secret self-issues the device delegation.
-async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let device_did = string_property(&input, "deviceDid")?
-        .parse()
-        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
-    let device_name = string_property(&input, "deviceName")?;
-    let endpoint = string_property(&input, "endpoint")?;
-    let service = service_did_property(&input)?;
-    let unlock =
-        crate::ceremony::unlock_account(device_did, device_name, &endpoint, service.as_ref())
-            .await
-            .map_err(js_error)?;
-    let result = ceremony_result(unlock.account)?;
-    Reflect::set(
-        &result,
-        &"credentialId".into(),
-        &unlock.credential_id.into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"encryptionKey".into(),
-        &unlock.encryption_key.into(),
-    )?;
-    set_deposits(&result, &unlock.deposits_hex)?;
-    Ok(result)
 }
 
 /// `authorizeDevice({ deviceDid, remote, endpoint })` → `{ rootDid,
@@ -358,26 +340,6 @@ pub fn install() {
     };
     let identity = Object::new();
 
-    let create_account = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(create_account(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"createAccount".into(),
-        create_account.as_ref().unchecked_ref(),
-    );
-    create_account.forget();
-
-    let enroll_custody_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(enroll_custody_passkey(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"enrollCustodyPasskey".into(),
-        enroll_custody_passkey.as_ref().unchecked_ref(),
-    );
-    enroll_custody_passkey.forget();
-
     let publish_encryption_key = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(publish_encryption_key(input))
     });
@@ -387,16 +349,6 @@ pub fn install() {
         publish_encryption_key.as_ref().unchecked_ref(),
     );
     publish_encryption_key.forget();
-
-    let unlock_with_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(unlock_with_passkey(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"unlockWithPasskey".into(),
-        unlock_with_passkey.as_ref().unchecked_ref(),
-    );
-    unlock_with_passkey.forget();
 
     let authorize_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(authorize_device(input))
@@ -428,6 +380,36 @@ pub fn install() {
     );
     verify_passkey.forget();
 
+    let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(create_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"createPasskey".into(),
+        create_passkey.as_ref().unchecked_ref(),
+    );
+    create_passkey.forget();
+
+    let use_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(use_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"usePasskey".into(),
+        use_passkey.as_ref().unchecked_ref(),
+    );
+    use_passkey.forget();
+
+    let add_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(add_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"addPasskey".into(),
+        add_passkey.as_ref().unchecked_ref(),
+    );
+    add_passkey.forget();
+
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
 
@@ -444,9 +426,9 @@ mod tests {
         let window = web_sys::window().unwrap();
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
         for name in [
-            "createAccount",
-            "enrollCustodyPasskey",
-            "unlockWithPasskey",
+            "createPasskey",
+            "usePasskey",
+            "addPasskey",
             "authorizeDevice",
             "signRevocation",
             "verifyPasskey",

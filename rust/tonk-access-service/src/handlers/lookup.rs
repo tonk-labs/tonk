@@ -100,18 +100,22 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         }
     };
 
-    let host = req
-        .url()?
-        .host_str()
-        .map(ToString::to_string)
-        .unwrap_or_default();
+    let url = req.url()?;
+    let host = url.host_str().map(ToString::to_string).unwrap_or_default();
+    let origin = url.origin().ascii_serialization();
     let Some(did) = customer_did(&host, &address) else {
         return not_found();
     };
 
-    match resolve(&store, &did, &address).await {
+    match resolve(&store, &did, &address, &origin).await {
         Ok(Some(found)) => {
-            let response = Response::from_json(&found.document)?.with_status(found.status);
+            let body = serde_json::to_string_pretty(&found.document)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+            let response = Response::ok(body)?.with_status(found.status).with_headers({
+                let headers = worker::Headers::new();
+                let _ = headers.set("content-type", "application/json");
+                headers
+            });
             let mut response = with_cors(Ok(response))?;
             // Only a settled answer is cacheable, by us or by anyone
             // downstream. A `202` is by definition about to change, and

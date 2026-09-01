@@ -151,7 +151,7 @@ fn warn(message: &str) {
 /// An empty fragment (`href="#"`) and `#top` are the document's top per the
 /// HTML spec's "scroll to the fragment" steps, but only when nothing carries
 /// that id. An id that matches nothing else scrolls nowhere: the click is
-/// still cancelled, because the alternative is loading the app inside the spot.
+/// still cancelled, because the alternative is loading the app inside the space.
 fn scroll_to_fragment(fragment: &str) -> bool {
     let Some(window) = window() else {
         return false;
@@ -266,7 +266,7 @@ fn classify_click(event: &Event) -> Intent {
 /// The profile/Hub guest has no synthetic origin — `space_origin_for` only
 /// answers for a `did:key`, and the profile is not one — and its links are
 /// genuinely top-level, resolving against the REAL host origin. Judging those
-/// against a missing base made every one of them external: the hub's own spot
+/// against a missing base made every one of them external: the hub's own space
 /// links and the FAB's account link were relayed to `open_external`, which
 /// opens our own origin in a new tab. Falling back to `context.origin` is what
 /// makes a top-level link navigate in place.
@@ -827,7 +827,7 @@ mod tests {
 
     /// The fragment row beats the modifier row. A cmd-clicked `#x` is not a new
     /// tab, even though a browser would make one: the host would resolve `#x`
-    /// against `/space/{id}` and open a duplicate spot scrolled nowhere.
+    /// against `/space/{id}` and open a duplicate space scrolled nowhere.
     #[dialog_common::test]
     async fn it_classifies_a_modified_fragment_click_as_a_fragment() {
         let click = Click {
@@ -844,7 +844,7 @@ mod tests {
     /// A fragment is NOT same-document in a `srcdoc` guest: the document URL is
     /// `about:srcdoc` but the BASE URL is inherited from the parent, so `#foo`
     /// resolves to `https://origin/space/{id}#foo` — a different document. Left
-    /// native, the browser loads the whole app inside the spot's iframe.
+    /// native, the browser loads the whole app inside the space's iframe.
     #[dialog_common::test]
     async fn it_cancels_a_fragment_click_rather_than_letting_it_navigate() {
         let relayed = relay(
@@ -910,7 +910,7 @@ mod tests {
     }
 
     /// A click with no anchor above it is not ours. An anchor with an EMPTY
-    /// href is: left alone it reloads the app inside the spot.
+    /// href is: left alone it reloads the app inside the space.
     #[dialog_common::test]
     async fn it_ignores_a_click_with_no_link_to_follow() {
         let bare = document().create_element("div").expect("a div");

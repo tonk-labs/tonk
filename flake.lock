@@ -15,6 +15,23 @@
         "type": "github"
       }
     },
+    "dialog-db-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787904139,
+        "narHash": "sha256-GCQRLeKw/HDO4ovlmMJqocPULH6yBPHjS8skv45vvLA=",
+        "owner": "dialog-db",
+        "repo": "dialog-db",
+        "rev": "2751e105d27bc3b82248da2ae8f4b7dec3d2a571",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dialog-db",
+        "ref": "tonk-2026-08-28",
+        "repo": "dialog-db",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -87,11 +104,11 @@
     },
     "nixpkgs-chromedriver": {
       "locked": {
-        "lastModified": 1785251445,
-        "narHash": "sha256-hzAykM03D1MQw6cOUPmM9TLSpxgfGwYc43RfvvIPwJs=",
+        "lastModified": 1787930035,
+        "narHash": "sha256-PAiMlDmXJCbpPwkqAo2qSIunA5FrBPCpquLbrqYEYs4=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "4c11dbad74b3939056d84906c6cf3131e73d451a",
+        "rev": "40af305ea0ef20a0683718cfaf7635a8ac246246",
         "type": "github"
       },
       "original": {
@@ -104,6 +121,7 @@
     "root": {
       "inputs": {
         "crane": "crane",
+        "dialog-db-src": "dialog-db-src",
         "flake-utils": "flake-utils",
         "nix-filter": "nix-filter",
         "nixpkgs": "nixpkgs",

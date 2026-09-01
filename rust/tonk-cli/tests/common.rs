@@ -89,12 +89,10 @@ pub struct AccountFixture {
     /// A site this profile created before the account existed, so its
     /// repository authority reaches no account root.
     pub pre_account_site: TonkSite,
-    pub server: tonk_account_service::helpers::AccountServer,
     pub profile: dialog_operator::Profile,
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
-    pub descriptor: Vec<u8>,
     pub root_prf: [u8; 32],
     pub tmp: TempDir,
 }
@@ -128,7 +126,6 @@ impl AccountFixture {
         // and the space registry all live in the same place the site config
         // opens sites through.
         let store = test.config.account_store.clone();
-        let server = tonk_account_service::helpers::AccountServer::start().await;
         let root_prf = [77; 32];
         let root = dialog_credentials::Ed25519Signer::import(&root_prf).await?;
         let link =
@@ -145,26 +142,14 @@ impl AccountFixture {
             None,
         )
         .await?;
-        reqwest::Client::new()
-            .post(format!("{}/accounts", server.endpoint))
-            .body(hex::decode(&ceremony.invocation_hex)?)
-            .send()
-            .await?
-            .error_for_status()?;
-        let descriptor = hex::decode(
-            ceremony
-                .descriptor_hex
-                .as_deref()
-                .expect("creation establishes a descriptor"),
-        )?;
         tonk_cli::account::attach_for_integration_test(
             &profile,
             &test.site.operator,
             test.config.clone(),
-            &server.endpoint,
+            remote,
             "fixture-credential",
             link.clone(),
-            &descriptor,
+            remote,
         )
         .await?;
 
@@ -185,12 +170,10 @@ impl AccountFixture {
             // that has hydrated its account rather than one that has only
             // linked it. Without this the account reads as unhydrated and
             // nothing will mount its repository.
-            let validated =
-                tonk_account::AccountRepositoryDescriptorV1::validate(&descriptor).await?;
             profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(validated.content_hash().to_vec())
+                .save(link.issuer().as_str().as_bytes().to_vec())
                 .perform(&test.site.operator)
                 .await?;
 
@@ -198,12 +181,12 @@ impl AccountFixture {
             // saves it with the root and the account sweep publishes the
             // fact. The fixture publishes directly, so account-backed
             // creates can seal their seeds into custody.
+            use dialog_varsig::Principal as _;
             use tonk_schema::prelude::DidExt as _;
             let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
                 zeroize::Zeroizing::new(root_prf),
             )
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
             let root_did: dialog_varsig::Did = ceremony.root_did.parse()?;
             if let Some(account) =
@@ -212,7 +195,7 @@ impl AccountFixture {
             {
                 account
                     .transaction()
-                    .assert(tonk_schema::AccountEncryptionKey::new(
+                    .assert(tonk_schema::AccountSealedInbox::new(
                         root_did.this(),
                         recipient.this(),
                     ))
@@ -224,12 +207,10 @@ impl AccountFixture {
 
         Ok(Self {
             pre_account_site: test.site,
-            server,
             profile,
             store,
             link,
             config: test.config,
-            descriptor,
             root_prf,
             tmp: test.tmp,
         })
@@ -460,7 +441,7 @@ pub async fn authorizing_page(
         };
         let payload = serde_json::json!({
             "delegationHex": authorized.delegation_hex,
-            "descriptorHex": authorized.descriptor_hex,
+            "remote": remote,
             "credentialId": authorized.root_did,
             "attachmentId": "0707070707070707070707070707070707070707070707070707070707070707",
         })

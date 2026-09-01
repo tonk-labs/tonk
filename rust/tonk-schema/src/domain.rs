@@ -126,8 +126,49 @@ pub mod space {
 /// which already means an invite's access proof. One namespace holding
 /// both would make "authorization" ambiguous between a device link and
 /// a share link.
-pub mod device {
+/// Attributes of a passkey that can recover an account, keyed on the
+/// custody DID its PRF output derives.
+pub mod recovery {
     use super::Attribute;
+
+    /// The credential id the authenticator returns, at creation and on
+    /// every assertion. What an assertion names to select this credential.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CredentialId(pub String);
+
+    /// Unix seconds at credential creation — when Tonk ran the ceremony,
+    /// not anything the authenticator signs.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CreatedAt(pub u64);
+
+    /// The browser and operating system where creation ran, e.g. `Chrome
+    /// on macOS`. Never the password manager or storage provider —
+    /// WebAuthn does not expose those reliably.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct CreatedOn(pub String);
+
+    /// The WebAuthn `user.name` this credential was created with — what a
+    /// passkey manager lists the entry under.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct Name(pub String);
+
+    /// The WebAuthn `user.displayName`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery")]
+    #[cardinality(one)]
+    pub struct DisplayName(pub String);
+}
+
+pub mod device {
+    use super::{Attribute, Entity};
 
     /// When the device was linked, unix seconds.
     ///
@@ -149,16 +190,19 @@ pub mod device {
     #[cardinality(one)]
     pub struct Title(pub String);
 
-    /// Why the delegation exists, e.g. `device-link`.
+    /// Why the delegation exists, e.g. `case:device-link`.
+    ///
+    /// An entity label rather than text, so a typo cannot silently read
+    /// as a different reason.
     ///
     /// Duplicated from the delegation's signed `meta` because `meta` is
     /// NOT decomposed into facts — it rides inside the envelope and
     /// cannot be queried. The signed copy stays authoritative; this one
-    /// exists so a device list can filter without opening envelopes.
+    /// exists so a list can filter without opening envelopes.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.device")]
     #[cardinality(one)]
-    pub struct Reason(pub String);
+    pub struct Reason(pub Entity);
 }
 
 /// Attributes for the `tonk/sync` concept — a replica's sync state.
@@ -678,6 +722,49 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.enroll")]
         pub struct Deposits(pub String);
+
+        /// The passkey custody space's DID, which the carried recovery
+        /// invocation acts on: derived attribute
+        /// `xyz.tonk.enroll/custody`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Custody(pub String);
+
+        /// The custody space's consent to being provisioned by this
+        /// account, hex: derived attribute `xyz.tonk.enroll/consent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Consent(pub String);
+
+        /// The pre-signed cell write the ceremony minted, hex: derived
+        /// attribute `xyz.tonk.enroll/recovery`.
+        ///
+        /// Enrollment verifies it and activation performs it, so a
+        /// signup finishes in one act rather than leaving custody to a
+        /// step that can be missed.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Recovery(pub String);
+
+        /// The sealed account secret the recovery write publishes, hex:
+        /// derived attribute `xyz.tonk.enroll/sealed`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.enroll")]
+        pub struct Sealed(pub String);
+    }
+
+    /// Attributes of the `account/resend-activation` command, dispatched
+    /// by the account panel's resend button while activation is pending.
+    pub mod resend {
+        use super::Attribute;
+
+        /// The click's timestamp — distinguishes one press from the
+        /// next so the transient re-fires, and gives this command an
+        /// attribute no other command carries: derived attribute
+        /// `xyz.tonk.resend-activation/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.resend-activation")]
+        pub struct At(pub u64);
     }
 
     pub mod promote {
@@ -797,33 +884,17 @@ pub mod profile {
 /// One entity per profile storage name; the account, provider, and email
 /// stamps are absent for a local workspace.
 pub mod roster {
-    use super::{Attribute, Entity};
+    use super::Attribute;
 
     /// The storage name the profile opens under: the activation handle.
+    ///
+    /// The only fact about a profile that lives on the device rather than on
+    /// that profile's own account branch. Display name and address are read
+    /// from there; copies here could only go stale.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
     pub struct Name(pub String);
-
-    /// The display label as of the last refresh: the profile's display
-    /// name, cached so a closed profile can be rendered without opening it.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.roster")]
-    pub struct Label(pub String);
-
-    /// The account root the profile is attached to.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.roster")]
-    pub struct Account(pub Entity);
-
-    /// The attached provider base URL.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.roster")]
-    pub struct Provider(pub String);
-
-    /// The account email, captured best-effort at link time.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.roster")]
-    pub struct Email(pub String);
 }
 
 /// Root-owned account state replicated through the hidden account repository.
@@ -836,25 +907,6 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct DisplayName(pub String);
-
-    /// Browser-reported Unix time in seconds, captured immediately after
-    /// `navigator.credentials.create()` returned. `f64` because the value
-    /// system stores numbers as `Float`; second-resolution Unix times convert
-    /// losslessly at this magnitude. Cardinality-one: an account has one
-    /// passkey creation moment, so concurrent linked-device writes converge on
-    /// a deterministic winner rather than accumulating.
-    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-    #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
-    pub struct PasskeyCreatedAt(pub f64);
-
-    /// The browser and operating system where passkey creation ran, e.g.
-    /// `Chrome on macOS`. Never the password manager or storage provider —
-    /// WebAuthn does not expose those reliably.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
-    pub struct PasskeyCreatedOn(pub String);
 
     /// The account's registration state with the access service, as one
     /// of `Registered`, `Active`, or `Suspended`.
@@ -871,10 +923,56 @@ pub mod account {
     /// newer build parses as absent rather than as a wrong status.
     ///
     /// [`tonk_account::customer::CustomerStatus`]: https://docs.rs/tonk-account
+    /// When enrollment recorded the address, unix seconds.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
-    pub struct CustomerStatus(pub String);
+    pub struct RegisteredAt(pub u64);
+
+    /// When activation was observed, unix seconds. Its presence is what
+    /// makes an account served.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct ActivatedAt(pub u64);
+
+    /// When the service withdrew, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct SuspendedAt(pub u64);
+
+    /// The derived status label: `case:onboarding`, `case:registered`,
+    /// `case:active`, or `case:suspended`. Never written directly — the
+    /// deductive rules in `profile.yaml` conclude it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// When this device minted its onboarding account, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingMintedAt(pub u64);
+
+    /// The local keypair holding the onboarding account.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingCustodian(pub Entity);
+
+    /// When a real account took over from the onboarding one, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct OnboardingRetiredAt(pub u64);
+
+    /// Why the service withdrew, in words a person can act on.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct SuspensionReason(pub String);
 
     /// The email address the account enrolled with.
     ///
@@ -906,59 +1004,56 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct ProviderAddress(pub String);
-    /// The account's X25519 public key as a `did:key:z6LS…` entity: the
-    /// recipient every device seals custodied seeds to. Derived from the
-    /// account secret, so rotation publishes a new one; cardinality-one
-    /// because sealed rows name their own recipient and need no history
-    /// here.
+    /// Where anything sealed for this account is addressed: the X25519
+    /// public key as a `did:key:z6LS…` entity. Every device can seal to
+    /// it; only a live passkey ceremony derives the private half and can
+    /// open the result. Derived from the account secret, so rotation
+    /// publishes a new one; cardinality-one because sealed rows name
+    /// their own recipient and need no history here.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
-    pub struct EncryptionKey(pub Entity);
+    pub struct SealedInbox(pub Entity);
 }
 
 /// Attributes of a seed sealed to an account, in the account space. One
-/// row per `(subject, recipient)`; see [`crate::CustodiedSeed`].
+/// one row per principal; see [`crate::SecretPrincipal`].
 pub mod custody {
     use super::{Attribute, Entity};
 
-    /// The DID the seed derives: a space's, or an invite principal's.
+    /// Who can open a sealed message: the X25519 `did:key` the bytes were
+    /// sealed to, as an entity.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
+    #[domain("xyz.tonk.secret")]
     #[cardinality(one)]
-    pub struct Subject(pub Entity);
+    pub struct To(pub Entity);
 
-    /// What the subject is: `tonk:space` or `tonk:invite`.
+    /// Who sealed a message, when that is known and worth recording.
+    /// Optional: most sealing has no meaningful sender, and naming one
+    /// would invent an author the seal does not bind.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
+    #[domain("xyz.tonk.secret")]
+    #[cardinality(one)]
+    pub struct Sender(pub Entity);
+
+    /// The sealed bytes of a message.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.secret")]
+    #[cardinality(one)]
+    pub struct Message(pub Vec<u8>);
+
+    /// What a sealed principal is: `tonk:space` for a space's signing key,
+    /// `tonk:invite` for an invite principal's.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.secret")]
     #[cardinality(one)]
     pub struct Kind(pub Entity);
 
-    /// The X25519 `did:key` the seed is sealed to.
+    /// The message whose plaintext is a principal's ed25519 seed.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
+    #[domain("xyz.tonk.secret")]
     #[cardinality(one)]
-    pub struct Recipient(pub Entity);
-
-    /// The sealed envelope bytes (`tonk_identity::sealed::Sealed`).
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
-    #[cardinality(one)]
-    pub struct Sealed(pub Vec<u8>);
-
-    /// The account a custody cell recovers.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
-    #[cardinality(one)]
-    pub struct Account(pub Entity);
-
-    /// A custody cell's envelope bytes
-    /// (`tonk_identity::envelope::Envelope`, sealed under a passkey's
-    /// KEK).
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.custody")]
-    #[cardinality(one)]
-    pub struct Cell(pub Vec<u8>);
+    pub struct Seed(pub Entity);
 }
 
 /// Attributes that describe a repository on its content branch, keyed by the

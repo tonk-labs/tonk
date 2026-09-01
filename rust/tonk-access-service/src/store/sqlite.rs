@@ -8,11 +8,14 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    ACTIVATE_CUSTOMER, ADD_CONSUMER, ANONYMIZE_DELETED_CONSUMERS, Consumer, ConsumerDeletionState,
-    ConsumerKind, Customer, DELETE_CUSTOMER, DELETE_SELF_CONSUMER, FINISH_CONSUMER_DELETION,
-    INSERT_CUSTOMER, INSERT_SELF_CONSUMER, MARK_CONSUMER_DELETING, MARK_SELF_CONSUMER_DELETING,
-    SELECT_CONSUMER, SELECT_CONSUMERS_BY_OWNER, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, Store,
-    StoreError, UPDATE_REGISTERED_EMAIL, parse_status,
+    ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, Enrollment,
+    INSERT_CUSTODY_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_LEDGER_SUBSCRIPTION,
+    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, RELEASE_LAPSED_ADDRESS, REMOVE_SUBSCRIPTION,
+    RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
+    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION,
+    START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION, Servability, Store, StoreError,
+    Subscription, SubscriptionKind, Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -34,12 +37,29 @@ impl SqliteStore {
     /// The screening gate still has to answer for it, so tests need a
     /// way to produce one.
     #[cfg(test)]
+    /// Set a subscription's expiry, which nothing writes in production
+    /// yet: renewal is the increment that will.
+    pub(crate) async fn expire_for_test(&self, consumer: &str, at: u64) {
+        self.0
+            .lock()
+            .expect("store mutex poisoned")
+            .execute(
+                "UPDATE subscription SET expires_at = ?2 WHERE consumer = ?1",
+                params![consumer, at as i64],
+            )
+            .expect("the expiry is written");
+    }
+
+    /// Suspend a customer, which nothing writes in production yet:
+    /// there is no admin path, so the fixture sets the column the way
+    /// one eventually will.
+    #[cfg(test)]
     pub(crate) async fn suspend_for_test(&self, did: &str) {
         self.0
             .lock()
             .expect("store mutex poisoned")
             .execute(
-                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                "UPDATE customer SET status = 'Suspended' WHERE account = ?1",
                 params![did],
             )
             .expect("the status is written");
@@ -92,6 +112,13 @@ impl SqliteStore {
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 5)
                 .map_err(map_err)?;
+            version = 5;
+        }
+        if version < 6 {
+            conn.execute_batch(include_str!("../../migrations/0006_account_schema.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 6)
+                .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
     }
@@ -122,24 +149,28 @@ impl Store for SqliteStore {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified, terms_version)| {
-            Ok(Customer {
-                did,
-                email,
-                status: parse_status(&status)?,
-                plan,
-                verified: verified as u64,
-                terms_version,
-            })
-        })
+        row.map(
+            |(did, email, ledger, status, plan, verified_at, terms_version)| {
+                Ok(Customer {
+                    account: did,
+                    email,
+                    ledger,
+                    status: parse_status(&status)?,
+                    plan,
+                    verified_at: verified_at as u64,
+                    terms_version,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -150,108 +181,184 @@ impl Store for SqliteStore {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                ))
-            })
-            .optional()
-            .map_err(map_err)?;
-        row.map(|(did, email, status, plan, verified, terms_version)| {
-            Ok(Customer {
-                did,
-                email,
-                status: parse_status(&status)?,
-                plan,
-                verified: verified as u64,
-                terms_version,
-            })
-        })
-        .transpose()
-    }
-
-    async fn consumer(&self, did: &str) -> Result<Option<Consumer>, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let row = conn
-            .query_row(SELECT_CONSUMER, params![did], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             })
             .optional()
             .map_err(map_err)?;
         row.map(
-            |(did, provider, owner, registered, kind, state, deleted_at)| {
-                Ok(Consumer {
-                    did,
-                    provider,
-                    owner,
-                    registered: registered as u64,
-                    kind: ConsumerKind::parse(&kind)?,
-                    deletion_state: ConsumerDeletionState::parse(&state)?,
-                    deleted_at: deleted_at.map(|value| value as u64),
+            |(did, email, ledger, status, plan, verified_at, terms_version)| {
+                Ok(Customer {
+                    account: did,
+                    email,
+                    ledger,
+                    status: parse_status(&status)?,
+                    plan,
+                    verified_at: verified_at as u64,
+                    terms_version,
                 })
             },
         )
         .transpose()
     }
 
-    async fn consumers_by_owner(&self, owner: &str) -> Result<Vec<Consumer>, StoreError> {
+    async fn servability(&self, did: &str) -> Result<Servability, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
-        let mut statement = conn.prepare(SELECT_CONSUMERS_BY_OWNER).map_err(map_err)?;
-        let rows = statement
-            .query_map(params![owner], |row| {
+        let row = conn
+            .query_row(SELECT_SERVABILITY, params![did], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })
+            .optional()
+            .map_err(map_err)?;
+        // The `(SELECT ?1)` on the left of every join always yields a
+        // row, so `None` here means the query itself found nothing —
+        // treated the same as a subject with no rows at all.
+        let Some((
+            own,
+            consumer,
+            expires_at,
+            deleted_at,
+            suspend_code,
+            suspend_message,
+            suspend_until_at,
+            archived_at,
+            provider_status,
+        )) = row
+        else {
+            return Ok(Servability::default());
+        };
+        Ok(Servability {
+            own: own.as_deref().map(parse_status).transpose()?,
+            consumer: consumer.is_some(),
+            expires_at: expires_at.map(|value| value as u64),
+            deleted_at: deleted_at.map(|value| value as u64),
+            // The code and the message are written together, so one
+            // without the other is a row nothing could explain.
+            suspension: suspend_code.map(|code| Suspension {
+                message: suspend_message.unwrap_or_default(),
+                code,
+                until: suspend_until_at.map(|value| value as u64),
+            }),
+            archived_at: archived_at.map(|value| value as u64),
+            provider: provider_status.as_deref().map(parse_status).transpose()?,
+        })
+    }
+
+    async fn consumer(&self, did: &str) -> Result<Option<Subscription>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let row = conn
+            .query_row(SELECT_SUBSCRIPTION, params![did], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            })
+            .optional()
+            .map_err(map_err)?;
+        row.map(
+            |(did, provider, registered_at, kind, deleted_at, expires_at)| {
+                Ok(Subscription {
+                    consumer: did,
+                    provider,
+                    registered_at: registered_at as u64,
+                    kind: SubscriptionKind::parse(&kind)?,
+                    deleted_at: deleted_at.map(|value| value as u64),
+                    expires_at: expires_at.map(|value| value as u64),
+                })
+            },
+        )
+        .transpose()
+    }
+
+    async fn subscriptions_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<Subscription>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let mut statement = conn
+            .prepare(SELECT_SUBSCRIPTIONS_BY_OWNER)
+            .map_err(map_err)?;
+        let rows = statement
+            .query_map(params![provider], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })
             .map_err(map_err)?;
         rows.map(|row| {
-            let (did, provider, owner, registered, kind, state, deleted_at) =
+            let (did, provider, registered_at, kind, deleted_at, expires_at) =
                 row.map_err(map_err)?;
-            Ok(Consumer {
-                did,
+            Ok(Subscription {
+                consumer: did,
                 provider,
-                owner,
-                registered: registered as u64,
-                kind: ConsumerKind::parse(&kind)?,
-                deletion_state: ConsumerDeletionState::parse(&state)?,
+                registered_at: registered_at as u64,
+                kind: SubscriptionKind::parse(&kind)?,
                 deleted_at: deleted_at.map(|value| value as u64),
+                expires_at: expires_at.map(|value| value as u64),
             })
         })
         .collect()
     }
 
-    async fn enroll_customer(
-        &self,
-        did: &str,
-        email: &str,
-        access: &[u8],
-        plan: &str,
-        now: u64,
-    ) -> Result<(), StoreError> {
+    async fn enroll_customer(&self, enrollment: Enrollment<'_>) -> Result<(), StoreError> {
+        let Enrollment {
+            did,
+            email,
+            plan,
+            ledger,
+            custody,
+            now,
+            expires_at,
+        } = enrollment;
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
         tx.execute(
             INSERT_CUSTOMER,
-            params![did, email, plan, now as i64, access],
+            params![did, email, ledger, plan, now as i64],
         )
         .map_err(map_err)?;
-        tx.execute(INSERT_SELF_CONSUMER, params![did, now as i64])
-            .map_err(map_err)?;
+        tx.execute(
+            INSERT_SELF_SUBSCRIPTION,
+            params![did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
+        tx.execute(
+            INSERT_LEDGER_SUBSCRIPTION,
+            params![ledger, did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
+        // The passkey's custody space, in the same transaction as the
+        // customer it belongs to: an enrollment claims every namespace it
+        // needs or claims none. Split across two writes, a failure between
+        // them left a customer whose own passkey could not be read back.
+        tx.execute(
+            INSERT_CUSTODY_SUBSCRIPTION,
+            params![custody, did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
         tx.commit().map_err(map_err)
     }
 
@@ -263,43 +370,84 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
-    async fn add_consumer(
+    async fn release_lapsed_address(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(RELEASE_LAPSED_ADDRESS, params![did, now as i64])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn add_subscription(
         &self,
         did: &str,
         provider: &str,
         now: u64,
-        kind: ConsumerKind,
+        kind: SubscriptionKind,
     ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(
-                ADD_CONSUMER,
+                ADD_SUBSCRIPTION,
                 params![did, provider, now as i64, kind.as_str()],
             )
             .map_err(map_err)?;
         Ok(changed > 0)
     }
 
-    async fn mark_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let changed = conn
-            .execute(MARK_CONSUMER_DELETING, params![did])
-            .map_err(map_err)?;
-        Ok(changed > 0)
-    }
-
-    async fn finish_consumer_deletion(&self, did: &str, now: u64) -> Result<bool, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let changed = conn
-            .execute(FINISH_CONSUMER_DELETION, params![did, now as i64])
-            .map_err(map_err)?;
-        Ok(changed > 0)
-    }
-
-    async fn mark_self_consumer_deleting(&self, did: &str) -> Result<bool, StoreError> {
+    async fn suspend_subscription(
+        &self,
+        consumer: &str,
+        code: &str,
+        message: &str,
+        until: Option<u64>,
+    ) -> Result<bool, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         Ok(conn
-            .execute(MARK_SELF_CONSUMER_DELETING, params![did])
+            .execute(
+                SUSPEND_SUBSCRIPTION,
+                params![consumer, code, message, until.map(|at| at as i64)],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn resume_subscription(&self, consumer: &str) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(RESUME_SUBSCRIPTION, params![consumer])
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn archive_subscription(&self, consumer: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(ARCHIVE_SUBSCRIPTION, params![consumer, now as i64])
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn mark_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(START_SUBSCRIPTION_DELETION, params![did, now as i64])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn finish_consumer_deletion(&self, did: &str) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(REMOVE_SUBSCRIPTION, params![did])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn mark_self_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(START_SELF_SUBSCRIPTION_DELETION, params![did, now as i64])
             .map_err(map_err)?
             > 0)
     }
@@ -307,13 +455,29 @@ impl Store for SqliteStore {
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
-        tx.execute(ANONYMIZE_DELETED_CONSUMERS, params![did])
+        tx.execute(DELETE_PURGED_SUBSCRIPTIONS, params![did])
             .map_err(map_err)?;
-        tx.execute(DELETE_SELF_CONSUMER, params![did])
+        tx.execute(DELETE_SELF_SUBSCRIPTION, params![did])
             .map_err(map_err)?;
         let changed = tx.execute(DELETE_CUSTOMER, params![did]).map_err(map_err)?;
         tx.commit().map_err(map_err)?;
         Ok(changed == 1)
+    }
+
+    async fn claim_activation_resend(
+        &self,
+        account: &str,
+        now: u64,
+        not_since: u64,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(
+                RECORD_ACTIVATION_SENT,
+                params![account, now as i64, not_since as i64],
+            )
+            .map_err(map_err)?
+            > 0)
     }
 
     async fn activate_customer(
@@ -322,10 +486,17 @@ impl Store for SqliteStore {
         terms_version: &str,
         now: u64,
     ) -> Result<bool, StoreError> {
-        let conn = self.0.lock().expect("store mutex poisoned");
-        let changed = conn
+        // Status and expiry together: the subscriptions were written to
+        // lapse if the link was never clicked, and it has been. Half of
+        // this would leave an active customer whose spaces expire.
+        let mut conn = self.0.lock().expect("store mutex poisoned");
+        let tx = conn.transaction().map_err(map_err)?;
+        let changed = tx
             .execute(ACTIVATE_CUSTOMER, params![did, now as i64, terms_version])
             .map_err(map_err)?;
+        tx.execute(ACTIVATE_SUBSCRIPTIONS, params![did])
+            .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
         Ok(changed > 0)
     }
 }
@@ -338,7 +509,15 @@ mod tests {
 
     async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
         store
-            .enroll_customer(did, email, &[], SIGNUP_PLAN, 1_700_000_000)
+            .enroll_customer(Enrollment {
+                did,
+                email,
+                plan: SIGNUP_PLAN,
+                ledger: did,
+                custody: &format!("{did}-custody"),
+                now: 1_700_000_000,
+                expires_at: u64::MAX,
+            })
             .await
             .expect("enrollment writes a customer");
     }
@@ -353,7 +532,7 @@ mod tests {
             .await
             .expect("lookup succeeds")
             .expect("the enrolled customer is found");
-        assert_eq!(found.did, "did:key:zA");
+        assert_eq!(found.account, "did:key:zA");
         assert_eq!(found.status, CustomerStatus::Registered);
     }
 
@@ -380,13 +559,15 @@ mod tests {
         enrolled(&store, "did:key:zA", "jsmith@example.com").await;
 
         let conflict = store
-            .enroll_customer(
-                "did:key:zB",
-                "jsmith@example.com",
-                &[],
-                SIGNUP_PLAN,
-                1_700_000_001,
-            )
+            .enroll_customer(Enrollment {
+                did: "did:key:zB",
+                email: "jsmith@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: "did:key:zB",
+                custody: "did:key:zB-custody",
+                now: 1_700_000_001,
+                expires_at: u64::MAX,
+            })
             .await;
         assert!(
             matches!(conflict, Err(StoreError::Conflict(_))),
@@ -425,7 +606,7 @@ mod tests {
             .lock()
             .expect("store mutex poisoned")
             .execute(
-                "UPDATE customer SET status = 'Suspended' WHERE did = ?1",
+                "UPDATE customer SET status = 'Suspended' WHERE account = ?1",
                 params!["did:key:zA"],
             )
             .expect("the status is written");

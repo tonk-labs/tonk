@@ -437,12 +437,29 @@ pub struct EnrollCustomer {
     /// The address to enroll. Empty means the account's recorded one,
     /// which is what the login and resend paths want.
     pub email: crate::domain::command::enroll::Email,
-    /// Comma-separated hex deposits from a passkey ceremony. Empty means
-    /// the worker mints a device-chained set instead.
-    pub deposits: crate::domain::command::enroll::Deposits,
 }
 
 impl Command for EnrollCustomer {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Ask the access service to mail this account's activation link again.
+///
+/// No address and no ceremony: the enrollment's rows stand at the
+/// service, so the only thing left is the mail, and the worker signs the
+/// self-subjected `/customer/resend` invocation with its own device key.
+/// Deliberately NOT a re-enrollment — that path runs a passkey ceremony
+/// the person waiting on an email never asked for.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResendActivation {
+    /// The command entity (a fresh id per press).
+    pub this: Entity,
+    /// When the resend was pressed, so a second press re-fires.
+    pub at: crate::domain::command::resend::At,
+}
+
+impl Command for ResendActivation {
     type Input = Self;
     type Output = ();
 }

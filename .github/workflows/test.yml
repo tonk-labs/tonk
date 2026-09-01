@@ -41,10 +41,10 @@ jobs:
     name: 'End-to-end account tests'
     needs: ['lints']
     runs-on: 'ubuntu-latest'
-    # The suite finishes in ~25 minutes; a run past this is a hung wait
-    # (a wedged webdriver call or a spawned CLI blocked on the network),
-    # and without a bound it burns the runner for GitHub's 6-hour cap.
-    timeout-minutes: 45
+    # A cold Nix build can take ~20 minutes before the ~30-minute suite starts.
+    # Keep a bound for wedged WebDriver or network calls while leaving headroom
+    # for runner variance.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space

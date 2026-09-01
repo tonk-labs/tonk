@@ -2308,6 +2308,254 @@ tonk-code:focus-within {
    own `<form>` (`.branch-yaml-query`); sealed cells dim back
    so the eye lands on the active one at the bottom — same idea
    as Observable's notebook layout. */
+.inspector-debug {
+    width: 100%;
+    color: var(--ink);
+    font-family: var(--sans);
+}
+
+.inspector-debug__disclosure {
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+}
+
+.inspector-debug__summary {
+    min-height: 44px;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto 18px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    cursor: pointer;
+    list-style: none;
+    transition-property: background-color;
+    transition-duration: 150ms;
+    transition-timing-function: var(--ease);
+}
+
+.inspector-debug__summary:hover {
+    background: var(--wash);
+}
+
+.inspector-debug__summary:focus-visible {
+    outline: 0;
+    box-shadow: inset 0 0 0 2px var(--ring);
+}
+
+.inspector-debug__summary::-webkit-details-marker {
+    display: none;
+}
+
+.inspector-debug__summary::after {
+    content: "⌄";
+    width: 18px;
+    justify-self: center;
+    color: var(--soft);
+    font: 18px/1 var(--sans);
+    text-align: center;
+}
+
+.inspector-debug__disclosure[open] > .inspector-debug__summary::after {
+    content: "⌃";
+}
+
+.inspector-debug__summary span,
+.inspector-debug__summary strong,
+.inspector-debug__summary small,
+.inspector-debug__actions button,
+.inspector-debug__copy,
+.inspector-debug__row dt,
+.inspector-debug__probe-error dt {
+    font-family: var(--cond);
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+}
+
+.inspector-debug__summary span,
+.inspector-debug__summary small {
+    color: var(--soft);
+    font-weight: 500;
+}
+
+.inspector-debug__summary strong {
+    font-weight: 600;
+}
+
+.inspector-debug__summary code,
+.inspector-debug__row code {
+    min-width: 0;
+    font: 11px/1.45 var(--mono);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+.inspector-debug__summary small {
+    white-space: nowrap;
+}
+
+.inspector-debug__body {
+    border-block-start: 1px solid var(--sep);
+    padding: 6px 12px 10px;
+}
+
+.inspector-debug__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    min-height: 40px;
+    margin-block-end: 4px;
+}
+
+.inspector-debug__actions:empty {
+    display: none;
+}
+
+.inspector-debug__actions button,
+.inspector-debug__copy {
+    position: relative;
+    min-width: 44px;
+    min-height: 40px;
+    border: 0;
+    border-radius: 0;
+    padding: 0 10px;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    font-weight: 600;
+    transition-property: background-color, scale;
+    transition-duration: 150ms;
+    transition-timing-function: var(--ease);
+}
+
+.inspector-debug__actions button:hover,
+.inspector-debug__copy:hover {
+    background: var(--wash);
+}
+
+.inspector-debug__actions button:focus-visible,
+.inspector-debug__copy:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: -3px;
+}
+
+.inspector-debug__actions button:active,
+.inspector-debug__copy:active {
+    scale: 0.96;
+}
+
+.inspector-debug__actions button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+.inspector-debug__rows {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    margin: 0;
+}
+
+.inspector-debug__row,
+.inspector-debug__probe-error {
+    min-height: 40px;
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    align-items: stretch;
+    border-block-end: 1px solid var(--sep);
+}
+
+.inspector-debug__row dt,
+.inspector-debug__probe-error dt {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    padding-inline-end: 8px;
+    color: var(--soft);
+    font-weight: 500;
+}
+
+.inspector-debug__row dd,
+.inspector-debug__probe-error dd {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    margin: 0;
+    padding-inline-start: 8px;
+}
+
+.inspector-debug__probe-error dd {
+    display: flex;
+    padding-inline-end: 8px;
+    color: var(--soft);
+    font-size: 12px;
+    line-height: 1.45;
+    text-wrap: pretty;
+}
+
+.inspector-debug__copy {
+    align-self: stretch;
+    width: 56px;
+    min-width: 56px;
+    margin-inline-start: 8px;
+    padding-inline: 8px;
+    color: var(--soft);
+}
+
+.inspector-debug__copy.is-copied {
+    background: var(--wash);
+    color: var(--ink);
+}
+
+.inspector-debug__notice {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    color: var(--soft);
+    font-size: 12px;
+    line-height: 1.45;
+    text-wrap: pretty;
+}
+
+.inspector-debug__notice.is-error,
+.inspector-debug__transient.is-error {
+    color: var(--ink);
+}
+
+.inspector-debug__transient {
+    min-height: 20px;
+    padding-block-start: 6px;
+    color: var(--soft);
+    font: 500 12px/1.4 var(--cond);
+}
+
+@media (max-width: 720px) {
+    .inspector-debug__summary {
+        grid-template-columns: auto auto minmax(0, 1fr) 18px;
+        padding-block: 7px;
+    }
+
+    .inspector-debug__summary small {
+        grid-column: 1 / 4;
+        grid-row: 2;
+    }
+
+    .inspector-debug__summary::after {
+        grid-column: 4;
+        grid-row: 1 / span 2;
+    }
+
+    .inspector-debug__actions button {
+        flex: 1;
+    }
+
+    .inspector-debug__row,
+    .inspector-debug__probe-error {
+        grid-template-columns: 84px minmax(0, 1fr);
+    }
+}
+
 .branch-cells {
     display: flex;
     flex-direction: column;
@@ -2525,6 +2773,7 @@ tonk-code:focus-within {
     padding: 0;
     margin: 0;
     block-size: 100vh;
+    block-size: 100dvh;
     inline-size: 100%;
 }
 
@@ -2683,19 +2932,18 @@ tonk-notebook-index {
      it has to actually hide what is behind it. A light-theme value
      hardcoded here read as nearly transparent against the dark theme,
      and the page showed through and collided with the rows. */
-  .tonk-dim {
-    position: fixed; inset: 0; z-index: 20;
-    background: var(--dim);
-    opacity: 0; transition: opacity .4s var(--ease);
-    pointer-events: none;
+  #tonk-register {
+    position: fixed; inset: 0; z-index: 21;
+    box-sizing: border-box;
+    inline-size: auto; max-inline-size: none;
+    block-size: auto; max-block-size: none;
+    margin: 0; padding: 0; overflow: auto;
+    border: 0; border-radius: 0;
+    background: transparent; box-shadow: none;
+    color: inherit;
   }
-  .tonk-dim.on { opacity: 1; pointer-events: auto; }
-
-  .tonk-cluster {
-    position: fixed; inset: 0; z-index: 21; overflow: auto;
-    transition: opacity .4s var(--ease);
-  }
-  .tonk-cluster[hidden] { display: none; }
+  #tonk-register[open] { display: block; }
+  #tonk-register::backdrop { background: var(--dim); }
 
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
@@ -2846,4 +3094,47 @@ tonk-notebook-index {
     font-size: 13px; cursor: pointer;
     color: var(--ink);
     text-decoration: underline; text-underline-offset: 3px;
+  }
+
+  @media (max-width: 519px) {
+    .tonk-ceremony .m-head,
+    .tonk-ceremony .orow,
+    .tonk-ceremony .obtn {
+      min-height: 44px;
+      height: 44px;
+    }
+    .tonk-ceremony .orow {
+      align-items: center;
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+    .tonk-ceremony .orow .v,
+    .tonk-ceremony .orow .k {
+      align-items: center;
+      padding-bottom: 0;
+      margin-bottom: 0;
+    }
+    .tonk-ceremony .ed {
+      height: 44px;
+      font-size: 16px;
+      line-height: 44px;
+    }
+    .tonk-ceremony .ghost {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #tonk-register,
+    .tonk-ceremony .orow,
+    .tonk-ceremony .obtn {
+      transition: none;
+    }
+    .tonk-ceremony .cur,
+    .tonk-ceremony .obtn.wait,
+    .tonk-ceremony .flash {
+      animation: none;
+    }
   }

@@ -115,6 +115,8 @@ pub mod error;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod identity_bridge;
 
+mod user_error;
+
 /// Test helpers for integration testing.
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
@@ -126,3 +128,7 @@ mod account_flow;
 /// Real-browser passkey ceremony tests.
 #[cfg(test)]
 mod identity;
+
+/// Real-browser service-worker load-time upgrade tests.
+#[cfg(test)]
+mod service_worker_upgrade;

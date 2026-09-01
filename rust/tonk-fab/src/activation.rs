@@ -24,14 +24,26 @@ use tonk_host::consumer::{self, Subscription};
 const BANNER_ID: &str = "fabb-activation-banner";
 const CLUSTER_ID: &str = "fabb-activation-cluster";
 
-/// Distinguishes this element's account subscription from its others.
+/// Distinguishes this element's account subscriptions from its others.
 const SUB_TAG: &str = "fabb-activation";
+/// The activation half, subscribed separately: registration and activation
+/// are independent facts that resolve independently.
+const ACTIVE_TAG: &str = "fabb-activation-active";
 
 thread_local! {
-    /// The live subscription, held here rather than in the watch because
-    /// it is opened a microtask after `watch` has already returned.
+    /// The live registration subscription, held here rather than in the
+    /// watch because it is opened a microtask after `watch` returned.
     static OPEN: std::cell::RefCell<Option<Subscription>> =
         const { std::cell::RefCell::new(None) };
+    /// The live activation subscription.
+    static ACTIVE_OPEN: std::cell::RefCell<Option<Subscription>> =
+        const { std::cell::RefCell::new(None) };
+    /// The address the registration frame carried, latched so an
+    /// activation frame (which carries no address) still renders it.
+    static REGISTERED_EMAIL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+    /// Whether an activation frame has arrived.
+    static ACTIVATED: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
 }
 
 pub(crate) struct ActivationWatch {
@@ -76,17 +88,32 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
     //
     // The share row then never learned the account existed, and clicking
     // share waited for a link that was never going to arrive.
+    // Two subscriptions, because registration and activation are two
+    // independent facts that resolve independently: an enrolled account
+    // has a registration row and no activation row, and one query
+    // requiring both would resolve for neither.
+    // Claim-retried: a fab booting while its host installs (or while a
+    // service-worker swap restarts everything) used to dispatch into
+    // silence once and give up — the bar then never learned the account
+    // existed.
     let query = JSON::parse(&crate::logic::account_customer_query_body()).ok()?;
-    match consumer::subscribe(this, &query, Some(&SUB_TAG.into())) {
-        Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
-        Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
-    }
+    let active = JSON::parse(&crate::logic::account_active_query_body()).ok()?;
+    let watcher: Element = this.clone().into();
+    spawn_local(async move {
+        match consumer::subscribe_claimed(&watcher, &query, Some(&SUB_TAG.into())).await {
+            Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
+            Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
+        }
+        match consumer::subscribe_claimed(&watcher, &active, Some(&ACTIVE_TAG.into())).await {
+            Ok(subscription) => ACTIVE_OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
+            Err(error) => tonk_common::log!("activation: could not watch activation: {error:?}"),
+        }
+    });
 
-    // An account nobody has registered yet resolves to no row at all —
-    // `provider` is required on the concept, so "enrolled but unserved"
-    // does not match. That absence IS the answer, and nothing else will
-    // say it, so paint it now rather than waiting for a frame.
-    render(this, None, None);
+    // An account nobody has registered yet resolves to no row at all.
+    // That absence IS the answer, and nothing else will say it, so paint
+    // it now rather than waiting for a frame.
+    render(this, None, false);
 
     Some(ActivationWatch { _frames: frames })
 }
@@ -117,10 +144,27 @@ fn apply(host: &HtmlElement, payload: &JsValue, is_delta: bool) {
             .ok()
             .and_then(|value| value.as_string())
     };
-    render(host, read("status").as_deref(), read("email").as_deref());
+    // A registration frame carries the address; an activation frame
+    // carries `activated_at`, and its PRESENCE is the whole signal —
+    // there is no provider on it any more. The reader once looked for
+    // `provider` here after the query had moved on, so every activation
+    // frame read as not-activated and the banner lingered for the life
+    // of the page. [`crate::logic::ACTIVATION_FIELD`] is what the query
+    // binds, pinned to this reader by a test.
+    if let Some(email) = read("email") {
+        REGISTERED_EMAIL.with(|cell| *cell.borrow_mut() = Some(email));
+    }
+    let activated_frame = Reflect::get(&fields, &crate::logic::ACTIVATION_FIELD.into())
+        .is_ok_and(|value| !value.is_undefined() && !value.is_null());
+    if activated_frame {
+        ACTIVATED.with(|cell| *cell.borrow_mut() = true);
+    }
+    let email = REGISTERED_EMAIL.with(|cell| cell.borrow().clone());
+    let activated = ACTIVATED.with(|cell| *cell.borrow());
+    render(host, email.as_deref(), activated);
 }
 
-fn render(this: &HtmlElement, status: Option<&str>, email: Option<&str>) {
+fn render(this: &HtmlElement, email: Option<&str>, activated: bool) {
     if !this.is_connected() {
         return;
     }
@@ -130,23 +174,34 @@ fn render(this: &HtmlElement, status: Option<&str>, email: Option<&str>) {
     // `element.rs` used to fetch `/api/account` once on connect for it,
     // which went stale the moment someone registered: the bar kept
     // offering to log in to an account that now existed.
-    crate::element::apply_account_ready(this, status.is_some());
-    let status = status.unwrap_or_default();
-    let _ = this.set_attribute("data-customer-status", status);
+    // An account exists as soon as it has registered; being SERVED is
+    // the separate activation fact.
+    crate::element::apply_account_ready(this, email.is_some());
+    let _ = this.set_attribute(
+        "data-customer-status",
+        if email.is_none() {
+            ""
+        } else if activated {
+            "Active"
+        } else {
+            "Registered"
+        },
+    );
     if let Some(email) = email {
         let _ = this.set_attribute("data-customer-email", email);
     } else {
         let _ = this.remove_attribute("data-customer-email");
     }
     if let Ok(Some(row)) = this.query_selector("[data-share-link]") {
-        if status == "Registered" {
+        if email.is_some() && !activated {
             let _ = row.set_attribute("data-activation-blocked", "");
         } else {
             let _ = row.remove_attribute("data-activation-blocked");
         }
     }
 
-    if status != "Registered" {
+    // The banner is for exactly one state: registered and waiting.
+    if email.is_none() || activated {
         retire_condition();
         crate::bar::refresh_sync_condition(this);
         return;
@@ -204,7 +259,7 @@ fn ensure_banner(this: &HtmlElement, email: &str) {
 fn set_banner_copy(banner: &Element, email: &str) {
     if let Ok(Some(message)) = banner.query_selector("[data-activation-message]") {
         message.set_text_content(Some(&format!(
-            "{email} is not activated yet — nothing syncs until it is"
+            "{email} is waiting for email confirmation — nothing syncs until you confirm it"
         )));
     }
 }
@@ -352,8 +407,8 @@ mod tests {
     #[dialog_common::test]
     fn it_reads_the_condition_from_the_account_row() {
         let body = crate::logic::account_customer_query_body();
-        assert!(body.contains("xyz.tonk.account/customer-status"));
-        assert!(body.contains("xyz.tonk.account/provider-address"));
+        assert!(body.contains("xyz.tonk.account/registered-at"));
+        assert!(body.contains("xyz.tonk.account/customer-email"));
         // A concept name would need the profile to have been seeded with
         // a matching definition; the raw URIs need nothing.
         assert!(!body.contains("tonk:account"));

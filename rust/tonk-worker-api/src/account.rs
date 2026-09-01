@@ -15,6 +15,12 @@ pub struct AccountSummary {
     pub email: Option<String>,
     /// Facts Tonk recorded during passkey creation, absent for legacy roots.
     pub passkey: Option<PasskeyMetadata>,
+    /// The chosen account display name, when one was ever set. Absent
+    /// for an account nobody has named — which is how a sign-up is told
+    /// apart from a sign-in to an already-named account, so the name is
+    /// asked for once per account rather than once per device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// One hosted space associated with an account deletion review.
@@ -25,8 +31,11 @@ pub struct AccountDeletionSpace {
     pub subject: String,
     /// Display name from the account directory, when recorded.
     pub name: Option<String>,
-    /// Access-service lifecycle state.
-    pub state: String,
+    /// When the access service began purging this space, if it has. A
+    /// finished deletion leaves no record, so such a space is absent
+    /// from the plan rather than listed as already gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleting_since: Option<u64>,
 }
 
 /// Reviewable destructive scope loaded before asking for a passkey.
@@ -98,8 +107,13 @@ pub struct AccountLinkRequest {
     pub credential_id: String,
     /// Exact existing root → device grant bytes.
     pub delegation_hex: String,
-    /// Hex-encoded root-signed account repository descriptor.
-    pub descriptor_hex: String,
+    /// Where the account syncs: the access service's `/ucan/` address.
+    ///
+    /// Named by whoever links, because they are the party talking to
+    /// the service. It replaces a root-signed descriptor whose remote
+    /// was the linking browser's own origin, frozen at signup — the
+    /// same value, without the signature that made a guess permanent.
+    pub remote: String,
     /// Seed the current profile name only for a new-account creation winner.
     #[serde(default)]
     pub initialize_name: bool,
@@ -204,6 +218,7 @@ mod tests {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".into(),
             }),
+            display_name: None,
         })
         .unwrap();
         assert_eq!(json["email"], "person@example.com");
@@ -219,6 +234,7 @@ mod tests {
                 created_at: 1_754_380_800,
                 created_on: "Chrome on macOS".into(),
             }),
+            display_name: None,
         })
         .unwrap();
         assert!(json["email"].is_null());
@@ -232,13 +248,13 @@ mod tests {
             root_did: "did:key:root".into(),
             credential_id: "cred".into(),
             delegation_hex: "aa".into(),
-            descriptor_hex: "bb".into(),
+            remote: "https://accounts.example/ucan/".into(),
             initialize_name: true,
         })
         .unwrap();
         assert_eq!(link["credentialId"], "cred");
         assert_eq!(link["delegationHex"], "aa");
-        assert_eq!(link["descriptorHex"], "bb");
+        assert_eq!(link["remote"], "https://accounts.example/ucan/");
         assert_eq!(link["initializeName"], true);
     }
 

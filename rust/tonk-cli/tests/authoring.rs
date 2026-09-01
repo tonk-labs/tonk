@@ -210,6 +210,31 @@ mod when_adding_a_view {
     }
 
     #[dialog_common::test]
+    async fn dry_run_reports_identity_without_committing() -> Result<()> {
+        let test = TestSite::new().await?;
+        super::seed_habit(&test).await?;
+        let before = test.site.branch().await?.handle().revision();
+
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "habit",
+            ViewKind::Detail,
+            "<b>{name}</b>",
+            false,
+            tonk_cli::data_ops::WriteOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert!(out.contains("dry run — nothing committed"), "{out}");
+        assert!(out.contains("would have asserted the ui view"), "{out}");
+        assert_eq!(test.site.branch().await?.handle().revision(), before);
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_does_not_repoint_an_already_set_home() -> Result<()> {
         let test = TestSite::new().await?;
         super::seed_habit(&test).await?;

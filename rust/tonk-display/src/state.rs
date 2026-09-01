@@ -924,6 +924,44 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
+    fn it_keeps_nested_display_lifecycle_slots_scoped_to_their_owner() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let outer = host();
+        let inner = host();
+        inner.set_attribute("slot", "no-entity").unwrap();
+        let pending = document.create_element("span").unwrap();
+        pending.set_attribute("slot", "no-entity").unwrap();
+        pending.set_text_content(Some("Generating link…"));
+        inner.append_child(&pending).unwrap();
+        outer.append_child(&inner).unwrap();
+        document.body().unwrap().append_child(&outer).unwrap();
+
+        set(&outer, State::NoEntity);
+        set(&inner, State::NoEntity);
+        assert!(!pending.has_attribute("hidden"));
+        set(&inner, State::Ready);
+
+        assert!(
+            pending.has_attribute("hidden"),
+            "the inner ready state hides its own pending slot"
+        );
+        let display = web_sys::window()
+            .unwrap()
+            .get_computed_style(&pending)
+            .unwrap()
+            .unwrap()
+            .get_property_value("display")
+            .unwrap();
+        assert_eq!(display, "none", "hidden pending content is not rendered");
+        assert!(
+            !inner.has_attribute("hidden"),
+            "the outer display does not hide its active nested display"
+        );
+        outer.remove();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
     fn it_renders_the_danger_callout_on_set_error() {
         let host = host();
         set_error(&host, State::Malformed, "Not found", "no entity matched");

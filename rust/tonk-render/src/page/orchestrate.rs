@@ -102,27 +102,28 @@ async fn render_at_depth<B: QueryBackend>(
     };
     let folded = select_rows(rows);
 
-    // 6. Parse the template, collect bindings, plan, and render. Inject
-    //    the host attributes (model/entity/view) as `dom.host/*` fields
-    //    so a nested `<tonk-display model={dom.host/model}>` resolves,
-    //    matching the browser's `with_host_attributes`.
-    let mut roots = crate::parse_fragment(&view.display);
-    let bindings = crate::collect_bindings(&mut roots);
+    // 6. Parse, plan, and render each sibling against the same entity query.
+    //    Inject the host attributes (model/entity/view) as `dom.host/*`
+    //    fields so nested displays resolve like the browser's
+    //    `with_host_attributes` path.
     // Scalar (`cardinality: one`) fields are plain substitutions, not iteration
     // axes — so an absent optional scalar field renders its host once (blank)
     // instead of cloning it zero times and dropping it. Mirrors the browser
     // renderer's `data-scalar-fields` threading.
     let scalar_fields = scalar_field_names(&descriptor_json);
-    let repeat_root = this_repeat_root(&bindings);
-    let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let host_fields = host_fields(route);
     let conclusions: Vec<crate::Conclusion> = folded
         .iter()
         .map(|c| to_render_conclusion(c, &host_fields))
         .collect();
+    let mut roots = crate::parse_fragment(&view.display);
+    let bindings = crate::collect_bindings(&mut roots);
+    let repeat_root = this_repeat_root(&bindings);
+    let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let html = crate::render(&roots, &plan, &conclusions);
 
-    // 7. Recursively render any nested <tonk-display> in the output.
+    // 7. Recursively render nested <tonk-display> elements before
+    //    returning.
     expand_nested(backend, html, depth, visited).await
 }
 
