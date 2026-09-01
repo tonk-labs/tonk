@@ -1650,7 +1650,7 @@ fn landing(
 /// The cluster calls this on its way out. It is the same read the panel
 /// does when it boots, which is what decides which face to show.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn resettle() {
+pub(crate) fn resettle(after_ceremony: bool) {
     let Some(host) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.query_selector("tonk-account").ok().flatten())
@@ -1658,10 +1658,60 @@ pub(crate) fn resettle() {
     else {
         return;
     };
-    load_status(host);
+    load_status_with(host, after_ceremony);
+}
+
+/// One account read that rides out the moment it lands in.
+///
+/// The worker restarts across profile swaps and service-worker
+/// adoption — both routine right after a ceremony — and a read caught
+/// in that window fails at the transport (or decodes the asset
+/// server's fallback) with nothing wrong above it. The panel's whole
+/// face hangs on this one answer, so those failures retry, bounded;
+/// every other error is a real answer and surfaces unchanged.
+async fn account_status_settling(
+    ride_out_unregistered: bool,
+) -> Result<AccountStatus, crate::error::TonkUiError> {
+    let mut last = None;
+    for attempt in 0..30 {
+        match crate::api::account_status().await {
+            Err(error @ crate::error::TonkUiError::ApiError(_)) if attempt < 10 => {
+                last = Some(Err(error));
+            }
+            // A ceremony just said the account exists, and the worker
+            // agrees — the enrollment command that mounts the account
+            // replica is simply still landing. `Unregistered` is that
+            // command's before-state, so after an announcement it reads
+            // as "not yet" for a bounded window rather than as the
+            // signed-out answer it is on an ordinary boot.
+            Ok(status @ AccountStatus::Unregistered { .. }) if ride_out_unregistered => {
+                last = Some(Ok(status));
+            }
+            other => return other,
+        }
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            if let Some(window) = window() {
+                let _ =
+                    window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500);
+            }
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+    last.unwrap_or_else(|| {
+        Err(crate::error::TonkUiError::ApiError(
+            "account read never settled".to_string(),
+        ))
+    })
 }
 
 fn load_status(host: HtmlElement) {
+    load_status_with(host, false);
+}
+
+/// `after_ceremony` marks a reload requested by the registration cluster
+/// on its way out: a ceremony just finished, so an `Unregistered` answer
+/// is the enrollment command still landing, not a signed-out profile.
+fn load_status_with(host: HtmlElement, after_ceremony: bool) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
         .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
@@ -1676,7 +1726,7 @@ fn load_status(host: HtmlElement) {
                 // panel.
                 set_busy(&host, true, "Checking this browser…");
                 spawn_local(async move {
-                    match crate::api::account_status().await {
+                    match account_status_settling(after_ceremony).await {
                         Ok(AccountStatus::Registered { .. }) => {
                             load_callback_request(host, audience, callback, name);
                         }
@@ -1724,8 +1774,9 @@ fn load_status(host: HtmlElement) {
             show_action_error(&host, AccountAction::LoadAccount, &error);
             return;
         }
-        match crate::api::account_status().await {
+        match account_status_settling(after_ceremony).await {
             Ok(status) => {
+                tonk_common::log!("account: load_status read {status:?}");
                 // A persisted root with no provider is a signed-out
                 // profile: logging in here with a DIFFERENT passkey is
                 // refused, so the Choice panel offers a fresh profile.
