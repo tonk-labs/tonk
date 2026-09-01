@@ -197,3 +197,98 @@ test("an update-capable page claims an activated successor before one reload", a
     assert.equal(result.reloads(), 1);
     assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
 });
+
+function runColdFirstInstallPage() {
+    const messages = [];
+    let serviceWorkers;
+    const worker = eventTarget({
+        state: "installing",
+        postMessage(message) {
+            messages.push({ ...message, atState: worker.state });
+            if (message?.type === "claim" && worker.state === "activated") {
+                serviceWorkers.controller = worker;
+                serviceWorkers.dispatch("controllerchange");
+            }
+        },
+    });
+    const registration = eventTarget({
+        // The genuinely-first install: register() resolves while the
+        // worker is still installing, so there is no `active` to nudge.
+        active: null,
+        installing: worker,
+        waiting: null,
+        async update() {},
+    });
+    serviceWorkers = eventTarget({
+        controller: null,
+        ready: Promise.resolve(registration),
+        async register() {
+            return registration;
+        },
+    });
+    const storage = new Map();
+    const self = eventTarget({ tonkBootLife() {} });
+    const document = eventTarget({
+        visibilityState: "visible",
+        querySelector() {
+            return { textContent: "" };
+        },
+    });
+    vm.runInNewContext(
+        activationBlock(),
+        {
+            self,
+            window: {},
+            document,
+            navigator: { serviceWorker: serviceWorkers },
+            sessionStorage: {
+                getItem(key) {
+                    return storage.get(key) ?? null;
+                },
+                setItem(key, value) {
+                    storage.set(key, String(value));
+                },
+                removeItem(key) {
+                    storage.delete(key);
+                },
+            },
+            location: {
+                reload() {},
+            },
+            console: { log() {}, warn() {}, error() {} },
+        },
+        { filename: INDEX },
+    );
+    return { messages, worker, registration, serviceWorkers };
+}
+
+test("a cold first install claims once its worker activates", async () => {
+    const result = runColdFirstInstallPage();
+    await new Promise(setImmediate);
+    // Nothing to claim yet: register() resolved with the worker still
+    // installing and no active slot. The regression this pins: the claim
+    // was sent to `registration.active` HERE — a no-op on null — and
+    // never again, so a cleared-storage first visit stayed uncontrolled
+    // forever behind a shell stuck on "starting…".
+    assert.equal(
+        result.messages.filter((m) => m?.type === "claim" && m.atState === "activated").length,
+        0,
+    );
+
+    // The worker walks its lifecycle to activated.
+    result.worker.state = "installed";
+    result.worker.dispatch("statechange");
+    result.worker.state = "activating";
+    result.worker.dispatch("statechange");
+    result.registration.active = result.worker;
+    result.registration.installing = null;
+    result.worker.state = "activated";
+    result.worker.dispatch("statechange");
+    await new Promise(setImmediate);
+
+    const claims = result.messages.filter(
+        (m) => m?.type === "claim" && m.atState === "activated",
+    );
+    assert.ok(claims.length >= 1, "the page asks the activated worker to claim");
+    assert.equal(result.serviceWorkers.controller, result.worker, "and control lands");
+});
