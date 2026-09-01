@@ -35,6 +35,12 @@ enum Confirmation {
     },
 }
 
+enum DeleteFailure {
+    PreflightApi(crate::error::TonkUiError),
+    MutationApi(crate::error::TonkUiError),
+    Diagnostic(String),
+}
+
 /// The top-document account element. WebAuthn must not run in sealed guests.
 #[derive(Default)]
 struct TonkAccount;
@@ -357,7 +363,8 @@ fn log_action_error(action: AccountAction, detail: &str) {
 
 fn show_action_error(host: &HtmlElement, action: AccountAction, detail: &str) {
     log_action_error(action, detail);
-    show_error(host, user_error::diagnostic(action, detail));
+    let problem = user_error::problem_from_diagnostic(action, detail);
+    show_error(host, problem.message);
 }
 
 /// [`show_action_error`] for a failed passkey ceremony, which may carry
@@ -369,17 +376,24 @@ fn show_ceremony_error(
     error: &crate::custody_relay::CeremonyError,
 ) {
     log_action_error(action, &error.message);
-    show_error(host, user_error::ceremony(action, error));
+    let problem = user_error::ceremony_problem(action, error);
+    show_error(host, problem.message);
 }
 
 fn show_api_error(host: &HtmlElement, action: AccountAction, error: &crate::error::TonkUiError) {
     log_action_error(action, &error.to_string());
-    show_error(host, user_error::api(action, error));
+    let problem = user_error::api_problem(action, error);
+    show_error(host, problem.message);
 }
 
-fn show_confirmation_action_error(host: &HtmlElement, action: AccountAction, detail: &str) {
-    log_action_error(action, detail);
-    show_confirmation_error(host, user_error::diagnostic(action, detail));
+fn show_automatic_api_error(
+    host: &HtmlElement,
+    action: AccountAction,
+    error: &crate::error::TonkUiError,
+) {
+    log_action_error(action, &error.to_string());
+    let problem = user_error::api_problem(action, error);
+    show_error(host, problem.message);
 }
 
 fn show_confirmation_api_error(
@@ -388,7 +402,8 @@ fn show_confirmation_api_error(
     error: &crate::error::TonkUiError,
 ) {
     log_action_error(action, &error.to_string());
-    show_confirmation_error(host, user_error::api(action, error));
+    let problem = user_error::api_problem(action, error);
+    show_confirmation_error(host, problem.message);
 }
 
 fn show_display_name_api_error(
@@ -397,7 +412,8 @@ fn show_display_name_api_error(
     error: &crate::error::TonkUiError,
 ) {
     log_action_error(action, &error.to_string());
-    show_display_name_error(host, &user_error::api(action, error));
+    let problem = user_error::api_problem(action, error);
+    show_display_name_error(host, &problem.message);
 }
 
 fn show_account_guidance(host: &HtmlElement, message: &str) {
@@ -531,16 +547,32 @@ fn load_activation_notice(host: HtmlElement) {
             let _ = host.set_attribute("data-backup", "done");
             return;
         }
-        let mut state = match crate::api::customer_state().await {
-            Ok(state) => state,
+        let (mut attempt, result) = crate::account_observability::observe(
+            AccountAction::LoadRegistration,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::Unknown,
+            crate::api::customer_state(),
+        )
+        .await;
+        let mut state = match result {
+            Ok(state) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
+                state
+            }
             Err(error) => {
+                let problem = user_error::api_problem(AccountAction::LoadRegistration, &error);
+                attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
                 set_text(
                     &host,
                     "#account-registration-value",
                     "Unavailable — reload to retry",
                 );
                 if host.has_attribute(ACCOUNT_NOT_READY) {
-                    show_api_error(&host, AccountAction::LoadAccount, &error);
+                    show_automatic_api_error(&host, AccountAction::LoadRegistration, &error);
                 } else {
                     log_action_error(AccountAction::LoadAccount, &error.to_string());
                 }
@@ -558,14 +590,30 @@ fn load_activation_notice(host: HtmlElement) {
                 .await
                 .is_ok_and(|config| config.service_did.is_some())
         {
-            match crate::api::enroll_customer(None).await {
+            let (mut enroll_attempt, result) = crate::account_observability::observe(
+                AccountAction::LoadAccount,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::Recovery,
+                tonk_analytics::account::AccountState::RegisteredUnready,
+                crate::api::enroll_customer(None),
+            )
+            .await;
+            match result {
                 // Enrollment is a command, so this returns once the
                 // transient is committed, not once the service answers.
                 // Re-reading here would race the handler and paint a
                 // state already superseded; the row's subscription is
                 // what shows the outcome, whenever it lands.
-                Ok(()) => {}
+                Ok(()) => enroll_attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    tonk_analytics::account::AccountOutcome::success(),
+                ),
                 Err(error) => {
+                    let problem = user_error::api_problem(AccountAction::LoadAccount, &error);
+                    enroll_attempt.finish(
+                        tonk_analytics::account::Stage::RemoteCommit,
+                        problem.outcome,
+                    );
                     set_text(
                         &host,
                         "#account-registration-value",
@@ -817,6 +865,34 @@ fn close_confirmation(host: &HtmlElement) {
     let _ = Reflect::delete_property(host.as_ref(), &CONFIRMATION_RETURN_FOCUS.into());
 }
 
+fn cancel_confirmation(host: &HtmlElement) {
+    let action = match confirmation(host) {
+        Some(Confirmation::SignOut) => Some(AccountAction::SignOut),
+        Some(Confirmation::Revoke { .. }) => Some(AccountAction::RevokeDevice),
+        Some(Confirmation::Delete {
+            requested_space, ..
+        }) => Some(if requested_space.is_some() {
+            AccountAction::DeleteSpace
+        } else {
+            AccountAction::DeleteAccount
+        }),
+        None => None,
+    };
+    if let Some(action) = action {
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            action,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::Ready,
+        );
+        attempt.finish(
+            tonk_analytics::account::Stage::Input,
+            tonk_analytics::account::AccountOutcome::cancelled(),
+        );
+    }
+    close_confirmation(host);
+}
+
 fn open_confirmation(host: &HtmlElement, pending: Confirmation) -> Result<(), String> {
     if confirmation(host).is_none()
         && let Some(active) = window()
@@ -917,6 +993,26 @@ fn show_confirmation_error(host: &HtmlElement, message: impl AsRef<str>) {
             let _ = error.focus();
         }
     }
+}
+
+fn show_confirmation_validation_error(
+    host: &HtmlElement,
+    action: AccountAction,
+    message: impl AsRef<str>,
+) {
+    let mut attempt = crate::account_observability::WebAccountAttempt::start(
+        action,
+        tonk_analytics::account::Surface::Settings,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Ready,
+    );
+    attempt.finish(
+        tonk_analytics::account::Stage::Input,
+        tonk_analytics::account::AccountOutcome::terminal_failure(
+            tonk_analytics::account::FailureKind::InvalidInput,
+        ),
+    );
+    show_confirmation_error(host, message);
 }
 
 fn render_confirmation_result(host: &HtmlElement, message: &str) {
@@ -1112,9 +1208,21 @@ fn render_summary(host: &HtmlElement, summary: &tonk_worker_api::AccountSummary)
 }
 
 fn load_summary(host: HtmlElement) {
+    let mut attempt = crate::account_observability::WebAccountAttempt::start(
+        AccountAction::LoadAccount,
+        tonk_analytics::account::Surface::Settings,
+        tonk_analytics::account::Trigger::Automatic,
+        tonk_analytics::account::AccountState::Unknown,
+    );
     spawn_local(async move {
         match crate::api::account_summary().await {
-            Ok(summary) => render_summary(&host, &summary),
+            Ok(summary) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
+                render_summary(&host, &summary)
+            }
             Err(error) => {
                 for selector in [
                     "#account-email-value",
@@ -1129,6 +1237,8 @@ fn load_summary(host: HtmlElement) {
                     "We couldn't load these account details. Check your connection and reload settings.",
                 );
                 log_action_error(AccountAction::LoadAccount, &error.to_string());
+                let problem = user_error::api_problem(AccountAction::LoadAccount, &error);
+                attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
             }
         }
     });
@@ -1390,8 +1500,20 @@ fn commit_display_name(host: HtmlElement) {
         let _ = error.set_attribute("hidden", "");
     }
     spawn_local(async move {
-        match crate::api::set_account_display_name(&name).await {
+        let (mut attempt, result) = crate::account_observability::observe(
+            AccountAction::ChangeDisplayName,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::Ready,
+            crate::api::set_account_display_name(&name),
+        )
+        .await;
+        match result {
             Ok(authoritative) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 input.set_value(&authoritative);
                 let _ = input.set_attribute("data-confirmed-name", &authoritative);
                 set_text(
@@ -1401,6 +1523,11 @@ fn commit_display_name(host: HtmlElement) {
                 );
             }
             Err(error) => {
+                let problem = user_error::api_problem(AccountAction::ChangeDisplayName, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    problem.outcome,
+                );
                 input.set_value(&confirmed);
                 show_display_name_api_error(&host, AccountAction::ChangeDisplayName, &error);
             }
@@ -1439,10 +1566,26 @@ fn render_choice_profiles(
 
 fn load_profiles(host: HtmlElement) {
     spawn_local(async move {
-        match crate::api::list_profiles().await {
-            Ok(profiles) => render_profiles(&host, &profiles),
+        let (mut attempt, result) = crate::account_observability::observe(
+            AccountAction::LoadProfiles,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::Unknown,
+            crate::api::list_profiles(),
+        )
+        .await;
+        match result {
+            Ok(profiles) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
+                render_profiles(&host, &profiles)
+            }
             Err(error) => {
-                show_display_name_api_error(&host, AccountAction::LoadProfiles, &error);
+                let problem = user_error::api_problem(AccountAction::LoadProfiles, &error);
+                attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
+                show_automatic_api_error(&host, AccountAction::LoadProfiles, &error);
             }
         }
     });
@@ -1450,10 +1593,26 @@ fn load_profiles(host: HtmlElement) {
 
 fn load_choice_profiles(host: HtmlElement, root_persisted: bool) {
     spawn_local(async move {
-        match crate::api::list_profiles().await {
-            Ok(profiles) => render_choice_profiles(&host, &profiles, root_persisted),
+        let (mut attempt, result) = crate::account_observability::observe(
+            AccountAction::LoadProfiles,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::Unknown,
+            crate::api::list_profiles(),
+        )
+        .await;
+        match result {
+            Ok(profiles) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
+                render_choice_profiles(&host, &profiles, root_persisted)
+            }
             Err(error) => {
-                show_api_error(&host, AccountAction::LoadProfiles, &error);
+                let problem = user_error::api_problem(AccountAction::LoadProfiles, &error);
+                attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
+                show_automatic_api_error(&host, AccountAction::LoadProfiles, &error);
             }
         }
     });
@@ -1577,19 +1736,35 @@ fn consume_revoke_target() {
 fn load_devices(host: HtmlElement) {
     set_busy(&host, true, "Loading devices…");
     spawn_local(async move {
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            AccountAction::LoadDevices,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::Ready,
+        );
         // Which row is this device is answered separately from the list:
         // the rows are shared facts, identical everywhere, and identity
         // is the one thing only this device can answer for itself.
         let own = match crate::api::identify().await {
             Ok(identity) => identity.did,
             Err(error) => {
+                let problem = user_error::api_problem(AccountAction::LoadDevices, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::LocalPreflight,
+                    problem.outcome,
+                );
                 set_busy(&host, false, "");
-                show_api_error(&host, AccountAction::LoadDevices, &error);
+                show_automatic_api_error(&host, AccountAction::LoadDevices, &error);
                 return;
             }
         };
+        attempt.checkpoint(tonk_analytics::account::Stage::LocalPreflight);
         match crate::api::account_devices().await {
             Ok(devices) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 set_busy(&host, false, "");
                 render_devices(&host, &devices, &own);
                 if let Some(did) = revoke_target_from_url() {
@@ -1606,8 +1781,10 @@ fn load_devices(host: HtmlElement) {
                 }
             }
             Err(error) => {
+                let problem = user_error::api_problem(AccountAction::LoadDevices, &error);
+                attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
                 set_busy(&host, false, "");
-                show_api_error(&host, AccountAction::LoadDevices, &error);
+                show_automatic_api_error(&host, AccountAction::LoadDevices, &error);
             }
         }
     });
@@ -1676,11 +1853,27 @@ fn load_status(host: HtmlElement) {
                 // panel.
                 set_busy(&host, true, "Checking this browser…");
                 spawn_local(async move {
-                    match crate::api::account_status().await {
+                    let (mut attempt, result) = crate::account_observability::observe(
+                        AccountAction::LoadAccount,
+                        tonk_analytics::account::Surface::Settings,
+                        tonk_analytics::account::Trigger::Automatic,
+                        tonk_analytics::account::AccountState::Unknown,
+                        crate::api::account_status(),
+                    )
+                    .await;
+                    match result {
                         Ok(AccountStatus::Registered { .. }) => {
+                            attempt.finish(
+                                tonk_analytics::account::Stage::AccountLoad,
+                                tonk_analytics::account::AccountOutcome::success(),
+                            );
                             load_callback_request(host, audience, callback, name);
                         }
                         Ok(status) => {
+                            attempt.finish(
+                                tonk_analytics::account::Stage::AccountLoad,
+                                tonk_analytics::account::AccountOutcome::success(),
+                            );
                             let root_persisted =
                                 matches!(status, AccountStatus::Unregistered { .. });
                             set_busy(&host, false, "");
@@ -1693,9 +1886,15 @@ fn load_status(host: HtmlElement) {
                             load_choice_profiles(host.clone(), root_persisted);
                         }
                         Err(error) => {
+                            let problem =
+                                user_error::api_problem(AccountAction::LoadAccount, &error);
+                            attempt.finish(
+                                tonk_analytics::account::Stage::AccountLoad,
+                                problem.outcome,
+                            );
                             set_busy(&host, false, "");
                             set_mode(&host, "choice");
-                            show_api_error(&host, AccountAction::LinkCli, &error);
+                            show_automatic_api_error(&host, AccountAction::LoadAccount, &error);
                         }
                     }
                 });
@@ -1717,8 +1916,35 @@ fn load_status(host: HtmlElement) {
     // authorization outcome, reported here in the page's own styling.
     let link_outcome = query_value("link").map(|status| (status, query_value("message")));
     set_busy(&host, true, "Checking this browser…");
+    let mut settle_attempt = crate::account_observability::take_settle_pending().then(|| {
+        crate::account_observability::WebAccountAttempt::start(
+            AccountAction::SettleAccount,
+            tonk_analytics::account::Surface::Settings,
+            tonk_analytics::account::Trigger::Recovery,
+            tonk_analytics::account::AccountState::PendingActivation,
+        )
+    });
+    let mut load_attempt = crate::account_observability::WebAccountAttempt::start(
+        AccountAction::LoadAccount,
+        tonk_analytics::account::Surface::Settings,
+        tonk_analytics::account::Trigger::Automatic,
+        tonk_analytics::account::AccountState::Unknown,
+    );
     spawn_local(async move {
         if let Err(error) = service(&host).await {
+            let problem = user_error::problem_from_diagnostic(AccountAction::LoadAccount, &error);
+            load_attempt.finish(
+                tonk_analytics::account::Stage::AccessService,
+                problem.outcome,
+            );
+            if let Some(attempt) = settle_attempt.as_mut() {
+                let problem =
+                    user_error::problem_from_diagnostic(AccountAction::SettleAccount, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccessService,
+                    problem.outcome,
+                );
+            }
             set_busy(&host, false, "");
             set_mode(&host, NO_PANEL_MODE);
             show_action_error(&host, AccountAction::LoadAccount, &error);
@@ -1726,6 +1952,10 @@ fn load_status(host: HtmlElement) {
         }
         match crate::api::account_status().await {
             Ok(status) => {
+                load_attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 // A persisted root with no provider is a signed-out
                 // profile: logging in here with a DIFFERENT passkey is
                 // refused, so the Choice panel offers a fresh profile.
@@ -1739,11 +1969,22 @@ fn load_status(host: HtmlElement) {
                 } else {
                     let _ = host.remove_attribute(ACCOUNT_NOT_READY);
                 }
-                match landing(
+                let landing = landing(
                     account_state,
                     revoke_target_from_url().is_some(),
                     adding_account(),
-                ) {
+                );
+                if let Some(attempt) = settle_attempt.as_mut() {
+                    let outcome = if matches!(landing, Landing::Success | Landing::Devices) {
+                        tonk_analytics::account::AccountOutcome::success()
+                    } else {
+                        tonk_analytics::account::AccountOutcome::terminal_failure(
+                            tonk_analytics::account::FailureKind::LocalState,
+                        )
+                    };
+                    attempt.finish(tonk_analytics::account::Stage::Complete, outcome);
+                }
+                match landing {
                     Landing::Devices => show_success(&host),
                     Landing::Success => {
                         // Marked BEFORE settling, because settling starts
@@ -1773,9 +2014,18 @@ fn load_status(host: HtmlElement) {
                 }
             }
             Err(error) => {
+                let load_problem = user_error::api_problem(AccountAction::LoadAccount, &error);
+                load_attempt.finish(
+                    tonk_analytics::account::Stage::AccountLoad,
+                    load_problem.outcome,
+                );
+                if let Some(attempt) = settle_attempt.as_mut() {
+                    let problem = user_error::api_problem(AccountAction::SettleAccount, &error);
+                    attempt.finish(tonk_analytics::account::Stage::AccountSync, problem.outcome);
+                }
                 set_busy(&host, false, "");
                 set_mode(&host, "choice");
-                show_api_error(&host, AccountAction::LoadAccount, &error);
+                show_automatic_api_error(&host, AccountAction::LoadAccount, &error);
             }
         }
     });
@@ -2206,7 +2456,7 @@ fn bind(host: &HtmlElement) {
         "#account-confirm-cancel",
         "[data-confirmation-scrim]",
     ] {
-        on_click(host, selector, |host| close_confirmation(&host));
+        on_click(host, selector, |host| cancel_confirmation(&host));
     }
 
     for event_name in ["input", "change"] {
@@ -2249,6 +2499,12 @@ fn bind(host: &HtmlElement) {
         let device_name = crate::device_name::current();
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
+            let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                AccountAction::CreateAccount,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::None,
+            );
             let result = async {
                 prepare_added_profile().await?;
                 // The page's whole part: one passkey ceremony. The
@@ -2274,9 +2530,23 @@ fn bind(host: &HtmlElement) {
                 Ok::<(), crate::custody_relay::CeremonyError>(())
             }
             .await;
-            if let Err(error) = result {
-                set_busy(&host, false, "");
-                show_ceremony_error(&host, AccountAction::CreateAccount, &error);
+            match result {
+                Ok(()) => attempt.finish(
+                    tonk_analytics::account::Stage::ActivationWait,
+                    tonk_analytics::account::AccountOutcome::blocked(
+                        tonk_analytics::account::FailureKind::AwaitingActivation,
+                    ),
+                ),
+                Err(error) => {
+                    let problem =
+                        user_error::ceremony_problem(AccountAction::CreateAccount, &error);
+                    attempt.finish(
+                        tonk_analytics::account::Stage::WorkerHandoff,
+                        problem.outcome,
+                    );
+                    set_busy(&host, false, "");
+                    show_ceremony_error(&host, AccountAction::CreateAccount, &error);
+                }
             }
         });
     });
@@ -2288,10 +2558,21 @@ fn bind(host: &HtmlElement) {
             // A resend, not a re-enrollment: the rows stand at the
             // service, so the worker only signs the resend invocation —
             // no passkey prompt for someone who is waiting on an inbox.
-            let result = crate::api::resend_activation().await;
+            let (mut attempt, result) = crate::account_observability::observe(
+                AccountAction::ResendActivation,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::PendingActivation,
+                crate::api::resend_activation(),
+            )
+            .await;
             set_busy(&host, false, "");
             match result {
                 Ok(_) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::RemoteCommit,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     set_text(
                         &host,
                         "#account-activation-notice",
@@ -2305,7 +2586,14 @@ fn bind(host: &HtmlElement) {
                     // pressed the button, which is enough to say so.
                     count_down_resend(host.clone());
                 }
-                Err(error) => show_api_error(&host, AccountAction::ResendActivation, &error),
+                Err(error) => {
+                    let problem = user_error::api_problem(AccountAction::ResendActivation, &error);
+                    attempt.finish(
+                        tonk_analytics::account::Stage::RemoteCommit,
+                        problem.outcome,
+                    );
+                    show_api_error(&host, AccountAction::ResendActivation, &error);
+                }
             }
         });
     });
@@ -2314,6 +2602,12 @@ fn bind(host: &HtmlElement) {
         clear_error(&host);
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
+            let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                AccountAction::AddPasskey,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::Ready,
+            );
             let result = async {
                 let (root_did, _delegation_hex) = match crate::api::root_status()
                     .await
@@ -2351,12 +2645,23 @@ fn bind(host: &HtmlElement) {
             set_busy(&host, false, "");
             match result {
                 Ok(()) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::RemoteCommit,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     if let Ok(Some(button)) = host.query_selector("#account-add-passkey") {
                         let _ = button.set_attribute("hidden", "");
                     }
                     load_summary(host.clone());
                 }
-                Err(error) => show_ceremony_error(&host, AccountAction::AddPasskey, &error),
+                Err(error) => {
+                    let problem = user_error::ceremony_problem(AccountAction::AddPasskey, &error);
+                    attempt.finish(
+                        tonk_analytics::account::Stage::WorkerHandoff,
+                        problem.outcome,
+                    );
+                    show_ceremony_error(&host, AccountAction::AddPasskey, &error);
+                }
             }
         });
     });
@@ -2366,6 +2671,12 @@ fn bind(host: &HtmlElement) {
         let device_name = crate::device_name::current();
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
+            let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                AccountAction::LogIn,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::None,
+            );
             let result = async {
                 prepare_added_profile().await?;
                 // One assertion, and the worker does the rest: it
@@ -2385,9 +2696,20 @@ fn bind(host: &HtmlElement) {
                 .await
             }
             .await;
-            if let Err(error) = result {
-                set_busy(&host, false, "");
-                show_ceremony_error(&host, AccountAction::LogIn, &error);
+            match result {
+                Ok(_) => attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    tonk_analytics::account::AccountOutcome::success(),
+                ),
+                Err(error) => {
+                    let problem = user_error::ceremony_problem(AccountAction::LogIn, &error);
+                    attempt.finish(
+                        tonk_analytics::account::Stage::WorkerHandoff,
+                        problem.outcome,
+                    );
+                    set_busy(&host, false, "");
+                    show_ceremony_error(&host, AccountAction::LogIn, &error);
+                }
             }
         });
     });
@@ -2405,6 +2727,12 @@ fn bind(host: &HtmlElement) {
         {
             set_busy(&host, true, "Waiting for your passkey…");
             spawn_local(async move {
+                let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                    AccountAction::LinkCli,
+                    tonk_analytics::account::Surface::Settings,
+                    tonk_analytics::account::Trigger::User,
+                    tonk_analytics::account::AccountState::Ready,
+                );
                 let result = async {
                     // Registration precedes linking: a device linked to an
                     // unregistered account inherits a dead sync path, so a
@@ -2472,12 +2800,26 @@ fn bind(host: &HtmlElement) {
                     deliver_to_callback(
                         &callback,
                         &[("authorize", &encoded), ("redirect", &redirect)],
-                    )
+                    )?;
+                    Ok::<(), String>(())
                 }
                 .await;
-                if let Err(error) = result {
-                    set_busy(&host, false, "");
-                    show_action_error(&host, AccountAction::LinkCli, &error);
+                match result {
+                    Ok(()) => attempt.finish(
+                        tonk_analytics::account::Stage::CallbackDelivery,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    ),
+                    Err(error) => {
+                        let problem =
+                            user_error::problem_from_diagnostic(AccountAction::LinkCli, &error);
+                        attempt.finish(
+                            tonk_analytics::account::Stage::CallbackDelivery,
+                            problem.outcome,
+                        );
+                        set_busy(&host, false, "");
+                        log_action_error(AccountAction::LinkCli, &error);
+                        show_error(&host, problem.message);
+                    }
                 }
             });
             return;
@@ -2513,6 +2855,17 @@ fn bind(host: &HtmlElement) {
             &[("deny", "declined in the browser"), ("redirect", &redirect)],
         ) {
             show_action_error(&host, AccountAction::LinkCli, &error);
+        } else {
+            let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                AccountAction::LinkCli,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::Ready,
+            );
+            attempt.finish(
+                tonk_analytics::account::Stage::CallbackDelivery,
+                tonk_analytics::account::AccountOutcome::cancelled(),
+            );
         }
     });
 
@@ -2527,8 +2880,20 @@ fn bind(host: &HtmlElement) {
         clear_error(&host);
         set_busy(&host, true, "Loading the permanent deletion scope…");
         spawn_local(async move {
-            match crate::api::account_deletion_plan().await {
+            let (mut attempt, result) = crate::account_observability::observe(
+                AccountAction::LoadDeletionPlan,
+                tonk_analytics::account::Surface::Settings,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::Ready,
+                crate::api::account_deletion_plan(),
+            )
+            .await;
+            match result {
                 Ok(plan) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::AccountLoad,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     set_busy(&host, false, "");
                     let pending = Confirmation::Delete {
                         plan,
@@ -2539,6 +2904,8 @@ fn bind(host: &HtmlElement) {
                     }
                 }
                 Err(error) => {
+                    let problem = user_error::api_problem(AccountAction::LoadDeletionPlan, &error);
+                    attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
                     set_busy(&host, false, "");
                     show_api_error(&host, AccountAction::LoadDeletionPlan, &error);
                 }
@@ -2555,16 +2922,35 @@ fn bind(host: &HtmlElement) {
             Confirmation::SignOut => {
                 set_busy(&host, true, "Signing out…");
                 spawn_local(async move {
-                    match crate::api::unlink_account().await {
-                        Ok(_) => match window().map(|window| window.location().reload()) {
-                            Some(Ok(())) => {}
-                            _ => {
-                                set_busy(&host, false, "");
-                                close_confirmation(&host);
-                                set_mode(&host, "choice");
+                    let (mut attempt, result) = crate::account_observability::observe(
+                        AccountAction::SignOut,
+                        tonk_analytics::account::Surface::Settings,
+                        tonk_analytics::account::Trigger::User,
+                        tonk_analytics::account::AccountState::Ready,
+                        crate::api::unlink_account(),
+                    )
+                    .await;
+                    match result {
+                        Ok(_) => {
+                            attempt.finish(
+                                tonk_analytics::account::Stage::LocalCommit,
+                                tonk_analytics::account::AccountOutcome::success(),
+                            );
+                            match window().map(|window| window.location().reload()) {
+                                Some(Ok(())) => {}
+                                _ => {
+                                    set_busy(&host, false, "");
+                                    close_confirmation(&host);
+                                    set_mode(&host, "choice");
+                                }
                             }
-                        },
+                        }
                         Err(error) => {
+                            let problem = user_error::api_problem(AccountAction::SignOut, &error);
+                            attempt.finish(
+                                tonk_analytics::account::Stage::LocalCommit,
+                                problem.outcome,
+                            );
                             set_busy(&host, false, "");
                             show_confirmation_api_error(&host, AccountAction::SignOut, &error);
                         }
@@ -2615,9 +3001,26 @@ fn bind(host: &HtmlElement) {
             clear_error(&host);
             set_busy(&host, true, "Switching account…");
             spawn_local(async move {
-                match crate::api::activate_profile(profile).await {
-                    Ok(_) => reload_into_switched_profile(&host),
+                let (mut attempt, result) = crate::account_observability::observe(
+                    AccountAction::SwitchProfile,
+                    tonk_analytics::account::Surface::Settings,
+                    tonk_analytics::account::Trigger::User,
+                    tonk_analytics::account::AccountState::Ready,
+                    crate::api::activate_profile(profile),
+                )
+                .await;
+                match result {
+                    Ok(_) => {
+                        attempt.finish(
+                            tonk_analytics::account::Stage::LocalCommit,
+                            tonk_analytics::account::AccountOutcome::success(),
+                        );
+                        reload_into_switched_profile(&host)
+                    }
                     Err(error) => {
+                        let problem = user_error::api_problem(AccountAction::SwitchProfile, &error);
+                        attempt
+                            .finish(tonk_analytics::account::Stage::LocalCommit, problem.outcome);
                         set_busy(&host, false, "");
                         show_api_error(&host, AccountAction::SwitchProfile, &error);
                     }
@@ -2657,12 +3060,13 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
     let confirmed_email = match input(&host, "#account-delete-email") {
         Ok(email) if email == plan.email => email,
         Ok(_) => {
-            return show_confirmation_error(
+            return show_confirmation_validation_error(
                 &host,
+                action,
                 "The confirmation email does not match this account.",
             );
         }
-        Err(error) => return show_confirmation_error(&host, error),
+        Err(error) => return show_confirmation_validation_error(&host, action, error),
     };
     let understood = host
         .query_selector("#account-delete-understood")
@@ -2671,8 +3075,9 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
         .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
         .is_some_and(|input| input.checked());
     if !understood {
-        return show_confirmation_error(
+        return show_confirmation_validation_error(
             &host,
+            action,
             "Confirm that you understand the permanent consequences.",
         );
     }
@@ -2689,7 +3094,11 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
         .cloned()
         .collect();
     if requested.is_some() && destructive.len() != 1 {
-        return show_confirmation_error(&host, "The selected owned space is already deleted.");
+        return show_confirmation_validation_error(
+            &host,
+            action,
+            "The selected owned space is already deleted.",
+        );
     }
     set_busy(
         &host,
@@ -2699,6 +3108,12 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
         } else {
             "Waiting for your passkey…"
         },
+    );
+    let mut attempt = crate::account_observability::WebAccountAttempt::start(
+        action,
+        tonk_analytics::account::Surface::Settings,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Ready,
     );
     spawn_local(async move {
         let result = async {
@@ -2711,8 +3126,8 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
                     subject: space.subject.clone(),
                 })
                 .await
-                .map_err(|error| error.to_string())?;
-                return Ok::<_, String>((Some(deleted.subject), None));
+                .map_err(DeleteFailure::MutationApi)?;
+                return Ok::<_, DeleteFailure>((Some(deleted.subject), None));
             }
             // Account deletion asks the human to verify with the
             // account's passkey, then the worker signs every
@@ -2720,7 +3135,7 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
             // authority.
             let credential_id = match crate::api::root_status()
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(DeleteFailure::PreflightApi)?
             {
                 tonk_worker_api::RootStatus::Ready {
                     root_did,
@@ -2728,19 +3143,21 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
                     ..
                 } => {
                     if root_did != plan.root_did {
-                        return Err("this device's passkey belongs to a different account".into());
+                        return Err(DeleteFailure::Diagnostic(
+                            "this device's passkey belongs to a different account".into(),
+                        ));
                     }
                     credential_id
                 }
                 tonk_worker_api::RootStatus::Missing { .. } => {
-                    return Err(
+                    return Err(DeleteFailure::Diagnostic(
                         "no account passkey is registered on this device to verify with".into(),
-                    );
+                    ));
                 }
             };
             verify_passkey(VerifyPasskeyInput { credential_id })
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| DeleteFailure::Diagnostic(error.to_string()))?;
             let spaces = destructive
                 .iter()
                 .map(|space| AccountSpaceDeletionRequest {
@@ -2752,12 +3169,16 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
                 confirmed_email,
             })
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(DeleteFailure::MutationApi)?;
             Ok((None, Some(deleted)))
         }
         .await;
         match result {
             Ok((Some(subject), None)) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::Complete,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 render_confirmation_result(
                     &host,
                     &format!(
@@ -2766,6 +3187,10 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
                 );
             }
             Ok((None, Some(result))) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::Complete,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 render_confirmation_result(
                     &host,
                     &format!(
@@ -2783,11 +3208,43 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
             }
             Ok(_) => {
                 set_busy(&host, false, "");
-                show_confirmation_action_error(&host, action, "the deletion result was incomplete");
+                let problem = user_error::problem_from_diagnostic(
+                    action,
+                    "the deletion result was incomplete",
+                );
+                attempt.finish(tonk_analytics::account::Stage::Complete, problem.outcome);
+                log_action_error(action, "the deletion result was incomplete");
+                show_confirmation_error(&host, problem.message);
             }
-            Err(error) => {
+            Err(DeleteFailure::PreflightApi(error)) => {
                 set_busy(&host, false, "");
-                show_confirmation_action_error(&host, action, &error);
+                let problem = user_error::api_problem(action, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::LocalPreflight,
+                    problem.outcome,
+                );
+                log_action_error(action, &error.to_string());
+                show_confirmation_error(&host, problem.message);
+            }
+            Err(DeleteFailure::MutationApi(error)) => {
+                set_busy(&host, false, "");
+                log_action_error(action, &error.to_string());
+                let problem = user_error::mutation_api_problem(action, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    problem.outcome,
+                );
+                show_confirmation_error(&host, problem.message);
+            }
+            Err(DeleteFailure::Diagnostic(error)) => {
+                set_busy(&host, false, "");
+                let problem = user_error::problem_from_diagnostic(action, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::LocalPreflight,
+                    problem.outcome,
+                );
+                log_action_error(action, &error);
+                show_confirmation_error(&host, problem.message);
             }
         }
     });
@@ -2817,9 +3274,19 @@ fn execute_revoke(host: HtmlElement, did: String, self_revoke: bool) {
             "Revoking device…"
         },
     );
+    let mut attempt = crate::account_observability::WebAccountAttempt::start(
+        AccountAction::RevokeDevice,
+        tonk_analytics::account::Surface::Settings,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Ready,
+    );
     spawn_local(async move {
         match crate::api::revoke_account_device(did).await {
             Ok(acknowledgement) => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 clear_error(&host);
                 set_busy(
                     &host,
@@ -2853,7 +3320,13 @@ fn execute_revoke(host: HtmlElement, did: String, self_revoke: bool) {
             }
             Err(error) => {
                 set_busy(&host, false, "");
-                show_confirmation_api_error(&host, AccountAction::RevokeDevice, &error);
+                log_action_error(AccountAction::RevokeDevice, &error.to_string());
+                let problem = user_error::mutation_api_problem(AccountAction::RevokeDevice, &error);
+                attempt.finish(
+                    tonk_analytics::account::Stage::RemoteCommit,
+                    problem.outcome,
+                );
+                show_confirmation_error(&host, problem.message);
             }
         }
     });

@@ -66,6 +66,13 @@ thread_local! {
     /// typed, when it was an answer about nothing on screen.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     static ANSWER: RefCell<Option<Answer>> = const { RefCell::new(None) };
+    /// Long-lived automatic probes hold their attempt across subscription
+    /// setup and the first meaningful frame instead of fabricating duration at
+    /// the completion callback.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static REGISTRATION_WATCH: RefCell<Option<crate::account_observability::WebAccountAttempt>> = const { RefCell::new(None) };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static ACTIVATION_WATCH: RefCell<Option<crate::account_observability::WebAccountAttempt>> = const { RefCell::new(None) };
 }
 
 enum ReturnFocus {
@@ -131,6 +138,14 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::account_observability::record_instant_success(
+        AccountAction::OpenRegistration,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Unknown,
+        tonk_analytics::account::Stage::Input,
+    );
     open_with_return(None);
 }
 
@@ -419,6 +434,16 @@ pub fn close() {
             }
         });
         DELEGATES.with(|held| held.borrow_mut().clear());
+        for attempt in [&REGISTRATION_WATCH, &ACTIVATION_WATCH] {
+            attempt.with(|held| {
+                if let Some(mut attempt) = held.borrow_mut().take() {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::Complete,
+                        tonk_analytics::account::AccountOutcome::cancelled(),
+                    );
+                }
+            });
+        }
         // The answer belongs to the dialog that asked, so the next one
         // starts from nothing rather than from what this one was told.
         ANSWER.with(|held| *held.borrow_mut() = None);
@@ -622,13 +647,29 @@ fn check_now() {
     // dialog renders. Painting it here too would be a second source of
     // truth that disagrees with the row while the lookup runs.
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
-            tonk_common::log!("register: could not ask about the address: {error}");
-            clear_state();
-            set_status(&user_error::diagnostic(
-                AccountAction::CheckEmail,
-                &error.to_string(),
-            ));
+        let (mut attempt, result) = crate::account_observability::observe(
+            AccountAction::CheckEmail,
+            tonk_analytics::account::Surface::RegistrationDialog,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::None,
+            crate::api::transact_profile(check_email_claim(&email)),
+        )
+        .await;
+        match result {
+            Ok(()) => attempt.finish(
+                tonk_analytics::account::Stage::EmailLookup,
+                tonk_analytics::account::AccountOutcome::success(),
+            ),
+            Err(error) => {
+                tonk_common::log!("register: could not ask about the address: {error}");
+                clear_state();
+                let problem = user_error::problem_from_diagnostic(
+                    AccountAction::CheckEmail,
+                    &error.to_string(),
+                );
+                attempt.finish(tonk_analytics::account::Stage::EmailLookup, problem.outcome);
+                set_status(&problem.message);
+            }
         }
     });
 }
@@ -679,6 +720,14 @@ async fn account_is_activated() -> bool {
 /// crosses.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn await_activation(host: &Element) {
+    ACTIVATION_WATCH.with(|held| {
+        *held.borrow_mut() = Some(crate::account_observability::WebAccountAttempt::start(
+            AccountAction::WatchActivation,
+            tonk_analytics::account::Surface::RegistrationDialog,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::PendingActivation,
+        ));
+    });
     let mut delegates = Vec::new();
     for method in ["reset", "update"] {
         let is_delta = method == "update";
@@ -716,6 +765,15 @@ fn activation_watch_failed(detail: &str) {
         detail,
     ));
     set_action(RETURN_TO_SPACE, true);
+    let problem = user_error::problem_from_diagnostic(AccountAction::WatchActivation, detail);
+    ACTIVATION_WATCH.with(|held| {
+        if let Some(mut attempt) = held.borrow_mut().take() {
+            attempt.finish(
+                tonk_analytics::account::Stage::ActivationWait,
+                problem.outcome,
+            );
+        }
+    });
 }
 
 /// Whether a failed ceremony is the ordinary wait for an emailed link.
@@ -842,6 +900,14 @@ pub(crate) fn answer_query_body() -> String {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn watch_answers(host: &Element) {
     let _ = host.set_attribute("with", "main@profile:tonk");
+    REGISTRATION_WATCH.with(|held| {
+        *held.borrow_mut() = Some(crate::account_observability::WebAccountAttempt::start(
+            AccountAction::LoadRegistration,
+            tonk_analytics::account::Surface::RegistrationDialog,
+            tonk_analytics::account::Trigger::Automatic,
+            tonk_analytics::account::AccountState::Unknown,
+        ));
+    });
 
     let mut delegates = Vec::new();
     for method in ["reset", "update"] {
@@ -851,6 +917,14 @@ fn watch_answers(host: &Element) {
             Closure::<dyn FnMut(JsValue, JsValue)>::new(move |payload: JsValue, _opts: JsValue| {
                 let _ = &target;
                 if let Some(answer) = read_answer(&payload, is_delta) {
+                    REGISTRATION_WATCH.with(|held| {
+                        if let Some(mut attempt) = held.borrow_mut().take() {
+                            attempt.finish(
+                                tonk_analytics::account::Stage::AccountLoad,
+                                tonk_analytics::account::AccountOutcome::success(),
+                            );
+                        }
+                    });
                     ANSWER.with(|held| *held.borrow_mut() = Some(answer.clone()));
                     show_answer(&answer);
                 }
@@ -898,6 +972,12 @@ fn registration_watch_failed(detail: &str) {
         AccountAction::LoadRegistration,
         detail,
     ));
+    let problem = user_error::problem_from_diagnostic(AccountAction::LoadRegistration, detail);
+    REGISTRATION_WATCH.with(|held| {
+        if let Some(mut attempt) = held.borrow_mut().take() {
+            attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
+        }
+    });
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1145,11 +1225,20 @@ fn copy_the_share_link() {
     };
     set_action("copying link…", false);
     wasm_bindgen_futures::spawn_local(async move {
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            AccountAction::CopyInvite,
+            tonk_analytics::account::Surface::RegistrationDialog,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::Ready,
+        );
         let claim = enable_sync_claim(&space, js_sys::Date::now());
         if let Err(error) = crate::api::transact_profile(claim).await {
             tonk_common::log!("register: could not finish the share: {error}");
             set_status("Could not create the link. Share the space again.");
             set_action(COPY_LINK, true);
+            let problem =
+                user_error::problem_from_diagnostic(AccountAction::CopyInvite, &error.to_string());
+            attempt.finish(tonk_analytics::account::Stage::LocalCommit, problem.outcome);
             return;
         }
         // The link arrives as a fact on the space's own branch, so this
@@ -1157,6 +1246,10 @@ fn copy_the_share_link() {
         match await_invite_link(&space).await {
             Some(link) => match write_to_clipboard(&link).await {
                 Ok(()) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::CallbackDelivery,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     set_status("You can use the copied link to invite someone into a space.");
                     set_action(RETURN_TO_SPACE, true);
                     focus_action();
@@ -1164,10 +1257,22 @@ fn copy_the_share_link() {
                 Err(error) => {
                     tonk_common::log!("register: could not copy the invite link: {error}");
                     set_status(&user_error::diagnostic(AccountAction::CopyInvite, &error));
+                    let problem =
+                        user_error::problem_from_diagnostic(AccountAction::CopyInvite, &error);
+                    attempt.finish(
+                        tonk_analytics::account::Stage::CallbackDelivery,
+                        problem.outcome,
+                    );
                     set_action(COPY_LINK, true);
                 }
             },
             None => {
+                attempt.finish(
+                    tonk_analytics::account::Stage::CallbackDelivery,
+                    tonk_analytics::account::AccountOutcome::retryable(
+                        tonk_analytics::account::FailureKind::Timeout,
+                    ),
+                );
                 set_status("The link is taking longer than expected. Share the space again.");
                 set_action(COPY_LINK, true);
             }
@@ -1298,6 +1403,27 @@ pub(crate) fn run_signup_ceremony() {
     // attention is earned by blinking, never by hue.
     set_action("waiting for your device", false);
 
+    let account_action = if existing {
+        AccountAction::LogIn
+    } else {
+        AccountAction::CreateAccount
+    };
+    let mut account_attempt = crate::account_observability::WebAccountAttempt::start(
+        account_action,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        if existing {
+            tonk_analytics::account::AccountState::Unknown
+        } else {
+            tonk_analytics::account::AccountState::None
+        },
+    );
+    account_attempt.checkpoint(tonk_analytics::account::Stage::EmailLookup);
+    account_attempt.checkpoint(if existing {
+        tonk_analytics::account::Stage::PasskeyAssert
+    } else {
+        tonk_analytics::account::Stage::PasskeyCreate
+    });
     wasm_bindgen_futures::spawn_local(async move {
         let outcome = if existing {
             crate::account::run_login_ceremony(set_status).await
@@ -1318,6 +1444,12 @@ pub(crate) fn run_signup_ceremony() {
             // one click away, with no way to tell from the screen that
             // waiting was all it needed.
             Err(error) if awaits_confirmation(error.denial.as_ref()) => {
+                let problem = user_error::ceremony_problem(account_action, &error);
+                account_attempt.finish(
+                    tonk_analytics::account::Stage::ActivationWait,
+                    problem.outcome,
+                );
+                crate::account_observability::mark_settle_pending();
                 tonk_common::log!("register: the account awaits its email confirmation");
                 hide_action();
                 add_row(
@@ -1339,14 +1471,12 @@ pub(crate) fn run_signup_ceremony() {
             }
             Err(error) => {
                 tonk_common::log!("register: the ceremony did not complete: {error}");
-                set_status(&user_error::ceremony(
-                    if existing {
-                        AccountAction::LogIn
-                    } else {
-                        AccountAction::CreateAccount
-                    },
-                    &error,
-                ));
+                let problem = user_error::ceremony_problem(account_action, &error);
+                account_attempt.finish(
+                    tonk_analytics::account::Stage::PasskeyAssert,
+                    problem.outcome,
+                );
+                set_status(&problem.message);
                 // Back to something clickable: a control left mid-flight
                 // refuses every later attempt.
                 set_action(
@@ -1391,8 +1521,19 @@ pub(crate) fn run_signup_ceremony() {
                 // device, since what it waits on is a fact that syncs.
                 if existing && account_is_activated().await {
                     // Already activated: nothing to wait for.
+                    account_attempt.finish(
+                        tonk_analytics::account::Stage::Complete,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     finish_ceremony();
                 } else {
+                    account_attempt.finish(
+                        tonk_analytics::account::Stage::ActivationWait,
+                        tonk_analytics::account::AccountOutcome::blocked(
+                            tonk_analytics::account::FailureKind::AwaitingActivation,
+                        ),
+                    );
+                    crate::account_observability::mark_settle_pending();
                     // What happens next arrives as facts: the emailed
                     // link lands `AccountCustomer`, and the subscription
                     // renders it. Nothing here polls for it.
@@ -1686,11 +1827,22 @@ pub(crate) fn finish_ceremony() {
     if host.query_selector(NAME_ROW).ok().flatten().is_some() {
         return;
     }
+    let activation_was_pending = host.query_selector(CONFIRM_ROW).ok().flatten().is_some();
     // The row that was awaiting the link is the one that resolves; the
     // address row above it keeps saying which address. Where no
     // confirmation row stands — signing in with an existing passkey
     // never raises one — there is nothing to settle.
     settle_named_row(CONFIRM_ROW, "email", "verified");
+    if activation_was_pending {
+        ACTIVATION_WATCH.with(|held| {
+            if let Some(mut attempt) = held.borrow_mut().take() {
+                attempt.finish(
+                    tonk_analytics::account::Stage::Complete,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
+            }
+        });
+    }
 
     // Only REGISTRATION asks. A login reaches an account that already
     // belongs to someone: it may be named already, or its naming may
@@ -1821,14 +1973,30 @@ fn offer_the_link(name: &str) {
     wasm_bindgen_futures::spawn_local({
         let name = name.to_owned();
         async move {
-            let status = match crate::api::transact_profile(profile_rename_claim(&name)).await {
-                Ok(()) => "Your account is ready.".to_owned(),
+            let (mut attempt, result) = crate::account_observability::observe(
+                AccountAction::SaveInitialDisplayName,
+                tonk_analytics::account::Surface::RegistrationDialog,
+                tonk_analytics::account::Trigger::User,
+                tonk_analytics::account::AccountState::Ready,
+                crate::api::transact_profile(profile_rename_claim(&name)),
+            )
+            .await;
+            let status = match result {
+                Ok(()) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::LocalCommit,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
+                    "Your account is ready.".to_owned()
+                }
                 Err(error) => {
                     tonk_common::log!("register: could not record the display name: {error}");
-                    user_error::diagnostic(
+                    let problem = user_error::problem_from_diagnostic(
                         AccountAction::SaveInitialDisplayName,
                         &error.to_string(),
-                    )
+                    );
+                    attempt.finish(tonk_analytics::account::Stage::LocalCommit, problem.outcome);
+                    problem.message
                 }
             };
             conclude(&status);

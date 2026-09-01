@@ -44,20 +44,31 @@ pub fn install() {
     spawn_local(identify());
 }
 
-/// Console panic reporting (always) plus a content-free `panic` event
-/// (first line of the panic message only) when capture is live.
+/// Console panic reporting (always) plus a content-free `panic` event. The
+/// local console retains the diagnostic; analytics gets only a static type and
+/// repository-relative source location.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         console_error_panic_hook::hook(info);
-        let message = info
-            .to_string()
-            .lines()
-            .next()
-            .unwrap_or("panic")
-            .to_owned();
+        let location = info
+            .location()
+            .map(|location| {
+                let file = location.file();
+                let file = file
+                    .find("rust/")
+                    .map(|index| &file[index..])
+                    .unwrap_or("unknown");
+                format!("{file}:{}", location.line())
+            })
+            .unwrap_or_else(|| "unknown".to_owned());
+        let fingerprint = format!("wasm_panic:{location}");
         tonk_analytics::web::capture(
             tonk_analytics::event::PANIC,
-            &serde_json::json!({ "message": message }),
+            &serde_json::json!({
+                "type": "wasm_panic",
+                "location": location,
+                "fingerprint": fingerprint,
+            }),
         );
     }));
 }

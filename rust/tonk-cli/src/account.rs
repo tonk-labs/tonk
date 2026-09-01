@@ -9,6 +9,7 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
+use tonk_analytics::account::{DegradationKind, Stage};
 use url::Url;
 
 /// Production account API used unless explicitly overridden.
@@ -18,6 +19,18 @@ pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
 /// and posts the grant back to the waiting CLI.
 pub const DEFAULT_LINK_PAGE: &str = "https://tonk.network/settings/link";
+
+/// The browser explicitly declined the native device handoff.
+#[derive(Debug, thiserror::Error)]
+#[error("authorization was declined in the browser: {detail}")]
+pub struct BrowserAuthorizationDenied {
+    detail: String,
+}
+
+/// The terminal cancelled the native device handoff before an answer.
+#[derive(Debug, thiserror::Error)]
+#[error("account login cancelled")]
+pub struct LinkCancelled;
 
 /// Open the browser's passkey-protected, review-first account deletion flow.
 pub async fn open_deletion(
@@ -297,8 +310,8 @@ pub async fn logout(profile: &Profile) -> Result<()> {
 
 /// Disconnect only the account session owned by `store`.
 pub async fn logout_in(profile: &Profile, store: &crate::space::SpaceStore) -> Result<()> {
-    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    logout_with_operator_in(profile, &operator, store).await
+    let mut observer = crate::account_observability::NoopAccountObserver;
+    logout_in_observed(profile, store, &mut observer).await
 }
 
 async fn logout_with_operator(
@@ -314,13 +327,34 @@ async fn logout_with_operator_in(
     operator: &dialog_operator::Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<()> {
+    let mut observer = crate::account_observability::NoopAccountObserver;
+    logout_with_operator_in_observed(profile, operator, store, &mut observer).await
+}
+
+/// Disconnect the provider session and expose the durable local commit seam.
+pub async fn logout_in_observed(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
+) -> Result<()> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    logout_with_operator_in_observed(profile, &operator, store, observer).await
+}
+
+async fn logout_with_operator_in_observed(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
+) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    for account in
-        crate::account_session::logout_transition_for_store(profile, operator, store).await?
-    {
+    let accounts =
+        crate::account_session::logout_transition_for_store(profile, operator, store).await?;
+    observer.checkpoint(tonk_analytics::account::Stage::LocalCommit);
+    for account in accounts {
         if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
             eprintln!(
                 "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
@@ -529,7 +563,9 @@ async fn hydrate_activated_account(
     store: &crate::space::SpaceStore,
     account: &crate::account_session::ActiveAccount,
     url: String,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<LinkOutcome> {
+    observer.checkpoint(Stage::AccountSync);
     let ensured = ensure_after_link(
         profile,
         operator.clone(),
@@ -538,6 +574,9 @@ async fn hydrate_activated_account(
     )
     .await?;
 
+    if ensured.warning.is_some() {
+        observer.degraded(DegradationKind::AccountSync);
+    }
     Ok(LinkOutcome {
         url,
         root_did: account.root_did.clone(),
@@ -561,7 +600,9 @@ async fn link_via_callback(
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
     page: &str,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<LinkOutcome> {
+    observer.checkpoint(Stage::CallbackBind);
     let callback = crate::callback::Callback::bind().await?;
     let url = login_url(
         page,
@@ -571,8 +612,10 @@ async fn link_via_callback(
     );
 
     println!("Open this URL to approve the device:\n{url}");
+    observer.checkpoint(Stage::BrowserOpen);
     if options.open_browser && webbrowser::open(&url).is_err() {
         eprintln!("Could not open a browser; use the URL above.");
+        observer.degraded(DegradationKind::BrowserOpen);
     }
     // A caller that drives the ceremony itself (tests, or an embedder with
     // its own browser control) receives the URL rather than relying on the
@@ -588,24 +631,27 @@ async fn link_via_callback(
         .map(|page| page.origin().ascii_serialization());
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
+    observer.checkpoint(Stage::CallbackWait);
     let received = tokio::select! {
         result = callback.receive(redirect_origin) => result?,
         signal = &mut ctrl_c => {
             signal.context("failed to listen for Ctrl-C")?;
-            bail!("account login cancelled");
+            return Err(LinkCancelled.into());
         }
     };
     let bytes = match received {
         crate::callback::Authorization::Granted(bytes) => bytes,
         crate::callback::Authorization::Denied(reason) => {
-            bail!("authorization was declined in the browser: {reason}");
+            return Err(BrowserAuthorizationDenied { detail: reason }.into());
         }
     };
+    observer.checkpoint(Stage::DelegationValidate);
     let authorization: CallbackAuthorization =
         serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
     let account = account_from_callback(profile, options, authorization).await?;
+    observer.checkpoint(Stage::ActivationStage);
     complete_staged_account(profile, operator, store, &account).await?;
-    hydrate_activated_account(profile, operator, store, &account, url).await
+    hydrate_activated_account(profile, operator, store, &account, url, observer).await
 }
 
 /// What the authorizing page posts back to the waiting CLI.
@@ -650,6 +696,19 @@ pub async fn link_in(
     link_with_operator(profile, &operator, &options).await
 }
 
+/// [`link_in`] with native stage reporting for the account CLI.
+pub async fn link_in_observed(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    options: &LinkOptions,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
+) -> Result<LinkOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let mut options = options.clone();
+    options.store = Some(store.clone());
+    link_with_operator_observed(profile, &operator, &options, observer).await
+}
+
 /// [`link`] against a caller-supplied operator.
 ///
 /// [`link`] resolves one from the global install, mounting the profile by
@@ -659,6 +718,17 @@ pub async fn link_with_operator(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
     options: &LinkOptions,
+) -> Result<LinkOutcome> {
+    let mut observer = crate::account_observability::NoopAccountObserver;
+    link_with_operator_observed(profile, operator, options, &mut observer).await
+}
+
+/// Observed form of [`link_with_operator`] used by the CLI command seam.
+pub async fn link_with_operator_observed(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    options: &LinkOptions,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<LinkOutcome> {
     let store = match options.store.clone() {
         Some(store) => store,
@@ -674,12 +744,22 @@ pub async fn link_with_operator(
     };
     if let Some(account) = state.active {
         recorded_account_grant(profile, &account).await?;
-        return hydrate_activated_account(profile, operator, &store, &account, String::new()).await;
+        return hydrate_activated_account(
+            profile,
+            operator,
+            &store,
+            &account,
+            String::new(),
+            observer,
+        )
+        .await;
     }
     match state.pending_login {
         Some(crate::account_session::PendingLogin::Activating { account }) => {
+            observer.checkpoint(Stage::ActivationStage);
             complete_staged_account(profile, operator, &store, &account).await?;
-            hydrate_activated_account(profile, operator, &store, &account, String::new()).await
+            hydrate_activated_account(profile, operator, &store, &account, String::new(), observer)
+                .await
         }
         Some(crate::account_session::PendingLogin::Waiting { .. }) => {
             bail!(
@@ -688,7 +768,7 @@ pub async fn link_with_operator(
         }
         None => {
             let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
-            link_via_callback(profile, operator, &store, options, page).await
+            link_via_callback(profile, operator, &store, options, page, observer).await
         }
     }
 }
@@ -1140,6 +1220,18 @@ pub async fn revoke_in(
     options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
+    let mut observer = crate::account_observability::NoopAccountObserver;
+    revoke_in_observed(profile, store, options, did, &mut observer).await
+}
+
+/// [`revoke_in`] with the publication boundary exposed to CLI telemetry.
+pub async fn revoke_in_observed(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    options: &RevokeOptions,
+    did: &str,
+    observer: &mut dyn crate::account_observability::CliAccountObserver,
+) -> Result<RevokeOutcome> {
     let connection = optional_connection_in(profile, store)
         .await?
         .context("no active account; run `tonk account login`")?;
@@ -1168,6 +1260,7 @@ pub async fn revoke_in(
             Ok(false) => {}
             Err(error) => eprintln!("warning: this device's rows were not retracted: {error:#}"),
         }
+        observer.checkpoint(Stage::RemoteCommit);
         publish_revocation(profile, &branch, &operator, store, &artifact).await?;
         return Ok(RevokeOutcome::Revoked);
     }
@@ -1218,6 +1311,7 @@ pub async fn revoke_in(
     )
     .await
     .with_context(|| format!("cannot revoke {did}"))?;
+    observer.checkpoint(Stage::RemoteCommit);
     publish_revocation(profile, &branch, &operator, store, &artifact).await?;
     match retract_device_rows(&branch, &operator, did).await {
         Ok(true) => {
