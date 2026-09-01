@@ -189,6 +189,7 @@ function lockHarness({ available = true } = {}) {
 function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
     let claims = 0;
     let retirements = 0;
+    let activationRequests = 0;
     const logs = [];
     const registration = eventTarget({ installing: null, waiting: null });
     const lockState = locks === undefined ? lockHarness() : { locks, requests: [] };
@@ -201,7 +202,9 @@ function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
         registration,
         serviceWorker: {},
         navigator,
-        async skipWaiting() {},
+        async skipWaiting() {
+            activationRequests += 1;
+        },
         clients: {
             async claim() {
                 claims += 1;
@@ -256,6 +259,7 @@ function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
     return {
         scope,
         claims: () => claims,
+        activationRequests: () => activationRequests,
         retirements: () => retirements,
         logs,
         lockRequests: lockState.requests,
@@ -285,6 +289,7 @@ function reloadSafetyBlock() {
 
 function runWarmUpdatePage({
     critical = false,
+    incomingState = "activated",
     predicate = "present",
     indexedDB = new FakeIndexedDB(),
     broadcast = broadcastHarness(),
@@ -302,9 +307,15 @@ function runWarmUpdatePage({
     const oldWorker = eventTarget({ state: "activated", postMessage() {} });
     let serviceWorkers;
     const incoming = eventTarget({
-        state: "activated",
+        state: incomingState,
         postMessage(message) {
             messages.push(message);
+            if (message?.type === "activate") {
+                incoming.state = "activated";
+                registration.installing = null;
+                registration.waiting = null;
+                incoming.dispatch("statechange");
+            }
             if (message?.type === "claim") {
                 claimLockStates.push(lockState.held());
                 serviceWorkers.controller = incoming;
@@ -454,6 +465,17 @@ test("an explicit cold-start claim message takes control", async () => {
     assert.equal(claims(), 1);
 });
 
+test("an explicit waiting-worker activation message repeats skipWaiting", async () => {
+    const { scope, activationRequests } = loadServiceWorker();
+    const pending = [];
+    scope.onmessage({
+        data: { type: "activate" },
+        waitUntil: (promise) => pending.push(promise),
+    });
+    await Promise.all(pending);
+    assert.equal(activationRequests(), 1);
+});
+
 test("a durable account-setup hold blocks global claim across reloads and tabs", async () => {
     const indexedDB = new FakeIndexedDB({ hold: VALID_HOLD });
     const { scope, claims, lockRequests } = loadServiceWorker({ indexedDB });
@@ -550,7 +572,11 @@ test("alignment defers while account setup is critical and resumes after durabil
 test("alignment remains held after a reload until the durable singleton clears", async () => {
     const indexedDB = new FakeIndexedDB({ hold: VALID_HOLD });
     const broadcast = broadcastHarness();
-    const result = runWarmUpdatePage({ indexedDB, broadcast });
+    const result = runWarmUpdatePage({
+        indexedDB,
+        broadcast,
+        incomingState: "installed",
+    });
     await new Promise(setImmediate);
 
     assert.equal(result.messages.length, 0);
@@ -559,7 +585,10 @@ test("alignment remains held after a reload until the durable singleton clears",
     indexedDB.values.delete("account-setup");
     result.signalHoldChanged();
     await new Promise(setImmediate);
-    assert.equal(result.messages[0]?.type, "claim");
+    assert.deepEqual(
+        result.messages.map((message) => message?.type),
+        ["activate", "claim"],
+    );
     assert.equal(result.reloads(), 1);
 });
 

@@ -213,6 +213,12 @@ impl Reactor {
     /// and ends the SSE response stream regardless of who else
     /// holds the state.
     pub fn shutdown(&self) {
+        // Pending subscriptions own the sender for an SSE response even
+        // though their repository/branch has not materialized yet. They are
+        // not reachable through either cache below, so drain them explicitly
+        // or an absent-branch stream can keep the retiring worker alive.
+        self.pending_subscriptions.lock().clear();
+        self.pending_polls.lock().clear();
         let repos = {
             let mut map = self.repos.write();
             std::mem::take(&mut *map)

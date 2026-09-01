@@ -660,6 +660,27 @@
                 }
 
                 const priorController = navigator.serviceWorker.controller;
+                const onControllerReplacement = () => {
+                    if (
+                        !priorController ||
+                        !navigator.serviceWorker.controller ||
+                        navigator.serviceWorker.controller === priorController
+                    ) {
+                        return;
+                    }
+                    // `clients.claim()` changes every controlled tab, not only
+                    // the page that requested adoption. Keep this listener for
+                    // the document lifetime so sibling A documents also cross
+                    // the account-safety gate and align to B exactly once.
+                    try {
+                        sessionStorage.setItem(UPGRADE_RELOAD, "1");
+                    } catch {}
+                    globalThis.tonkReloadWhenAccountSetupDurable();
+                };
+                navigator.serviceWorker.addEventListener(
+                    "controllerchange",
+                    onControllerReplacement,
+                );
                 let resolveControlled;
                 const controlled = new Promise((resolve) => {
                     resolveControlled = resolve;
@@ -761,6 +782,7 @@
                 }
 
                 let incoming = null;
+                let activationRequested = null;
                 let claimRequested = null;
                 let settled = false;
                 let resolveOutcome;
@@ -776,6 +798,19 @@
                 const onWorkerState = () => {
                     noteLife();
                     if (incoming?.state === "redundant") finish("failed");
+                    // A complete successor waits until this update-aware page
+                    // crosses the origin-global account-safety gate. Only then
+                    // ask that exact worker to activate.
+                    if (
+                        incoming?.state === "installed" &&
+                        activationRequested !== incoming
+                    ) {
+                        const successor = incoming;
+                        activationRequested = successor;
+                        globalThis.tonkWhenAccountSetupDurable(() => {
+                            successor.postMessage({ type: "activate" });
+                        });
+                    }
                     // Activation alone deliberately leaves older, unaware
                     // pages on their existing controller. This document owns
                     // the update protocol, so once its observed successor is
@@ -1315,7 +1350,9 @@
                         // old document behind the successor's stale-write
                         // barrier before it could persist recovery.
                         globalThis.tonkReloadWhenAccountSetupDurable(() =>
-                            registration.waiting?.postMessage({ type: "claim" }),
+                            registration.waiting?.postMessage({
+                                type: "activate",
+                            }),
                         );
                     });
 

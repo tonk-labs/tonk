@@ -1023,6 +1023,11 @@ mod tests {
             .ok()
             .flatten()
             .expect("the dialog should be on the page");
+        // A real dismissal necessarily happens after `showModal()` returns to
+        // the browser. Current Chrome does not queue `close` when a freshly
+        // shown dialog is synchronously closed in that same task, so yield one
+        // turn before emulating Esc.
+        next_tick().await;
         dialog.unchecked_ref::<HtmlDialogElement>().close();
         wait_for_teardown(document).await;
     }

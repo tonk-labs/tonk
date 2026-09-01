@@ -594,18 +594,20 @@ async function selfDestruct() {
 }
 
 self.oninstall = event => {
-    // Promote this worker straight from `installing` to `activating`
-    // without parking in `waiting`. Earlier this call sat at the top
-    // of the script, where it's a no-op — the browser only honors
-    // `skipWaiting()` while the worker is in `waiting`, and at
-    // top-level eval time the lifecycle hasn't reached install yet.
-    //
     event.waitUntil((async () => {
         // Uncaught by design: a worker becomes installable only after its
         // provenance-bound UI, lazy, guest, and worker-Wasm graph is complete.
         // A failed incoming build leaves every retained generation untouched.
         await installGeneration();
-        await self.skipWaiting();
+        if (!self.registration.active) {
+            // First install has no incumbent document generation to protect.
+            // Activate so the registering page can explicitly request claim.
+            await self.skipWaiting();
+        }
+        // A complete replacement has an active incumbent and deliberately
+        // parks in `waiting`. An update-aware page requests activation only
+        // after the origin-global account-safety gate permits every controlled
+        // document to align.
     })());
     log("Installed");
 };
@@ -1010,9 +1012,9 @@ function retireIfSuperseded(event) {
     event.waitUntil?.(retire("a successor is waiting"));
 }
 
-function maybeCheckKillSwitch(event) {
+function maybeCheckKillSwitch(event, force = false) {
     const now = Date.now();
-    if (now - killSwitchCheckedAt < KILL_SWITCH_INTERVAL_MS) return;
+    if (!force && now - killSwitchCheckedAt < KILL_SWITCH_INTERVAL_MS) return;
     killSwitchCheckedAt = now;
     event.waitUntil?.(
         (async () => {
@@ -1086,7 +1088,10 @@ self.onfetch = event => {
     // anyway. Placed AFTER the control-file early-out so the probe can
     // never trigger itself.
     if (event.request.mode === "navigate") {
-        maybeCheckKillSwitch(event);
+        // A person explicitly navigating/reloading is an immediate recovery
+        // boundary; do not let the periodic throttle hide a newly published
+        // withdrawal flag from that action.
+        maybeCheckKillSwitch(event, true);
     }
     // `/api/*` navigations remain real data-plane requests. All other
     // navigations use an exact stamped static document when one exists, or the
@@ -1257,6 +1262,12 @@ async function claimClientsWhenAccountSetupSafe() {
 }
 
 self.onmessage = event => {
+    // A complete worker waits until an update-aware page crosses the shared
+    // account-safety gate. Only that page may ask it to activate.
+    if (event.data && event.data.type === "activate") {
+        event.waitUntil?.(self.skipWaiting());
+        return;
+    }
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(claimClientsWhenAccountSetupSafe());
         return;

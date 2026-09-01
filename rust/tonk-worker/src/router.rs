@@ -692,6 +692,7 @@ pub mod tests {
             session_expires_at: session.expires_at,
             profile_name,
             reactor,
+            retiring: std::sync::atomic::AtomicBool::new(false),
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
@@ -4549,7 +4550,7 @@ employee:
         );
     }
 
-    /// `Reactor::shutdown` must drop every active subscriber's
+    /// Worker retirement must drop every active subscriber's
     /// `mpsc::Sender` so the SSE response body finishes and the SW
     /// can release in-flight fetches.
     ///
@@ -4577,7 +4578,7 @@ employee:
         // Trigger the shutdown the SW upgrade path runs.
         {
             let guard = app_state.read().await;
-            guard.reactor.shutdown();
+            guard.retire();
         }
 
         // The body must end — `frame()` returns `None`. Race
@@ -4591,6 +4592,44 @@ employee:
                 "expected stream end, got frame: {frame:?}",
             ),
             _ = timeout => panic!("subscription body did not end after shutdown"),
+        }
+
+        // Retirement is terminal for this worker generation. Reopening after
+        // the successor has activated (and `registration.waiting` has become
+        // empty) must still receive a short 503, never a fresh SSE body.
+        for attempt in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{repo}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "text/event-stream")
+                        .body(Body::from(named_concept_wire_query().to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "retired query reconnect {attempt} must be refused"
+            );
+            assert_ne!(
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/event-stream")
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({ "control": "update-pending" })
+            );
         }
     }
 
