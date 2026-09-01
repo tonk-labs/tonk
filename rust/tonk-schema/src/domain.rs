@@ -82,6 +82,18 @@ pub mod space {
     #[cardinality(one)]
     pub struct Local(pub bool);
 
+    /// The account providing this space with the access service. Its
+    /// PRESENCE is the record that the space is provisioned; the sync
+    /// engine retracts it when the service answers that the subject is
+    /// no longer served, returning the row to local-only. The value is
+    /// the providing account's DID entity — stable across replicas, so
+    /// every device asserts the identical fact and the record converges
+    /// (a timestamp here would give each writer its own value).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Provider(pub Entity);
+
     /// The space's display name, mirrored into the account directory
     /// (the content-branch copy stays the editable source of truth) so
     /// every device can label a space it has not replicated yet.

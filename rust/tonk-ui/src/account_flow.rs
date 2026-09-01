@@ -3280,32 +3280,45 @@ mod tests {
 
     /// Type into the row named `noun` and commit it with Enter.
     async fn type_into_settled_row(driver: &WebDriver, noun: &str, value: &str) -> Result<()> {
-        let outcome = driver
-            .execute_async(
-                r##"
-                const done = arguments[arguments.length - 1];
-                const [noun, value] = [arguments[0], arguments[1]];
-                for (const row of document.querySelectorAll("#tonk-register .orow")) {
-                    const k = row.querySelector(".k");
-                    if (!k || k.textContent.trim() !== noun) continue;
-                    const input = row.querySelector("input");
-                    if (!input) return done({ error: noun + " row takes no input" });
-                    input.focus();
-                    input.value = value;
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
-                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-                    return done({ ok: true });
+        // The row unfolds a beat after the step before it settles — the
+        // ceremony reads the account summary between "email · verified"
+        // and asking for a name — so an absent row is waited out rather
+        // than failed on the first look.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute_async(
+                    r##"
+                    const done = arguments[arguments.length - 1];
+                    const [noun, value] = [arguments[0], arguments[1]];
+                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                        const k = row.querySelector(".k");
+                        if (!k || k.textContent.trim() !== noun) continue;
+                        const input = row.querySelector("input");
+                        if (!input) return done({ error: noun + " row takes no input" });
+                        input.focus();
+                        input.value = value;
+                        input.dispatchEvent(new Event("input", { bubbles: true }));
+                        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        return done({ ok: true });
+                    }
+                    done({ error: "no row named " + noun });
+                    "##,
+                    vec![serde_json::json!(noun), serde_json::json!(value)],
+                )
+                .await?;
+            let outcome = outcome.json().clone();
+            match outcome.get("error").and_then(|error| error.as_str()) {
+                None => return Ok(()),
+                Some(error) if error.starts_with("no row named") => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                done({ error: "no row named " + noun });
-                "##,
-                vec![serde_json::json!(noun), serde_json::json!(value)],
-            )
-            .await?;
-        let outcome = outcome.json().clone();
-        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
-            return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+                Some(error) => return Err(anyhow!("could not fill the {noun:?} row: {error}")),
+            }
         }
-        Ok(())
     }
 
     /// Wait for the narrator to say something containing `fragment`.
