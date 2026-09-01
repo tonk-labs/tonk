@@ -21,6 +21,8 @@
 //! `AwaitingActivation` learns it is confirmed when the same sync
 //! succeeds, with no separate probe.
 
+pub mod cache;
+
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_ucan_core::{Container, Invocation};
 use dialog_varsig::AnySignature;
