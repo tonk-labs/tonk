@@ -568,6 +568,11 @@ describe("immutable generation install", () => {
           : new Response(body, { status: 200 });
       },
     });
+    const progress = [];
+    self.clients.matchAll = async (options) => {
+      assert.deepEqual(options, { type: "window", includeUncontrolled: true });
+      return [{ postMessage: (message) => progress.push(message) }];
+    };
     const mod = await loadWith({
       buildId,
       wasmHash,
@@ -584,6 +589,15 @@ describe("immutable generation install", () => {
     let install;
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
+
+    assert.ok(
+      progress.some(({ type, build, phase }) =>
+        type === "tonk-install-progress" &&
+        build === buildId &&
+        phase === "adopted"
+      ),
+      "a long verified install must keep the uncontrolled boot watchdog alive",
+    );
 
     const shell = await caches.open(mod.SHELL_CACHE);
     for (const [path, body] of resources) {

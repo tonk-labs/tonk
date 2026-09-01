@@ -147,6 +147,40 @@ mod native {
             driver
                 .set_page_load_timeout(std::time::Duration::from_secs(60))
                 .await?;
+            #[cfg(test)]
+            {
+                // Install before the first navigation so failures from the
+                // eager service-worker registration are still available when
+                // an integration wait times out. The user-facing boot surface
+                // deliberately hides technical diagnostics.
+                let devtools = ChromeDevTools::new(driver.handle.clone());
+                devtools
+                    .execute_cdp_with_params(
+                        "Page.addScriptToEvaluateOnNewDocument",
+                        serde_json::json!({
+                            "source": r#"
+                                globalThis.__tonkTestErrors = [];
+                                const describe = value => {
+                                    if (value instanceof Error) return `${value.name}: ${value.message}`;
+                                    if (typeof value === "string") return value;
+                                    try { return JSON.stringify(value); } catch { return String(value); }
+                                };
+                                const priorError = console.error.bind(console);
+                                console.error = (...values) => {
+                                    globalThis.__tonkTestErrors.push(values.map(describe).join(" "));
+                                    priorError(...values);
+                                };
+                                addEventListener("error", event => {
+                                    globalThis.__tonkTestErrors.push(`error: ${describe(event.error || event.message)}`);
+                                });
+                                addEventListener("unhandledrejection", event => {
+                                    globalThis.__tonkTestErrors.push(`unhandledrejection: ${describe(event.reason)}`);
+                                });
+                            "#,
+                        }),
+                    )
+                    .await?;
+            }
             goto(&driver, &self.tonk_web.to_string()).await?;
             Ok(driver)
         }
