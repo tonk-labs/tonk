@@ -360,6 +360,18 @@ fn show_action_error(host: &HtmlElement, action: AccountAction, detail: &str) {
     show_error(host, user_error::diagnostic(action, detail));
 }
 
+/// [`show_action_error`] for a failed passkey ceremony, which may carry
+/// the service's own reason for refusing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_ceremony_error(
+    host: &HtmlElement,
+    action: AccountAction,
+    error: &crate::custody_relay::CeremonyError,
+) {
+    log_action_error(action, &error.message);
+    show_error(host, user_error::ceremony(action, error));
+}
+
 fn show_api_error(host: &HtmlElement, action: AccountAction, error: &crate::error::TonkUiError) {
     log_action_error(action, &error.to_string());
     show_error(host, user_error::api(action, error));
@@ -1887,18 +1899,22 @@ fn deliver_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), St
 /// `409 a different account is already signed in on this profile`,
 /// because saving a new root over an existing one is what creation does.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), String> {
+pub(crate) async fn run_login_ceremony(
+    narrate: impl Fn(&str),
+) -> Result<(), crate::custody_relay::CeremonyError> {
+    use crate::custody_relay::CeremonyError;
+
     narrate("Waiting for your passkey…");
     // One assertion, and the worker does the rest: it opens the account
     // from its custody cell, mints this browser's delegation, records
     // the root and submits the link. The page holds no key material.
-    let provider = proposed_remote()?;
+    let provider = proposed_remote().map_err(CeremonyError::said)?;
     narrate("Linking this browser…");
     crate::custody_relay::mediate_now(
         "usePasskey",
         tonk_worker_api::CustodyIntent::Login(tonk_worker_api::DeviceLink {
             device_name: crate::device_name::current(),
-            endpoint: proposed_remote()?,
+            endpoint: proposed_remote().map_err(CeremonyError::said)?,
             provider,
         }),
     )
@@ -1921,7 +1937,7 @@ pub(crate) async fn run_login_ceremony(narrate: impl Fn(&str)) -> Result<(), Str
 pub(crate) async fn run_account_ceremony(
     email: &str,
     narrate: impl Fn(&str),
-) -> Result<(), String> {
+) -> Result<(), crate::custody_relay::CeremonyError> {
     prepare_added_profile().await?;
     narrate("Waiting for your passkey…");
 
@@ -1941,7 +1957,8 @@ pub(crate) async fn run_account_ceremony(
             created_on: Some(crate::device_name::current()),
         }),
     )
-    .await?;
+    .await
+    .map_err(|error| error.message)?;
     Ok(())
 }
 
@@ -2254,12 +2271,12 @@ fn bind(host: &HtmlElement) {
                 )
                 .await?;
                 set_busy(&host, true, "Creating your account…");
-                Ok::<(), String>(())
+                Ok::<(), crate::custody_relay::CeremonyError>(())
             }
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
-                show_action_error(&host, AccountAction::CreateAccount, &error);
+                show_ceremony_error(&host, AccountAction::CreateAccount, &error);
             }
         });
     });
@@ -2268,9 +2285,10 @@ fn bind(host: &HtmlElement) {
         clear_error(&host);
         set_busy(&host, true, "Sending another activation email…");
         spawn_local(async move {
-            // Enrollment is idempotent while Registered: the rows stand
-            // and the link is sent again.
-            let result = crate::api::enroll_customer(None).await;
+            // A resend, not a re-enrollment: the rows stand at the
+            // service, so the worker only signs the resend invocation —
+            // no passkey prompt for someone who is waiting on an inbox.
+            let result = crate::api::resend_activation().await;
             set_busy(&host, false, "");
             match result {
                 Ok(_) => {
@@ -2327,7 +2345,7 @@ fn bind(host: &HtmlElement) {
                     }),
                 )
                 .await?;
-                Ok::<(), String>(())
+                Ok::<(), crate::custody_relay::CeremonyError>(())
             }
             .await;
             set_busy(&host, false, "");
@@ -2338,7 +2356,7 @@ fn bind(host: &HtmlElement) {
                     }
                     load_summary(host.clone());
                 }
-                Err(error) => show_action_error(&host, AccountAction::AddPasskey, &error),
+                Err(error) => show_ceremony_error(&host, AccountAction::AddPasskey, &error),
             }
         });
     });
@@ -2369,7 +2387,7 @@ fn bind(host: &HtmlElement) {
             .await;
             if let Err(error) = result {
                 set_busy(&host, false, "");
-                show_action_error(&host, AccountAction::LogIn, &error);
+                show_ceremony_error(&host, AccountAction::LogIn, &error);
             }
         });
     });

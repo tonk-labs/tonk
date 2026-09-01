@@ -576,6 +576,57 @@ fn enroll_claim(email: Option<&str>) -> serde_json::Value {
     })
 }
 
+/// The `account/resend-activation` claim: ask the worker to have the
+/// service mail the activation link again. No address and no ceremony —
+/// the enrollment's rows stand, so the worker signs the resend
+/// invocation with its own device key and nothing prompts for a passkey.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn resend_activation_claim(at: f64) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Send this account's activation link again.",
+                        "with": {
+                            "at": { "the": "xyz.tonk.resend-activation/at", "cardinality": "one", "as": "UnsignedInteger" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "at": at as u64
+                }
+            }
+        }]
+    })
+}
+
+/// Dispatch the resend-activation command.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn resend_activation() -> Result<(), TonkUiError> {
+    use wasm_bindgen::JsValue;
+
+    tonk_host::ready::wait().await;
+    let consumer = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .ok_or_else(|| TonkUiError::ApiError("no document to dispatch from".to_string()))?;
+    let request = js_sys::JSON::parse(&resend_activation_claim(js_sys::Date::now()).to_string())
+        .map_err(|error| TonkUiError::ApiError(format!("resend claim did not parse: {error:?}")))?;
+    tonk_host::consumer::claim_with_route(
+        &consumer,
+        &request,
+        None,
+        Some(tonk_account::MAIN_BRANCH),
+        true,
+    )
+    .await
+    .map(|_: JsValue| ())
+    .map_err(|error| TonkUiError::ApiError(format!("resend was not dispatched: {error:?}")))
+}
+
 /// The account's customer registration state: the access service's live
 /// answer joined with the locally recorded enrollment.
 pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
@@ -858,31 +909,6 @@ pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
     }
 }
 
-/// Record an activation receipt with the worker.
-///
-/// The activation page posts the emailed invocation straight to the
-/// service, so the receipt — and the provider address it names — never
-/// passes through the worker. This hands it over, so the registration
-/// fact reflects activation the moment it happens.
-pub async fn report_activation(receipt: &serde_json::Value) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/customer/activated", origin()))
-        .json(receipt)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/customer/activated returned {status}: {text}"
-        )))
-    }
-}
-
 /// Swap the worker onto another roster profile. The caller reloads the
 /// page afterwards so every surface re-renders the new profile.
 pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkUiError> {
@@ -1007,133 +1033,9 @@ pub async fn delete_owned_space(
     }
 }
 
-/// The account service's error body: `{"error":{"code":…,"message":…}}`.
-/// Distinct from [`ErrorBody`], whose `kind` the account service does not
-/// emit.
-#[derive(Deserialize)]
-struct AccountErrorBody {
-    error: AccountErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct AccountErrorDetail {
-    message: String,
-}
-
-/// Turn a failed account-service response into an error the account
-/// panel can show verbatim.
-///
-/// The service already curates these messages for display ("an account
-/// already exists for this email address"), so the message alone is what
-/// belongs in front of someone — not the JSON envelope, and not the HTTP
-/// status. An unparseable body falls back to the raw text, which is only
-/// reachable if the service returned something other than its own error
-/// shape.
-fn account_service_error(path: &str, status: reqwest::StatusCode, text: &str) -> TonkUiError {
-    match serde_json::from_str::<AccountErrorBody>(text) {
-        Ok(body) => TonkUiError::Account(body.error.message),
-        Err(_) => TonkUiError::ApiError(format!("POST {path} returned {status}: {text}")),
-    }
-}
-
-/// Ask the account service to email a verification code.
-pub async fn request_account_code(service: &str, email: &str) -> Result<(), TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!("{}/codes", service.trim_end_matches('/')))
-        .json(&serde_json::json!({ "email": email }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(account_service_error("/codes", status, &text))
-    }
-}
-
-/// Verify control of an available account email before starting WebAuthn.
-pub async fn preflight_account(service: &str, email: &str, code: &str) -> Result<(), TonkUiError> {
-    let path = "/accounts/preflight";
-    let response = reqwest::Client::new()
-        .post(format!("{}{}", service.trim_end_matches('/'), path))
-        .json(&serde_json::json!({ "email": email, "code": code }))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    let status = response.status();
-    let text = response.text().await.map_err(into_api_error)?;
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(account_service_error(path, status, &text))
-    }
-}
-
-/// Submit a signed ceremony container to the account service.
-pub async fn submit_account_ceremony(
-    service: &str,
-    path: &str,
-    invocation_hex: &str,
-) -> Result<serde_json::Value, TonkUiError> {
-    let body = hex::decode(invocation_hex)
-        .map_err(|error| TonkUiError::ApiError(format!("invalid invocation bytes: {error}")))?;
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/{}",
-            service.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        ))
-        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
-        .body(body)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(account_service_error(path, status, &text))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The account panel shows whatever string comes back, so the
-    /// service's curated sentence has to survive on its own — without the
-    /// JSON envelope, the HTTP status, or the "local API" label that
-    /// [`TonkUiError::ApiError`] adds.
-    #[test]
-    fn it_shows_only_the_services_message() {
-        let error = account_service_error(
-            "/accounts",
-            reqwest::StatusCode::CONFLICT,
-            r#"{"error":{"code":"CONFLICT","message":"an account already exists for this email address"}}"#,
-        );
-        assert_eq!(
-            error.to_string(),
-            "an account already exists for this email address"
-        );
-    }
-
-    /// A body that isn't the service's error shape keeps the diagnostic
-    /// context, since there is no curated message to show instead.
-    #[test]
-    fn it_falls_back_to_the_raw_body_for_an_unknown_shape() {
-        let error = account_service_error(
-            "/accounts",
-            reqwest::StatusCode::BAD_GATEWAY,
-            "<html>upstream is down</html>",
-        );
-        assert_eq!(
-            error.to_string(),
-            "Error from local API: POST /accounts returned 502 Bad Gateway: <html>upstream is down</html>"
-        );
-    }
 
     #[test]
     fn it_explains_email_verification_for_an_unavailable_account_name() {

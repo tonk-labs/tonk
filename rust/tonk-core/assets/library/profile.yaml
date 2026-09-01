@@ -1255,8 +1255,6 @@ view!: &not-found-view
 # declaration is what says a fact exists and what it means.
 # ════════════════════════════════════════════════════════════════════
 
-# ── The account itself ──────────────────────────────────────────────
-
 # The account-wide display name, keyed by the immutable account subject.
 #
 # Cardinality-one, so two devices renaming concurrently converge on one
@@ -1314,6 +1312,21 @@ concept!: &account/registered
       the: xyz.tonk.account/customer-email
       cardinality: one
       as: text
+    provider:
+      description: >
+        Where this account syncs: the UCAN endpoint its spaces attach
+        their remotes to. Known at enrollment and unchanged by
+        activation, so it belongs here rather than on the activation
+        fact — a client can attach its remote immediately and let the
+        gate answer.
+
+        That is what makes activation observable without asking: the
+        remote answers 403 while the customer is unconfirmed and 200
+        once the emailed link is opened, so a device learns it was
+        activated from the sync it was already doing.
+      the: xyz.tonk.account/provider-address
+      cardinality: one
+      as: text
 
 # Activation. Its PRESENCE is what makes an account served; nothing has
 # to overwrite the registration to say so.
@@ -1329,15 +1342,6 @@ concept!: &account/active
       the: xyz.tonk.account/activated-at
       cardinality: one
       as: unsigned-integer
-    provider:
-      description: >
-        The access service serving this account: the UCAN endpoint its
-        spaces attach their remotes to. Known only at activation, which
-        is exactly when this fact is written — so unlike a status field
-        it is never absent on a row that claims to be served.
-      the: xyz.tonk.account/provider-address
-      cardinality: one
-      as: entity
 
 # Suspension: the service withdrew.
 concept!: &account/suspended
@@ -1357,6 +1361,149 @@ concept!: &account/suspended
       the: xyz.tonk.account/suspension-reason
       cardinality: one
       as: text
+
+# The onboarding account: a real account this device minted for itself,
+# custodied locally, before anyone signed up.
+#
+# ENTITY: the onboarding account's own DID.
+#
+# It exists so a device can create and own spaces immediately — signup is
+# not a precondition for using Tonk. Its secret is sealed to a keypair on
+# this device rather than to a passkey, which is exactly what makes it
+# INTERIM: nothing recovers it elsewhere, and signing up rotates every
+# custodied seed onto the real account and retires this one.
+#
+# Recorded as a fact so it can be seen. The secret itself stays in a
+# credential site; this is only the DID and the moment, so an inspector can
+# answer "which account am I acting as, and is it the real one?".
+#
+# This account HAS custody before any passkey exists: a custodian keypair
+# on this device, a KEK sealed to it, and the account secret sealed under
+# that. All three live in credential sites, so unlike a passkey's envelope
+# there is no `secret:message` to find — the custodian is a local key, not
+# a principal anything else can address. `custodian` names it so the
+# arrangement is at least visible.
+concept!: &account/onboarding
+  this: tonk:account/onboarding
+  description: A locally custodied account, held until a real one replaces it.
+  with:
+    minted-at:
+      description: When this device minted the onboarding account, unix seconds.
+      the: xyz.tonk.account/onboarding-minted-at
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    custodian:
+      description: >
+        The local keypair holding this account: what its secret is sealed
+        under before a passkey exists. A device-local key, so nothing
+        addresses it and no sealed message names it as recipient — this is
+        the only record that it is what currently holds the account.
+      the: xyz.tonk.account/onboarding-custodian
+      cardinality: one
+      as: entity
+    retired-at:
+      description: >
+        When a real account took over, unix seconds. Its presence is what
+        says this account is no longer the one in use — the row stays so
+        the handover is visible rather than silently gone.
+      the: xyz.tonk.account/onboarding-retired-at
+      cardinality: one
+      as: unsigned-integer
+
+# The account's status, DERIVED from the facts above.
+#
+# ENTITY: the account's own DID.
+#
+# Deductive (`assert:`, no bang), so it is computed on read and never
+# stored. A stored status would be a writable slot that could disagree with
+# the facts it summarises; deriving it means the summary cannot drift from
+# what actually happened.
+#
+# The four cases are mutually exclusive, and each rule below states the
+# whole condition rather than relying on rule order:
+#
+#   case:onboarding  a locally custodied account, not yet registered
+#   case:registered  enrolled, and neither activated nor suspended
+#   case:active      activated and not suspended
+#   case:suspended   the service withdrew
+concept!: &account/status
+  this: tonk:account/status
+  description: The account's status, derived from its registration facts.
+  with:
+    status:
+      description: >
+        `case:onboarding`, `case:registered`, `case:active`, or
+        `case:suspended` — an entity label rather than text, so a typo
+        cannot silently read as a different state.
+      the: xyz.tonk.account/status
+      cardinality: one
+      as: entity
+
+# An onboarding account that has not been handed over is interim.
+rule!:
+  description: A live onboarding account is interim
+  assert: account/status
+  when:
+    - assert: account/onboarding
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:onboarding
+  unless:
+    - assert: account/registered
+      where: { this: ?this }
+    - assert: account/onboarding
+      where: { this: ?this, retired-at: _ }
+
+# Registered is the fallback: enrolled, and neither later fact has
+# arrived. Both are excluded, not just activation — a suspended account
+# still carries its registration, so testing activation alone would derive
+# two cases at once.
+rule!:
+  description: An account that is neither active nor suspended is registered
+  assert: account/status
+  when:
+    - assert: account/registered
+      where:
+        this: ?this
+    - assert: ==
+      where:
+        this: ?status
+        is: case:registered
+  unless:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Activated and not withdrawn.
+rule!:
+  description: An activated account that is not suspended is active
+  assert: account/status
+  when:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:active
+  unless:
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Suspension wins outright.
+rule!:
+  description: A suspended account is suspended
+  assert: account/status
+  when:
+    - assert: account/suspended
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:suspended
 
 # Where anything sealed for this account is addressed.
 #
@@ -1425,6 +1572,25 @@ concept!: &recovery/passkey
     created-on:
       description: Browser and operating-system label, e.g. "Chrome on macOS".
       the: xyz.tonk.recovery/created-on
+      cardinality: one
+      as: text
+  maybe:
+    name:
+      description: >
+        The WebAuthn `user.name` this credential was created with — the
+        address, where one was given. What a passkey manager lists the
+        entry under, so it is what a person recognises their own passkey
+        by. Absent for a credential created without one, which the
+        ceremony names with an opaque random string instead.
+      the: xyz.tonk.recovery/name
+      cardinality: one
+      as: text
+    display-name:
+      description: >
+        The WebAuthn `user.displayName`. Usually the same address as
+        `name`; kept separately because WebAuthn keeps them separately
+        and an authenticator may show either.
+      the: xyz.tonk.recovery/display-name
       cardinality: one
       as: text
 
@@ -1569,6 +1735,61 @@ concept!: &secret/principal
       the: xyz.tonk.secret/seed
       cardinality: one
       as: entity
+
+# ── Delegations ─────────────────────────────────────────────────────
+
+# A delegation this branch retained: the proof itself, as dialog stores it.
+#
+# ENTITY: the delegation's blob hash — the same entity `tonk:account/
+# device-link` and `secret:principal` hang their own fields on, so those
+# concepts join to this one on `this`.
+#
+# NOT a tonk concept in the usual sense: every field here is dialog's own
+# decomposition, written when the chain was retained (`dialog.ucan/*`).
+# Declared so an inspector can see them at all — without a concept the
+# facts exist and nothing can name them, which is why "who can act on
+# what" was queryable only by hand-rolling attribute selectors.
+#
+# `expiration` and `not-before` are optional because dialog omits them
+# entirely for a delegation that never expires or has no lower bound; a
+# required field would hide exactly the powerlines that matter most.
+concept!: &ucan/delegation
+  this: ucan:delegation
+  description: A delegation retained on this branch.
+  with:
+    issuer:
+      description: Who signed it.
+      the: dialog.ucan/issuer
+      cardinality: one
+      as: text
+    audience:
+      description: Who receives the authority.
+      the: dialog.ucan/audience
+      cardinality: one
+      as: text
+    subject:
+      description: >
+        What the authority is over. A powerline — authority over anything —
+        carries the any-subject DID rather than being absent, which keeps
+        the lookup a plain equality.
+      the: dialog.ucan/subject
+      cardinality: one
+      as: text
+    command:
+      description: The delegated command path, e.g. `/use/get`.
+      the: dialog.ucan/command
+      cardinality: one
+      as: text
+  maybe:
+    expiration:
+      description: Unix seconds, absent when the delegation never expires.
+      the: dialog.ucan/expiration
+      cardinality: one
+      as: unsigned-integer
+      # `dialog.ucan/notBefore` is deliberately not declared: the notation's
+      # attribute parser rejects a camelCase last segment, and that is the
+      # name dialog writes. A lower validity bound is therefore readable
+      # only by attribute, not through this concept.
 
 # ── Profiles this device knows ──────────────────────────────────────
 

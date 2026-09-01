@@ -1866,15 +1866,11 @@ pub fn account_active_query_body() -> String {
             "activated_at": {
                 "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
                 "cardinality": "one"
-            },
-            "provider": {
-                "the": "xyz.tonk.account/provider-address", "as": "Text", "cardinality": "one"
             }
         } },
         "terms": {
             "this": { "?": { "name": "account" } },
             "activated_at": { "?": { "name": "activated_at" } },
-            "provider": { "?": { "name": "provider" } }
         }
     })
     .to_string()

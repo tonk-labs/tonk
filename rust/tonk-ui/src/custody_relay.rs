@@ -269,9 +269,30 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
 pub(crate) fn mediate_with(method: &'static str, intent: tonk_worker_api::CustodyIntent) {
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = run(method, intent).await {
-            report(&error);
+            report(&error.message);
         }
     });
+}
+
+/// A ceremony that did not complete: what to say, and the service's own
+/// reason when it had one.
+///
+/// The reason is a variant rather than a sentence to match. Matching
+/// prose made the service's wording load-bearing in the page: a reworded
+/// refusal quietly downgraded "open the link in your email" to "check
+/// your connection", and nothing failed to say so.
+#[derive(Debug, Clone)]
+pub(crate) struct CeremonyError {
+    /// What went wrong, for a reader.
+    pub message: String,
+    /// Why the access service refused, when it is what refused.
+    pub denial: Option<tonk_identity::custody::CustodyDenial>,
+}
+
+impl std::fmt::Display for CeremonyError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(&self.message)
+    }
 }
 
 /// [`mediate_custody`], awaited: for a caller that has to know whether
@@ -279,7 +300,7 @@ pub(crate) fn mediate_with(method: &'static str, intent: tonk_worker_api::Custod
 pub(crate) async fn mediate_now(
     method: &'static str,
     intent: tonk_worker_api::CustodyIntent,
-) -> Result<(), String> {
+) -> Result<(), CeremonyError> {
     run(method, intent).await
 }
 
@@ -293,33 +314,92 @@ fn report(error: &str) {
     }
 }
 
-async fn run(method: &'static str, intent: tonk_worker_api::CustodyIntent) -> Result<(), String> {
+async fn run(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+) -> Result<(), CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
 
     let identity = web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
         .filter(|value| !value.is_undefined())
-        .ok_or_else(|| "window.tonkIdentity is not installed".to_string())?;
+        .ok_or_else(|| CeremonyError::said("window.tonkIdentity is not installed"))?;
     let ceremony = js_sys::Reflect::get(&identity, &method.into())
         .ok()
         .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
-        .ok_or_else(|| format!("tonkIdentity.{method} is missing"))?;
+        .ok_or_else(|| CeremonyError::said(format!("tonkIdentity.{method} is missing")))?;
+
+    // The address, lifted out of the intent and onto the ceremony input.
+    // A passkey manager shows `user.name`, and without one the ceremony
+    // falls back to a random hex string — so an entry that should read
+    // "someone@example.com" reads "9e5a87ca4a602850…" and a person cannot
+    // tell their own passkeys apart. Only creation has an address to give:
+    // asserting an existing passkey names no user entity at all.
+    let email = match &intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(creation) => Some(creation.email.clone()),
+        tonk_worker_api::CustodyIntent::Enroll(enrollment) => enrollment.email.clone(),
+        tonk_worker_api::CustodyIntent::AddPasskey(_)
+        | tonk_worker_api::CustodyIntent::Login(_) => None,
+    };
 
     let request = serde_wasm_bindgen::to_value(&intent)
-        .map_err(|error| format!("the request did not serialize: {error}"))?;
+        .map_err(|error| CeremonyError::said(format!("the request did not serialize: {error}")))?;
     let input = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
+    if let Some(email) = email.filter(|email| !email.trim().is_empty()) {
+        let _ = js_sys::Reflect::set(&input, &"name".into(), &email.as_str().into());
+        let _ = js_sys::Reflect::set(&input, &"displayName".into(), &email.as_str().into());
+    }
 
     let answer = ceremony
         .call1(&JsValue::NULL, &input)
-        .map_err(|error| describe(&error))?;
-    let promise = answer
-        .dyn_into::<js_sys::Promise>()
-        .map_err(|_| format!("tonkIdentity.{method} did not return a promise"))?;
+        .map_err(|error| CeremonyError::thrown(&error))?;
+    let promise = answer.dyn_into::<js_sys::Promise>().map_err(|_| {
+        CeremonyError::said(format!("tonkIdentity.{method} did not return a promise"))
+    })?;
     wasm_bindgen_futures::JsFuture::from(promise)
         .await
         .map(|_| ())
-        .map_err(|error| describe(&error))
+        .map_err(|error| CeremonyError::thrown(&error))
+}
+
+/// A failure that never reached the service carries no reason from it.
+impl<T: Into<String>> From<T> for CeremonyError {
+    fn from(message: T) -> Self {
+        Self::said(message)
+    }
+}
+
+impl CeremonyError {
+    /// A failure this page found itself, with no service involved.
+    pub(crate) fn said(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            denial: None,
+        }
+    }
+
+    /// A thrown value, with the refusal reason it carries.
+    ///
+    /// The worker sets `code` on what it rejects with when the access
+    /// service is what refused; anything else -- a dismissed prompt, an
+    /// unsupported authenticator -- carries none and stays a message.
+    fn thrown(error: &wasm_bindgen::JsValue) -> Self {
+        let denial = js_sys::Reflect::get(error, &"code".into())
+            .ok()
+            .and_then(|code| code.as_string())
+            .and_then(|code| {
+                let message = js_sys::Reflect::get(error, &"message".into())
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .unwrap_or_default();
+                tonk_identity::custody::CustodyDenial::from_code(&code, &message)
+            });
+        Self {
+            message: describe(error),
+            denial,
+        }
+    }
 }
 
 /// A thrown value as text, keeping the DOM error name in front so a

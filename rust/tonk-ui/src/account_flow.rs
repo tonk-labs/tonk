@@ -330,6 +330,52 @@ mod tests {
         }
     }
 
+    /// A second browser holding the same passkey: a different device, the
+    /// same person.
+    ///
+    /// The virtual authenticator is per-driver — it is created over CDP on
+    /// one browser — so a second driver cannot be handed the first's. What
+    /// CDP does allow is reading the credentials out of one authenticator
+    /// and adding them to another, which is what a passkey synced through
+    /// a platform keychain looks like from the page's side.
+    async fn second_device_with_same_passkey(
+        env: &TestEnvironment,
+        first: &WebDriver,
+        first_authenticator: &str,
+    ) -> Result<(WebDriver, String)> {
+        let source = ChromeDevTools::new(first.handle.clone());
+        let credentials = source
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": first_authenticator }),
+            )
+            .await?;
+        let credentials = credentials["credentials"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))?;
+        if credentials.is_empty() {
+            return Err(anyhow!(
+                "the first device registered no passkey, so there is none to carry over"
+            ));
+        }
+
+        let (second, authenticator) = driver_with_prf_authenticator(env).await?;
+        let devtools = ChromeDevTools::new(second.handle.clone());
+        for credential in credentials {
+            devtools
+                .execute_cdp_with_params(
+                    "WebAuthn.addCredential",
+                    serde_json::json!({
+                        "authenticatorId": authenticator,
+                        "credential": credential,
+                    }),
+                )
+                .await?;
+        }
+        Ok((second, authenticator))
+    }
+
     async fn credential_count(driver: &WebDriver, authenticator_id: &str) -> Result<usize> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         let result = devtools
@@ -863,6 +909,81 @@ mod tests {
         assert_eq!(compact["undersized"], serde_json::json!([]));
 
         driver.quit().await?;
+        Ok(())
+    }
+
+    /// Signing in on a second device before the emailed link is opened
+    /// waits, rather than failing.
+    ///
+    /// The regression this pins: `existing` meant "an account exists for
+    /// this address", and the ceremony read it as "the account is
+    /// activated" — so a second device closed the ceremony, could not
+    /// hydrate the account branch, and showed "We couldn't finish logging
+    /// you in" with nothing to act on. What it is actually waiting for is
+    /// an email someone has not opened yet, on a device that may not be
+    /// this one.
+    ///
+    /// Two things had to be true for the wait to work at all, and both are
+    /// exercised here:
+    ///
+    /// - the passkey's custody space must be PROVISIONED even though the
+    ///   customer is unconfirmed, or the gate refuses with "not
+    ///   provisioned" and `Recourse::None` — a dead end
+    /// - the gate's refusal must be readable as "waiting on the email",
+    ///   which is what turns it into a row instead of an error
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_waits_for_the_email_when_a_second_device_signs_in(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "second-device@example.com";
+
+        // First device: enrol, and stop. The link is never opened, so the
+        // customer stays unconfirmed for the whole test.
+        let (first, authenticator) = driver_with_prf_authenticator(&env).await?;
+        enroll_only(&first, &env, EMAIL).await?;
+
+        // A second device holding the same passkey. A fresh profile is
+        // what makes it a different device; the shared virtual
+        // authenticator is what makes it the same person.
+        let (second, _second_authenticator) =
+            second_device_with_same_passkey(&env, &first, &authenticator).await?;
+        wait_for_service_worker(&second).await?;
+        goto(&second, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&second, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&second, "#account-choose-link").await?;
+        await_register_dialog(&second).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        // The address is taken, so the offer is to sign in rather than
+        // create — that much already worked.
+        await_register_action(&second, "log in with your passkey").await?;
+        click_register_action(&second).await?;
+
+        // What this test exists for: a row naming the outstanding step,
+        // not a failure. The ceremony stays up, because the thing it
+        // waits on has not happened yet.
+        let row = element(&second, "#tonk-register-confirm-row").await?;
+        let text = row.text().await?;
+        assert!(
+            text.contains("awaiting confirmation"),
+            "a second device should wait on the email, got {text:?}"
+        );
+
+        let status = element(&second, "#tonk-register-status")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            !status.contains("couldn't finish"),
+            "and must not report a failure for a wait: {status:?}"
+        );
+        assert!(
+            status.contains("confirmation link"),
+            "it should name the step that finishes this: {status:?}"
+        );
+
+        first.quit().await?;
+        second.quit().await?;
         Ok(())
     }
 
@@ -2661,16 +2782,11 @@ mod tests {
                     "activated_at": {
                         "the": "xyz.tonk.account/activated-at",
                         "as": "UnsignedInteger", "cardinality": "one"
-                    },
-                    "provider": {
-                        "the": "xyz.tonk.account/provider-address",
-                        "as": "Text", "cardinality": "one"
                     }
                 } },
                 "terms": {
                     "this": { "?": { "name": "account" } },
                     "activated_at": { "?": { "name": "activated_at" } },
-                    "provider": { "?": { "name": "provider" } }
                 }
             }),
         )
@@ -2681,16 +2797,17 @@ mod tests {
             !rows.is_empty(),
             "an activated account must resolve, got {rows:?}",
         );
-        assert_eq!(
-            rows[0]["fields"]["status"], "Active",
-            "and say so: {rows:?}",
-        );
+        // Presence, not a status string: the row resolves only when the
+        // account has an activation fact, so a row arriving at all is the
+        // answer. The bar reads it the same way.
         assert!(
-            rows[0]["fields"]["provider"]
-                .as_str()
-                .is_some_and(|p| !p.is_empty()),
-            "with the provider the service named: {rows:?}",
+            rows[0]["fields"]["activated_at"].as_u64().is_some(),
+            "and carry when it activated: {rows:?}",
         );
+        // Where the account syncs is on the REGISTRATION, not here: it is
+        // known at enrollment and unchanged by activation, which is what
+        // lets a client attach its remote before the emailed link is
+        // opened and learn it was activated from the gate answering 200.
 
         driver.quit().await?;
         Ok(())

@@ -207,7 +207,7 @@
                 # Activation links must open on the page origin (trunk),
                 # not on the access service's own port, or the /activate
                 # route 404s.
-                export ACCESS_PUBLIC_ORIGIN="http://localhost:8080"
+                export ACCESS_PUBLIC_ORIGIN="http://localhost:''${TRUNK_SERVE_PORT:-8080}"
                 # Regular runs are ephemeral: the access service keeps its
                 # state in memory and a restart starts clean. Export
                 # ACCESS_STATE_DIR (e.g. "$PWD/.tonk-dev/access") before
@@ -291,12 +291,17 @@
                 # string around. Beyond `/@`: `/.well-known/tonk` is where the
                 # browser reads its service endpoints (trunk otherwise serves
                 # index.html for it, and the JSON parse fails as "deployment
-                # configuration is invalid"), and `/customer/` is the
-                # registration state polled by the worker and account panel.
+                # configuration is invalid"), `/.well-known/did.json` is the
+                # service's own DID document — unproxied it answered
+                # index.html too, so anything resolving the service identity
+                # got HTML where it expected JSON — and `/customer/` is the
+                # registration state the worker and account panel read.
                 {
                   printf '\n[[proxies]]\nbackend = "%s/@"\nno_redirect = true\n' \
                     "$SHORTCUT_ORIGIN"
                   printf '\n[[proxies]]\nbackend = "%s/.well-known/tonk"\n' \
+                    "$SHORTCUT_ORIGIN"
+                  printf '\n[[proxies]]\nbackend = "%s/.well-known/did.json"\n' \
                     "$SHORTCUT_ORIGIN"
                   printf '\n[[proxies]]\nbackend = "%s/customer/"\n' \
                     "$SHORTCUT_ORIGIN"
