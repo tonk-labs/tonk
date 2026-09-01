@@ -118,13 +118,14 @@ provider's `customer`. Read in three separate steps it could see a customer that
 activates between the first and the last, and it would cost three round
 trips on a path that runs before every presign.
 
-It still reaches D1 directly, every time. `plan/Access metering.md` §11
-specifies a read through an isolate cache, then KV, and D1 only on a
-miss — but the consumer-state KV namespace does not exist yet, and
-`REVOCATIONS_KV` is the only one bound. The value KV is meant to serve
-is derived from sponsorships, usage, and plan rates (§11.1), so that
-tier belongs with the increment that brings those tables. The join does
-not have to wait for it.
+On the worker the query runs behind the cache tier `plan/Access
+metering.md` §11 specifies: an isolate cache, then `SERVABILITY_KV`,
+and D1 only on a miss, with the derived verdict written back under an
+absolute `not_after` (generous for a permit, short for a denial). The
+registration commands write the fresh verdict through after their D1
+commit, and deprovisioning deletes the key. The funding axes (§11.1 —
+sponsorships, usage, plan rates) still await the increment that brings
+those tables; the cached value is today's verdict, no more.
 
 Because the gate is subject-level, it cannot serve a read while refusing
 a write. Anything needing that distinction has to come from the

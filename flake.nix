@@ -331,8 +331,28 @@
           "test:e2e" = {
             description = "Run serialized real-browser account integration tests";
             command = ''
-              cargo build -p tonk-cli &&
-              cargo test -p tonk-ui --features integration-tests -- --test-threads=1
+              # Both installables come from the Nix store, so cachix serves
+              # them warm; rebuilding them in-place with cargo cost every CI
+              # run a from-scratch compile, since runners keep no cargo
+              # target directory between runs.
+              nix build .#tonk-cli .#tests-e2e
+
+              TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
+              export TONK_BIN
+              # The store-built CLI bakes in the release PostHog key; the
+              # debug build the suite spawned before had none. Keep test
+              # runs out of the analytics.
+              export DO_NOT_TRACK=1
+
+              TESTS_PATH="$(nix eval .#tests-e2e.outPath --raw)"
+
+              # The `e2e` profile (.config/nextest.toml) serializes the
+              # suite and holds the quarantine list of known-broken tests.
+              cargo nextest run \
+                --profile e2e \
+                --workspace-remap ./ \
+                --archive-file "$TESTS_PATH/tests-e2e.tar.zst" \
+                "$@"
             '';
           };
 
@@ -446,6 +466,15 @@
             name = "web-release";
             target = "wasm32-unknown-unknown";
             args = "--workspace --exclude tonk-cli --release";
+          };
+
+          # The real-browser suite `test:e2e` runs. Its `integration-tests`
+          # feature pulls the WebDriver stack the shared workspace artifacts
+          # never compile, hence its own dependency-only build.
+          tests-e2e = buildTestArchive {
+            name = "e2e";
+            args = "--package tonk-ui --features integration-tests";
+            depsExtraArgs = "--package tonk-ui --features integration-tests";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''

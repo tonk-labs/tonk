@@ -41,7 +41,11 @@ pub fn parse_status(value: &str) -> Result<CustomerStatus, StoreError> {
 
 /// A billable party, keyed by the DID that also names its account
 /// consumer.
-#[derive(Debug, Clone)]
+///
+/// Serde is for the KV replica ([`replica`]): the row travels there as
+/// itself, so the probe and the email lookup answer from KV exactly
+/// what D1 would have said.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Customer {
     /// The account this subscription is for.
     pub account: String,
@@ -565,6 +569,8 @@ DELETE FROM customer
 "#;
 
 pub mod ingest;
+
+pub mod replica;
 
 #[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub mod sqlite;

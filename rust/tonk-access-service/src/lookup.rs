@@ -134,6 +134,17 @@ pub struct Found {
     pub status: u16,
 }
 
+/// The answer for a customer row, whichever store it was read from:
+/// the document built for `did` at `origin`, with the status its state
+/// fixes.
+pub fn found_of(did: &str, customer: &crate::store::Customer, origin: &str) -> Found {
+    let suspended = customer.status == CustomerStatus::Suspended;
+    Found {
+        document: customer_document(did, customer, suspended, origin),
+        status: status_of(customer.status),
+    }
+}
+
 /// Resolve `address` against `store`, building the document for `did`.
 ///
 /// `Ok(None)` when no customer holds the address, which the caller
@@ -148,11 +159,7 @@ pub async fn resolve<S: Store>(
     let Some(customer) = store.customer_by_email(address).await? else {
         return Ok(None);
     };
-    let suspended = customer.status == CustomerStatus::Suspended;
-    Ok(Some(Found {
-        document: customer_document(did, &customer, suspended, origin),
-        status: status_of(customer.status),
-    }))
+    Ok(Some(found_of(did, &customer, origin)))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
