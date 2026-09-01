@@ -92,16 +92,23 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
     // independent facts that resolve independently: an enrolled account
     // has a registration row and no activation row, and one query
     // requiring both would resolve for neither.
+    // Claim-retried: a fab booting while its host installs (or while a
+    // service-worker swap restarts everything) used to dispatch into
+    // silence once and give up — the bar then never learned the account
+    // existed.
     let query = JSON::parse(&crate::logic::account_customer_query_body()).ok()?;
-    match consumer::subscribe(this, &query, Some(&SUB_TAG.into())) {
-        Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
-        Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
-    }
     let active = JSON::parse(&crate::logic::account_active_query_body()).ok()?;
-    match consumer::subscribe(this, &active, Some(&ACTIVE_TAG.into())) {
-        Ok(subscription) => ACTIVE_OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
-        Err(error) => tonk_common::log!("activation: could not watch activation: {error:?}"),
-    }
+    let watcher: Element = this.clone().into();
+    spawn_local(async move {
+        match consumer::subscribe_claimed(&watcher, &query, Some(&SUB_TAG.into())).await {
+            Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
+            Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
+        }
+        match consumer::subscribe_claimed(&watcher, &active, Some(&ACTIVE_TAG.into())).await {
+            Ok(subscription) => ACTIVE_OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
+            Err(error) => tonk_common::log!("activation: could not watch activation: {error:?}"),
+        }
+    });
 
     // An account nobody has registered yet resolves to no row at all.
     // That absence IS the answer, and nothing else will say it, so paint

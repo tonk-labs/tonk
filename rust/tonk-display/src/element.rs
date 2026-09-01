@@ -862,7 +862,7 @@ async fn run(
     check_generation(&state, generation)?;
     let model_body = to_body(&model_q)?;
     let model_tag = JsValue::from_str("model");
-    let model_sub = host_consumer::subscribe(host, &model_body, Some(&model_tag))?;
+    let model_sub = host_consumer::subscribe_claimed(host, &model_body, Some(&model_tag)).await?;
     {
         let mut s = state.borrow_mut();
         if s.generation != generation {
@@ -968,11 +968,12 @@ async fn start_downstream(
     // our `__tonkReset` delegate, which routes to `handle_view_frame`
     // (or `handle_entity_frame`) by `opts.tag`.
     let view_tag = JsValue::from_str("view");
-    let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
+    let view_sub = host_consumer::subscribe_claimed(host, &view_body, Some(&view_tag)).await?;
     check_downstream(&state, downstream_generation)?;
 
     let entity_tag = JsValue::from_str("entity");
-    let entity_sub = host_consumer::subscribe(host, &entity_body, Some(&entity_tag))?;
+    let entity_sub =
+        host_consumer::subscribe_claimed(host, &entity_body, Some(&entity_tag)).await?;
 
     {
         let mut s = state.borrow_mut();
