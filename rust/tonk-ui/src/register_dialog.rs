@@ -76,6 +76,10 @@ enum ReturnFocus {
 /// The dialog's host id, and the parts the handlers address.
 const DIALOG_ID: &str = "tonk-register";
 const COMMITTED_EMAIL_ATTR: &str = "data-register-email";
+/// Which ceremony ran: `signup` created the account, `login` reached an
+/// existing one. Only signup's finish asks for a display name.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const CEREMONY_KIND_ATTR: &str = "data-register-ceremony";
 const EMAIL_INPUT: &str = "#tonk-register-email";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ACTION: &str = "#tonk-register-action";
@@ -1279,6 +1283,14 @@ pub(crate) fn run_signup_ceremony() {
     // and the step in front of you is the only one taking input.
     if let Some(host) = host_element() {
         let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
+        // Which ceremony this is, for the finish: only REGISTRATION
+        // ever asks for a display name. A login reaches an account that
+        // already belongs to someone — asking again on every device
+        // would have each answer overwrite the last.
+        let _ = host.set_attribute(
+            CEREMONY_KIND_ATTR,
+            if existing { "login" } else { "signup" },
+        );
     }
     settle_named_row(EMAIL_ROW, "email", &email);
     // While the platform holds the ceremony, the action row says so
@@ -1399,9 +1411,51 @@ pub(crate) fn run_signup_ceremony() {
                     });
                     if let Some(host) = host_element() {
                         await_activation(&host);
+                        // The activation signal is the account sweep's
+                        // own pull being served, so drive the sweeps at
+                        // the ceremony's cadence: confirmation should
+                        // land here seconds after the link is opened,
+                        // not whenever the background heartbeat next
+                        // comes around.
+                        nudge_sync_while_waiting();
                     }
                 }
             }
+        }
+    });
+}
+
+/// Ask the worker to drain sync every few seconds while the ceremony
+/// waits on the emailed link.
+///
+/// The sweep that is finally served records the activation fact in the
+/// same pass, and the subscription flips the ceremony — this loop only
+/// controls how soon that sweep runs. Stops with the wait: a settled
+/// row, a dismissed cluster.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn nudge_sync_while_waiting() {
+    /// Fast enough that confirming feels answered, slow enough not to
+    /// hammer a drain that also runs on its own heartbeat.
+    const EVERY: i32 = 3_000;
+
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            let Some(host) = host_element() else {
+                return;
+            };
+            let still_waiting = host
+                .query_selector(&format!("{CONFIRM_ROW} .v"))
+                .ok()
+                .flatten()
+                .and_then(|value| value.text_content())
+                .is_some_and(|value| value.trim() == "awaiting confirmation");
+            if !still_waiting {
+                return;
+            }
+            if let Err(error) = crate::api::kick_sync().await {
+                tonk_common::log!("register: sync nudge did not run: {error}");
+            }
+            sleep(EVERY).await;
         }
     });
 }
@@ -1431,6 +1485,12 @@ fn poll_lookup_until_active(email: String) {
     const EVERY: i32 = 4_000;
 
     wasm_bindgen_futures::spawn_local(async move {
+        // Rounds the lookup has answered `active` while the worker's
+        // parked login was still finishing. The tap is the FALLBACK —
+        // the worker kept the assertion's handles and completes the
+        // login itself — so the offer waits a few rounds for the silent
+        // finish before asking for a gesture the flow may not need.
+        let mut served_rounds = 0u32;
         loop {
             // The ceremony is gone (dismissed, or finished): nothing
             // left to resume.
@@ -1448,13 +1508,43 @@ fn poll_lookup_until_active(email: String) {
             if !still_waiting {
                 return;
             }
+            // The worker finished the login it parked: the account is
+            // linked, and nothing needs a second passkey tap. Finish
+            // the ceremony the way a completed sign-in would.
+            if matches!(
+                crate::api::account_status().await,
+                Ok(tonk_worker_api::AccountStatus::Registered { .. })
+            ) {
+                settle_named_row(CONFIRM_ROW, "email", "verified");
+                if host
+                    .query_selector("#tonk-register-passkey-row")
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    add_row(
+                        &host,
+                        "tonk-register-passkey-row",
+                        "passkey",
+                        &crate::device_name::current(),
+                    );
+                }
+                finish_ceremony();
+                return;
+            }
             if host.get_attribute("data-state").as_deref() == Some(tonk_schema::email_state::ACTIVE)
             {
-                settle_named_row(CONFIRM_ROW, "email", "verified");
-                set_status("Your email is confirmed. Log in with your passkey to continue.");
-                set_action("log in with your passkey", true);
-                focus_action();
-                return;
+                served_rounds += 1;
+                if served_rounds >= 3 {
+                    // The silent finish did not land — a restarted
+                    // worker dropped the handles — so the way back in
+                    // is one tap and a fresh assertion.
+                    settle_named_row(CONFIRM_ROW, "email", "verified");
+                    set_status("Your email is confirmed. Log in with your passkey to continue.");
+                    set_action("log in with your passkey", true);
+                    focus_action();
+                    return;
+                }
             }
             if let Err(error) = crate::api::transact_profile(check_email_claim(&email)).await {
                 // A missed round is the next round's problem: the wait
@@ -1602,13 +1692,19 @@ pub(crate) fn finish_ceremony() {
     // never raises one — there is nothing to settle.
     settle_named_row(CONFIRM_ROW, "email", "verified");
 
+    // Only REGISTRATION asks. A login reaches an account that already
+    // belongs to someone: it may be named already, or its naming may
+    // still be waiting in the signup ceremony open on the device that
+    // registered — either way, asking here would have every device's
+    // answer overwrite the last one's.
+    let signing_in = host.get_attribute(CEREMONY_KIND_ATTR).as_deref() == Some("login");
     wasm_bindgen_futures::spawn_local(async move {
         // The summary's display name is the CHOSEN one — the
-        // `AccountDisplayName` fact, absent until someone answers this
-        // very question — not the roster's, which falls back to a
-        // petname and so cannot tell a named account from a fresh one.
-        // Best-effort: an unreadable summary only means the question is
-        // asked, which is the fresh-signup behavior anyway.
+        // `AccountDisplayName` fact, absent until the registering
+        // ceremony answers the question — not the roster's, which falls
+        // back to a petname and so cannot tell a named account from a
+        // fresh one. Best-effort: an unreadable summary only means the
+        // record row is not shown.
         let named = crate::api::account_summary()
             .await
             .ok()
@@ -1632,6 +1728,7 @@ pub(crate) fn finish_ceremony() {
                 );
                 conclude("Your account is ready.");
             }
+            None if signing_in => conclude("You're signed in."),
             None => ask_for_name(&host),
         }
     });

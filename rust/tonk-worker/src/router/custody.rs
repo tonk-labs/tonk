@@ -340,23 +340,117 @@ async fn login(
     custodian: &tonk_identity::custodian::Custodian,
     link: tonk_worker_api::DeviceLink,
 ) -> Result<wasm_bindgen::JsValue, String> {
-    use dialog_varsig::Principal as _;
-
     // The address the email lookup resolved, when one ran: the DID
     // document is the account's own word on where it syncs, and the
     // caller's endpoint is this browser's origin, which is only right
     // when both devices are on the same deployment.
     let endpoint = super::email_status::resolved_service().unwrap_or_else(|| link.endpoint.clone());
-    let account = custodian
+    let account = match custodian
         .account()
         .load(endpoint.clone())
         .perform(&tonk_identity::account::Crypto)
         .await
-        .map_err(|error| refusal("the custody cell did not open", &error))?
-        .ok_or_else(|| {
-            "this passkey has published no account yet; create one on the browser that holds it"
-                .to_string()
-        })?;
+    {
+        Ok(account) => account,
+        Err(error) => {
+            // Waiting on the email is the one refusal this handler can
+            // outlast ITSELF: the person already touched their passkey,
+            // so keep the assertion's derivation handles and finish the
+            // login here when the gate flips, rather than asking for a
+            // second ceremony because an inbox was slow. Best effort —
+            // a worker restart drops the handles, and the page's poll
+            // falls back to offering the tap.
+            if matches!(
+                tonk_identity::custody::denial_of(&error),
+                Some(tonk_identity::custody::CustodyDenial::AwaitingActivation)
+            ) {
+                finish_login_once_served(
+                    state.clone(),
+                    custodian.clone(),
+                    link.clone(),
+                    endpoint.clone(),
+                );
+            }
+            return Err(refusal("the custody cell did not open", &error));
+        }
+    };
+    let account = account.ok_or_else(|| {
+        "this passkey has published no account yet; create one on the browser that holds it"
+            .to_string()
+    })?;
+    complete_login(state, custodian, &link, &endpoint, account).await?;
+    Ok(wasm_bindgen::JsValue::UNDEFINED)
+}
+
+/// Retry the parked login until the gate serves it, then finish it.
+///
+/// The waiting page shows "awaiting confirmation" and polls the address
+/// lookup; this loop is what makes the resume silent. Terminal answers
+/// stop it — a refusal that is not the activation wait, or a cell that
+/// opens to nothing — and so does the deadline: after that the page's
+/// own fallback (one tap, fresh assertion) is the way back in.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn finish_login_once_served(
+    state: AppState,
+    custodian: tonk_identity::custodian::Custodian,
+    link: tonk_worker_api::DeviceLink,
+    endpoint: String,
+) {
+    /// Between asks: fast enough that a confirmation feels answered.
+    const EVERY: web_time::Duration = web_time::Duration::from_secs(4);
+    /// Asks before giving up — roughly an hour of waiting.
+    const ROUNDS: u32 = 900;
+
+    wasm_bindgen_futures::spawn_local(async move {
+        for _ in 0..ROUNDS {
+            let _ = crate::r#async::sleep(EVERY).await;
+            match custodian
+                .account()
+                .load(endpoint.clone())
+                .perform(&tonk_identity::account::Crypto)
+                .await
+            {
+                Ok(Some(account)) => {
+                    match complete_login(&state, &custodian, &link, &endpoint, account).await {
+                        Ok(()) => log!("custody: the parked login finished on activation"),
+                        Err(error) => log!("custody: the parked login could not finish: {error}"),
+                    }
+                    return;
+                }
+                Ok(None) => {
+                    log!("custody: the parked login found no published account; stopping");
+                    return;
+                }
+                Err(error)
+                    if matches!(
+                        tonk_identity::custody::denial_of(&error),
+                        Some(tonk_identity::custody::CustodyDenial::AwaitingActivation)
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    log!("custody: the parked login met a terminal refusal: {error:#}");
+                    return;
+                }
+            }
+        }
+        log!("custody: the parked login outlasted its window; the page's tap resumes it");
+    });
+}
+
+/// The half of a login that runs once the custody cell has opened:
+/// link this device under the recovered root and record everything the
+/// signed-in state reads.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn complete_login(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    link: &tonk_worker_api::DeviceLink,
+    endpoint: &str,
+    account: tonk_identity::account::Account,
+) -> Result<(), String> {
+    use dialog_varsig::Principal as _;
 
     let dialog_credentials::Signer::Ed25519(root) = account
         .signer()
@@ -402,11 +496,11 @@ async fn login(
             .map(hex::encode)
             .unwrap_or_default(),
         &ceremony.delegation_hex,
-        &endpoint,
+        endpoint,
         false,
     )
     .await?;
-    Ok(wasm_bindgen::JsValue::UNDEFINED)
+    Ok(())
 }
 
 /// Seal a fresh account secret under this custodian.

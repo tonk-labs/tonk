@@ -3515,6 +3515,7 @@ mod tests {
         render_summary(
             &host,
             &tonk_worker_api::AccountSummary {
+                display_name: None,
                 email: Some("person@example.com".into()),
                 passkey: Some(tonk_worker_api::PasskeyMetadata {
                     created_at: 1_754_380_800,
@@ -3542,6 +3543,7 @@ mod tests {
         render_summary(
             &host,
             &tonk_worker_api::AccountSummary {
+                display_name: None,
                 email: Some("legacy@example.com".into()),
                 passkey: None,
             },
@@ -3570,6 +3572,7 @@ mod tests {
         render_summary(
             &host,
             &tonk_worker_api::AccountSummary {
+                display_name: None,
                 email: None,
                 passkey: Some(tonk_worker_api::PasskeyMetadata {
                     created_at: 1_754_380_800,

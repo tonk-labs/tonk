@@ -558,6 +558,134 @@ mod tests {
         Ok(())
     }
 
+    /// Present `email`'s activation invocation to the access service
+    /// over plain HTTP — what another device's activation page does, as
+    /// far as this browser can tell: nothing in it handles the link.
+    async fn activate_over_http(env: &TestEnvironment, email: &str) -> Result<()> {
+        use base64::Engine as _;
+        let link = activation_link(env, email).await?;
+        let encoded = link
+            .split("ucan=")
+            .nth(1)
+            .ok_or_else(|| anyhow!("the activation link names no invocation"))?;
+        let invocation = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)?;
+        let response = reqwest::Client::new()
+            .post(env.access_service.join("ucan/")?)
+            .header("content-type", "application/cbor")
+            .body(invocation)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "activation was refused: {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    /// Copy every credential from one virtual authenticator to another:
+    /// what a passkey manager's sync does, over CDP.
+    async fn copy_credentials(
+        from: &WebDriver,
+        from_id: &str,
+        to: &WebDriver,
+        to_id: &str,
+    ) -> Result<()> {
+        let from_tools = ChromeDevTools::new(from.handle.clone());
+        let to_tools = ChromeDevTools::new(to.handle.clone());
+        let held = from_tools
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": from_id }),
+            )
+            .await?;
+        let credentials = held["credentials"].as_array().cloned().unwrap_or_default();
+        anyhow::ensure!(
+            !credentials.is_empty(),
+            "the first device holds a credential to copy"
+        );
+        for credential in credentials {
+            to_tools
+                .execute_cdp_with_params(
+                    "WebAuthn.addCredential",
+                    serde_json::json!({ "authenticatorId": to_id, "credential": credential }),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Activation opened somewhere this browser cannot see still reaches
+    /// the waiting ceremony, and QUICKLY: the gate stops refusing the
+    /// account sweep, the sweep the ceremony itself is driving gets
+    /// served, and THIS browser records the fact its subscription flips
+    /// on. The cross-tab variant cannot pin this — an activating tab
+    /// shares the worker and does the recording itself — and this exact
+    /// seam is where the live flow broke: the reactor's cached branch
+    /// session predated the upstream wiring, so every post-activation
+    /// sweep failed `Branch main has no upstream`, forever.
+    #[dialog_common::test]
+    async fn it_notices_activation_performed_on_another_device(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, "confirmed-elsewhere@example.com").await?;
+
+        activate_over_http(&env, "confirmed-elsewhere@example.com").await?;
+
+        // The waiting row resolves from the sweep alone — inside the
+        // helper's one-minute patience, where the ceremony's own nudge
+        // cadence is seconds.
+        await_row_value(&driver, "email", "verified").await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The whole three-device story. Device A starts registration and
+    /// waits. Device B signs in with the same passkey while the email
+    /// is unopened — parked on the same awaiting row, not an error.
+    /// Device C (here: plain HTTP) opens the link. Both A and B then
+    /// finish ON THEIR OWN: A's sweep is served and records the fact,
+    /// and B's worker kept the assertion's derivation handles and
+    /// completes the parked login — no second passkey tap.
+    #[dialog_common::test]
+    async fn it_finishes_both_waiting_devices_when_a_third_confirms(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let email = "three-devices@example.com";
+        let (device_a, authenticator_a) = driver_with_prf_authenticator(&env).await?;
+        enroll_only(&device_a, &env, email).await?;
+
+        // Device B: a separate browser holding the same passkey.
+        let (device_b, authenticator_b) = driver_with_prf_authenticator(&env).await?;
+        copy_credentials(&device_a, &authenticator_a, &device_b, &authenticator_b).await?;
+        goto(&device_b, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&device_b, "tonk-account[data-mode=\"choice\"]").await?;
+        element(&device_b, "#account-choose-link")
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(&device_b).await?;
+        type_into_register_dialog(&device_b, email).await?;
+        await_register_action(&device_b, "log in with your passkey").await?;
+        click_register_action(&device_b).await?;
+        // Refused by the gate, and parked rather than failed.
+        await_row_value(&device_b, "email", "awaiting confirmation").await?;
+
+        // Device C.
+        activate_over_http(&env, email).await?;
+
+        // Device A's ceremony resolves from its own sweep.
+        await_row_value(&device_a, "email", "verified").await?;
+        // Device B's parked login finishes silently: verified, with the
+        // passkey row the completed sign-in shows — and nothing asked
+        // for a second assertion.
+        await_row_value(&device_b, "email", "verified").await?;
+        await_settled_row(&device_b, "passkey").await?;
+
+        device_a.quit().await?;
+        device_b.quit().await?;
+        Ok(())
+    }
+
     /// Follow the emailed activation link and accept, leaving the
     /// customer `Active` and its queued work drained.
     pub(crate) async fn activate(

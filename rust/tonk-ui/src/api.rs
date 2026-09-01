@@ -627,6 +627,30 @@ pub async fn resend_activation() -> Result<(), TonkUiError> {
     .map_err(|error| TonkUiError::ApiError(format!("resend was not dispatched: {error:?}")))
 }
 
+/// Ask the worker for a sync drain now.
+///
+/// The registering ceremony's activation signal is the account sweep's
+/// own pull turning from refused to served, so its freshness is the
+/// drain cadence. While the ceremony waits it calls this on its own
+/// clock instead of the background heartbeat's; the drain coalesces
+/// concurrent requests, so an extra ask costs nothing.
+pub async fn kick_sync() -> Result<(), TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/sync", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(TonkUiError::ApiError(format!(
+            "POST /api/sync returned {}",
+            response.status()
+        )))
+    }
+}
+
 /// The account's customer registration state: the access service's live
 /// answer joined with the locally recorded enrollment.
 pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
