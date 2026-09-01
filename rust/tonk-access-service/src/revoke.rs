@@ -113,6 +113,7 @@ mod tests {
 
     use super::*;
     use crate::revocation::index::MemoryRevocationIndex;
+    use crate::store::Enrollment;
     use crate::store::sqlite::SqliteStore;
     use crate::store::{SIGNUP_PLAN, SubscriptionKind};
 
@@ -137,14 +138,15 @@ mod tests {
     async fn store_holding(subject: &str) -> SqliteStore {
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(
-                subject,
-                "holder@example.com",
-                SIGNUP_PLAN,
-                subject,
-                0,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: subject,
+                email: "holder@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: subject,
+                custody: &format!("{}-custody", subject),
+                now: 0,
+                expires_at: u64::MAX,
+            })
             .await
             .expect("customer");
         store
@@ -278,14 +280,15 @@ mod tests {
         let subject = space.did().to_string();
         let store = SqliteStore::in_memory().expect("in-memory store");
         store
-            .enroll_customer(
-                &subject,
-                "pending@example.com",
-                SIGNUP_PLAN,
-                &subject,
-                0,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: &subject,
+                email: "pending@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: &subject,
+                custody: &format!("{}-custody", &subject),
+                now: 0,
+                expires_at: u64::MAX,
+            })
             .await
             .expect("customer stays Registered");
         store

@@ -218,9 +218,25 @@ fn sha256_multihash(content: &[u8]) -> Vec<u8> {
 
 async fn enroll_container(customer: &Ed25519Signer, service: &Did, email: &str) -> Vec<u8> {
     let _ = service;
-    enroll_container_parts(customer, email, &Custody::default())
-        .await
-        .0
+    // A custody key PER ACCOUNT, derived from the enrolling key: a
+    // custody space belongs to one account forever (the service refuses
+    // a claim from another), and the fixed default seed quietly enrolled
+    // every test account under one custodian. Deriving rather than
+    // randomizing keeps re-enrollments of the SAME account sharing their
+    // custody, which is what a real passkey does.
+    let mut key_seed = [9u8; 32];
+    let fingerprint = sha256_multihash(customer.did().as_str().as_bytes());
+    key_seed.copy_from_slice(&fingerprint[2..34]);
+    enroll_container_parts(
+        customer,
+        email,
+        &Custody {
+            key_seed,
+            ..Custody::default()
+        },
+    )
+    .await
+    .0
 }
 
 /// An enrollment carrying `custody`, valid unless a knob says otherwise.
@@ -446,44 +462,51 @@ async fn it_enrolls_a_customer_and_emails_an_activation_link() -> anyhow::Result
     Ok(())
 }
 
-/// Activation names the provider; enrollment does not.
+/// Enrollment names the provider; activation does not repeat it.
 ///
 /// The service decides which provider serves its customers and says so
 /// in the receipt, so a client records one authoritative address instead
 /// of deriving `https://{origin}/ucan/` from whichever origin its
 /// request happened to reach.
 ///
-/// Only at activation, though. The address is what says "this service
-/// serves you", and for an unactivated customer it does not — it gets
-/// neither service nor provisioning. Withholding it until activation is
-/// what lets a client tell "enrolled, awaiting the email" from "ready to
-/// sync" by looking at the recorded address alone.
+/// At ENROLLMENT, because that is when a client needs it. The address is
+/// where the account attaches its remote, and attaching it is what makes
+/// the provisioning gate's 403 -> 200 observable: a client that has the
+/// address learns it was activated from its own sync going through,
+/// rather than asking a status endpoint. Withheld until activation, the
+/// client had nowhere to sync and so no way to notice activation
+/// happening, which is what the polling it replaced was for.
+///
+/// Registration state, not the address, is what says "awaiting the
+/// email" -- and a client that syncs anyway is refused, retryably.
 #[dialog_common::test]
-async fn it_answers_the_provider_only_once_the_customer_activates() -> anyhow::Result<()> {
+async fn it_answers_the_provider_from_enrollment() -> anyhow::Result<()> {
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
     let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
 
     let enrolled = as_customer(fixture.registration(&container).handle().await.unwrap());
     assert_eq!(
-        enrolled.provider, None,
-        "enrollment must name no provider: this customer is not served yet",
+        enrolled.provider.as_deref(),
+        Some("https://hub.test/ucan/"),
+        "enrollment names where this account will sync",
     );
-    // Absent from the wire, not present-and-null: a client reading the
-    // JSON must see no key at all rather than an explicit empty value.
-    let wire = serde_json::to_value(&enrolled)?;
-    assert!(
-        wire.get("provider").is_none(),
-        "an unserved receipt must omit the provider key entirely, got {wire}",
+    assert_eq!(
+        serde_json::to_value(enrolled.status)?,
+        "Registered",
+        "having somewhere to sync is not being served yet",
     );
 
+    // Activation carries no provider: it was settled at enrollment, and a
+    // second copy is a second thing to disagree.
     let container = link_container(&fixture.last_email().1);
     let activated = as_customer(fixture.registration(&container).handle().await.unwrap());
-    assert_eq!(
-        activated.provider.as_deref(),
-        Some("https://hub.test/ucan/"),
-        "activation names the provider this customer's spaces attach to",
+    let wire = serde_json::to_value(&activated)?;
+    assert!(
+        wire.get("provider").is_none(),
+        "activation must omit the provider key entirely, got {wire}",
     );
+    assert_eq!(serde_json::to_value(activated.status)?, "Active");
     Ok(())
 }
 
@@ -527,9 +550,30 @@ async fn it_refuses_enrolling_an_active_customer_and_resends_while_registered() 
 
     let container = enroll_container(&customer, &service, "alice@example.com").await;
     fixture.registration(&container).handle().await.unwrap();
-    // Re-enrolling while registered is idempotent and resends the link.
+    // An impatient re-enrollment inside the resend interval keeps its
+    // rows and sends nothing: enrollment is rate limited against its own
+    // mail, so a loop of re-enrollments cannot pump messages at an
+    // address its owner never confirmed.
     let container = enroll_container(&customer, &service, "alice@example.com").await;
     fixture.registration(&container).handle().await.unwrap();
+    assert_eq!(
+        fixture
+            .emails
+            .0
+            .lock()
+            .expect("captured email mutex poisoned")
+            .len(),
+        1,
+        "the interval suppressed the second mail"
+    );
+    // Past the interval, re-enrolling while registered is idempotent and
+    // resends the link.
+    let container = enroll_container(&customer, &service, "alice@example.com").await;
+    let later = Registration {
+        now: unix_now() + tonk_account::customer::RESEND_INTERVAL_SECONDS + 1,
+        ..fixture.registration(&container)
+    };
+    later.handle().await.unwrap();
     assert_eq!(
         fixture
             .emails
@@ -713,35 +757,65 @@ async fn it_provisions_a_consumer_with_the_spaces_consent() -> anyhow::Result<()
     Ok(())
 }
 
+/// An unconfirmed customer may CLAIM a space, and still not be served.
+///
+/// Two different questions that were answered as one. Provisioning is a
+/// fact about the space -- whose namespace it is -- and activation is a
+/// fact about the customer. Refusing the claim conflated them: a second
+/// device signing in before the emailed link was opened could not claim
+/// the custody space its passkey needs, so the gate answered "is not
+/// provisioned", a dead end no email clears, instead of "awaits email
+/// activation", which one does.
+///
+/// The claim lands; the gate still refuses to serve, and refuses
+/// retryably.
 #[dialog_common::test]
-async fn it_refuses_provisioning_until_the_customer_confirms_their_email() -> anyhow::Result<()> {
+async fn it_provisions_before_the_email_but_serves_only_after() -> anyhow::Result<()> {
+    use dialog_capability::access::{AuthorizeError, Recourse};
+    use tonk_access_service::provisioning::screen;
+
     let fixture = Fixture::new().await;
     let customer = Ed25519Signer::generate().await?;
     let space = Ed25519Signer::generate().await?;
     let container = enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
     fixture.registration(&container).handle().await.unwrap();
 
-    // Enrolled but not activated: nothing may be provisioned yet, and
-    // the refusal names the cause so the client can say so.
+    // Enrolled, email unconfirmed: the space is claimed.
     let container = add_container(&customer, &space, &customer.did()).await;
-    let refusal = fixture.registration(&container).handle().await.unwrap_err();
-    assert!(matches!(refusal, RegistrationError::CustomerInactive));
-    assert!(
+    fixture.registration(&container).handle().await.unwrap();
+    assert_eq!(
         fixture
             .store
             .consumer(space.did().as_str())
             .await
             .unwrap()
-            .is_none(),
-        "a refused add writes no consumer row"
+            .expect("the claim wrote a consumer row")
+            .provider,
+        customer.did().to_string(),
     );
 
-    // The same add replays successfully once the email is confirmed,
-    // which is what the client's pending-work queue relies on.
+    // Claimed is not served. The refusal says waiting clears it, and
+    // names the email as what is outstanding.
+    let refusal = screen(&fixture.store, space.did().as_str(), unix_now())
+        .await
+        .unwrap()
+        .expect_err("an unconfirmed customer's space is not served");
+    let AuthorizeError::Declined { recourse, reason } = refusal else {
+        panic!("expected a declined refusal, got {refusal:?}");
+    };
+    assert_eq!(recourse, Recourse::Retry, "confirming the email clears it");
+    assert!(
+        reason.contains("awaits email activation"),
+        "the refusal must name the email as what is outstanding, got {reason}",
+    );
+
+    // Confirming the email serves the space that was already claimed.
     let container = link_container(&fixture.last_email().1);
     fixture.registration(&container).handle().await.unwrap();
-    let container = add_container(&customer, &space, &customer.did()).await;
-    assert!(fixture.registration(&container).handle().await.is_ok());
+    screen(&fixture.store, space.did().as_str(), unix_now())
+        .await
+        .unwrap()
+        .expect("activation serves the space claimed before it");
     Ok(())
 }
 
@@ -1411,6 +1485,7 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
 /// refusal proves the check it names instead of tripping an earlier one.
 mod custody {
     use super::*;
+    use dialog_capability::access::{AuthorizeError, Recourse};
     use tonk_access_service::provisioning::screen;
     use tonk_account::customer::RESEND_INTERVAL_SECONDS;
 
@@ -1425,6 +1500,102 @@ mod custody {
         )
         .await;
         fixture.registration(&container).handle().await
+    }
+
+    /// Enrollment provisions the passkey's custody space, so reading it
+    /// before the email is confirmed is a WAIT, not a dead end.
+    ///
+    /// This is the second-device sign-in: someone enrolls on one device
+    /// and signs in on another before opening the link. That device reads
+    /// its custody cell to recover the account, and what the gate says
+    /// about that read is the whole experience.
+    ///
+    /// Enrollment used to provision the customer and the ledger but not
+    /// the custody space, so the read was refused `not provisioned` with
+    /// `Recourse::None` — nothing to retry, nothing to do, and the browser
+    /// reported "We couldn't finish logging you in". The space is claimed
+    /// at enrollment now: the gate still refuses, because the customer is
+    /// unconfirmed, but it refuses with `Retry` and names the email as the
+    /// step that clears it.
+    #[dialog_common::test]
+    async fn it_tells_a_second_device_to_retry_after_the_email() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await.expect("customer");
+        let custody = Custody::default();
+        let custody_did = Ed25519Signer::import(&custody.key_seed)
+            .await
+            .expect("custody signer")
+            .did();
+
+        let container = enroll_container_with_custody(
+            &customer,
+            &fixture.service.did(),
+            "second-device@example.com",
+            &custody,
+        )
+        .await;
+        fixture
+            .registration(&container)
+            .handle()
+            .await
+            .expect("enrollment succeeds");
+
+        // The read a signing-in device makes: `/use/get/memory/cell` over
+        // its own custody space, which the gate screens by subject.
+        let (recourse, reason) = match screen(&fixture.store, custody_did.as_str(), unix_now())
+            .await
+            .expect("the store answers")
+        {
+            Ok(()) => panic!("an unconfirmed customer must not be served"),
+            Err(AuthorizeError::Declined { recourse, reason }) => (recourse, reason),
+            Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
+        };
+
+        assert_eq!(
+            recourse,
+            Recourse::Retry,
+            "opening the emailed link is what clears this, so it is worth retrying: {reason}"
+        );
+        assert!(
+            reason.contains("awaits email activation"),
+            "and the reason has to name that step, got {reason:?}"
+        );
+        assert!(
+            !reason.contains("not provisioned"),
+            "the custody space is claimed at enrollment, so this is never the answer: {reason:?}"
+        );
+
+        // The ledger the receipt hands a read grant for answers the same
+        // way. Both spaces are claimed by the same enrollment, and neither
+        // is served until the customer confirms — so nothing about this is
+        // special-cased per space: the gate screens a consumer by its
+        // provider's registration, whatever the consumer is.
+        let ledger = fixture
+            .store
+            .customer(customer.did().as_str())
+            .await
+            .expect("the store answers")
+            .expect("enrollment wrote the customer")
+            .ledger
+            .expect("enrollment named a ledger");
+        let (recourse, reason) = match screen(&fixture.store, &ledger, unix_now())
+            .await
+            .expect("the store answers")
+        {
+            Ok(()) => panic!("an unconfirmed customer's ledger must not be served"),
+            Err(AuthorizeError::Declined { recourse, reason }) => (recourse, reason),
+            Err(other) => panic!("the gate refused with {other:?}, not a declined request"),
+        };
+        assert_eq!(
+            recourse,
+            Recourse::Retry,
+            "the ledger waits on the same email: {reason}"
+        );
+        assert!(
+            reason.contains("awaits email activation"),
+            "and says so the same way, got {reason:?}"
+        );
+        Ok(())
     }
 
     /// The bug this flow exists to prevent: a signup that finishes with
@@ -1592,6 +1763,34 @@ mod custody {
         later.handle().await.expect("resending is accepted");
         let sent = fixture.emails.0.lock().expect("email mutex").clone();
         assert_eq!(sent.len(), 2, "past the interval it sends again");
+        assert_eq!(sent[1].0, "alice@example.com");
+        Ok(())
+    }
+
+    /// A resend needs no service key: the waiting person's own device
+    /// signs as itself, about the account it cannot yet sign for. The
+    /// command is deliberately unauthenticated beyond that signature —
+    /// the mail only goes to the address on the row, and the interval
+    /// bounds it — and requiring the service as issuer made the command
+    /// uninvocable by the only party that ever wants it.
+    #[dialog_common::test]
+    async fn it_resends_for_a_self_subjected_client_invocation() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container =
+            enroll_container(&customer, &fixture.service.did(), "alice@example.com").await;
+        fixture.registration(&container).handle().await.unwrap();
+
+        // Signed by a key the service has never seen: the device's own.
+        let device = Ed25519Signer::generate().await?;
+        let resend = resend_container(&device, &customer.did()).await;
+        let later = Registration {
+            now: unix_now() + RESEND_INTERVAL_SECONDS + 1,
+            ..fixture.registration(&resend)
+        };
+        later.handle().await.expect("a client resend is accepted");
+        let sent = fixture.emails.0.lock().expect("email mutex").clone();
+        assert_eq!(sent.len(), 2, "the link went out again");
         assert_eq!(sent[1].0, "alice@example.com");
         Ok(())
     }
@@ -1893,12 +2092,15 @@ mod custody {
         Ok(())
     }
 
-    /// One passkey may hold more than one account: the custody space is
-    /// derived from the credential, and the cell is named within it, so
-    /// two accounts under the same custodian are two enrollments that
-    /// do not collide.
+    /// One custody space belongs to one account, forever. The custody
+    /// DID is PRF-derived from the passkey and the sealed secret in its
+    /// cell IS the account — the same passkey always reopens the same
+    /// account — so a claim from a different account is never
+    /// legitimate, and its cell could not be replaced anyway: the vault
+    /// write is create-only. The refusal lands before anything durable,
+    /// and points at signing in instead.
     #[dialog_common::test]
-    async fn it_enrolls_two_accounts_under_one_custodian() -> anyhow::Result<()> {
+    async fn it_refuses_a_custodian_enrolled_to_another_account() -> anyhow::Result<()> {
         let fixture = Fixture::new().await;
         let custody = Custody::default();
 
@@ -1910,13 +2112,22 @@ mod custody {
         let (container, _, _) = enroll_container_parts(&second, "bob@example.com", &custody).await;
         let answer = fixture.registration(&container).handle().await;
         assert!(
-            answer.is_ok(),
-            "a second account under the same custodian enrolls, got {answer:?}"
+            matches!(answer, Err(RegistrationError::Forbidden { .. })),
+            "a second account claiming the same custodian is refused, got {answer:?}"
         );
         assert_eq!(
             fixture.vault.sealed().len(),
-            2,
-            "each enrollment writes its own cell"
+            1,
+            "and the first account's cell stands alone"
+        );
+        assert!(
+            fixture
+                .store
+                .customer(second.did().as_str())
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused enrollment leaves no customer row"
         );
         Ok(())
     }

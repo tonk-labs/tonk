@@ -105,9 +105,24 @@ fn document(id: &str, keys: impl IntoIterator<Item = String>) -> Value {
 
 /// The DID document for `did:web:{host}`, carrying the service's ed25519
 /// key.
-pub fn did_document(host: &str, signer: &Ed25519Signer) -> Value {
-    let id = format!("did:web:{host}");
-    document(&id, [signer.did().to_string()])
+pub fn did_document(host: &str, origin: &str, signer: &Ed25519Signer) -> Value {
+    // `did:web` separates path segments with `:`, so a host carrying a
+    // port percent-encodes it (`localhost%3A8090`), per the method spec.
+    // Raw, `did:web:localhost:8090` reads `8090` as a path segment and a
+    // resolver fetches `https://localhost/8090/did.json`.
+    let id = format!("did:web:{}", crate::lookup::encode_host(host));
+    let mut document = document(&id, [signer.did().to_string()]);
+    // Where this service is reached, in the document that already answers
+    // who it is. That is what a `service` block is for, and publishing it
+    // here means a client resolving the service needs nothing but its DID
+    // — no side channel naming the endpoint, and no second well-known
+    // path to keep in step with this one.
+    document["service"] = json!([{
+        "id": format!("{id}#ucan"),
+        "type": "TonkAccessService",
+        "serviceEndpoint": format!("{}/ucan/", origin.trim_end_matches('/')),
+    }]);
+    document
 }
 
 /// The DID document for an email address, carrying the `did:key` of the
@@ -209,11 +224,54 @@ mod tests {
     #[dialog_common::test]
     fn it_documents_the_key_under_the_web_did() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("tonk.network", &signer);
+        let document = did_document("tonk.network", "https://tonk.network", &signer);
         assert_eq!(document["id"], "did:web:tonk.network");
         let multibase = document["verificationMethod"][0]["publicKeyMultibase"]
             .as_str()
             .unwrap();
         assert_eq!(format!("did:key:{multibase}"), signer.did().to_string());
+    }
+
+    /// The service announces where it is reached, in its own document.
+    ///
+    /// That is what a DID `service` block is for, and it is what lets a
+    /// client resolve the endpoint from the DID alone. Without it the
+    /// endpoint had to come from somewhere else — a separate well-known
+    /// path carrying one field — which is a second thing to keep in step
+    /// with this document for no gain.
+    #[dialog_common::test]
+    fn it_announces_where_the_service_is_reached() {
+        let signer = signer_from_hex(&"11".repeat(32)).unwrap();
+        let document = did_document("tonk.network", "https://tonk.network", &signer);
+        let service = &document["service"][0];
+        assert_eq!(service["type"], "TonkAccessService");
+        assert_eq!(service["serviceEndpoint"], "https://tonk.network/ucan/");
+        assert_eq!(
+            service["id"], "did:web:tonk.network#ucan",
+            "the fragment names the endpoint within the document"
+        );
+    }
+
+    /// A non-default port survives into the endpoint.
+    ///
+    /// The origin is configuration, not the request's `Host` header: a dev
+    /// proxy forwards `Host: 127.0.0.1`, and a document built from that
+    /// published `http://127.0.0.1/ucan/` — port 80, nothing listening,
+    /// every fetch failing.
+    #[dialog_common::test]
+    fn it_keeps_the_port_the_service_is_reached_on() {
+        let signer = signer_from_hex(&"11".repeat(32)).unwrap();
+        let document = did_document("localhost:8090", "http://localhost:8090", &signer);
+        assert_eq!(
+            document["service"][0]["serviceEndpoint"],
+            "http://localhost:8090/ucan/"
+        );
+        // The DID itself percent-encodes the port: `did:web` separates
+        // path segments with `:`, so a raw one would resolve to
+        // `https://localhost/8090/did.json`.
+        assert_eq!(
+            document["id"], "did:web:localhost%3A8090",
+            "a port is one segment, not a path"
+        );
     }
 }

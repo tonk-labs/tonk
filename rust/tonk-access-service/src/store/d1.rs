@@ -14,13 +14,13 @@ use worker::wasm_bindgen::JsValue;
 
 use crate::store::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
-    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
-    INSERT_LEDGER_SUBSCRIPTION, INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT,
-    REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL,
-    SELECT_SERVABILITY, SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER,
-    START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION,
-    Servability, Store, StoreError, Subscription, SubscriptionKind, Suspension,
-    UPDATE_REGISTERED_EMAIL, parse_status,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, Enrollment,
+    INSERT_CUSTODY_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_LEDGER_SUBSCRIPTION,
+    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, RELEASE_LAPSED_ADDRESS, REMOVE_SUBSCRIPTION,
+    RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
+    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION,
+    START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION, Servability, Store, StoreError,
+    Subscription, SubscriptionKind, Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Cloudflare D1-backed [`Store`], for production use.
@@ -215,15 +215,16 @@ impl Store for D1Store {
             .collect()
     }
 
-    async fn enroll_customer(
-        &self,
-        did: &str,
-        email: &str,
-        plan: &str,
-        ledger: &str,
-        now: u64,
-        expires_at: u64,
-    ) -> Result<(), StoreError> {
+    async fn enroll_customer(&self, enrollment: Enrollment<'_>) -> Result<(), StoreError> {
+        let Enrollment {
+            did,
+            email,
+            plan,
+            ledger,
+            custody,
+            now,
+            expires_at,
+        } = enrollment;
         // D1 batches run as a single transaction: either every statement
         // commits or none does.
         let insert_customer = self
@@ -232,6 +233,7 @@ impl Store for D1Store {
             .bind(&[
                 JsValue::from(did),
                 JsValue::from(email),
+                JsValue::from(ledger),
                 JsValue::from(plan),
                 JsValue::from_f64(now as f64),
             ])
@@ -255,8 +257,27 @@ impl Store for D1Store {
                 JsValue::from_f64(expires_at as f64),
             ])
             .map_err(map_err)?;
+        let insert_custody = self
+            .0
+            .prepare(INSERT_CUSTODY_SUBSCRIPTION)
+            .bind(&[
+                JsValue::from(custody),
+                JsValue::from(did),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(expires_at as f64),
+            ])
+            .map_err(map_err)?;
+        // One batch, which D1 runs as a single transaction: an enrollment
+        // claims the customer and every namespace it needs, or claims
+        // none. Split across separate writes, a failure between them left
+        // a customer whose own passkey could not be read back.
         self.0
-            .batch(vec![insert_customer, insert_consumer, insert_ledger])
+            .batch(vec![
+                insert_customer,
+                insert_consumer,
+                insert_ledger,
+                insert_custody,
+            ])
             .await
             .map_err(map_err)?;
         Ok(())
@@ -267,6 +288,18 @@ impl Store for D1Store {
             .0
             .prepare(UPDATE_REGISTERED_EMAIL)
             .bind(&[JsValue::from(did), JsValue::from(email)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn release_lapsed_address(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(RELEASE_LAPSED_ADDRESS)
+            .bind(&[JsValue::from(did), JsValue::from(now as f64)])
             .map_err(map_err)?
             .run()
             .await

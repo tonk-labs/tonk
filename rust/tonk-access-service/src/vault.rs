@@ -32,30 +32,60 @@ pub enum VaultError {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Vault {
-    /// Redeem `recovery` — a verified, proofless `/use/put/memory/cell`
-    /// invocation, as the bare token it travelled as — and store
-    /// `sealed` where it names.
+    /// Redeem `recovery` — a verified `/use/put/memory/cell` invocation
+    /// chain, re-encoded as a redeemable container (proofs included,
+    /// when the ceremony issued through a delegate) — and store `sealed`
+    /// where it names.
     ///
     /// Takes the invocation rather than a key so the object written is
     /// the one the ceremony authorized, not one this service chose.
+    ///
+    /// The write is CREATE-ONLY: the invocation carries no `when`, which
+    /// production storage signs into the permit as `if-none-match: *`,
+    /// so a cell that already exists answers 412. Enrollment publishes
+    /// once per custody space for exactly this reason, and every
+    /// implementation — the in-memory one included — must refuse a
+    /// second write the same way, or tests pass against a laxer store
+    /// than the one deployed.
     async fn publish(&self, recovery: &[u8], sealed: &[u8]) -> Result<(), VaultError>;
 }
 
 /// A [`Vault`] that keeps cells in memory, for tests and local
-/// development. Holds `(recovery, sealed)` pairs in the order written.
+/// development. Holds `(recovery, sealed)` pairs in the order written,
+/// keyed create-only by the custody subject the invocation names — the
+/// same refusal production storage answers with a 412.
 #[cfg(any(test, feature = "helpers"))]
 #[derive(Default)]
 pub struct CapturedVault(pub std::sync::Mutex<Vec<(Vec<u8>, Vec<u8>)>>);
+
+/// The custody subject a redeemable recovery container acts on.
+#[cfg(any(test, feature = "helpers"))]
+fn recovery_subject(recovery: &[u8]) -> Result<String, VaultError> {
+    dialog_ucan_core::InvocationChain::<dialog_varsig::AnySignature>::try_from(recovery)
+        .map(|chain| chain.subject().to_string())
+        .map_err(|error| {
+            VaultError::Unavailable(format!("the recovery container did not decode: {error}"))
+        })
+}
 
 #[cfg(any(test, feature = "helpers"))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Vault for CapturedVault {
     async fn publish(&self, recovery: &[u8], sealed: &[u8]) -> Result<(), VaultError> {
-        self.0
-            .lock()
-            .expect("vault mutex poisoned")
-            .push((recovery.to_vec(), sealed.to_vec()));
+        let subject = recovery_subject(recovery)?;
+        let mut cells = self.0.lock().expect("vault mutex poisoned");
+        for (held, _) in cells.iter() {
+            if recovery_subject(held)? == subject {
+                // What production answers: the permit carries
+                // `if-none-match: *`, so the second write of a cell is
+                // a 412, not a replacement.
+                return Err(VaultError::Unavailable(format!(
+                    "storage answered 412 Precondition Failed: {subject} already holds a cell"
+                )));
+            }
+        }
+        cells.push((recovery.to_vec(), sealed.to_vec()));
         Ok(())
     }
 }
@@ -96,14 +126,11 @@ pub trait Redeemer {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Redeemer + dialog_common::ConditionalSync> Vault for AuthorizedVault<A> {
     async fn publish(&self, recovery: &[u8], sealed: &[u8]) -> Result<(), VaultError> {
-        // The recovery invocation travelled as a block in the
-        // enrollment's container, so it is a bare token. Redeeming it
-        // means presenting it the way any client would: as a container
-        // of its own, carrying nothing else.
-        let container = dialog_ucan_core::Container::new(vec![recovery.to_vec()])
-            .to_bytes()
-            .map_err(|error| VaultError::Unavailable(error.to_string()))?;
-        let permit = self.0.redeem(&container).await?;
+        // `recovery` is already a redeemable container — the verified
+        // chain re-encoded with its proofs. Re-wrapping the bare token
+        // here used to drop those proofs, so a delegate-issued recovery
+        // verified at enrollment and then failed at the write.
+        let permit = self.0.redeem(recovery).await?;
         let response = permit
             .upload(sealed.to_vec())
             .await

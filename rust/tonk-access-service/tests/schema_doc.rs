@@ -44,12 +44,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0005_customer_email.sql"),
     ),
     (
-        "0006_subscription_expiry.sql",
-        include_str!("../migrations/0006_subscription_expiry.sql"),
-    ),
-    (
-        "0007_activation_resend.sql",
-        include_str!("../migrations/0007_activation_resend.sql"),
+        "0006_account_schema.sql",
+        include_str!("../migrations/0006_account_schema.sql"),
     ),
 ];
 

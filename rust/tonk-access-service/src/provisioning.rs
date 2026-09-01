@@ -184,6 +184,7 @@ fn servable(status: CustomerStatus, who: &str) -> Result<(), AuthorizeError> {
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::store::Enrollment;
     use crate::store::sqlite::SqliteStore;
 
     async fn store_with(
@@ -193,14 +194,15 @@ mod tests {
         let store = SqliteStore::in_memory().expect("in-memory store");
         for (did, status) in customers {
             store
-                .enroll_customer(
+                .enroll_customer(Enrollment {
                     did,
-                    &format!("{did}@example.com"),
-                    "trial@2026-08",
-                    did,
-                    0,
-                    u64::MAX,
-                )
+                    email: &format!("{did}@example.com"),
+                    plan: "trial@2026-08",
+                    ledger: did,
+                    custody: &format!("{}-custody", did),
+                    now: 0,
+                    expires_at: u64::MAX,
+                })
                 .await
                 .expect("customer");
             match status {

@@ -9,13 +9,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
-    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, INSERT_CUSTOMER,
-    INSERT_LEDGER_SUBSCRIPTION, INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT,
-    REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL,
-    SELECT_SERVABILITY, SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER,
-    START_SELF_SUBSCRIPTION_DELETION, START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION,
-    Servability, Store, StoreError, Subscription, SubscriptionKind, Suspension,
-    UPDATE_REGISTERED_EMAIL, parse_status,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, Enrollment,
+    INSERT_CUSTODY_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_LEDGER_SUBSCRIPTION,
+    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, RELEASE_LAPSED_ADDRESS, REMOVE_SUBSCRIPTION,
+    RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
+    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION,
+    START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION, Servability, Store, StoreError,
+    Subscription, SubscriptionKind, Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -115,18 +115,9 @@ impl SqliteStore {
             version = 5;
         }
         if version < 6 {
-            conn.execute_batch(include_str!(
-                "../../migrations/0006_subscription_expiry.sql"
-            ))
-            .map_err(map_err)?;
+            conn.execute_batch(include_str!("../../migrations/0006_account_schema.sql"))
+                .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 6)
-                .map_err(map_err)?;
-            version = 6;
-        }
-        if version < 7 {
-            conn.execute_batch(include_str!("../../migrations/0007_activation_resend.sql"))
-                .map_err(map_err)?;
-            conn.pragma_update(None, "user_version", 7)
                 .map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
@@ -332,19 +323,23 @@ impl Store for SqliteStore {
         .collect()
     }
 
-    async fn enroll_customer(
-        &self,
-        did: &str,
-        email: &str,
-        plan: &str,
-        ledger: &str,
-        now: u64,
-        expires_at: u64,
-    ) -> Result<(), StoreError> {
+    async fn enroll_customer(&self, enrollment: Enrollment<'_>) -> Result<(), StoreError> {
+        let Enrollment {
+            did,
+            email,
+            plan,
+            ledger,
+            custody,
+            now,
+            expires_at,
+        } = enrollment;
         let mut conn = self.0.lock().expect("store mutex poisoned");
         let tx = conn.transaction().map_err(map_err)?;
-        tx.execute(INSERT_CUSTOMER, params![did, email, plan, now as i64])
-            .map_err(map_err)?;
+        tx.execute(
+            INSERT_CUSTOMER,
+            params![did, email, ledger, plan, now as i64],
+        )
+        .map_err(map_err)?;
         tx.execute(
             INSERT_SELF_SUBSCRIPTION,
             params![did, now as i64, expires_at as i64],
@@ -355,6 +350,15 @@ impl Store for SqliteStore {
             params![ledger, did, now as i64, expires_at as i64],
         )
         .map_err(map_err)?;
+        // The passkey's custody space, in the same transaction as the
+        // customer it belongs to: an enrollment claims every namespace it
+        // needs or claims none. Split across two writes, a failure between
+        // them left a customer whose own passkey could not be read back.
+        tx.execute(
+            INSERT_CUSTODY_SUBSCRIPTION,
+            params![custody, did, now as i64, expires_at as i64],
+        )
+        .map_err(map_err)?;
         tx.commit().map_err(map_err)
     }
 
@@ -362,6 +366,14 @@ impl Store for SqliteStore {
         let conn = self.0.lock().expect("store mutex poisoned");
         let changed = conn
             .execute(UPDATE_REGISTERED_EMAIL, params![did, email])
+            .map_err(map_err)?;
+        Ok(changed > 0)
+    }
+
+    async fn release_lapsed_address(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let changed = conn
+            .execute(RELEASE_LAPSED_ADDRESS, params![did, now as i64])
             .map_err(map_err)?;
         Ok(changed > 0)
     }
@@ -497,7 +509,15 @@ mod tests {
 
     async fn enrolled(store: &SqliteStore, did: &str, email: &str) {
         store
-            .enroll_customer(did, email, SIGNUP_PLAN, did, 1_700_000_000, u64::MAX)
+            .enroll_customer(Enrollment {
+                did,
+                email,
+                plan: SIGNUP_PLAN,
+                ledger: did,
+                custody: &format!("{did}-custody"),
+                now: 1_700_000_000,
+                expires_at: u64::MAX,
+            })
             .await
             .expect("enrollment writes a customer");
     }
@@ -539,14 +559,15 @@ mod tests {
         enrolled(&store, "did:key:zA", "jsmith@example.com").await;
 
         let conflict = store
-            .enroll_customer(
-                "did:key:zB",
-                "jsmith@example.com",
-                SIGNUP_PLAN,
-                "did:key:zB",
-                1_700_000_001,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: "did:key:zB",
+                email: "jsmith@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: "did:key:zB",
+                custody: "did:key:zB-custody",
+                now: 1_700_000_001,
+                expires_at: u64::MAX,
+            })
             .await;
         assert!(
             matches!(conflict, Err(StoreError::Conflict(_))),

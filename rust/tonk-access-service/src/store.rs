@@ -61,6 +61,35 @@ pub struct Customer {
     pub terms_version: Option<String>,
 }
 
+/// One enrollment: the customer and every space it brings with it.
+///
+/// A struct rather than a parameter list because these are one thing --
+/// what a single account signs up with -- and they are written in one
+/// transaction. As positional arguments they were also three adjacent
+/// `&str` DIDs, where transposing two would compile and quietly enroll
+/// an account whose ledger and custody were swapped.
+#[derive(Debug, Clone, Copy)]
+pub struct Enrollment<'a> {
+    /// The account's own DID, which is the customer.
+    pub did: &'a str,
+    /// The address the activation link is sent to.
+    pub email: &'a str,
+    /// The plan this customer signs up on.
+    pub plan: &'a str,
+    /// The account's ledger space.
+    pub ledger: &'a str,
+    /// The custody space holding the sealed account envelope.
+    ///
+    /// Claimed here, with the customer, so a second device signing in
+    /// before the emailed link is opened is told to wait for it rather
+    /// than that the space is not provisioned.
+    pub custody: &'a str,
+    /// When the enrollment happened.
+    pub now: u64,
+    /// When the unconfirmed registration lapses.
+    pub expires_at: u64,
+}
+
 /// What the provisioning gate reads about one subject.
 ///
 /// Rows rather than a verdict: deciding is `provisioning::screen`'s job,
@@ -194,19 +223,17 @@ pub trait Store {
     /// Atomically write a new customer row together with its self-provided
     /// account consumer. Two steps would leave a window in which a
     /// consumer exists with no provider.
-    async fn enroll_customer(
-        &self,
-        did: &str,
-        email: &str,
-        plan: &str,
-        ledger: &str,
-        now: u64,
-        expires_at: u64,
-    ) -> Result<(), StoreError>;
+    async fn enroll_customer(&self, enrollment: Enrollment<'_>) -> Result<(), StoreError>;
 
     /// Update the email of a customer still `Registered`. Returns whether
     /// a row changed; an `Active` customer's email is never touched here.
     async fn update_registered_email(&self, did: &str, email: &str) -> Result<bool, StoreError>;
+
+    /// Release the address of a `Registered` customer whose activation
+    /// window lapsed, so another account can enroll it. Answers whether
+    /// the release happened — `false` means the holder activated, or
+    /// still has time. See [`RELEASE_LAPSED_ADDRESS`].
+    async fn release_lapsed_address(&self, did: &str, now: u64) -> Result<bool, StoreError>;
 
     /// Provision `did` as a consumer under `provider`. Idempotent for the
     /// same provider; answers false when a different customer already
@@ -323,8 +350,8 @@ SELECT consumer, provider, registered_at, kind, deleted_at, expires_at
 "#;
 
 pub const INSERT_CUSTOMER: &str = r#"
-INSERT INTO customer (account, email, status, plan, cycle_anchor_at)
-VALUES (?1, ?2, 'Registered', ?3, ?4)
+INSERT INTO customer (account, email, ledger, status, plan, cycle_anchor_at)
+VALUES (?1, ?2, ?3, 'Registered', ?4, ?5)
 "#;
 
 /// The customer's own account space is a subscription like any other,
@@ -362,6 +389,24 @@ ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
  WHERE subscription.deleted_at IS NULL
 "#;
 
+/// The passkey's custody space, claimed by the enrollment that carried
+/// it.
+///
+/// Written in the same transaction as the customer: an enrollment claims
+/// every namespace it needs or claims none. The gate refuses to serve it
+/// while the customer is unconfirmed, so claiming it early costs nothing
+/// and is what makes that refusal `Retry` — "awaits email activation" —
+/// rather than the dead end "not provisioned".
+///
+/// Re-enrolling with the same passkey extends the deadline rather than
+/// failing, the way the ledger does.
+pub const INSERT_CUSTODY_SUBSCRIPTION: &str = r#"
+INSERT INTO subscription (consumer, provider, registered_at, expires_at, kind)
+VALUES (?1, ?2, ?3, ?4, 'custody')
+ON CONFLICT (consumer) DO UPDATE SET expires_at = excluded.expires_at
+ WHERE subscription.deleted_at IS NULL
+"#;
+
 /// Record that the activation link was sent, but only if enough time
 /// has passed since the last one.
 ///
@@ -388,11 +433,15 @@ UPDATE subscription
 
 /// Provisioning is idempotent per provider: re-adding under the same
 /// customer re-runs the update, while a consumer someone else provides
-/// matches no row and changes nothing.
+/// matches no row and changes nothing — unless the hold has LAPSED.
+/// `expires_at` in the past means the reservation ended, and the DID is
+/// claimable by whoever asks next; `?3` is the current time, so the
+/// comparison is against this call rather than a swept state. Custody
+/// reservations depend on that arm: a custody DID is PRF-derived and
+/// therefore stable, so the same passkey enrolling again after its
+/// first registration expired must be able to reclaim it — holding it
+/// forever would strand the account this design exists to recover.
 ///
-/// A reservation another customer holds is refused for as long as it
-/// stands, and claimable once it lapses — `?3` is the current time, so
-/// the comparison is against this call rather than a swept state.
 /// Claiming clears `expires_at`, which is what a provisioned row
 /// looks like: null never lapses.
 pub const ADD_SUBSCRIPTION: &str = r#"
@@ -402,19 +451,40 @@ ON CONFLICT (consumer) DO UPDATE SET
   provider = excluded.provider,
   kind = excluded.kind,
   expires_at = NULL
-WHERE subscription.provider = excluded.provider
-  AND subscription.deleted_at IS NULL
+WHERE subscription.deleted_at IS NULL
+  AND (subscription.provider = excluded.provider
+       OR (subscription.expires_at IS NOT NULL
+           AND subscription.expires_at <= excluded.registered_at))
 "#;
 
-/// Reserve `did` for `provider` until `expires_at`, so the window
-/// between naming a space and provisioning it cannot be raced.
-///
-/// The same guard as [`ADD_SUBSCRIPTION`]: a free DID, one this provider
-/// already holds, or one whose reservation has lapsed. Re-reserving
-/// extends the deadline, which is what a passkey re-enrolling on a new
-/// device does.
 pub const UPDATE_REGISTERED_EMAIL: &str = r#"
 UPDATE customer SET email = ?2 WHERE account = ?1 AND status = 'Registered'
+"#;
+
+/// Release the address of a `Registered` customer whose activation
+/// window lapsed, so someone else can enroll it.
+///
+/// Any keypair can enroll any address it does not control, and the mail
+/// goes unanswered — without this the squatted address answers
+/// `AddressTaken` forever. Only the ADDRESS is released: the row stays,
+/// keyed by its account DID, and its own account can re-enroll and name
+/// an address again. The tombstone is the account DID itself — unique,
+/// so the email index cannot collide, and never a plausible address, so
+/// no lookup resolves it.
+///
+/// The guard re-checks status and lapse in the statement, so a
+/// registration racing its own activation keeps its address: the answer
+/// says whether the release actually happened.
+pub const RELEASE_LAPSED_ADDRESS: &str = r#"
+UPDATE customer
+   SET email = account
+ WHERE account = ?1
+   AND status = 'Registered'
+   AND EXISTS (SELECT 1 FROM subscription
+                WHERE consumer = ?1
+                  AND provider = ?1
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= ?2)
 "#;
 
 pub const ACTIVATE_CUSTOMER: &str = r#"

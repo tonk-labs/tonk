@@ -9,6 +9,7 @@ use crate::email::{CapturedEmail, EmailError, EmailSender};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
+use crate::store::Enrollment;
 use crate::store::ingest::{IngestStore, SqliteIngest};
 use crate::store::sqlite::SqliteStore;
 use async_trait::async_trait;
@@ -342,7 +343,7 @@ async fn handle_request(
                     .status(StatusCode::OK)
                     .header(CONTENT_TYPE, "application/json")
                     .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&config).expect("deployment config serializes"),
+                        serde_json::to_vec_pretty(&config).expect("deployment config serializes"),
                     )))
                     .unwrap()
             }
@@ -354,13 +355,23 @@ async fn handle_request(
         return Ok(cors_response(response));
     }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
-        let document = did_document(&request_host(&req), &registration.service);
+        // The configured origin's host, for the same reason the customer
+        // documents use it: a proxy's `Host` header is not the name the
+        // browser resolved, and the service's own DID must not change with
+        // the path a request took.
+        let host = registration
+            .origin
+            .trim_end_matches('/')
+            .split_once("://")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| request_host(&req));
+        let document = did_document(&host, &registration.origin, &registration.service);
         return Ok(cors_response(
             Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&document).expect("did document serializes"),
+                    serde_json::to_vec_pretty(&document).expect("did document serializes"),
                 )))
                 .unwrap(),
         ));
@@ -437,7 +448,7 @@ async fn handle_request(
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&body).expect("service did serializes"),
+                    serde_json::to_vec_pretty(&body).expect("service did serializes"),
                 )))
                 .unwrap(),
         ));
@@ -453,13 +464,21 @@ async fn handle_request(
     {
         use crate::lookup::{address_from_segments, customer_did, resolve};
 
-        let host = request_host(&req);
+        // The configured public origin, not the `Host` header. A dev proxy
+        // forwards `Host: 127.0.0.1` — no port, and not the name the browser
+        // used — so a header-derived document published
+        // `http://127.0.0.1/ucan/`, which resolves to port 80 and fails to
+        // fetch. Worse, the DID ITSELF is built from this, so the identity a
+        // customer resolves to would depend on which proxy a request came
+        // through.
+        let origin = registration.origin.trim_end_matches('/').to_string();
+        let host = origin
+            .split_once("://")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| request_host(&req));
         let found = match address_from_segments(domain, local) {
             Some(address) => match customer_did(&host, &address) {
-                Some(did) => {
-                    let origin = format!("http://{host}");
-                    resolve(&registration.store, &did, &address, &origin).await
-                }
+                Some(did) => resolve(&registration.store, &did, &address, &origin).await,
                 None => Ok(None),
             },
             None => Ok(None),
@@ -480,7 +499,7 @@ async fn handle_request(
                     },
                 )
                 .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&found.document).expect("did document serializes"),
+                    serde_json::to_vec_pretty(&found.document).expect("did document serializes"),
                 )))
                 .unwrap(),
             Ok(None) => Response::builder()
@@ -912,14 +931,15 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
         .is_none()
     {
         store
-            .enroll_customer(
-                &provider,
-                "tests@example.com",
-                SIGNUP_PLAN,
-                &provider,
-                0,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: &provider,
+                email: "tests@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: &provider,
+                custody: "did:key:zTestCustody",
+                now: 0,
+                expires_at: u64::MAX,
+            })
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         store

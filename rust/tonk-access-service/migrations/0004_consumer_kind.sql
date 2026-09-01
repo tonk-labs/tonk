@@ -3,4 +3,4 @@
 -- tell them apart: custody namespaces never appear in a review and are
 -- purged by customer finalization, last — so the deletion machinery
 -- cannot destroy the account's own key custody mid-flight.
-ALTER TABLE subscription ADD COLUMN kind TEXT NOT NULL DEFAULT 'space';
+ALTER TABLE consumer ADD COLUMN kind TEXT NOT NULL DEFAULT 'space';

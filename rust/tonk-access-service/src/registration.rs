@@ -47,7 +47,7 @@ use tonk_account::subscription::{
 };
 
 use crate::email::{EmailSender, normalize_email};
-use crate::store::{SIGNUP_PLAN, Store, StoreError};
+use crate::store::{Enrollment, SIGNUP_PLAN, Store, StoreError, SubscriptionKind};
 use crate::vault::Vault;
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
@@ -101,13 +101,13 @@ const CUSTODY_SPACE: &str = "custody";
 /// See [`CUSTODY_SPACE`].
 const CUSTODY_SECRET_CELL: &str = "secret";
 
-/// The verified blocks an activation link carries: exactly what was
-/// checked at enrollment, and nothing else the container happened to
-/// hold.
+/// The verified custody material an enrollment carries: exactly what
+/// was checked, and nothing else the container happened to hold.
 pub struct CustodyMaterial {
     /// The sealed envelope, written into the custody cell.
     pub sealed: Vec<u8>,
-    /// The pre-signed publish invocation that writes it.
+    /// The pre-signed publish invocation WITH its proofs, re-encoded as
+    /// a redeemable container: what the vault presents to storage.
     pub recovery: Vec<u8>,
     /// The custody space's consent to being provisioned.
     pub consent: Vec<u8>,
@@ -340,10 +340,20 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             }
             // Resend names the account as an argument rather than the
             // subject: whoever is waiting for the mail cannot sign as
-            // the account they have not activated yet. Safe because the
-            // link only ever goes to the address already on the row.
+            // the account they have not activated yet. So unlike the
+            // operator commands above, ANY self-subjected invocation is
+            // accepted — the caller signs as themselves, which the
+            // ordinary verification checks, and nothing more is asked.
+            // Deliberately unauthenticated beyond that: the link only
+            // ever goes to the address already on the row, the answer
+            // never says whether the account exists, and the send is
+            // rate limited against `activation_sent_at` — so the worst
+            // a caller achieves is one mail per interval to an inbox
+            // they do not control.
             Some(RegistrationCommand::Resend) => {
-                let chain = self.service_command(&RESEND_COMMAND).await?;
+                let chain = self
+                    .verified_chain(&RESEND_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
+                    .await?;
                 let effect: ResendActivation = deserialize_arguments(chain.arguments())?;
                 self.resend(&effect.account).await?;
                 Ok(Answer::Done)
@@ -452,87 +462,175 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(internal)?
             && holder.account != customer.to_string()
         {
-            return Err(RegistrationError::AddressTaken);
+            // A `Registered` holder whose activation window lapsed no
+            // longer holds the address: any keypair can enroll any
+            // address it does not control, and without this the mail
+            // going unanswered would squat the address forever. The
+            // release re-checks status and lapse in its own statement,
+            // so a holder racing their own activation keeps it.
+            let lapsed = holder.status == CustomerStatus::Registered
+                && self
+                    .store
+                    .consumer(&holder.account)
+                    .await
+                    .map_err(internal)?
+                    .and_then(|subscription| subscription.expires_at)
+                    .is_some_and(|at| at <= self.now)
+                && self
+                    .store
+                    .release_lapsed_address(&holder.account, self.now)
+                    .await
+                    .map_err(internal)?;
+            if !lapsed {
+                return Err(RegistrationError::AddressTaken);
+            }
         }
+        // The status refusals land before anything durable does: an
+        // enrollment the customer's own state refuses must leave the
+        // vault exactly as it found it.
+        let existing = self
+            .store
+            .customer(customer.as_str())
+            .await
+            .map_err(internal)?;
+        match existing.as_ref().map(|customer| customer.status) {
+            Some(CustomerStatus::Active) => return Err(RegistrationError::CustomerActive),
+            Some(CustomerStatus::Suspended) => return Err(RegistrationError::CustomerSuspended),
+            Some(CustomerStatus::Registered) | None => {}
+        }
+
         let material = self.verify_custody(&effect, &customer).await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer).await?;
+        // One custody space, one account, forever. The custody DID is
+        // PRF-derived from the passkey, and the sealed secret in its
+        // cell IS the account — the same passkey always reopens the same
+        // account, so a claim from a DIFFERENT account is never
+        // legitimate, lapsed or not, and its cell could not be replaced
+        // anyway (the write below is create-only). Refused here, before
+        // anything durable, with an answer that says what to do instead.
+        let custody_subscription = self
+            .store
+            .consumer(effect.custody.as_str())
+            .await
+            .map_err(internal)?;
+        let custody_enrolled = custody_subscription
+            .as_ref()
+            .is_some_and(|subscription| subscription.provider == customer.to_string());
+        if custody_subscription.is_some() && !custody_enrolled {
+            return Err(RegistrationError::Forbidden {
+                message: "this passkey's custody space is enrolled to another account; \
+                          sign in with the passkey instead of creating a new account"
+                    .to_string(),
+            });
+        }
+
         // The cell goes in before the customer row. Nothing serves it
         // yet — the customer is `Registered`, and the gate refuses
         // everything behind a provider in that state — so this writes
         // into a space that answers nothing until the emailed link is
         // clicked. Doing it here rather than queueing it is what stops a
         // signup finishing with an account no second device can open.
-        self.vault
-            .publish(&material.recovery, &material.sealed)
-            .await
-            .map_err(|error| RegistrationError::Internal {
-                message: error.to_string(),
-            })?;
+        //
+        // Written ONCE per custody space. The write is create-only — a
+        // custody cell must never be replaced under a passkey that
+        // could already have opened it — so a `Registered` re-enrollment
+        // whose custody this account already subscribed (the resend
+        // path) skips the publish instead of failing it. A custody this
+        // account has not enrolled before (a re-created passkey derives
+        // a fresh custody DID) still gets its cell.
+        if !custody_enrolled {
+            self.vault
+                .publish(&material.recovery, &material.sealed)
+                .await
+                .map_err(|error| RegistrationError::Internal {
+                    message: error.to_string(),
+                })?;
+        }
 
-        match self
-            .store
-            .customer(customer.as_str())
-            .await
-            .map_err(internal)?
-        {
+        match existing {
             None => {
                 // The subscriptions expire when the activation link
                 // does, so a signup nobody finishes clears itself
                 // rather than leaving rows behind.
                 self.store
-                    .enroll_customer(
-                        customer.as_str(),
-                        &address,
-                        SIGNUP_PLAN,
-                        space.did.as_str(),
-                        self.now,
-                        self.now + self.activation_ttl,
-                    )
+                    .enroll_customer(Enrollment {
+                        did: customer.as_str(),
+                        email: &address,
+                        plan: SIGNUP_PLAN,
+                        ledger: space.did.as_str(),
+                        custody: effect.custody.as_str(),
+                        now: self.now,
+                        expires_at: self.now + self.activation_ttl,
+                    })
                     .await
                     .map_err(internal)?;
             }
-            Some(existing) => match existing.status {
-                CustomerStatus::Registered => {
-                    if existing.email != address {
-                        self.store
-                            .update_registered_email(customer.as_str(), &address)
-                            .await
-                            .map_err(internal)?;
-                    }
+            Some(existing) => {
+                if existing.email != address {
+                    self.store
+                        .update_registered_email(customer.as_str(), &address)
+                        .await
+                        .map_err(internal)?;
                 }
-                CustomerStatus::Active => return Err(RegistrationError::CustomerActive),
-                CustomerStatus::Suspended => return Err(RegistrationError::CustomerSuspended),
-            },
+                // The cell published above needs its subscription row,
+                // or the gate never serves it: a `Registered` account
+                // re-enrolling with a passkey it re-created brings a
+                // custody space the first enrollment never named.
+                if !custody_enrolled {
+                    self.store
+                        .add_subscription(
+                            effect.custody.as_str(),
+                            customer.as_str(),
+                            self.now,
+                            SubscriptionKind::Custody,
+                        )
+                        .await
+                        .map_err(internal)?;
+                }
+            }
         }
 
         // Recorded as a send like any other, so resending is rate
         // limited against this one rather than treating enrollment as
-        // if no mail had gone out.
-        self.store
-            .claim_activation_resend(customer.as_str(), self.now, self.now)
+        // if no mail had gone out — and limited BY the last one: an
+        // enrollment repeated inside the interval keeps its rows and
+        // sends nothing, so a loop of re-enrollments cannot pump mail
+        // at an address its owner never confirmed.
+        if self
+            .store
+            .claim_activation_resend(
+                customer.as_str(),
+                self.now,
+                self.now.saturating_sub(RESEND_INTERVAL_SECONDS),
+            )
             .await
-            .map_err(internal)?;
-        self.email
-            .send_activation(&address, &link)
-            .await
-            .map_err(|err| RegistrationError::Internal {
-                message: format!("activation email failed: {err:?}"),
-            })?;
+            .map_err(internal)?
+        {
+            self.email
+                .send_activation(&address, &link)
+                .await
+                .map_err(|err| RegistrationError::Internal {
+                    message: format!("activation email failed: {err:?}"),
+                })?;
+        }
 
         Ok(Receipt {
             customer,
             status: CustomerStatus::Registered,
-            // Enrollment names no provider. The address is what says
-            // "this service serves you", and it does not yet: an
-            // unactivated customer gets neither service nor
-            // provisioning. Naming it here would let a client record an
-            // endpoint it cannot use, and erase the difference between
-            // "enrolled, email unconfirmed" and "ready to sync" — which
-            // is exactly the distinction the share flow needs in order
-            // to say "check your email" rather than "turn on sync".
-            // Activation is where it lands.
-            provider: None,
+            // Enrollment names the provider, even though nothing is
+            // served yet. It is WHERE this account syncs, which is known
+            // now and does not change at activation — so a client can
+            // attach its remote immediately and let the gate answer.
+            //
+            // That is what makes activation observable without asking:
+            // the remote answers 403 while the customer is unconfirmed
+            // and 200 once the emailed link is opened, so a device
+            // learns it was activated from the sync it was already
+            // doing. Withholding the address here forced the opposite —
+            // a client with nowhere to sync had to poll a status
+            // endpoint to discover it could start.
+            provider: Some(self.provider_address()),
             // The space, though, is named now: it is derived rather than
             // allocated, so it exists as soon as the account does, and a
             // client that records it here needs nothing from activation
@@ -563,7 +661,11 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             return Ok(Receipt {
                 customer,
                 status: CustomerStatus::Active,
-                provider: Some(self.provider_address()),
+                // Activation names no provider: enrollment already did,
+                // and the address does not change. A client is syncing to
+                // it by now, which is how it learns it was activated —
+                // the gate stops answering 403.
+                provider: None,
                 ledger,
             });
         }
@@ -578,7 +680,8 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                 Ok(Receipt {
                     customer,
                     status: CustomerStatus::Active,
-                    provider: Some(self.provider_address()),
+                    // Already active: same reasoning as above.
+                    provider: None,
                     ledger,
                 })
             }
@@ -607,12 +710,18 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         {
             None => return Err(RegistrationError::UnknownCustomer),
             Some(customer) => match customer.status {
-                CustomerStatus::Active => {}
-                // An unactivated customer gets nothing: not service, and
-                // not provisioning either. The client holds the add as
-                // pending work and replays it once the email is
-                // confirmed; re-enrolling resends that email.
-                CustomerStatus::Registered => return Err(RegistrationError::CustomerInactive),
+                // Provisioning is a fact about the SPACE; activation is a
+                // fact about the customer. An unconfirmed customer may
+                // still claim its namespaces — the gate refuses to serve
+                // them either way, and refuses with `Retry` because
+                // confirming the email is what clears it.
+                //
+                // Refusing here instead conflated the two: a second device
+                // signing in could not provision the custody space its
+                // passkey needs, so the gate answered "not provisioned"
+                // with no recourse — a dead end that reads as a broken
+                // login rather than as an email waiting to be confirmed.
+                CustomerStatus::Active | CustomerStatus::Registered => {}
                 CustomerStatus::Suspended => return Err(RegistrationError::CustomerSuspended),
             },
         }
@@ -779,7 +888,10 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                 ),
             });
         }
-        let recovery_bytes = carried(&effect.recovery, "recovery")?;
+        // Resolved for the refusal it produces: `recovery` must name a
+        // block the container carries, whether or not the bytes are
+        // used beyond the resolution below.
+        carried(&effect.recovery, "recovery")?;
         let consent_bytes = carried(&effect.consent, "consent")?;
 
         // The recovery invocation, with its proofs resolved from the
@@ -901,9 +1013,22 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             })?;
         self.verify_consent(head, &effect.custody, account).await?;
 
+        // The recovery travels onward as the CHAIN, not the bare token:
+        // a delegate-issued recovery names proofs, and the vault redeems
+        // whatever it is handed as a container of its own. Handing it
+        // the token alone dropped those proofs, so exactly the chains
+        // this verification deliberately admits were then refused at the
+        // write.
+        let recovery_container =
+            recovery
+                .to_bytes()
+                .map_err(|error| RegistrationError::Internal {
+                    message: format!("the verified recovery did not re-encode: {error}"),
+                })?;
+
         Ok(CustodyMaterial {
             sealed,
-            recovery: recovery_bytes,
+            recovery: recovery_container,
             consent: consent_bytes,
         })
     }

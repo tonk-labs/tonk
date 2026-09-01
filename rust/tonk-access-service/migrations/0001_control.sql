@@ -21,29 +21,29 @@ CREATE TABLE plan (
 );
 
 CREATE TABLE customer (
-  account           TEXT PRIMARY KEY, -- the account DID this subscribes
+  did               TEXT PRIMARY KEY, -- also the DID of its account consumer
   email             TEXT NOT NULL,
-  verified_at          INTEGER NOT NULL DEFAULT 0, -- activation timestamp, 0 while Registered
+  verified          INTEGER NOT NULL DEFAULT 0, -- activation timestamp, 0 while Registered
   terms_version     TEXT,             -- accepted at activation
   terms_accepted_at INTEGER,
   status            TEXT NOT NULL,    -- Registered | Active | Suspended
   plan              TEXT NOT NULL REFERENCES plan(id),
   credit_limit      INTEGER,          -- override, null means use plan
-  cycle_anchor_at      INTEGER NOT NULL, -- subscription time, periods derive from it
+  cycle_anchor      INTEGER NOT NULL, -- subscription time, periods derive from it
   limit_code        TEXT,             -- null when under limit
-  limit_resets_at      INTEGER,          -- null with code set: cleared by event
+  limit_resets      INTEGER,          -- null with code set: cleared by event
   stripe_customer   TEXT,             -- null until payment is set up
-  ledger            TEXT              -- DID of the space this service replicates its accounting into; null until one exists
+  access            BLOB NOT NULL     -- deposited delegation to the service over the account space
 );
 
-CREATE TABLE subscription (
-  consumer        TEXT PRIMARY KEY, -- the DID this subscription is for
-  provider        TEXT NOT NULL REFERENCES customer(account), -- the customer who pays
-  registered_at      INTEGER NOT NULL,
+CREATE TABLE consumer (
+  did             TEXT PRIMARY KEY,
+  provider        TEXT REFERENCES customer(did), -- null means not servable
+  registered      INTEGER NOT NULL,
   archived_at     INTEGER,
   suspend_code    TEXT,
   suspend_message TEXT,
-  suspend_until_at   INTEGER,            -- null with code set: indefinite
+  suspend_until   INTEGER,            -- null with code set: indefinite
   size            INTEGER NOT NULL DEFAULT 0,    -- last measurement
   measured_at     INTEGER NOT NULL DEFAULT 0
 );

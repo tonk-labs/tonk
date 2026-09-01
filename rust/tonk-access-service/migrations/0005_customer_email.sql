@@ -16,8 +16,8 @@ UPDATE customer SET email = lower(trim(email));
 --
 -- The self-provided consumer rows of dropped customers go with them.
 -- They are deleted first, while the customers they name still exist.
-DELETE FROM subscription WHERE provider IN (
-  SELECT account FROM customer
+DELETE FROM consumer WHERE provider IN (
+  SELECT did FROM customer
    WHERE rowid NOT IN (SELECT max(rowid) FROM customer GROUP BY email)
 );
 

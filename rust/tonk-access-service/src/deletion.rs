@@ -634,7 +634,7 @@ mod tests {
 
     use super::*;
     use crate::store::sqlite::SqliteStore;
-    use crate::store::{SIGNUP_PLAN, Store};
+    use crate::store::{Enrollment, SIGNUP_PLAN, Store};
 
     /// A device-signed deprovision invocation, proving through the
     /// root's delegation — the shape the worker sends.
@@ -725,14 +725,15 @@ mod tests {
         let space = Ed25519Signer::import(&[72; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "owner@example.com",
-                SIGNUP_PLAN,
-                root.did().as_str(),
-                at,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "owner@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
@@ -796,14 +797,15 @@ mod tests {
         let custody = Ed25519Signer::import(&[94; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "custody@example.com",
-                SIGNUP_PLAN,
-                root.did().as_str(),
-                at,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "custody@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: custody.did().as_str(),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
@@ -891,14 +893,15 @@ mod tests {
         let root = Ed25519Signer::generate().await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "alice@example.com",
-                SIGNUP_PLAN,
-                root.did().as_str(),
-                at,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "alice@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         assert!(
@@ -926,14 +929,15 @@ mod tests {
         // And a different account may take it.
         let other = Ed25519Signer::generate().await.unwrap();
         store
-            .enroll_customer(
-                other.did().as_str(),
-                "alice@example.com",
-                SIGNUP_PLAN,
-                other.did().as_str(),
-                at + 2,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: other.did().as_str(),
+                email: "alice@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: other.did().as_str(),
+                custody: &format!("{}-custody", other.did().as_str()),
+                now: at + 2,
+                expires_at: u64::MAX,
+            })
             .await
             .expect("the released address enrolls again");
     }
@@ -945,14 +949,15 @@ mod tests {
         let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
         let at = now();
         store
-            .enroll_customer(
-                root.did().as_str(),
-                "delete@example.com",
-                SIGNUP_PLAN,
-                root.did().as_str(),
-                at,
-                u64::MAX,
-            )
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email: "delete@example.com",
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
             .await
             .unwrap();
         store
@@ -1029,7 +1034,14 @@ mod tests {
         );
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
-            &[format!("{}/", space.did()), format!("{}/", root.did())]
+            &[
+                format!("{}/", space.did()),
+                // Enrollment claims the passkey's custody space, so
+                // finalization purges it: after the data spaces, before
+                // the account's own.
+                format!("{}-custody/", root.did()),
+                format!("{}/", root.did()),
+            ]
         );
     }
 }
