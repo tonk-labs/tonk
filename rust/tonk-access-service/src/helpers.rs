@@ -149,8 +149,10 @@ impl AccessServiceAddress {
 
     /// The confirmation half: present the invocation the activation email
     /// carries. It is complete and service-signed, so presenting it is
-    /// activating and no key is needed here.
-    async fn confirm_email(&self, email: &str) -> anyhow::Result<()> {
+    /// activating and no key is needed here. Public so a lifecycle test
+    /// can confirm at a chosen moment — "another device opened the
+    /// link" — rather than only as part of [`Self::activate_customer`].
+    pub async fn confirm_email(&self, email: &str) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
         let endpoint = self.ucan_endpoint();
         let inbox: Vec<(String, String)> = client

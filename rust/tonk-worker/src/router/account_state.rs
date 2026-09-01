@@ -365,14 +365,26 @@ async fn configure_account_upstream(
             })?,
     };
 
-    let branch = repository
+    // The REACTOR's cached session, not a fresh handle. A branch handle
+    // captures its upstream cell when first opened, and the reactor's
+    // profile-main session opens early — boot chores, enrollment fact
+    // writes — before any account remote exists. Setting the upstream on
+    // a separately opened handle published it durably but left the
+    // cached cell empty, so every sweep's pull and push through the
+    // reactor answered `Branch main has no upstream` FOREVER: the exact
+    // wedge that left a signed-up browser watching its 403s turn into
+    // 200s with nothing able to hydrate. Performed on the cached handle,
+    // the write lands in both places at once.
+    let session = tonk
+        .reactor
+        .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to open profile main branch: {error}"))
         })?;
+    let branch = session.handle();
     let remote_branch = remote
         .branch(tonk_account::MAIN_BRANCH)
         .open()
@@ -1798,6 +1810,27 @@ mod tests {
         Ed25519Signer,
         String,
     ) {
+        linked_account_state(passkey, true).await
+    }
+
+    /// A linked account against a real access service. `activated`
+    /// decides how far the customer got: `true` is the state every
+    /// steady-state test wants — the emailed link opened, the trusted
+    /// marker in place — while `false` stops at `Registered`, which is
+    /// the state a browser that just signed up is actually in: enrolled,
+    /// refused by the gate, and never yet hydrated.
+    async fn linked_account_state(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        activated: bool,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        Ed25519Signer,
+        String,
+    ) {
         use dialog_operator::Profile;
         use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
@@ -1838,11 +1871,19 @@ mod tests {
         // Hydration syncs the account space, which the access service
         // serves only once its customer has confirmed the emailed
         // activation link.
-        service
-            .address
-            .activate_customer(&root, "worker-account-state@example.com")
-            .await
-            .unwrap();
+        if activated {
+            service
+                .address
+                .activate_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        } else {
+            service
+                .address
+                .enroll_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        }
         // The endpoint the account syncs against, not the service root:
         // the remote is the address a link names, and that is `/ucan/`.
         let remote = format!(
@@ -1882,14 +1923,19 @@ mod tests {
         )
         .await
         .unwrap();
-        state
-            .profile
-            .credential()
-            .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-            .save(root_signer.did().as_str().as_bytes().to_vec())
-            .perform(&state.operator)
-            .await
-            .unwrap();
+        // The marker only exists once a hydration succeeded, and none
+        // can while the customer is still `Registered`: pre-setting it
+        // there would put the fixture in a state no real browser reaches.
+        if activated {
+            state
+                .profile
+                .credential()
+                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .save(root_signer.did().as_str().as_bytes().to_vec())
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
 
         (state, service, root_signer, remote)
     }
@@ -2028,6 +2074,100 @@ mod tests {
             "the registration names where to sync"
         );
 
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The registering browser's whole wait, end to end: enrolled and
+    /// refused, activated somewhere else, noticed at the FIRST sweep the
+    /// gate serves. Every other test here starts `Active` with the
+    /// trusted marker pre-set, so none of them ran this lifecycle — and
+    /// the live flow broke exactly inside it: a browser that had never
+    /// hydrated sat on "awaiting confirmation" watching its pulls turn
+    /// from 403 to 200 with nothing recording the transition.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_notices_activation_at_the_first_served_sweep() {
+        use tonk_account::customer::CustomerStatus;
+        use tonk_schema::AccountActive;
+
+        let (state, service, _root, remote) = linked_account_state(None, false).await;
+        // What enrollment records on the device: registered, and where
+        // the account will sync — the receipt names the provider now.
+        super::super::customer::record_customer_status(
+            &state,
+            CustomerStatus::Registered,
+            "worker-account-state@example.com",
+            Some(&remote),
+        )
+        .await
+        .unwrap();
+
+        // While the customer is `Registered` the gate refuses the
+        // sweep, and nothing may claim the account is served.
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert!(
+            status != AccountStateStatus::Ready || swept.is_err(),
+            "the gate refuses while awaiting activation, got {status:?} / {swept:?}"
+        );
+        let account = super::super::identity::root_did(&state).await.unwrap();
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let read_active = || async {
+            let rows: Vec<AccountActive> = branch
+                .handle()
+                .query()
+                .select(Query::<AccountActive> {
+                    this: Term::from(account.this()),
+                    activated_at: Term::var("activated_at"),
+                })
+                .perform(&state.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            rows
+        };
+        assert!(
+            read_active().await.is_empty(),
+            "no sweep may record activation the gate has not granted"
+        );
+
+        // The emailed link is opened somewhere this browser cannot see.
+        service
+            .address
+            .confirm_email("worker-account-state@example.com")
+            .await
+            .unwrap();
+
+        // The next sweep is served, and being served IS the signal: it
+        // must both hydrate and record the fact the ceremony waits on,
+        // in this same pass — not on some later one.
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(
+            status,
+            AccountStateStatus::Ready,
+            "the first served sweep hydrates"
+        );
+        swept.unwrap();
+        assert_eq!(
+            read_active().await.len(),
+            1,
+            "and records the activation the confirm row waits on"
+        );
+        assert!(
+            matches!(
+                super::super::customer::registration(&state).await,
+                super::super::customer::Registration::Served { .. }
+            ),
+            "the registration reads served"
+        );
+
+        let ready = require_ready_account_state(&state).await.unwrap();
         service.stop().await.unwrap();
         discard(state, &ready.key);
     }
