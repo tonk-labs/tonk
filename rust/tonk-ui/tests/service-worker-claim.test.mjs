@@ -410,6 +410,78 @@ function runWarmUpdatePage({
     };
 }
 
+function runColdInstallPage() {
+    const messages = [];
+    let resolveReady;
+    const storage = new Map();
+    const firstWorker = {
+        state: "activated",
+        postMessage(message) {
+            messages.push(message);
+            if (message?.type === "claim") {
+                serviceWorkers.controller = firstWorker;
+                void serviceWorkers.dispatch("controllerchange");
+            }
+        },
+    };
+    const registration = eventTarget({
+        active: null,
+        installing: firstWorker,
+        waiting: null,
+        async update() {},
+    });
+    const serviceWorkers = eventTarget({
+        controller: null,
+        ready: new Promise((resolve) => {
+            resolveReady = resolve;
+        }),
+        async register() {
+            return registration;
+        },
+    });
+    const self = eventTarget({ tonkBootLife() {} });
+    const document = eventTarget({
+        visibilityState: "visible",
+        documentElement: { hasAttribute: () => false },
+        querySelector() {
+            return { textContent: "" };
+        },
+    });
+    const context = {
+        self,
+        window: self,
+        document,
+        navigator: { serviceWorker: serviceWorkers, locks: lockHarness().locks },
+        indexedDB: new FakeIndexedDB(),
+        BroadcastChannel: broadcastHarness().BroadcastChannel,
+        sessionStorage: {
+            getItem(key) {
+                return storage.get(key) ?? null;
+            },
+            setItem(key, value) {
+                storage.set(key, String(value));
+            },
+            removeItem(key) {
+                storage.delete(key);
+            },
+        },
+        location: { reload() {} },
+        console: { log() {}, warn() {}, error() {} },
+        Event,
+    };
+    vm.runInNewContext(reloadSafetyBlock(), context, { filename: INDEX });
+    vm.runInNewContext(activationBlock(), context, { filename: INDEX });
+    return {
+        messages,
+        activate() {
+            registration.installing = null;
+            registration.active = firstWorker;
+            resolveReady(registration);
+        },
+        ready: () => self.serviceWorkerActivates(),
+    };
+}
+
 test("activation alone does not claim pre-upgrade pages", async () => {
     const { scope, claims } = loadServiceWorker();
     const pending = [];
@@ -463,6 +535,23 @@ test("an explicit cold-start claim message takes control", async () => {
     });
     await Promise.all(pending);
     assert.equal(claims(), 1);
+});
+
+test("a page registering its first worker waits for activation before claiming", async () => {
+    const result = runColdInstallPage();
+    await new Promise(setImmediate);
+    assert.deepEqual(
+        result.messages,
+        [],
+        "there is no active worker to receive a claim while install is pending",
+    );
+
+    result.activate();
+    await result.ready();
+    assert.deepEqual(
+        result.messages.map((message) => message?.type),
+        ["claim", "connectivity"],
+    );
 });
 
 test("an explicit waiting-worker activation message repeats skipWaiting", async () => {

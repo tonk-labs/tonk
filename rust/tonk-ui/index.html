@@ -733,6 +733,9 @@
                 // First install (or an active-but-unclaimed worker) keeps this
                 // document. Wait until `/api/*` is controlled, nudging an
                 // already-active worker whose activate event happened earlier.
+                // `register()` may resolve while a true first install is still
+                // verifying, when `registration.active` is null. Observe every
+                // registration slot so the claim is sent after activation.
                 if (!priorController) {
                     if (!navigator.serviceWorker.controller) {
                         // On a genuinely FIRST install the worker is still
