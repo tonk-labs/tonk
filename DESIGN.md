@@ -1,289 +1,457 @@
-# Tonk design system
+# The tonk chrome — working spec for agents
 
-This is the default visual language for Tonk product UI. Read it before changing
-web layouts, components, CSS, or product chrome.
+Read this before you write or edit any HTML, CSS, or JS for tonk. The system is
+non-standard on purpose: nearly every default you would reach for — vertically centered
+labels, icon libraries, accent colors, rounded buttons, widths that follow content — is
+wrong here. This file is the operational contract: the primitives, the exact numbers, and
+the traps. The reasoning lives in [fabb/README.md](fabb/README.md) of the `gooey` repository
+(laws + decision log). Those decisions are settled. Do not re-litigate
+one in passing; reopening one is a deliberate act, with the owner, on the record.
 
-Tonk uses warm stone surfaces, aubergine ink, compact rectangular controls, and
-careful typography. The product is compact and deliberate. Decoration is sparse;
-hierarchy comes from value, type, geometry, and spacing.
+## The rules everyone breaks — check your diff against these
 
-## Sources and scope
+1. **Everything chrome is 36px tall.** Cells, rows, buttons, headers, the sync circle.
+   Tall rows (for notices only) are 56px. The touch target is 44px, delivered invisibly 
+   (wrapper or padding), never by growing the block.
+2. **Words sit bottom-right.** `align-items:flex-end; justify-content:flex-end;
+   line-height:1`, padding **9px bottom, 10px right**. Never vertically centered. Only
+   symbol-only marks (×, +, the discs) are geometrically centered. Two seats may leave
+   the right edge — both still bottom-seated: a **two-sided row** holds a noun or name
+   at its left end (`margin-right:auto`) while the actionable word keeps bottom-right,
+   and a label may flush a **terminal edge it owns** (the account tab's name against
+   the bar's left end; headers flush left). Left-flushing anywhere else is still wrong.
+3. **Two Plex registers, never mixed up.** Labels are **IBM Plex Sans Condensed**
+   (600, 13px, lowercase). Reading text — sentences, descriptions, dialog bodies — is
+   **IBM Plex Sans** (normal, 400, 13.5px). Condensed sentences and non-condensed labels
+   are both errors.
+4. **One ink, no second color.** Stone ink `#38182A` and its derivations. No green, no
+   red, no blue — not for success, not for destructive, not for links. Attention blinks;
+   it never takes a hue.
+5. **Edges are 1px ink.** A ring around every surface, a 1px separator between flush
+   cells. Corners are square; a curve appears only on mute, symbol-bearing chrome.
+6. **Gaps are 7px of pure page** between blocks in a stack — no drawn dividers there.
+   Inside a bar the gap is 0 and a 1px line divides. Never both.
+7. **Widths are fixed.** `36 · 144 · 216 · 288 · 432`. A cell never sizes to its
+   content; breakpoints swap whole rungs in and out. The one sanctioned flex follows
+   the **column**, never the content (the phone spaces rung, the signed-out fact cell,
+   the gate's half-rung pair).
+8. **No icon library.** Every mark is Unicode geometry or a few lines of bespoke CSS/SVG,
+   from the tables below.
+9. **Chrome is lowercase.** User words (names, spaces) pass through untouched.
+10. **The chrome themes itself, never the view** — and no unprefixed CSS variable ever
+    crosses the shadow boundary.
 
-This guide captures the current product direction shown in the Tonk account UI
-and the latest FABB, Hub, onboarding, and edge studies in the adjacent
-`tonk-labs/gooey` repository. When an existing surface already has tokens or
-components, reuse them rather than creating a parallel system. The current
-account implementation is a useful reference:
-[`rust/tonk-ui/src/account.css`](rust/tonk-ui/src/account.css).
+## The block
 
-Gooey also contains older lime-and-magenta explorations, generic presets, and TUI
-studies. They are not the default product style. Use them only when a task names
-them explicitly. This guide covers product web UI and embedded chrome; CLI output
-should follow the CLI's existing output patterns.
-
-## The visual language
-
-| Property | Tonk treatment |
-| --- | --- |
-| Atmosphere | Warm, low-chroma, technical, compact |
-| Primary color | Aubergine ink on a warm stone ground |
-| Shape | Rectangular word-bearing controls; curves reserved for discs, switches, close controls, and end caps |
-| Structure | Fixed-width blocks, fused bars, and stacks separated by page-colored gaps |
-| Type | Condensed lowercase labels; normal-width reading text |
-| Depth | A one-pixel ink ring and, when floating, translucent frost; no drop shadows |
-| Emphasis | Solid ink for the primary action; near-ink for the current location |
-| Motion | Short, interruptible transitions with no bounce or glow |
-
-## Color
-
-Tonk is a one-ink system. Do not add a second brand color or a semantic red,
-green, blue, or yellow palette to product chrome. Status must also be expressed
-through words, geometry, or motion so color is never the only signal.
-
-### Core palette
-
-| Role | Light | Dark | Use |
-| --- | --- | --- | --- |
-| Page | `#e8e6e4` | `#161313` | App canvas |
-| Ink | `#38182a` | `#e2dfdd` | Text, glyphs, rings, primary actions |
-| On ink | `#f7f6f5` | `#221c1d` | Content on solid ink |
-| Soft ink | `#5b4953` | `#c8c3bf` | Metadata and secondary reading text only |
-| Current | `#552e44` | `#cdc5c9` | Selected view or location, not a call to action |
-| Flat frost | `#f7f6f5` | `#1b1718` | In-flow blocks on a flat page |
-| Panel | `#d0ccc8` | `#3c3335` | Settings and joined secondary surfaces |
-| Card | `#fcfbfb` | `#261f20` | Dialog and sturdy content surfaces |
-| Ring | `rgb(56 24 42 / 85%)` | `rgb(226 223 221 / 55%)` | Outer surface edge |
-| Separator | `rgb(56 24 42 / 28%)` | `rgb(226 223 221 / 28%)` | Dividers inside a fused surface |
-| Hover wash | Ink at `6%` | Light ink at `9%` | Hover on frost or card surfaces |
-| Press wash | Ink at `12%` | Light ink at `15%` | Pressed state on frost or card surfaces |
-| Scrim | `rgb(56 24 42 / 32%)` | `rgb(0 0 0 / 45%)` | Modal backdrop |
-
-For hover on a solid-ink action, wash it with `on-ink`, not more ink:
-`rgb(247 246 245 / 16%)` in light mode and `rgb(34 28 29 / 14%)` in dark
-mode. An ink wash over an ink surface produces no visible state change.
-
-### Frost
-
-Floating chrome may use translucent frost over content:
+The whole system derives from one primitive: a **36px-tall box of frost with a 1px ink
+ring, its word seated in the bottom-right corner**. Canonical CSS:
 
 ```css
-background: rgb(253 252 252 / 72%);
-backdrop-filter: blur(12px) saturate(1.5);
-box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
-```
-
-Use real blur only where content can pass behind the surface. On a flat page,
-use the pre-composited `Flat frost` color. A stack shares one blurred underlay;
-do not put `backdrop-filter` on every row. Dialog surfaces are dense enough to
-use the card color without blur.
-
-App-owned pages may follow the system light or dark scheme. Embedded chrome
-owns its own scoped colors and must never recolor the host view. Do not add a
-manual theme switch unless the product behavior calls for one.
-
-## Typography
-
-Load the fonts at the host page. Shadow-root CSS may declare the stacks but
-cannot supply the font files.
-
-| Register | Family | Specification | Use |
-| --- | --- | --- | --- |
-| Chrome label | IBM Plex Sans Condensed | `600 13px/1`, `0.02em` tracking | Buttons, cells, headers, section actions |
-| Menu label | IBM Plex Sans Condensed | `500 13px/1` | Dense menus when less emphasis is needed |
-| Reading text | IBM Plex Sans | `400 13–13.5px/1.45–1.55` | Sentences, explanations, dialog bodies |
-| Emphasized name | IBM Plex Sans Condensed | `600 13.5px` | Entity names inside reading text |
-| Technical metadata | IBM Plex Mono | `11–12px` | IDs, code, counts, timestamps where monospacing helps |
-
-Product-owned chrome is lowercase. Write the source copy in lowercase and use
-`text-transform: lowercase` as a backstop. Never transform names, space titles,
-handles, typed values, or other user-authored text.
-
-Do not set sentences in the condensed face or labels in normal Plex Sans. Large
-Gestalte display type belongs to editorial and design-document contexts, not
-ordinary product chrome. Use the existing Tonk wordmark asset instead of
-recreating the logo in text.
-
-Apply font smoothing once at the page root. Balance short headings, use pretty
-wrapping for short-to-medium prose, and leave long text and code to normal
-wrapping. Use tabular numerals for values that update in place.
-
-## Geometry and spacing
-
-The compact chrome block is the main unit:
-
-```css
-.tonk-block {
-  box-sizing: border-box;
-  height: 36px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 0 10px 9px 16px;
-  background: var(--frost-solid);
-  box-shadow: 0 0 0 1px var(--ring);
-  font: 600 13px/1 var(--cond);
-  letter-spacing: 0.02em;
+.block{
+  height:36px;                                   /* 56px for tall rows, nothing else */
+  display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+  padding:0 10px 9px 16px;                       /* right 10 · bottom 9 · left varies */
+  font:600 13px/1 "IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
+  letter-spacing:.02em; text-transform:lowercase;
+  background:var(--frost);                       /* or var(--frost-solid) on a flat page */
+  box-shadow:0 0 0 1px var(--ring);
+  border-radius:0;                               /* square. curves are punctuation */
 }
 ```
 
-The bottom-right label placement is deliberate. It applies to compact chrome
-labels, not to paragraphs, form explanations, or data-heavy content rows.
-Symbol-only controls are centered geometrically.
+Bars are blocks fused flush on one surface. Stacks are blocks separated by page. Modals
+are stacks floating denser. Buttons are bar cells that left the bar. If you are building
+a new surface and it does not start from this block, stop.
 
-| Measure | Value | Notes |
-| --- | --- | --- |
-| Compact block | `36px` high | Bar cells, compact rows, headers |
-| Minimum hit target | `44 × 44px` | May be an invisible extension or a visible 44px control in dialogs and touch layouts |
-| Label seat | `9px` bottom, `10px` right | Keep `line-height: 1` |
-| Stack gap | `7px` | Page color shows between separate blocks |
-| Inline glyph gap | `8px` | Use `6px` inside tight buttons |
-| Symbol cell | `36px` | Sync disc and compact icon cells |
-| Small column | `144px` | Actions, menus, settings rail |
-| Medium column | `216px` | Account and space controls |
-| Main column | `432px` | Lists, forms, and dialogs |
-| Page inset | At least `16px` | Add safe-area insets on touch devices |
+## The seat — how words sit
 
-These widths are a compositional grid, not a requirement to make prose fit a
-small box. Combine the units for larger panels. At narrow widths, stack or swap
-whole regions instead of squeezing every cell around its text.
+- **Vertical:** `align-items:flex-end`, `line-height:1`, **9px bottom padding**. With
+  those three, the 13px label, the 14px triangles, and the 9px settings glyph self-align
+  to one shared bottom edge. Do not center vertically, do not use line-height to fake it.
+- **Horizontal:** `justify-content:flex-end`, **10px right padding**. The label's datum
+  is a straight vertical edge (a cell divider, a rail's docked edge, the box's own right
+  edge). Left padding is the entry side and varies by context: bar cell 0, hub cell 12,
+  space row 16, menu row 22, button 24.
+- **Inline gap** between a glyph and its word: **8px** (6px inside buttons).
+- **Tall rows (56px):** column layout, everything still right-flushed and bottom-seated;
+  metadata lines are 11px / 400 / soft, gap 4px, 10px top padding.
+- **Two-sided rows:** a noun or name seats bottom-left (`margin-right:auto`) while the
+  value or verb keeps bottom-right — the ceremony's step rows (`email · goblin@…`), the
+  account page's `oat works · switch account ▸`. The left seat is for what a row is
+  about; the right seat stays the actionable edge.
+- **The exception:** symbol-only marks — ×, +, the discs, a lone settings glyph in a
+  36px symbol cell — stay geometrically centered. They are punctuation, not words.
+- A divided pair (glass half / ink half) is two boxes fused at gap 0; the fill boundary
+  is the divider and each word seats against its own edges. No drawn line needed (the
+  reminder banner; the gate's `continue without account | join` rung — two half-rung
+  cells following the cluster).
 
-## Edges, shape, and depth
+## Type
 
-- Draw a surface edge with `box-shadow: 0 0 0 1px var(--ring)` so the ring does
-  not consume the 36px block. Use a real border where an input, separator, or
-  joined seam needs to participate in layout.
-- Use square corners on controls and containers that carry words. Rounded forms
-  are reserved for discs, switches, close controls, and the exposed end of a
-  bar or rail.
-- Do not add conventional elevation shadows. Tonk depth is page, frost, ring,
-  and value contrast.
-- Fused bar cells have no gap and use a one-pixel separator. Separate stack
-  rows have a 7px gap and no drawn divider. Never use both treatments at once.
-- When imagery appears, add an inset one-pixel neutral outline: pure black at
-  10% in light mode and pure white at 10% in dark mode.
+| register | family | weight / size / leading | where |
+|---|---|---|---|
+| chrome label | IBM Plex Sans Condensed | 600 · 13px · 1 | bar cells, hub cells, buttons, dialog headers, CTAs |
+| menu row | IBM Plex Sans Condensed | 500 · 13px · 1 | `tonk-mi` rows |
+| triangles ▸ ◂ | chrome font | **500 · 14px** | riding a word — smaller or heavier goes stubby |
+| reading text | IBM Plex Sans (normal) | 400 · 13.5px · 1.4–1.55 | dialog bodies, hub row descriptions, settings explainers |
+| emphasized name in reading text | IBM Plex Sans Condensed | 600 · 13.5px | e.g. a space name inside a sentence |
 
-## Component treatments
+Letter-spacing `.02em` on chrome. Chrome words are lowercase — authored lowercase;
+buttons and the hub's `.chrome` class also enforce `text-transform:lowercase`. User words are never transformed (the rename
+editor sets `text-transform:none`). No interpuncts in chrome; nothing competes with the
+circle. Fonts are a **host concern**: `@font-face` cannot live in shadow CSS, so the
+components only declare the stack — every host page must load IBM Plex Sans Condensed
+(hub also needs IBM Plex Sans and IBM Plex Mono).
 
-### Actions
+## Color — stone ink
 
-| Role | Treatment |
-| --- | --- |
-| Primary | Solid ink, on-ink label, square corners. The fill is the emphasis; no decorative icon is needed. |
-| Secondary | Flat frost or card surface with an ink ring |
-| Quiet | Bare text with a one-pixel underline; thicken the underline on hover |
-| Current location | Near-ink fill. It must not compete with the primary action. |
-| Disabled or busy | Reduced opacity plus the correct disabled cursor and accessible state |
+One ink with a hue: **`#38182A`** (wine/aubergine, hsl 326·40%·16%). The scheme is
+**stone·ink**: the ink is the brand, the ground is its own warm gray (hue 30) — related,
+not derived. Values come from the five-scheme study (`schemes.css`, `purple-ink` branch);
+the reasoning is `fabb/COLOR.md`.
 
-Soft ink is never used for an actionable label because it reads as disabled.
-Standard press feedback is `scale: 0.96` over `150ms`. Do not scale drag handles,
-long-press controls, or any control whose state change already provides the
-physical feedback.
+**The roles, which matter more than the values:**
 
-### Rows, fields, and menus
+- **Solid ink = the CTA register.** The coloring is the action. Primary buttons, the
+  `create new space +` row, the account page's `add account +` row, `create account`,
+  the gate's account door. No glyphs on primaries.
+- **Current = near-ink `--cur`** — the ink's hue, +10 lightness, slightly less
+  saturation. A place you are in never outshouts a thing you can do. Applied to the
+  hub's current tab (the account cell keeps it through settings — settings is an
+  account place) and `tonk-mi[current]`. **Current marks places, never facts**: the
+  signed-out `no spaces available` rung sheds it (soft on near-ink is unreadable;
+  found Sep 1).
+- **Soft ink = metadata only.** **An actionable word never wears soft** — soft on a
+  clickable reads as disabled.
+- **On-ink** for words on solid surfaces.
+- **Alerts blink** (opacity 1 → .55, 2.4s); they never take a color. Pointing at a
+  blinking thing calms it.
+- Selection and tap-highlight are ink on on-ink — never the browser's blue. Focus is a
+  2px ink outline, offset −2.
 
-- Compact action rows use the block geometry. Reading rows use normal Plex Sans
-  with `1.45–1.55` leading and may align on the baseline instead of using the
-  chrome seat.
-- Text fields are square and usually transparent with a one-pixel underline.
-  Labels or values align right when they complete a chrome row; long forms may
-  use the clearer conventional alignment.
-- Menus are stacks of blocks, not a rounded floating panel. Match the menu width
-  to its anchor column.
-- On hover-capable devices, secondary row actions may appear on approach. On
-  coarse pointers, keep the action available without relying on hover.
-- State the absence of a capability in plain text instead of leaving a dead or
-  unexplained control.
+**Component tokens** (the chrome carries **one scheme — light**; law 8):
 
-### Dialogs
+| token | value |
+|---|---|
+| `--fabb-ink` | `#38182a` |
+| `--fabb-ink-soft` | `#5b4953` |
+| `--fabb-on-ink` | `#f7f6f5` |
+| `--fabb-cur` | `#552e44` |
+| `--fabb-sep` | `rgba(56,24,42,.34)` |
+| `--fabb-hover` | `rgba(56,24,42,.06)` |
+| `--fabb-press` | `rgba(56,24,42,.12)` |
+| `--fabb-bg` (frost rest) | `rgba(253,252,252,.72)` + `blur(12px) saturate(1.5)` |
+| `--fabb-panel` (modal) | `rgba(253,252,252,.92)` — no blur at modal density |
+| `--fabb-ring` | `rgba(56,24,42,.85)`, drawn as `box-shadow: 0 0 0 1px` |
 
-Use native `<dialog>` behavior where possible. A Tonk dialog is a small cluster
-of independently edged blocks: header, body, optional explanatory or arming
-block, and actions. Separate blocks with 7px; fuse the action run at gap 0.
-The page scrim dims, not the dialog surface. The close control may form the one
-rounded exposed end.
+**Hub tokens, light** (page grammar on top of the same ink):
 
-Dialogs must remain usable in short viewports. Constrain and scroll the dialog
-body so the title, close control, and actions remain reachable.
+| token | value | | token | value |
+|---|---|---|---|---|
+| `--page` | `#e8e6e4` | | `--wash` / `--wash-2` | ink `.06` / `.12` |
+| `--ink` / `--soft` | `#38182a` / `#5b4953` | | `--wash-p` | `rgba(247,246,245,.16)` ⚠ see below |
+| `--on-ink` | `#f7f6f5` | | `--canvas` / `--stub-ink` | `#e4e2e0` / `#9f968e` |
+| `--cur` | `#552e44` | | `--veil` | `rgba(232,230,228,.9)` |
+| `--ring` / `--sep` | ink `.85` / `.28` | | `--dim` | `rgba(56,24,42,.32)` |
+| `--frost` / `--frost-solid` | `rgba(253,252,252,.72)` / `#f7f6f5` | | `--track` | `rgba(56,24,42,.22)` |
+| `--panel` / `--card` / `--card-hover` | `#d0ccc8` / `#fcfbfb` / `#eeedec` | | `--modal` | `rgba(253,252,252,.92)` |
 
-### Glyphs and branding
+⚠ **`--wash-p` is a wash of on-ink, not of ink.** It is the hover for solid-ink
+surfaces, and a 16% ink wash over an ink solid composites to exactly the resting color —
+a no-op hover (measured; the wash-p correction, Aug 20). The stone·ink block in
+`schemes.css` still carries the pre-correction ink-derived value — **do not copy it**.
 
-Product chrome uses simple geometry: discs, blocks, triangles, hairlines, and a
-small set of bespoke SVG marks. Prefer `currentColor` and square line caps. Do
-not introduce a general icon library just to decorate FABB chrome.
+**Hub dark twin** — the hub follows `prefers-color-scheme` and nothing else: no stored
+mode, no stamped attribute, no switch. The chrome floating over a space stays light
+either way (law 8).
 
-Use these text glyphs consistently:
+| token | value | | token | value |
+|---|---|---|---|---|
+| `--page` | `#161313` | | `--wash` / `--wash-2` | bone `.09` / `.15` |
+| `--ink` / `--soft` | `#e2dfdd` / `#c8c3bf` | | `--wash-p` | `rgba(34,28,29,.14)` |
+| `--on-ink` | `#221c1d` | | `--canvas` / `--stub-ink` | `#1c1718` / `#736265` |
+| `--cur` | regenerate via `schemes.gen.py` — same step toward the page from `#e2dfdd`; mono's `#cdc5c9` came from a different dark ink | | `--veil` | `#161313` — the page itself, no translucency in the dark |
+| `--ring` / `--sep` | bone `.55` / `.28` | | `--dim` | `rgba(0,0,0,.45)` |
+| `--frost` / `--frost-solid` | `rgba(29,24,25,.78)` / `#1b1718` | | `--track` | bone `.25` |
+| `--panel` / `--card` / `--card-hover` | `#3c3335` / `#261f20` / `#322a2b` | | `--modal` | `rgba(29,24,25,.88)` |
 
-| Glyph | Meaning |
-| --- | --- |
-| `▸` | Open or continue, normally paired with a word |
-| `◂` | Back, normally paired with a word |
-| `↖` | Leave the current environment |
-| `×` | Close |
-| `+` | Create or add |
+The dark stance, if the components' twin ever returns: **the hue belongs to the dark end
+of the ramp, not to the ink role** — bone ink in an aubergine room, never lavender ink.
 
-The sync disc communicates state through fill: filled for online/syncing,
-hollow for offline, and diagonally divided for deliberately paused. Every glyph
-still needs an accessible name.
+Two separator weights are deliberate: `.34` between bar cells (they sit on glass),
+`.28` on the hub's flat surfaces.
 
-## Interaction and motion
+## Edges
 
-Motion explains state or preserves spatial context. It is never decorative.
+- **Every chrome surface wears a ring**: `box-shadow: 0 0 0 1px var(--ring)` — outside
+  the box, so blocks stay exactly 36px. Never `border` for the ring (it eats the seat).
+- **Inside a bar**, flush cells divide with `border-left: 1px solid var(--sep)`.
+- **Inside a stack**, nothing divides — the 7px gap of page is the divider.
+- **Corners are square.** `border-radius:0` on buttons, cells, rows, headers, footers.
+  Curves live only where no word does: the circle, the × pill, the toggle, a dialog
+  rail's left caps, and the bar's single end cap.
+- **The bar ends on a straight line.** One 18px round cap, on the circle's end, traveling
+  with the circle when the bar flips (`18px 0 0 18px` unflipped, mirrored flipped,
+  `100px` when collapsed to the circle alone — the radius animates on the same 0.4s
+  easing). The tail is a cell, and cells are boxes.
+- Row caps (`tonk-mi[cap=left|right]`, the hub × pill) are 18px radii on the outer end
+  only. A dialog header takes its cap only when a side rail is slotted; the body stays
+  boxy, so the × pill sticks out past it.
+- No drop shadows anywhere. Depth is frost + ring, nothing else.
 
-| Timing | Use |
-| --- | --- |
-| `150ms ease-out` | Hover, press, opacity, and standard controls |
-| `200ms` | Toggle-disc movement |
-| `400ms cubic-bezier(.25,.46,.45,.94)` | FABB telescope, snap, and other spatial movement |
-| `450ms`, at most twice | Brief error or state flash |
-| `1.05s steps(1, end)` | Editable block cursor |
-| `2.4s` | Calm waiting or attention pulse |
-| `500ms` | Long-press threshold; this times the gesture and is not itself an animation |
+## Gaps and surfaces
 
-Use CSS transitions for interactive state changes so they can reverse when the
-user changes direction. Specify the properties; never use `transition: all`.
-Avoid bounce, glow, sweeping gradients, and staged entrance animation on routine
-product pages. Only add `will-change` after observing a real first-frame issue.
+- **Bar = one object**: gap 0, flush cells, one continuous frost surface, 1px separators.
+- **Stack = many blocks**: `gap:7px` of pure page. A menu's glass lives on **one masked
+  underlay** (`.w::before`) — the mask carves the 7px gaps back to page, rows paint
+  rings/washes/solids above it, capped rows keep their own frost (a rectangular underlay
+  can't follow the radii). **Never add a per-row `backdrop-filter`** — one filter per
+  stack is a performance law (13 live blur layers → 3, measured).
+- **Modal cluster = the same glass, denser**: blocks at `.92` (dark `.88`), the backdrop
+  dims at `.32` — **the page dims, the modal surface never does**. At modal density the
+  blur retires; only the glass color stays.
+- **Flat page = pre-composited frost**: in-flow hub blocks wear `--frost-solid` (same
+  look, no filter). A blur of a flat page into itself is pure GPU spend. Real
+  `backdrop-filter` frost belongs only to chrome that floats **over content** — today
+  that is the bar (and its stacks) over a space; nothing in the hub floats since the
+  account overlay died when the cells became tabs, so every hub page renders
+  filterless.
+- The more it floats, the more it ghosts: floating chrome `.72` / modal blocks `.92` /
+  flat page solid.
 
-Honor `prefers-reduced-motion`. Remove decorative transitions, waiting pulses,
-and flashes while preserving immediate state changes and gesture thresholds.
+## Geometry — the numbers
 
-## Responsive and accessible behavior
+| thing | number |
+|---|---|
+| block height | **36px** · tall row 56px · touch target 44px (invisible) |
+| seat | bottom **9px** · right **10px** · glyph-word gap 8px (buttons 6px) |
+| bar cells | `circle 36 · space 216 · share 144` = **396px** |
+| hub column | `account 144 · spaces 288` = **432px**, fixed, centered; bar fills it — the sheet's one cluster width (modals and the ceremony share it) |
+| menu width | its anchor rung's width (`--fabb-menu-w`: space stack 216, share stack 144) |
+| stack gap | 7px |
+| dialog | `max-width: 26rem` (wide: 36rem) · body inset `margin-right: 43px` (36 + 7) so the × pill sticks out · body padding 14px 18px |
+| button | 36 × min-144, radius 0 |
+| toggle | 32 × 18 outline wrapping two 14px disc positions — hollow left off, filled right on |
+| sync disc | 14px: filled = online+syncing · 2px-border hollow = offline · 135° half-fill = paused |
+| block cursor | 7 × 13 ink block on the last character, `mix-blend-mode:difference` |
+| float margin | `max(16px, safe-area + 8px)` per edge |
+| focus ring | 2px solid ink, offset −2 |
 
-- Adapt when content stops fitting, not from a guessed device name. Preserve an
-  existing component's tested breakpoints when editing it.
-- Swap, stack, or disclose whole regions. Do not compress 36px chrome until its
-  text becomes illegible. Keep user-authored text wrappable where the surface
-  permits it.
-- On coarse pointers, use in-place disclosure instead of hover flyouts. Keep
-  draggable chrome inside safe-area insets and above the on-screen keyboard.
-- Interactive targets are at least 44px in each dimension and must not overlap.
-- Use `:focus-visible`. The focus treatment must remain visible on both frost
-  and solid ink; use an inset on-ink/ink pair when one color is insufficient.
-- Use ink/on-ink selection colors and remove the browser-blue tap highlight only
-  when an equivalent pressed state is present.
-- Do not rely on hue, hover, motion, or an icon alone to communicate meaning.
-- Preserve DOM, reading, and focus order when a component changes visual order.
+## The bar (`tonk-bar`)
 
-## Voice
+- **Two states, no middle**: fully extended, or collapsed to the circle. No fold cell,
+  no folded state. When cells outgrow their room they **pan** horizontally by swipe
+  (hidden scrollbar, `touch-action:pan-x`); with `responsive`, under **330px** of host
+  width the bar auto-collapses.
+- **The circle answers three gestures**: **tap** collapses · **drag** moves · **hold
+  0.5s** pauses syncing (0.5s again resumes). Past 4px of movement the drag wins and the
+  hold dies. Offline, hold is a no-op — you can't pause what isn't syncing. The hold has
+  no press animation: the disc flipping at the threshold is the feedback.
+- **Drag snaps to the nearest edge.** Snapped right, the bar anchors there, telescopes
+  leftward, and **flips its bookends**: the circle takes the right end, cap and all.
+  **Content order never changes** (`space · share`). Flip is a real **DOM reorder** —
+  never `row-reverse`, never CSS `order` — so reading order, focus order, and visual
+  order stay one sequence. `_snap()` derives `flip` at the halfway line.
+- **Coarse pointers**: default seat bottom-right, stacks open upward, the snapped seat
+  persists per device, and a bottom-seated bar rides above the keyboard (visualViewport)
+  and settles back.
+- A live rename commits before the bar does anything else.
 
-Product-owned labels are short, direct, and lowercase. Prefer capability or
-state language such as `copy link`, `create account`, or `no spaces available`.
-Use “people” rather than “users” in product copy. Preserve the spelling and case
-of names and other user-authored content.
+## Stacks, flyouts, disclosure
 
-Errors should say what happened and what the person can do next. Success,
-warning, and destructive actions use the same ink palette; wording and layout
-carry their meaning.
+- A menu hangs 7px under its cell, at its rung's width. Menu cells carry
+  `aria-expanded`.
+- A `slot="sub"` child flies out sideways on hover-capable pointers. **A connected
+  flyout bridges its gap**: the parent row's surface spans the 7px (ring lines carried
+  across), so the pair reads as one piece.
+- **Flyouts flip against what clips them** — the nearest overflow-clipping ancestor,
+  not the viewport.
+- Below 640px or on coarse pointers, disclosure is **in place**: the picked sub-stack
+  replaces its parent in the same column at the rung width. Side-flight is gated to
+  pointers that can hover.
+- **Verbs go symbol-only on touch**; the word stays as the accessible name and the
+  desktop hover surface. While a verb speaks ("copied"), its icon steps aside for the
+  word, then returns.
+- A removed capability is **said, not hidden**: a visitor's share stack reads
+  `sharing needs an account`; the signed-out hub reads `no spaces available`. A dead
+  cell is worse chrome than an honest one.
 
-## Before shipping a UI change
+## Dialogs (`tonk-dialog`)
 
-- Reuse the surface's existing tokens and components.
-- Check the light and dark schemes that the surface actually supports.
-- Confirm label font, case, alignment, and user-text preservation.
-- Check 36px geometry, 44px hit targets, 7px gaps, and fixed column alignment.
-- Confirm primary, current, quiet, disabled, hover, press, focus, busy, and error
-  states are distinguishable without a semantic color.
-- Test keyboard order, coarse-pointer behavior, reduced motion, narrow width,
-  and short viewport height.
-- Inspect the rendered result. Static CSS review is not visual verification.
+Native `<dialog>`. The cluster is a stack: header block, body block, optional
+`slot="side"` rail (144px, wears the left caps), optional `slot="actions"` footer — a
+flush boxy run at **gap 0** that renders only when actions are slotted. Header takes its
+18px cap only when a rail is slotted. Primary action is solid ink — the coloring is the
+CTA, no glyphs. The × pill (36 × 36, right cap) sticks out past the body. Page dims
+`.32`; the surface never dims.
+
+## The hub (`hub.html`)
+
+- One centered **432px column** — logotype in flow above, then the two-cell bar, then
+  the current page, sharing one axis and one width. The bar **fills** the column (it
+  does not shrink-wrap), so it ends flush with the page below in every state.
+- **The two cells are tabs** (`account 144 · spaces 288`), and the tab you are on wears
+  current. **A tab is a place, not a popover**: selecting account *replaces* the spaces
+  list with the account page — no overlay, no outside-click dismissal, no open/closed
+  state. The account cell flushes its name left against the bar's end and carries no ▸.
+- Three pages hang from the bar. **Spaces**: the list, footed by the solid
+  `create new space +` row — a verb in the list it acts on, never a bar cell.
+  **Account**: `settings ⚙` first (under the name is where hands look for it), then a
+  two-sided `name · switch account ▸` row per other account (the current account is
+  the tab, never a row), then the solid `add account +` row. **Settings**: reached
+  through the account page; the account tab stays current there, and clicking it leads
+  back to the account page. Switching or adding an account lands on that account's
+  spaces.
+- The way home is **one hop from anywhere**: the spaces cell, or Escape.
+- The settings rail is a **run of boxy tabs above the body at every width** (a 144
+  side rail left the 432 body too narrow; no rail → no caps). The current tab fuses
+  into the body folder-style — seam covered by an explicit 1px `::after`, border not
+  ring at the joint.
+- Signed out, the bar states it: `create account` solid, the spaces rung reads its
+  fact in soft — and sheds the current coat (**current marks places, not facts**).
+  The rung **flexes into the room the account cell leaves it** — law 7's one
+  permitted flex: following the *column*, never the content.
+- **Phone (≤640px)**: both rungs stay — account holds its 144, spaces follows the
+  column; the spaces cell is the way back from the other pages on a screen with no
+  Escape. Hub margins: column `100vw − 32`, logo 28px.
+- Every in-flow hub block wears `--frost-solid` (no filter — nothing floats in the hub
+  any more). Dark comes from `prefers-color-scheme` alone.
+
+## Glyphs
+
+**No icon library — geometry, not illustration**: circles, blocks, triangles, hairlines.
+If it can't be said in those shapes it probably doesn't belong in the chrome.
+
+Unicode, rendered in the chrome font — triangles at **14px, weight 500**, 1:1 with text:
+
+| glyph | codepoint | meaning |
+|---|---|---|
+| ▸ | U+25B8 | go · open — always with a word riding it (`open ▸`) |
+| ◂ | U+25C2 | back (`back ◂`) — the pair is purely semantic; the directional fold reading retired with the fold cell |
+| ↖ | U+2196 | leaving the environment (`more ↖` → the directory) |
+| × | U+00D7 | close |
+| + | U+002B | new |
+
+Drawn marks — CSS plus three bespoke inline SVGs, all on `currentColor`/ink tokens:
+
+| mark | construction | meaning |
+|---|---|---|
+| sync disc | 14px circle: ink fill / 2px border / 135° half-fill + 1.5px border | syncing / offline / paused |
+| blinking disc | `fabb-blink`, opacity 1 → .55, 2.4s | changes to review (idle in the MVP) |
+| block cursor ▮ | 7 × 13 ink block, hard-blink 1.05s `steps(1,end)` | editable · focused |
+| rename glyph | 6 × 12 ink block — the cursor as a noun | rename |
+| toggle discs | hollow left / filled right, 14px | off / on |
+| settings | 9 × 9 SVG: two 1.2px lines, two 3 × 3 knobs, square caps | settings |
+| link | 10 × 10 SVG: two hollow rings, a hairline between — peers joined | copy link |
+| trash | 9 × 10 SVG: 3px handle knob, full-width lid hairline, solid body, square caps | remove |
+
+## Motion
+
+One easing: `cubic-bezier(.25,.46,.45,.94)`.
+
+| duration | what |
+|---|---|
+| 0.4s | telescope, snap, the traveling cap radius |
+| 0.2s | toggle disc |
+| 2.4s | calm blink (alerts) |
+| 1.05s | cursor hard-blink, `steps(1,end)` |
+| **0.5s** | the hold — times a hand, not a frame: exempt from `prefers-reduced-motion`, animates nothing |
+
+Everything else respects `prefers-reduced-motion`. A hidden tab pauses every animation
+(`.vispause`). Do not invent a new duration or easing.
+
+## Component contract (`fabb.js`)
+
+One classic script, no dependencies, no build, works from `file://` — never convert to
+an ES module. Eight shadow-DOM custom elements:
+
+| tag | role | key attrs | events |
+|---|---|---|---|
+| `tonk-fab` | the sync circle | `state=synced\|offline\|paused` · `alert` (idle in MVP) | `fabb-press` `fabb-pause` |
+| `tonk-bar` | the bar | `space` `state` `collapsed` `up` `flip` `responsive` `static` | `fabb-cell` `-collapse` `-rename` `-pause` `-snap` |
+| `tonk-menu` | a stack | `data-for=space\|share` (slotted) — width from its rung | — |
+| `tonk-mi` | one block | `chrome` `muted` `current` `tall` `label` `cap` · `slot="sub"` flies out | `fabb-pick` |
+| `tonk-dialog` | a cluster | `heading` `wide` · `slot="side"` `slot="actions"` | `fabb-open` `fabb-close` |
+| `tonk-button` | a block button | `variant=primary\|quiet` `solid` `disabled` | `fabb-press` |
+| `tonk-field` | editable value — cursor blinks at rest | `value` | `change` |
+| `tonk-toggle` | the switch, form-associated | `checked` | `change` |
+
+There is no `mode` attribute and no fold/`folded` — both retired Aug 27. Imperative
+surface: `open()` / `close()` / `editSpace()`.
+
+**Boundary rules, learned the hard way:**
+
+- Public skin API is the `--fabb-*` set only. Internal tokens are `--_ink`, `--_bg`, …
+  because a host's own `--ink` *will* arrive uninvited (it did: invisible button labels).
+  Every new knob is a `--fabb-*` with a `--_*` mirror. Never an unprefixed variable.
+- **Document styles beat `::slotted()`**: slotted glyphs take their colors explicitly
+  from the tokens, and doc classes must never share names with slotted classes (the
+  doc's `.g` once hijacked the menu icons).
+- Global wiring (document listeners, viewport lift, ResizeObserver, the menu's mask
+  observer) is rebuilt in `connectedCallback` — reparenting fires disconnect on every
+  `appendChild` move, and in-place disclosure reparents menus routinely.
+- Pre-upgrade property sets are lifted by the upgrade dance (`upgrades` list per class).
+- `:host([hidden]){display:none!important}` lives in the shared skin — every `:host`
+  display would otherwise defeat `[hidden]`.
+- Events are namespaced `fabb-*`, composed, and bubble.
+
+## Process
+
+- **The doc is the integration test.** A new component gets a section in `fabb.html`
+  whose stage renders the real element. If the spec page and the artifact can drift,
+  you built it wrong.
+- **A cut takes its chrome with it and leaves its law alone.** Removing a feature never
+  removes the stance that governed it (the blink primitive outlived the changes rung).
+- Chrome and doc are different registers: `fabb.html` / `onboard.html` prose may use
+  Gestalte and the doc grammar; nothing of the doc leaks into components.
+- The onboarding pattern: **the account question comes first.** Opening a space raises
+  the gate — a doorstep cluster over the dimmed space: the space's name as a header
+  value (seated right), an account row when the device holds one (its ▾ unfolds the
+  other accounts and the add door *into the cluster* — no floating menu), and a split
+  rung of two half-rung cells: `continue without account` on frost, the account door
+  on solid ink. The narrator speaks only when the device holds no account. "add an
+  account" is deliberately wide — create or sign back in; the passkey prompt settles
+  which, so the words never have to.
+- The ceremony re-dresses the same cluster in place — ink dim, one block per completed
+  step, a narrator block whose sentence and quiet verb advance; the growing cluster
+  *is* the progress (no dots, no "step 2 of 4"). There is **no ×**: the way out is the
+  gate's own frost cell, the ceremony's bare `◂ back to space` ghost word, or Escape.
+  Payoff: the dim lifts, the disc fills, the bar assembles.
+- **A decline is answered by silence.** After `continue without account` the reminder
+  banner waits (10s), then rises without taking focus, saying only "Add an account to
+  keep your data safe and access it from other devices." with a verb that answers the
+  device (`add an account ▸` / `join ▸`). Never an instant re-ask — a decline met on
+  the spot reads as a nag — and any door opening cancels the wait.
+- Voice: lowercase chrome; "people", not "users"; capability does the talking; ration
+  em dashes.
+- When you change a number, change it everywhere it derives: the seat constants, cell
+  widths, and token values appear in `fabb.js`, `fabb.html`, `hub.html`, and
+  `onboard.html`. Grep before you declare done.
+
+## Do not
+
+- Do not vertically center a chrome word, and do not left-flush one outside the two
+  sanctioned seats — a two-sided row's left noun, a terminal edge the label owns
+  (symbol-only marks center; everything else seats bottom-right).
+- Do not set labels in normal Plex Sans or body text in Condensed.
+- Do not introduce a second color, a semantic palette, or a colored destructive action.
+- Do not round a button, a cell, or a header. Do not add a drop shadow.
+- Do not put gaps between bar cells or drawn lines between stack blocks.
+- Do not let a width follow content; do not squeeze a cell at a breakpoint — swap rungs.
+- Do not import an icon set; compose from the glyph tables.
+- Do not uppercase chrome or transform user words.
+- Do not render triangles below 14px or above weight 500.
+- Do not put soft ink on anything clickable.
+- Do not add a `backdrop-filter` to a stack row, a modal block, or anything on a flat
+  page.
+- Do not theme the host view from the chrome, and do not let host styles into the
+  shadow roots.
+- Do not show a scrollbar on the pan strip.
+- Do not treat a tab's page as a popover: no outside-click dismissal, no open/closed
+  state — a tab is a place, and its page replaces the last one.
+- Do not answer a decline immediately — the reminder waits, then rises without taking
+  focus.
+- Do not dress a fact in current; current is for places (`no spaces available` stays
+  soft on frost).
+- Do not use Gestalte in chrome.
+- Do not re-litigate the decision log in passing.
