@@ -246,12 +246,33 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
             device_did,
         }),
         // The record is provider metadata, not the linked flag: an
-        // attachment whose account was never mounted is a link that did
-        // not complete, and re-linking heals it.
-        Some(_) if !linked(state).await => Ok(AccountStatus::Unregistered {
-            root_did: root.root_did.to_string(),
-            device_did,
-        }),
+        // attachment whose account was never mounted is a link that
+        // did not complete. That state is ordinary mid-enrollment — a
+        // ceremony writes the record and the replica mount lands as
+        // its own commit — so a status read that lands between the two
+        // must not report the signed-out answer a page acts on.
+        // Mounting is idempotent and serialized, so run it here and
+        // answer from the outcome: healed reads as the registered
+        // account it is, and only a profile the mount cannot configure
+        // (no address anywhere) stays unregistered.
+        Some(_) if !linked(state).await => {
+            let _ = super::account_state::ensure_account_state(state).await;
+            match load_provider(state, &root.root_did).await? {
+                Some(record) if linked(state).await => {
+                    let account_state = super::account_state::status(state).await;
+                    Ok(AccountStatus::Registered {
+                        root_did: root.root_did.to_string(),
+                        device_did,
+                        provider: record.provider().to_owned(),
+                        account_state,
+                    })
+                }
+                _ => Ok(AccountStatus::Unregistered {
+                    root_did: root.root_did.to_string(),
+                    device_did,
+                }),
+            }
+        }
         Some(record) => {
             let account_state = super::account_state::status(state).await;
             Ok(AccountStatus::Registered {
