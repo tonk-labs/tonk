@@ -268,20 +268,26 @@ async function reportInstallProgress(phase, completed, total, force = false) {
         // The client-message path below covers browsers without a worker-side
         // BroadcastChannel implementation.
     }
+    // Client discovery is only a compatibility fallback for browsers without
+    // worker-side BroadcastChannel. In particular, Chrome can leave
+    // `matchAll({ includeUncontrolled: true })` pending while this worker is
+    // still installing. Never let that optional lookup hold the verified
+    // generation transaction open.
     try {
-        const windows = await self.clients.matchAll({
-            type: "window",
-            includeUncontrolled: true,
-        });
-        for (const client of windows) {
-            client.postMessage({
-                type: "tonk-install-progress",
-                build: BUILD_ID,
-                phase,
-                completed,
-                total,
-            });
-        }
+        void self.clients
+            .matchAll({ type: "window", includeUncontrolled: true })
+            .then(windows => {
+                for (const client of windows) {
+                    client.postMessage({
+                        type: "tonk-install-progress",
+                        build: BUILD_ID,
+                        phase,
+                        completed,
+                        total,
+                    });
+                }
+            })
+            .catch(() => {});
     } catch {
         // Progress exists only to distinguish a slow verified install from a
         // silent stall; install correctness never depends on delivery.

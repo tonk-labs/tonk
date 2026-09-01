@@ -525,6 +525,19 @@ describe("cache naming", () => {
 });
 
 describe("immutable generation install", () => {
+  test("client discovery cannot stall verified install progress", async () => {
+    const { self } = withGlobals();
+    self.clients.matchAll = () => new Promise(() => {});
+    const mod = await loadWith({ exports: ["reportInstallProgress"] });
+
+    await Promise.race([
+      mod.reportInstallProgress("verify", 1, 2, true),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("install progress stalled on client discovery")), 100),
+      ),
+    ]);
+  });
+
   test("installs the complete verified UI and guest graph before going offline", async () => {
     const buildId = "complete-build";
     const wasm = new Uint8Array([9, 8, 7, 6]);
