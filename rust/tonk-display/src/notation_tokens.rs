@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn it_decorates_a_bare_symbol_value() {
-        let text = "view!:\n  model: greeting\n";
+        let text = "view!:\n  this: greeting\n";
         let marks = collect_marks(text);
         assert!(
             marks

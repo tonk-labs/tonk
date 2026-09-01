@@ -2,7 +2,9 @@
 WASM_BINDGEN_TEST_TIMEOUT = "60"
 
 [target.wasm32-unknown-unknown]
-runner = "wasm-bindgen-test-runner"
+# The Nix development and CI shells provide this native runner on PATH. It
+# keeps one browser alive while retaining a fresh origin for every test.
+runner = "wbg-pool"
 rustflags = [
   "--cfg",
   'getrandom_backend="wasm_js"',

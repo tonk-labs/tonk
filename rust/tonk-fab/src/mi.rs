@@ -106,7 +106,9 @@ impl CustomElement for TonkMi {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode", "muted", "chrome", "tall", "current", "cap"]
+        &[
+            "mode", "muted", "chrome", "tall", "current", "cap", "pressed",
+        ]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -133,6 +135,7 @@ impl CustomElement for TonkMi {
                 shadow::emit(&host, "fabb-pick", &detail);
             }));
         }
+        sync_pressed(this);
 
         // `.fly.sub` only applies when something is actually slotted —
         // without the check the bridge would paint across an empty gap on
@@ -179,6 +182,28 @@ impl CustomElement for TonkMi {
         if name == "mode" {
             shadow::apply_mode(this);
             propagate(this);
+        } else if name == "pressed" {
+            sync_pressed(this);
+        }
+    }
+}
+
+fn sync_pressed(this: &HtmlElement) {
+    let Some(root) = this.shadow_root() else {
+        return;
+    };
+    let Ok(Some(row)) = root.query_selector(".row") else {
+        return;
+    };
+    match this.get_attribute("pressed") {
+        Some(value) => {
+            let _ = row.set_attribute(
+                "aria-pressed",
+                if value == "true" { "true" } else { "false" },
+            );
+        }
+        None => {
+            let _ = row.remove_attribute("aria-pressed");
         }
     }
 }

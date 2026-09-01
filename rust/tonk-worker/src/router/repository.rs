@@ -327,7 +327,7 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-/// The `tonk:enable-sync` transient's target spot, read from the raw facts.
+/// The `tonk:enable-sync` transient's target space, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
@@ -368,7 +368,7 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
 /// name. The create forms carry it in a hidden `name` input (the wizard
 /// no longer asks for a name up front); the handler uniquifies it
 /// against the existing space labels via [`next_untitled_label`], and
-/// the user renames the spot later (the FAB's inline editable /
+/// the user renames the space later (the FAB's inline editable /
 /// `tonk/rename-repository`).
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const UNTITLED: &str = "Untitled";
@@ -495,7 +495,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 /// existing space labels ([`next_untitled_label`]) so consecutive
 /// creates read "Untitled", "Untitled 2", …. Once the space is created
 /// and seeded, the handler posts a `navigate` message back to the
-/// originating client so the creator lands inside the new spot. A
+/// originating client so the creator lands inside the new space. A
 /// remote/auth failure leaves a working local space, retryable from the
 /// topbar.
 ///
@@ -799,7 +799,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
     }
 }
 
-/// Attach a sync remote to an existing spot, then mint an invite when the
+/// Attach a sync remote to an existing space, then mint an invite when the
 /// transient asks for one.
 ///
 /// The share control dispatches this when a user accepts the offer to turn
@@ -994,7 +994,7 @@ async fn run_invite(
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
-    // remote lands its recipient in a spot that can never fill, so there is
+    // remote lands its recipient in a space that can never fill, so there is
     // nothing worth generating key material for. Refusing here also means a
     // refusal costs no delegation and rotates no credential.
     let remote_execution = match super::create_invite::resolve_remote_url(&tonk, &repository)
@@ -1029,7 +1029,7 @@ async fn run_invite(
             // `not-synced` is not a refusal either: the account has a
             // provider, this space simply has no remote yet, and
             // attaching one is this handler's next step rather than a
-            // question for the caller. Sharing a local-only spot is
+            // question for the caller. Sharing a local-only space is
             // exactly the moment it earns its remote.
             //
             // Without this the click had nowhere to go. The control's
@@ -1081,16 +1081,31 @@ async fn run_invite(
     // enable-sync attach: a foreign remote (self-hosted, a test server)
     // is not our access service, and refusing the mint over it would
     // make those unshareable.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
-            }
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        // Our own service said no, and waiting will not change the
+        // answer. A link minted anyway points at a space the service
+        // will not serve — the recipient meets "you don't have this
+        // space" — so the share is refused with the reason instead.
+        Err(error @ TonkWorkerError::Upstream { .. })
+            if remote_is_own_service(remote_execution.access_url.as_str())
+                && !super::customer::is_retryable(&error) =>
+        {
+            log!("Invite for repo '{repo_name}': the service refused to provision: {error}");
+            drop(tonk);
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                tonk_worker_api::share::BLOCKED_NOT_PROVISIONED,
+                &error.to_string(),
+                time,
+            )
+            .await;
+            return Ok(RunInvite::Settled);
         }
         Err(error) => {
-            log!("Invite for repo '{repo_name}': no prefix to provision with: {error}");
+            log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
         }
     }
 
@@ -1227,11 +1242,11 @@ async fn run_invite(
     Ok(RunInvite::Settled)
 }
 
-/// Record why a share click could not mint, on the spot's content-branch
+/// Record why a share click could not mint, on the space's content-branch
 /// session overlay, keyed by the subject.
 ///
 /// Overlay-only, exactly like the `Credential` a successful mint writes: a
-/// refusal is this device's answer to this click, not a property of the spot,
+/// refusal is this device's answer to this click, not a property of the space,
 /// and it must never replicate. The write schedules a poll, so the dispatcher's
 /// drain fans it out to the share control's subscription in the same pass as a
 /// successful mint would have been.
@@ -1308,7 +1323,7 @@ async fn publish_share_blocked(
 /// `remote` is already a ready-to-append `&remote=…` suffix. It is never
 /// empty: a repo with no shareable remote is refused before any of this
 /// runs, because an invite that carries no remote strands its recipient in
-/// a spot that can never fill. This is the shape the share view used to
+/// a space that can never fill. This is the shape the share view used to
 /// concatenate from three overlay fields; building it here gives it one
 /// definition and lets it be shortened.
 ///
@@ -1768,6 +1783,223 @@ async fn run_rename_repository(
     Ok(())
 }
 
+/// Post-commit handler for the [`CreateNotebook`] command.
+///
+/// The index's heading switcher fires this when the author names a
+/// notebook that does not exist. The handler writes it and then drops the
+/// author into it, both halves here because neither can happen in the
+/// page: the notebook's entity is derived when the fact is written, so the
+/// element that fired the command never learns it, and a service worker
+/// has no `window` to navigate with — the redirect goes back as a
+/// `navigate` message to the originating client, like the create-space and
+/// join redirects.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct CreateNotebookHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl CreateNotebookHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::CreateNotebook::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNotebookHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::CreateNotebook::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::CreateNotebook::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = decoded else { return };
+            let title = command.title.0;
+            let body = command.body.0;
+            // The repository the command fired in. Read from the origin
+            // rather than carried on the command: the notebook belongs to
+            // the space whose page the author was on, and a command that
+            // NAMED its target could be committed against any branch.
+            let repo = env.origin().repo.clone();
+            if title.trim().is_empty() || repo.trim().is_empty() {
+                log!("CreateNotebook: blank title or origin repo, skipping");
+                return;
+            }
+            log!("command CreateNotebook title={title} repo={repo}");
+
+            match create_notebook_inner(&env, &repo, &title, &body).await {
+                Ok(entity) => {
+                    // Drop the author into the notebook they just named.
+                    let href = format!("/space/{repo}/notebook/{entity}");
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
+                Err(error) => log!("CreateNotebook '{title}' failed: {error}"),
+            }
+        })
+    }
+}
+
+/// Write the notebook and return its entity.
+///
+/// Through notation rather than a typed assert: the notebook concept lives
+/// in the YAML library, not in `tonk-schema`, so the shape stays in one
+/// place. `notebook/named` is the title-only concept — a notebook with no
+/// blocks yet cannot satisfy `notebook`, which requires one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_notebook_inner(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    title: &str,
+    body: &str,
+) -> Result<String, RepositoryError> {
+    let tonk = env.state().read().await;
+    // The title is data, and goes in as a quoted scalar so a colon or a
+    // quote in a notebook's name cannot change the document's shape.
+    let document = format!(
+        "notebook/named!:\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let response = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook create failed: {e}")))?;
+
+    if response.commits.claims == 0 {
+        return Err(RepositoryError::Internal(
+            "notebook create wrote nothing".to_owned(),
+        ));
+    }
+
+    // Read the entity back by title.
+    //
+    // The commit summary reports entities keyed by VARIABLE, and an
+    // anchor-less head has no variable — so a write whose identity derives
+    // from its body reports none at all. Querying for the title we just
+    // wrote is what recovers it, and the derivation is deterministic, so
+    // this finds exactly the notebook the write created.
+    let lookup = format!(
+        "notebook/named:\n  this: ?this\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let found = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, lookup, false)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook lookup failed: {e}")))?;
+
+    let entity = found
+        .matches_after
+        .first()
+        .and_then(|block| block.results.first())
+        .map(|result| result.this.clone())
+        .ok_or_else(|| {
+            RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
+        })?;
+
+    // Carry the draft's body over, and always leave at least one block.
+    //
+    // Everything under the heading is content the author already typed, so
+    // the notebook they land in has to open with it — otherwise naming a
+    // draft silently discards the writing that prompted the name.
+    //
+    // A title-only create has no body at all, and a notebook with no block
+    // does not satisfy `tonk:notebook` (which requires one), so the page
+    // you land on reports a missing attribute instead of rendering. An
+    // empty first block is also just what a new document is: somewhere to
+    // start typing.
+    let mut blocks = draft_blocks(body);
+    // At least one block, or the notebook does not satisfy `tonk:notebook`
+    // (which requires one) and the page reports a missing attribute
+    // instead of rendering.
+    //
+    // Only one, though: an empty trailing block would be invisible anyway.
+    // `project` drops empty blocks, and markdown collapses trailing blank
+    // lines, so a document ending in one parses back without it. Landing
+    // ready to type is the CARET's job (`caret="end"`), not an extra
+    // block's.
+    if blocks.is_empty() {
+        blocks.push(String::new());
+    }
+    {
+        let mut document = String::new();
+        // Written back to front and chained forward by `next`, the shape
+        // the library's position rules expect (see `insert_notation`):
+        // a variable must be bound by an earlier assertion than the one
+        // naming it.
+        for (index, source) in blocks.iter().enumerate().rev() {
+            document.push_str("block/insert!:\n");
+            document.push_str(&format!("  this: ?b{index}\n"));
+            document.push_str(&format!("  notebook: {entity}\n"));
+            document.push_str(&format!("  source: {}\n", yaml_block_scalar(source)));
+            if index + 1 < blocks.len() {
+                document.push_str(&format!("  next: ?b{}\n", index + 1));
+            } else {
+                document.push_str("  next: case:none\n");
+            }
+            document.push_str("  prev: tonk:notebook/edge\n\n");
+        }
+        super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("draft body failed: {e}")))?;
+    }
+
+    Ok(entity)
+}
+
+/// The draft's blocks, heading and all.
+///
+/// The heading is KEPT. It also becomes the notebook's title, but a title
+/// is metadata: a notebook's document IS its blocks projected, so dropping
+/// the heading opens the new notebook without the line the author just
+/// wrote — they typed `# Counter` and land on an empty page.
+///
+/// Blocks are separated by a blank line, which is what prosemirror-markdown
+/// emits between top-level blocks.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn draft_blocks(body: &str) -> Vec<String> {
+    body.split("\n\n")
+        .map(str::trim)
+        .filter(|chunk| !chunk.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A source as a YAML block scalar, so markdown with newlines, colons and
+/// backticks survives without escaping.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn yaml_block_scalar(source: &str) -> String {
+    let mut out = String::from("|-\n");
+    for line in source.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
 /// Post-commit handler for the [`RemoveSpace`] command.
 ///
 /// Fired when the user confirms a Hub row's delete overlay. Removal is
@@ -1875,7 +2107,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 ///
 /// 1. Retract its replica record from the profile meta branch
 ///    ([`remove_replica_from_profile`]) — the Hub row's source of
-///    truth, so the spot disappears immediately. This is the commit
+///    truth, so the space disappears immediately. This is the commit
 ///    point; everything after is cleanup.
 /// 2. Evict the repository from the reactor cache
 ///    ([`Reactor::evict`](crate::Reactor::evict)) and forget it in the
@@ -2090,7 +2322,7 @@ async fn remove_replica_from_profile(
     // The account-level directory entry hangs on the repository's own
     // entity, so it needs its own sweep — filtered to the space
     // namespace, because other facts may key on that entity too.
-    // Removing it is what makes "delete spot" account-wide: every
+    // Removing it is what makes "delete space" account-wide: every
     // device's Hub lists the directory, not this device's replica row.
     let directory = meta
         .handle()
@@ -2308,12 +2540,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 /// space syncs.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
-    match super::customer::provider_address(tonk).await {
-        Some(provider) => Some(provider),
-        None => super::account::descriptor(tonk)
-            .await
-            .map(|descriptor| descriptor.remote().to_string()),
-    }
+    super::account_state::account_remote(tonk).await.ok()
 }
 
 /// Create a space local-only, split out so its `?` errors are logged
@@ -2403,23 +2630,25 @@ async fn enable_sync_inner(
     // local-only space earns its remote, so it is where the consumer row
     // has to be created.
     //
-    // Best effort, not fatal. A remote is not necessarily OUR access
-    // service — a self-hosted endpoint or a test server is attached the
-    // same way, and `/provider/add` against our own service is beside
-    // the point there. Refusing the attach on a failed provision would
-    // make those unreachable, so the attach proceeds and a space that
-    // does need provisioning surfaces it as a refused presign rather
-    // than a refused attach.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("enable sync '{key}': provisioning skipped: {error}");
-            }
+    // Best effort ONLY for a remote that is not our access service — a
+    // self-hosted endpoint or a test server is attached the same way,
+    // and `/provider/add` against our own service is beside the point
+    // there. But when the remote IS our service and it refuses with an
+    // answer waiting will not change, attaching anyway wires the space
+    // to an upstream that refuses every presign terminally: the sync
+    // loop hammers it forever and a link handed out against it answers
+    // "you don't have this space". That refusal fails the attach.
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        Err(error) if remote_is_own_service(remote) && !super::customer::is_retryable(&error) => {
+            return Err(RepositoryError::Internal(format!(
+                "enable sync '{key}': the service refused to provision this space, and \
+                 attaching its own remote anyway would wire the space to an upstream \
+                 that refuses every request: {error}"
+            )));
         }
         Err(error) => {
-            log!("enable sync '{key}': no root delegation to consent with: {error}")
+            log!("enable sync '{key}': provisioning skipped: {error}");
         }
     }
 
@@ -2905,6 +3134,61 @@ pub async fn create_repository(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision `subject` under this profile's account, repairing a stale
+/// consent first.
+///
+/// A space created before sign-in mints its consent to the account the
+/// profile held THEN — the onboarding account — and the stored chain
+/// does not change when the real account arrives. Presenting it earns
+/// `consent was issued to <onboarding>, not the invoking customer`, and
+/// treating that refusal as skippable wired spaces to remotes that then
+/// refused every presign terminally, with an invite already handed out:
+/// the recipient met "you don't have this space" while this device's
+/// sync hammered an unprovisionable upstream. The rotation sweep is the
+/// repair — it re-issues from the space's own key — so when the stored
+/// audience is not the current root it runs HERE, before anything is
+/// presented, rather than whenever the next boot chore gets to it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn provision_space_consumer(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), TonkWorkerError> {
+    let held = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => match super::identity::root_did(tonk).await {
+            Ok(root) if prefix.audience() != &root => None,
+            _ => Some(prefix),
+        },
+        // A space created before sign-in may have persisted no prefix at
+        // all — there was no account to delegate to. The rotation sweep
+        // below mints and installs it from the sealed seed.
+        Err(TonkWorkerError::NotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    let prefix = match held {
+        Some(current) => current,
+        None => {
+            log!("{subject}: consent missing or audienced to a retired account; re-issuing");
+            super::rotation::rotate_from_onboarding(tonk).await;
+            space_root_prefix(tonk, subject).await?
+        }
+    };
+    super::customer::provision_consumer(tonk, subject, &prefix, None).await
+}
+
+/// Whether `remote` is this deployment's own access service — the one
+/// party whose provisioning refusal is authoritative for it. A foreign
+/// remote (self-hosted, a test server) is attached and shared without
+/// asking our service's opinion.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn remote_is_own_service(remote: &str) -> bool {
+    let Ok(own) = super::customer::service_origin() else {
+        return false;
+    };
+    url::Url::parse(remote)
+        .map(|remote| remote.origin() == own.origin())
+        .unwrap_or(false)
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
@@ -3605,7 +3889,7 @@ pub async fn get_repository(
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
-    // route performs, so a second device can address a spot straight
+    // route performs, so a second device can address a space straight
     // from the synced account directory. A no-op for mounted repos.
     // The outcome rides the not-found error: a swallowed mount failure
     // turns an explainable miss into a bare 404.
@@ -4385,6 +4669,10 @@ where
                 })?;
         }
     }
+    // Deliver the fresh snapshots the refresh scheduled for the rebound
+    // subscriptions: without this drain a live view over a just-wired
+    // branch waits for a commit that a quiet space never makes.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(effective)
 }
@@ -4532,7 +4820,7 @@ mod space_config_tests {
 /// decode) so an older, frozen profile descriptor still triggers it. That
 /// tolerance cuts both ways: a renamed attribute on either side doesn't
 /// fail — the fact simply never matches, the field reads as absent, and
-/// the spot is created missing the remote with nothing logged. Pin both
+/// the space is created missing the remote with nothing logged. Pin both
 /// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
@@ -4548,12 +4836,12 @@ mod form_attribute_tests {
     ///
     /// It used to: the Hub filled a hidden input from
     /// `<tonk-default-remote auto>`, and this test pinned the two
-    /// spellings together. Then a spot stopped earning its remote at
+    /// spellings together. Then a space stopped earning its remote at
     /// creation — the worker resolves where a space syncs from the
-    /// account's own registration, so a spot made before anyone
+    /// account's own registration, so a space made before anyone
     /// registers stays local until it is shared. A form that names a
     /// remote would wire one anyway, which is the behaviour
-    /// `it_creates_a_local_only_spot_from_the_hub_wizard` refuses.
+    /// `it_creates_a_local_only_space_from_the_hub_wizard` refuses.
     ///
     /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
     /// still declares the field keeps working; it is simply no longer
@@ -4562,7 +4850,7 @@ mod form_attribute_tests {
     fn it_declares_no_remote_on_the_create_form() {
         assert!(
             !PROFILE_LIBRARY.contains(REMOTE_ATTR),
-            "profile.yaml declares `the: {REMOTE_ATTR}` again — a spot \
+            "profile.yaml declares `the: {REMOTE_ATTR}` again — a space \
              would wire a remote at creation instead of earning one when \
              it is shared",
         );
@@ -4939,29 +5227,45 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let rows: Vec<tonk_schema::CustodiedSeed> = branch
+        let principals: Vec<tonk_schema::SecretPrincipal> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::CustodiedSeed> {
-                this: Term::var("this"),
-                subject: Term::from(tonk_schema::domain::custody::Subject(subject.this())),
+            .select(Query::<tonk_schema::SecretPrincipal> {
+                this: Term::from(subject.this()),
                 kind: Term::var("kind"),
-                recipient: Term::var("recipient"),
-                sealed: Term::var("sealed"),
+                seed: Term::var("seed"),
             })
             .perform(&tonk.operator)
             .try_vec()
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1, "one custodied space seed");
-        assert_eq!(rows[0].kind.0.to_string(), tonk_schema::SeedKind::SPACE);
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].sealed.0).unwrap();
+        assert_eq!(principals.len(), 1, "one sealed space principal");
+        assert_eq!(
+            principals[0].kind.0.to_string(),
+            tonk_schema::SeedKind::SPACE
+        );
+
+        let rows: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the principal names a real message");
+        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
         let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
             crate::router::tests::test_root_seed(&tonk.profile_name),
         ));
         let opened = account
-            .encryption_key()
-            .open(&sealed, &subject)
+            .secret()
+            .reveal(&sealed, &subject)
             .expect("the account key opens the custodied seed");
         let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
             .await
@@ -5567,6 +5871,51 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Entries the first result row folds together under `field` — an
+    /// open collection query returns ONE row per entity, its entries
+    /// keyed inside the field's dictionary.
+    async fn entry_count(state: &AppState, repo: &str, query: &str, field: &str) -> usize {
+        rows(state, repo, query)
+            .await
+            .first()
+            .and_then(|row| row.get(field))
+            .and_then(|value| value.as_object())
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
+    /// Run a query document and return its result rows, as JSON.
+    async fn rows(
+        state: &AppState,
+        repo: &str,
+        query: &str,
+    ) -> Vec<std::collections::BTreeMap<String, serde_json::Value>> {
+        let guard = state.read().await;
+        let response = evaluate_body(&guard, repo, "main", query.to_owned(), false)
+            .await
+            .unwrap_or_else(|e| panic!("query failed: {e}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| {
+                block
+                    .results
+                    .iter()
+                    .map(|result| {
+                        // `this` is the match's entity, carried beside the
+                        // bound fields rather than among them.
+                        let mut fields = result.fields.clone();
+                        fields.insert(
+                            "this".to_owned(),
+                            serde_json::Value::String(result.this.clone()),
+                        );
+                        fields
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The FAB space-rename must PERSIST. The repository banner writes a
     /// transient `tonk/rename-repository` command (its `subject` is the repo's
     /// own DID, `name` the typed value); the standard-library rule fires on
@@ -5596,7 +5945,7 @@ mod tests {
 
         let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             3,
             "the seed places three blocks"
         );
@@ -5608,7 +5957,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             4,
             "a placement adds an entry under its key"
         );
@@ -5630,10 +5979,367 @@ mod tests {
         )
         .await;
         assert_eq!(
-            count(&state, repo, entries).await,
+            entry_count(&state, repo, entries, "block").await,
             3,
             "a removal retracts the entry"
         );
+    }
+
+    /// A RUN of blocks inserted in ONE transaction lands in document order.
+    ///
+    /// This is the case a per-block command cannot express: block 2's
+    /// position depends on block 3's, which does not exist until the same
+    /// commit derives it. The chain (`next`) plus the recursive position
+    /// rules resolve the whole run in a single round; a design that derived
+    /// each block from its PREDECESSOR needed the predecessor's position to
+    /// survive into a second round, which a transient command does not.
+    #[dialog_common::test]
+    async fn it_inserts_a_run_of_blocks_in_document_order() {
+        let (_app, state, key) = fresh_repo("test-notebook-insert-run").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        // Exactly what `insert_notation` emits for three blocks appended
+        // after the seed's last block: written back to front, chained
+        // forward by variable, every one anchored on the block the run
+        // follows.
+        seed(
+            &state,
+            repo,
+            r#"block/insert!:
+  this: ?b2
+  notebook: id:notebook/scratch
+  source: |-
+    three
+  next: case:none
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b1
+  notebook: id:notebook/scratch
+  source: |-
+    two
+  next: ?b2
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b0
+  notebook: id:notebook/scratch
+  source: |-
+    one
+  next: ?b1
+  prev: id:notebook/scratch/3
+"#,
+        )
+        .await;
+
+        let blocks = count(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let chains = count(&state, repo, "block/chain:\n  this: ?this\n  next: ?next\n").await;
+        let positions = count(&state, repo, "block/position:\n  this: ?this\n  at: ?at\n").await;
+
+        // An open collection query folds per entity: ONE row for the
+        // notebook, its entries under `block` keyed by position. Order
+        // lives in the KEYS: positions are fractional indices, ordered
+        // lexicographically.
+        let placed = rows(
+            &state,
+            repo,
+            "notebook:\n  this: id:notebook/scratch\n  block: {?block/key: ?block}\n",
+        )
+        .await;
+        let entry_map = placed
+            .first()
+            .and_then(|row| row.get("block"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            entry_map.len(),
+            6,
+            "three seeded blocks plus the three inserted ones \
+             (blocks={blocks} chains={chains} positions={positions} placed={placed:#?})"
+        );
+        let sources = rows(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let source_of: std::collections::BTreeMap<String, String> = sources
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("this")?.as_str()?.to_owned(),
+                    row.get("source")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+
+        // Position keys are fractional indices: their LEXICOGRAPHIC
+        // order is the document order, which `serde_json`'s BTreeMap
+        // iteration yields directly.
+        let document: Vec<&str> = entry_map
+            .values()
+            .filter_map(|block| source_of.get(block.as_str()?))
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            document.len(),
+            6,
+            "every placed block resolves to a source: placed={placed:#?}"
+        );
+        assert_eq!(
+            &document[3..],
+            &["one", "two", "three"],
+            "the run reads in document order, after the seeded blocks: {document:#?}"
+        );
+    }
+
+    /// The create handler writes a titled notebook and reports its entity.
+    ///
+    /// The entity is what makes the redirect possible: the page cannot
+    /// learn it (the command is transient and swept before any
+    /// subscription sees it), so the handler that writes the notebook is
+    /// the one that navigates to it.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_and_reports_its_entity() {
+        let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(&env, repo, "Groceries", "")
+            .await
+            .expect("the create writes a notebook");
+        assert!(!entity.is_empty(), "and reports the entity to navigate to");
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titled: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titled.contains(&"Groceries"),
+            "the notebook is readable by title: {named:#?}"
+        );
+        assert!(
+            named
+                .iter()
+                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity.as_str())),
+            "and the reported entity is the one written: {entity} not in {named:#?}"
+        );
+    }
+
+    /// A title with a colon or a quote must not reshape the notation.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_whose_title_carries_yaml_syntax() {
+        let (_app, state, key) = fresh_repo("test-notebook-title-syntax").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let awkward = r#"Notes: "on" quoting"#;
+        super::create_notebook_inner(&env, repo, awkward, "")
+            .await
+            .expect("an awkward title still writes");
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titled: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titled.contains(&awkward),
+            "the title survives verbatim: {named:#?}"
+        );
+    }
+
+    /// Naming a draft keeps what was already written under the heading.
+    ///
+    /// The body is the reason the index is a real notebook rather than a
+    /// search box: the author types into it before the notebook exists,
+    /// and naming it must not throw that away.
+    #[dialog_common::test]
+    async fn it_carries_a_drafts_body_into_the_notebook() {
+        let (_app, state, key) = fresh_repo("test-notebook-draft-body").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(
+            &env,
+            repo,
+            "Groceries",
+            "# Groceries\n\nmilk and eggs\n\n```dialog-yaml\nconcept:\n```",
+        )
+        .await
+        .expect("the draft creates a notebook");
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.contains(&"milk and eggs"),
+            "the body's prose carries over: {blocks:#?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.contains("dialog-yaml")),
+            "and so does a fence: {blocks:#?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.starts_with("# Groceries")),
+            "and so does the heading: it is the title AND the document's \
+             first line, so dropping it opens the notebook blank: {blocks:#?}"
+        );
+    }
+
+    /// A title-only create still leaves a block.
+    ///
+    /// `tonk:notebook` requires one, so a blockless notebook renders as a
+    /// missing-attribute callout instead of a document — which is what the
+    /// author lands on right after naming it.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_with_a_block_from_a_bare_title() {
+        let (_app, state, key) = fresh_repo("test-notebook-bare-title").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        // What the switcher sends for a title with nothing typed under it.
+        let entity = super::create_notebook_inner(&env, repo, "Counter", "# Counter")
+            .await
+            .expect("a bare title creates a notebook");
+
+        let placed = count(
+            &state,
+            repo,
+            &format!("notebook:\n  this: {entity}\n  title: ?title\n  block: {{?key: ?block}}\n"),
+        )
+        .await;
+        assert!(
+            placed > 0,
+            "the notebook resolves as `tonk:notebook`, so the page renders"
+        );
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.iter().any(|s| s.starts_with("# Counter")),
+            "the heading is kept: {blocks:#?}"
+        );
+        assert_eq!(
+            sources.len(),
+            1,
+            "and it is the ONLY block: an empty second one would be dropped \
+             by `project` and collapsed by markdown, so the caret does that \
+             job instead: {blocks:#?}"
+        );
+    }
+
+    /// A rename must not also CREATE. Both commands are transient and both
+    /// carry a title, so they decode from the same event unless their
+    /// attributes differ.
+    #[dialog_common::test]
+    async fn it_does_not_create_a_notebook_when_retitling() {
+        let (_app, state, key) = fresh_repo("test-notebook-retitle-only").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let before = count(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+
+        seed(
+            &state,
+            repo,
+            "notebook/retitle!:\n  subject: id:notebook/scratch\n  title: \"Renamed\"\n",
+        )
+        .await;
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        assert_eq!(
+            named.len(),
+            before,
+            "a rename renames in place, it does not add one: {named:#?}"
+        );
+        let titles: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(titles.contains(&"Renamed"), "and it took: {named:#?}");
     }
 
     #[dialog_common::test]
@@ -5716,9 +6422,14 @@ mod tests {
             CORE.contains("tonk-display > [slot][hidden]"),
             "inactive pending and refusal slots should not survive a ready result",
         );
-        assert!(CORE.contains("local spot &middot; no sync remote"));
+        assert!(CORE.contains("sharing unavailable"));
         assert!(
-            CORE.contains("Use connect in the condition banner, then create the agent link again.")
+            !CORE.contains("Use connect in the condition banner"),
+            "the refusal must not prescribe a repair that is absent or inappropriate"
+        );
+        assert!(
+            CORE.contains("<p>{detail}</p>"),
+            "the worker-owned complete sentence is the only refusal body"
         );
     }
 
@@ -5938,15 +6649,19 @@ mod tests {
         );
     }
 
-    /// Reconciling the cached handle swaps in a fresh `BranchState`, but it
-    /// must carry the live subscriptions across so in-flight SSE streams
-    /// don't silently freeze on the discarded handle.
+    /// Reconciling the cached handle refreshes it IN PLACE, so everything
+    /// hanging off the `BranchState` — live subscriptions AND the session
+    /// overlay — survives. An earlier version opened a fresh handle and
+    /// swapped it in: the swap adopted subscriptions but a fresh open
+    /// mints an empty overlay, so a tab's `tonk:site` stamp vanished the
+    /// moment the share flow wired a remote and the space view sat on its
+    /// placeholder dot indefinitely.
     #[dialog_common::test]
-    async fn it_keeps_live_subscriptions_when_refreshing_a_branch() {
+    async fn it_keeps_subscriptions_and_overlay_when_refreshing_a_branch() {
         use std::sync::Arc;
 
         use dialog_query::{ConceptQuery, Query};
-        use tonk_schema::meta::Name;
+        use tonk_schema::meta::{Name, name::Referent};
 
         let (app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
         let repo = repo.as_str();
@@ -5955,7 +6670,7 @@ mod tests {
         // Register a subscription on the cached `main` and note which
         // `BranchState` it landed on. Hold the subscriber so its receiver
         // (and the paired sender in the state) stays connected.
-        let subscriber;
+        let mut subscriber;
         let before_ptr;
         {
             let guard = state.read().await;
@@ -5971,6 +6686,34 @@ mod tests {
                 .expect("subscribe");
             before_ptr = Arc::as_ptr(&session.state);
         }
+        // Drain whatever subscribing itself delivered, so anything that
+        // arrives next can only be a later write's doing.
+        while subscriber.receiver.try_recv().is_ok() {}
+
+        // An ephemeral session fact — the kind a tab's `tonk:site` stamp
+        // or the sync status is made of. It must survive the refresh.
+        {
+            let guard = state.read().await;
+            guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .overlay()
+                .assert(Name {
+                    this: "id:overlay-survivor".parse().expect("entity"),
+                    entity: Referent("id:overlay-target".parse().expect("entity")),
+                })
+                .write()
+                .perform(&guard.operator)
+                .await
+                .expect("overlay write");
+            guard.reactor.run_scheduled_polls(&guard.operator).await;
+        }
+        assert!(
+            subscriber.receiver.try_recv().is_ok(),
+            "the overlay write must reach the live subscriber",
+        );
+        while subscriber.receiver.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -5983,14 +6726,40 @@ mod tests {
             .await
             .expect("re-acquire main");
         assert!(
-            !std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
-            "refresh must swap in a fresh BranchState",
+            std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
+            "refresh must keep the cached BranchState, not swap it",
         );
         assert_eq!(
             session.state.subscriptions().lock().len(),
             1,
             "the live subscription must survive the refresh",
         );
+        // The refreshed handle must still track the wired upstream…
+        assert!(
+            session.state.branch.upstream().is_some(),
+            "the in-place refresh must pick up the wired upstream",
+        );
+        // …and still fold the session overlay: a fresh subscriber's
+        // snapshot carries the ephemeral fact. Before the in-place
+        // refresh this was the share-flow regression — the swapped-in
+        // handle's empty overlay silently dropped every session fact.
+        let mut fresh = session
+            .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
+            .expect("subscribe after refresh");
+        // A new subscriber is Pending until a poll serves its snapshot;
+        // drive one the way the request dispatcher would.
+        guard.reactor.schedule_poll(Arc::clone(&session.state));
+        guard.reactor.run_scheduled_polls(&guard.operator).await;
+        let mut snapshot = Vec::new();
+        while let Ok(bytes) = fresh.receiver.try_recv() {
+            snapshot.extend_from_slice(&bytes);
+        }
+        let snapshot = String::from_utf8_lossy(&snapshot);
+        assert!(
+            snapshot.contains("overlay-survivor"),
+            "the session overlay must survive the refresh; snapshot: {snapshot}",
+        );
+        drop(fresh);
         drop(subscriber);
     }
 
@@ -6206,7 +6975,7 @@ mod tests {
 
     /// The refusal class follows the account's registration state.
     ///
-    /// Same spot, same missing upstream, three different remedies: an
+    /// Same space, same missing upstream, three different remedies: an
     /// account that is served can attach one, an enrolled account is
     /// waiting on its email, and an unregistered one has to register.
     #[dialog_common::test]
@@ -6256,7 +7025,7 @@ mod tests {
         );
     }
 
-    /// A share click on a spot with no upstream mints nothing and leaves a
+    /// A share click on a space with no upstream mints nothing and leaves a
     /// refusal on the overlay instead.
     ///
     /// The class says WHY there is no upstream. This profile has never
@@ -6311,7 +7080,7 @@ mod tests {
     /// POST a remote config to `key`, exactly as the topbar and the share
     /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
-    /// a spot that syncs but cannot mint.
+    /// a space that syncs but cannot mint.
     async fn post_remote(
         app: &Router,
         key: &str,
@@ -6352,7 +7121,7 @@ mod tests {
     /// A second attach does not repoint a remote that is already there.
     ///
     /// The share prompt builds its endpoint from the page's origin, which
-    /// need not be the origin the spot actually syncs through, and dialog
+    /// need not be the origin the space actually syncs through, and dialog
     /// leaves an existing remote as-is — so the meta mirror has to keep
     /// describing the remote that is really there rather than adopting the
     /// caller's.
@@ -6434,11 +7203,11 @@ mod tests {
             .collect()
     }
 
-    /// Attaching a remote through the command targets the EXISTING spot. The
+    /// Attaching a remote through the command targets the EXISTING space. The
     /// `space/enable-sync` command in `core.yaml` shares `CreateSpace`'s trigger
-    /// attribute and so mints a new spot instead; this guards against that.
+    /// attribute and so mints a new space instead; this guards against that.
     #[dialog_common::test]
-    async fn it_attaches_the_remote_to_the_existing_spot() {
+    async fn it_attaches_the_remote_to_the_existing_space() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let (key, subject) = put_repo_info(&app, "test-enable-sync").await;
         let before = existing_space_labels(&state).await.len();
@@ -6448,11 +7217,11 @@ mod tests {
         assert_eq!(
             existing_space_labels(&state).await.len(),
             before,
-            "no new spot was created"
+            "no new space was created"
         );
         assert!(
             has_remote_upstream(&state, &key).await,
-            "the existing spot now tracks origin/main"
+            "the existing space now tracks origin/main"
         );
     }
 
@@ -6486,46 +7255,53 @@ mod tests {
         );
     }
 
-    /// The gate reads the customer's status, not merely whether an
-    /// account exists: `Registered` (enrolled, email unconfirmed) is as
-    /// unservable as no registration at all.
+    /// The gate reads what the account actually proved, not merely that
+    /// one exists: enrolled-but-unconfirmed is as unservable as no
+    /// registration at all.
+    ///
+    /// One account per state, because the facts are monotone — an
+    /// activation is never unmade by a later enrollment answer, which is
+    /// the race the three-fact shape exists to prevent. Reusing one
+    /// account across states would assert the opposite.
     #[dialog_common::test]
     async fn it_treats_an_enrolled_but_unconfirmed_customer_as_inactive() {
-        let (_app, state, _key) = fresh_repo("test-registered-inactive").await;
+        use tonk_account::customer::CustomerStatus;
 
-        let tonk = state.read().await;
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Registered,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Registered customer awaits email activation and is not servable",
-        );
+        let (_app, registered, _k1) = fresh_repo("test-registered-inactive").await;
+        {
+            let tonk = registered.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Registered)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Registered customer awaits email activation and is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Suspended,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            !crate::router::customer::is_active(&tonk).await,
-            "a Suspended customer is not servable",
-        );
+        let (_app, suspended, _k2) = fresh_repo("test-suspended-inactive").await;
+        {
+            let tonk = suspended.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Suspended)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                !crate::router::customer::is_active(&tonk).await,
+                "a Suspended customer is not servable",
+            );
+        }
 
-        crate::router::customer::record_test_customer(
-            &tonk,
-            tonk_account::customer::CustomerStatus::Active,
-        )
-        .await
-        .expect("the customer record saves");
-        assert!(
-            crate::router::customer::is_active(&tonk).await,
-            "an Active customer is the one state the service serves",
-        );
+        let (_app, active, _k3) = fresh_repo("test-active-servable").await;
+        {
+            let tonk = active.read().await;
+            crate::router::customer::record_test_customer(&tonk, CustomerStatus::Active)
+                .await
+                .expect("the customer record saves");
+            assert!(
+                crate::router::customer::is_active(&tonk).await,
+                "an Active customer is the one state the service serves",
+            );
+        }
     }
 
     /// The account's provider is read from the registration fact, so
@@ -6608,15 +7384,16 @@ mod tests {
         );
     }
 
-    /// An `Active` account whose provider write has not landed yet
-    /// still reads as served.
+    /// Activation carries its provider, so "active with no address"
+    /// cannot arise.
     ///
-    /// Activation writes the status and the address, and a space created
-    /// in the moment between them must not come up local-only. Reading
-    /// this as `AwaitingActivation` would tell an activated user to go
-    /// confirm an email they already confirmed.
+    /// The old shape wrote a status string and an address as separate
+    /// fields, so a space created between the two writes came up
+    /// local-only and the user was told to confirm an email they had
+    /// already confirmed. `tonk:account/active` carries both or neither:
+    /// there is no in-between to fall into.
     #[dialog_common::test]
-    async fn it_treats_an_active_account_without_a_recorded_provider_as_served() {
+    async fn it_records_no_activation_without_a_provider_to_serve_from() {
         use crate::router::customer::{
             Registration, is_active, record_customer_status, registration,
         };
@@ -6625,18 +7402,37 @@ mod tests {
         let (_app, state, _key) = fresh_repo("test-active-no-provider").await;
         let tonk = state.read().await;
 
+        // An activation answer that names no provider records the
+        // registration and withholds the activation, rather than
+        // claiming served with nowhere to serve from.
         record_customer_status(&tonk, CustomerStatus::Active, "who@example.test", None)
             .await
             .expect("the status records");
 
         assert!(
-            matches!(registration(&tonk).await, Registration::Served { .. }),
-            "an Active account is served whether or not its address landed yet",
+            matches!(
+                registration(&tonk).await,
+                Registration::AwaitingActivation { .. }
+            ),
+            "no provider means nothing was activated",
         );
+        assert!(!is_active(&tonk).await);
+
+        // The answer that names one activates.
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Active,
+            "who@example.test",
+            Some("https://service.example/ucan/"),
+        )
+        .await
+        .expect("the status records");
+
         assert!(
-            is_active(&tonk).await,
-            "the create gate must not withhold a remote from an activated account",
+            matches!(registration(&tonk).await, Registration::Served { .. }),
+            "an activation with a provider is served",
         );
+        assert!(is_active(&tonk).await);
     }
 
     /// Registration reads as one of four states, and the provider

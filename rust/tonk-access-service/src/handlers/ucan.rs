@@ -39,9 +39,57 @@ pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Res
     Ok(response.with_headers(headers))
 }
 
+/// The largest `/ucan/` body this service will read.
+///
+/// Every legitimate request is a container of a few signed tokens: the
+/// biggest is an enrollment, carrying an invocation, its delegation
+/// chain, and three small blocks — low single-digit KiB. The default
+/// leaves an order of magnitude for deep chains while keeping the
+/// endpoint from being used as a store.
+///
+/// `UCAN_MAX_BODY_BYTES` overrides it, so a future command that
+/// legitimately carries more does not need a code change to unblock.
+const DEFAULT_MAX_BODY_BYTES: u64 = 64 * 1024;
+
+/// The configured body limit, or [`DEFAULT_MAX_BODY_BYTES`].
+fn max_body_bytes(env: &Env) -> u64 {
+    env.var("UCAN_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|value| value.to_string().parse().ok())
+        .unwrap_or(DEFAULT_MAX_BODY_BYTES)
+}
+
+/// What the caller said it was sending, when it said.
+fn declared_length(req: &Request) -> Option<u64> {
+    req.headers()
+        .get("content-length")
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse().ok())
+}
+
+/// `413`, naming the limit so a caller can act on it.
+fn too_large(limit: u64) -> Result<Response> {
+    Ok(Response::from_json(&serde_json::json!({
+        "error": {
+            "code": "PAYLOAD_TOO_LARGE",
+            "message": format!("request body exceeds the {limit}-byte limit for /ucan/"),
+        }
+    }))?
+    .with_status(413))
+}
+
 /// POST /ucan/ → Authorize UCAN invocation and return presigned S3
 /// request, recording the invocation in ingest under `ctx.wait_until`.
 pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+    // Refused on size alone, before anything is decoded: a body this
+    // large is not a UCAN we failed to parse, and running the parser
+    // over it is the work the limit exists to avoid.
+    if let Some(declared) = declared_length(&req)
+        && declared > max_body_bytes(&env)
+    {
+        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+    }
     let body_bytes = match req.bytes().await {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -52,6 +100,10 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             return Ok(with_cors_headers(refusal.to_response()?));
         }
     };
+    // A request that declared nothing, or lied about it.
+    if body_bytes.len() as u64 > max_body_bytes(&env) {
+        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+    }
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Registration is not
@@ -162,8 +214,6 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
         .map_err(map_access_error)?;
 
     #[cfg(target_arch = "wasm32")]
-    screen_consumer_state(body_bytes, env).await?;
-    #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
 
     // Write permits carry the declared size as a signed Content-Length,
@@ -184,26 +234,6 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn screen_consumer_state(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
-    use crate::store::{ConsumerDeletionState, Store, d1::D1Store};
-
-    let Some(subject) = crate::deletion::subject(body_bytes) else {
-        return Ok(());
-    };
-    let store = D1Store::new(env.d1("CONTROL").map_err(|_| unavailable())?);
-    match store
-        .consumer(subject.as_str())
-        .await
-        .map_err(|_| unavailable())?
-    {
-        Some(consumer) if consumer.deletion_state != ConsumerDeletionState::Active => {
-            Err(AuthorizeError::Revoked { subject }.into())
-        }
-        _ => Ok(()),
-    }
 }
 
 /// Screen the subject against the provisioning gate: a space is served
@@ -227,7 +257,7 @@ async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Resul
         console_error!("provisioning screen unavailable, no CONTROL binding: {err}");
         provisioning_unavailable()
     })?);
-    match screen(&store, &subject).await {
+    match screen(&store, &subject, Date::now().as_millis() / 1_000).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(reason)) => {
             worker::console_log!("presign rejected: {subject} is not servable ({reason})");
@@ -274,7 +304,7 @@ thread_local! {
 /// an isolate cannot see change — so reading the bindings once and
 /// reusing the result costs nothing in freshness. A failed build is
 /// not cached: the next request tries again.
-fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
+pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
         if let Some(authorizer) = cached.get() {
             return Ok(authorizer.clone());

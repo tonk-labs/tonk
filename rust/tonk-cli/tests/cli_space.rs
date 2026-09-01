@@ -416,17 +416,31 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
-        let output = run(state.path(), &["--spot", "a", "status"], &[]);
-        assert!(!output.status.success());
-        assert!(stderr_of(&output).contains("unexpected argument '--spot'"));
+        for args in [
+            &["--spot", "a", "status"][..],
+            &["spot", "link", "a"][..],
+            &["account", "spots"][..],
+        ] {
+            let output = run(state.path(), args, &[]);
+            assert!(!output.status.success());
+            let stderr = stderr_of(&output);
+            assert!(
+                stderr.contains("a retired space command or option was supplied"),
+                "{stderr}"
+            );
+            assert!(!stderr.to_ascii_lowercase().contains("spot"), "{stderr}");
+        }
 
         let output = run(state.path(), &["status"], &[("TONK_SPOT", "a")]);
         assert!(!output.status.success());
+        let stderr = stderr_of(&output);
         assert!(
-            stderr_of(&output).contains("TONK_SPOT was removed; use TONK_SPACE"),
-            "{}",
-            stderr_of(&output)
+            stderr.contains(
+                "a retired space environment variable is set; unset it and use TONK_SPACE"
+            ),
+            "{stderr}"
         );
+        assert!(!stderr.to_ascii_lowercase().contains("spot"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -446,11 +460,14 @@ mod when_resolving_with_precedence {
             .env("TONK_SPACE", "a");
         let output = cmd.output().expect("run tonk");
         assert!(!output.status.success());
+        let stderr = stderr_of(&output);
         assert!(
-            stderr_of(&output).contains("TONK_SPOTS_STATE was removed; use TONK_SPACES_STATE"),
-            "{}",
-            stderr_of(&output)
+            stderr.contains(
+                "a retired space environment variable is set; unset it and use TONK_SPACES_STATE"
+            ),
+            "{stderr}"
         );
+        assert!(!stderr.to_ascii_lowercase().contains("spot"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -466,9 +483,12 @@ mod when_resolving_with_precedence {
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("TONK_SPOT was removed; use TONK_SPACE"),
+            stderr.contains(
+                "a retired space environment variable is set; unset it and use TONK_SPACE"
+            ),
             "{stderr}"
         );
+        assert!(!stderr.to_ascii_lowercase().contains("spot"), "{stderr}");
     }
 
     #[dialog_common::test]
@@ -493,6 +513,15 @@ mod when_resolving_with_precedence {
         let output = run(state.path(), &["space", "use"], &[("TONK_SPACE", "a")]);
         assert!(!output.status.success());
         assert!(stderr_of(&output).contains("<NAME>"));
+    }
+
+    #[dialog_common::test]
+    fn complete_help_uses_only_space_terminology() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let output = run(state.path(), &["help", "--all"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let stdout = stdout_of(&output);
+        assert!(!stdout.to_ascii_lowercase().contains("spot"), "{stdout}");
     }
 
     #[dialog_common::test]
@@ -1746,16 +1775,9 @@ mod when_reading {
                 .any(|recipe| recipe == "tonk assert task --<field> <value>")
         }));
 
-        let view = run(state.path(), &["show", "task-view", "--json"], env);
-        assert!(view.status.success(), "{}", stderr_of(&view));
-        let view: serde_json::Value = serde_json::from_str(&stdout_of(&view)).expect("view JSON");
-        assert_eq!(view["schemaVersion"], "tonk.show-view.v1");
-        assert_eq!(view["anchor"], "task-view");
-        assert_eq!(view["model"], "task");
-        assert_eq!(
-            view["template"].as_str().map(str::trim_end),
-            Some("<b>{title}</b>")
-        );
+        // A view now lives ON the model entity, so `show task` above is
+        // also the view's home; the template itself is listed by
+        // `tonk view` (covered in the views suite).
 
         let seeded = run(
             state.path(),

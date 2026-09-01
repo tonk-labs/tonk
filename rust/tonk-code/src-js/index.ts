@@ -100,7 +100,7 @@ import {
   historyKeymap,
   indentWithTab,
 } from "@codemirror/commands";
-import { acceptCompletion } from "@codemirror/autocomplete";
+import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
 import {
   bracketMatching,
   indentOnInput,
@@ -525,8 +525,20 @@ function baseExtensions(): Extension[] {
     // `@codemirror/lsp-client`). `acceptCompletion` returns false
     // when no completion is open, so the binding falls through to
     // `indentWithTab` and Tab still indents.
+    //
+    // `completionKeymap` is what makes the popup navigable at all:
+    // ArrowUp/Down and Ctrl-n/p move the selection, Enter accepts,
+    // Escape closes. Without it those keys fall through to
+    // `defaultKeymap` and move the CURSOR instead — the popup stays
+    // open showing a selection you cannot change, and Enter splits the
+    // line under it. Every one of its bindings no-ops when no
+    // completion is open, so ordinary editing is untouched.
+    //
+    // BEFORE `defaultKeymap`, since keymaps run in order and whichever
+    // claims the key first wins.
     keymap.of([
       { key: "Tab", run: acceptCompletion },
+      ...completionKeymap,
       ...defaultKeymap,
       ...historyKeymap,
       indentWithTab,
@@ -1242,9 +1254,13 @@ const SHADOW_STYLESHEET = `
 
   :host([hidden]) { display: none; }
 
+  /* No focus ring on the host. A cell takes focus whenever the caret
+     enters it, and a blue border plus a 2px halo reads as a form field
+     being validated rather than as a cursor. The editor already carries
+     its own caret, and the notebook's block highlight says which block
+     you are in; a third signal on top of those is noise. */
   :host(:focus-within) {
-    border-color: var(--tonk-code-cursor);
-    box-shadow: 0 0 0 2px var(--tonk-code-focus-ring);
+    border-color: var(--tonk-code-border);
   }
 
   .cm-editor { height: 100%; }

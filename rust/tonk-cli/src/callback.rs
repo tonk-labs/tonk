@@ -173,28 +173,187 @@ async fn bridge() -> Html<&'static str> {
     )
 }
 
-/// The page the browser lands on once the terminal has its answer.
+/// The fallback page the browser lands on once the terminal has its answer.
 ///
-/// A redirect back to the account page would be worse: the tab's purpose is
-/// finished, and sending the user somewhere else leaves them guessing whether
-/// it worked. This says what happened and offers to close, which browsers
-/// permit for a window that was scripted open and ignore otherwise — so the
+/// The account page normally supplies a same-origin redirect and renders the
+/// outcome itself. An older or custom page may not, so this standalone page
+/// uses the same ceremony styling and offers to close. Browsers permit closing
+/// a window that was scripted open and ignore the request otherwise, so the
 /// message stands on its own either way.
 fn confirmation(message: &str) -> String {
     format!(
         r#"<!doctype html>
+<html lang="en">
 <meta charset="utf-8">
-<title>Tonk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Tonk · Command-line access</title>
 <style>
-  body {{ font: 16px/1.5 system-ui, sans-serif; margin: 0;
-         min-height: 100vh; display: grid; place-items: center; }}
-  main {{ text-align: center; padding: 2rem; }}
-  button {{ font: inherit; margin-top: 1rem; padding: 0.5rem 1rem; }}
+  :root {{
+    color-scheme: light dark;
+    --page: #ececec;
+    --ink: #131313;
+    --on-ink: #fbfaef;
+    --soft: #55544f;
+    --ring: rgb(19 19 19 / 85%);
+    --frost-solid: #fafafa;
+    --wash-p: rgb(251 250 239 / 16%);
+    --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
+    --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+  }}
+
+  * {{ box-sizing: border-box; }}
+
+  ::selection {{
+    background: var(--ink);
+    color: var(--on-ink);
+  }}
+
+  body {{
+    display: grid;
+    min-height: 100vh;
+    min-height: 100dvh;
+    margin: 0;
+    padding: 48px 16px 80px;
+    place-items: center;
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--cond);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }}
+
+  .account {{
+    width: min(576px, calc(100vw - 32px));
+  }}
+
+  .account__logo {{
+    display: block;
+    width: 132px;
+    height: auto;
+    margin: 0 auto clamp(36px, 6vh, 56px);
+    color: var(--ink);
+  }}
+
+  .account__ceremony {{
+    width: min(432px, 100%);
+    margin-inline: auto;
+  }}
+
+  .account__stack {{
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }}
+
+  .account__ceremony-head {{
+    display: flex;
+    height: 36px;
+    margin: 0;
+    padding: 0 16px 9px;
+    align-items: flex-end;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+    text-wrap: balance;
+  }}
+
+  .account__run {{
+    display: flex;
+    min-height: 44px;
+    margin: 0;
+    padding: 0 10px 9px 24px;
+    align-items: flex-end;
+    justify-content: flex-end;
+    border: 0;
+    border-radius: 0;
+    appearance: none;
+    background: var(--ink);
+    box-shadow: 0 0 0 1px var(--ink);
+    color: var(--on-ink);
+    font: 600 13px/1 var(--cond);
+    letter-spacing: 0.02em;
+    text-align: right;
+    text-transform: lowercase;
+    cursor: pointer;
+    transition-property: scale, background-color;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }}
+
+  .account__run:hover {{
+    background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink);
+  }}
+
+  .account__run:active {{ scale: 0.96; }}
+
+  .account__run:focus-visible {{
+    outline: 0;
+    box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
+  }}
+
+  .account__narrator {{
+    width: min(432px, 100%);
+    margin: 7px auto 0;
+    padding: 10px 16px 11px;
+    background: var(--frost-solid);
+    box-shadow: 0 0 0 1px var(--ring);
+    color: var(--soft);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.55;
+    text-wrap: pretty;
+    overflow-wrap: anywhere;
+  }}
+
+  .account__narrator p {{ margin: 0; }}
+
+  @media (prefers-color-scheme: dark) {{
+    :root {{
+      --page: #161613;
+      --ink: #e9e6d6;
+      --on-ink: #22221c;
+      --soft: #cdcaba;
+      --ring: rgb(233 230 214 / 55%);
+      --frost-solid: #1e1e19;
+      --wash-p: rgb(19 19 19 / 14%);
+    }}
+  }}
+
+  @media (max-width: 463px) {{
+    body {{ padding-top: max(24px, env(safe-area-inset-top)); }}
+    .account {{ width: min(432px, calc(100vw - 32px)); }}
+    .account__logo {{
+      width: 98px;
+      margin-bottom: 32px;
+    }}
+  }}
+
+  @media (prefers-reduced-motion: reduce) {{
+    .account__run {{ transition: none; }}
+  }}
 </style>
-<main>
-  <p>{message}</p>
-  <button onclick="window.close()">Close this window</button>
+<main class="account">
+  <svg class="account__logo" viewBox="0 0 1024 343" role="img" aria-label="tonk" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z"/>
+    <path fill="currentColor" d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z"/>
+    <path fill="currentColor" d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z"/>
+  </svg>
+  <section class="account__ceremony" aria-labelledby="confirmation-title">
+    <div class="account__stack">
+      <h1 id="confirmation-title" class="account__ceremony-head">command-line access</h1>
+      <button class="account__run" type="button" onclick="window.close()">close this window</button>
+    </div>
+    <div class="account__narrator" role="status">
+      <p>{message}</p>
+    </div>
+  </section>
 </main>
+</html>
 "#
     )
 }
@@ -270,6 +429,22 @@ async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_matches_the_account_ceremony_shell() {
+        let page = confirmation("Authorized. You can return to your terminal.");
+
+        assert!(page.contains(r#"aria-label="tonk""#));
+        assert!(page.contains("command-line access"));
+        assert!(page.contains(r#"role="status""#));
+        assert!(page.contains("Authorized. You can return to your terminal."));
+        assert!(page.contains("--page: #ececec"));
+        assert!(page.contains("--page: #161613"));
+        assert!(page.contains("width: min(432px, 100%)"));
+        assert!(page.contains("min-height: 44px"));
+        assert!(page.contains("@media (max-width: 463px)"));
+        assert!(page.contains("@media (prefers-reduced-motion: reduce)"));
+    }
 
     /// Crossing from HTTPS to loopback HTTP must not carry the grant in the
     /// request body: Safari can discard that POST while showing its insecure

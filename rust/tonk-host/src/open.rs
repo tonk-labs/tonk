@@ -5,7 +5,7 @@
 //! `allow-top-navigation`. The guest relays the raw href and the page
 //! decides here.
 //!
-//! The href is ATTACKER-CONTROLLED. Spot content is data: views and
+//! The href is ATTACKER-CONTROLLED. Space content is data: views and
 //! components are facts a collaborator or an agent can assert into a
 //! space. This module is where an untrusted string meets the real
 //! origin, so two rules are absolute:
@@ -236,7 +236,7 @@ fn open_same_origin(url: &str) {
 /// path never gambles on activation surviving the relay. The affordance and
 /// the mechanism reinforce each other.
 ///
-/// ONE dialog at a time. This runs straight from the guest relay, so a spot
+/// ONE dialog at a time. This runs straight from the guest relay, so a space
 /// posting `open` in a loop arrives here as fast as it can call; ungated, that
 /// stacks N modals on the real origin. Refusing the second is safe because a
 /// modal absorbs every pointer event on the top page — measured in Chrome, the
@@ -360,7 +360,7 @@ fn confirm_then_open(url: &str, label: &str) {
 /// `forget` leaks the box AND leaves the shim rooted for the life of the
 /// module, and every closure held its own `dialog` clone, so removing the
 /// dialog dropped nothing. Since `open_external` reaches here straight from the
-/// guest relay, an untrusted spot could drive that leak. Returning the handle
+/// guest relay, an untrusted space could drive that leak. Returning the handle
 /// makes the lifetime the caller's decision instead of a claim in a comment.
 #[must_use]
 fn on_event<F: FnMut() + 'static>(
@@ -432,7 +432,7 @@ fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialo
 ///
 /// `noopener noreferrer` because this destination is off-origin: `noopener`
 /// denies it a handle on our window (reverse tabnabbing), `noreferrer` keeps
-/// the spot's URL out of its logs.
+/// the space's URL out of its logs.
 fn open_in_new_tab(document: &Document, url: &str) {
     let Ok(anchor) = document.create_element("a") else {
         return;
@@ -1033,7 +1033,7 @@ mod tests {
     /// the closure's JS shim rooted in the wasm-bindgen heap forever, holding the
     /// `url`, the `document`, and the whole detached dialog subtree with it. Every
     /// external link reaches that path straight from the guest relay, so an
-    /// untrusted spot could drive the leak: unbounded growth on the real origin.
+    /// untrusted space could drive the leak: unbounded growth on the real origin.
     ///
     /// `externref_heap_live_count` counts exactly what `forget` strands, so a flat
     /// count across cycles is direct evidence the closures are dropped. The first
@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     /// A modal dialog is a scarce resource on the trusted page, and this path
-    /// runs STRAIGHT FROM THE GUEST RELAY: a sealed spot posting `open` in a
+    /// runs STRAIGHT FROM THE GUEST RELAY: a sealed space posting `open` in a
     /// loop reaches it as fast as it can call. Without a gate that stacks N
     /// modals on the real origin.
     ///
@@ -1131,7 +1131,7 @@ mod tests {
         );
     }
 
-    /// The dialog says what it does. It opens a new tab and leaves the spot
+    /// The dialog says what it does. It opens a new tab and leaves the space
     /// running, so it must not claim the user is leaving.
     #[dialog_common::test]
     async fn it_names_the_action_without_claiming_the_user_leaves() {
@@ -1150,7 +1150,7 @@ mod tests {
         );
         assert!(
             !text.contains("Leave"),
-            "the spot stays open, so the dialog must not say the user is leaving"
+            "the space stays open, so the dialog must not say the user is leaving"
         );
     }
 

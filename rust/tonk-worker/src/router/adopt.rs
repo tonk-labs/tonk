@@ -115,7 +115,7 @@ mod tests {
             &tonk,
             &subject,
             &configuration,
-            Some("Foreign Spot"),
+            Some("Foreign Space"),
         )
         .await;
         assert!(

@@ -87,6 +87,9 @@ impl CustomElement for TonkMenu {
             return;
         }
         *self.wired.borrow_mut() = true;
+        if !this.has_attribute("role") {
+            let _ = this.set_attribute("role", "group");
+        }
 
         let root = shadow::build(this, CSS, HTML);
 

@@ -10,6 +10,8 @@
 //! See [`render`] for the result rendering (an HTML-string port of the former
 //! Leptos `view!` tree) and [`response`] for the engine-free wire types.
 
+pub mod debug;
+
 // `render` and `response` are pure logic (string building + serde) but their only
 // consumer is the wasm-gated `element`, so they are gated to match — otherwise a
 // native `-D warnings` build flags them as dead code. Public so the
@@ -34,6 +36,10 @@ pub mod cell_output;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element;
 
+/// `<tonk-notebook-index>` — the directory's search-and-create box.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod index;
+
 /// `<tonk-notebook>` — a prose document whose ```dialog fences are live
 /// query cells. Shares this crate's evaluate path and result rendering with
 /// `<tonk-inspector>`; see [`notebook`] for why it lives here rather than in
@@ -43,6 +49,8 @@ pub mod notebook;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use element::TonkInspectorElement;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use index::TonkNotebookIndexElement;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use notebook::TonkNotebookElement;
 
@@ -74,6 +82,17 @@ pub fn register_notebook() {
         return;
     }
     TonkNotebookElement::define("tonk-notebook");
+
+    let indexed = window()
+        .map(|win| {
+            !win.custom_elements()
+                .get("tonk-notebook-index")
+                .is_undefined()
+        })
+        .unwrap_or(false);
+    if !indexed {
+        TonkNotebookIndexElement::define("tonk-notebook-index");
+    }
 }
 
 /// Off-target builds have no DOM; the element only exists in the browser.

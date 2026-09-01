@@ -46,11 +46,11 @@ impl JoinFailureKind {
             Self::Malformed => "This share link is invalid.",
             Self::AudienceMismatch => "This invite was issued to a different identity.",
             Self::Revoked => "This invite has been revoked.",
-            Self::Unavailable => "Tonk could not reach this spot. Try again.",
+            Self::Unavailable => "Tonk could not reach this space. Try again.",
             Self::Refused => {
-                "This spot's host declined the invite. Its owner needs to check the spot's plan."
+                "This space's host declined the invite. Its owner needs to check the space's plan."
             }
-            Self::ClaimFailed => "Tonk could not join this spot.",
+            Self::ClaimFailed => "Tonk could not join this space.",
         }
     }
 

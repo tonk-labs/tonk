@@ -1,117 +1,11 @@
 //! Typed boundary to the top-document passkey ceremony API.
 
 use js_sys::{Function, Promise, Reflect};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-
-/// Input for creating an account and its first custody passkey in one
-/// ceremony: the secret is generated and sealed under the passkey's
-/// KEK. The custody cell cannot publish here — the account has not
-/// confirmed its email, and the service serves no unactivated customer
-/// — so the sealed bytes come back to be queued.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreateAccountInput {
-    pub email: String,
-    pub device_did: String,
-    pub device_name: String,
-    pub remote: String,
-    /// Browser/OS label recorded with the created passkey.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_on: Option<String>,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
-}
-
-/// Account-creation output: persistence and submission material, plus
-/// the custody DID and consent for provisioning the custody space.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreateAccountOutput {
-    pub root_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    pub invocation_hex: String,
-    #[serde(default)]
-    pub passkey: Option<tonk_worker_api::PasskeyMetadata>,
-    /// The account's X25519 recipient, published as `AccountEncryptionKey`.
-    #[serde(default)]
-    pub encryption_key: Option<String>,
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
-    pub custody_did: String,
-    pub consent_hex: String,
-    /// The sealed account secret, recorded on profile main and queued
-    /// for the vault publish.
-    pub sealed_hex: String,
-    /// The ceremony's pre-signed publish invocation, drained by the
-    /// worker once activation lands.
-    pub publish_invocation_hex: String,
-}
-
-/// Input for enrolling a custody passkey for a locally held account.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EnrollCustodyInput {
-    pub account_did: String,
-    /// What the passkey manager should call the credential — the
-    /// account address, when known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// The access service's `/ucan/` endpoint the cell publishes through.
-    pub endpoint: String,
-}
-
-/// A custody enrollment's outcome.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EnrollCustodyOutput {
-    pub custody_did: String,
-    pub credential_id: String,
-    pub consent_hex: String,
-    /// The sealed account secret — recorded on profile main either way.
-    pub sealed_hex: String,
-    /// Pre-signed publish invocation, present when the ceremony's own
-    /// publish was refused (the custody DID awaits provisioning).
-    #[serde(default)]
-    pub publish_invocation_hex: Option<String>,
-}
-
-/// Input for unlocking an account with a custody passkey on this browser.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct UnlockWithPasskeyInput {
-    pub device_did: String,
-    pub device_name: String,
-    /// The access service's `/ucan/` endpoint the cell resolves through.
-    pub endpoint: String,
-    /// Access-service DID the ceremony mints account-signed deposits
-    /// for, when the deployment names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_did: Option<String>,
-}
-
-/// Account ceremony output sent to the account service.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CeremonyOutput {
-    pub root_did: String,
-    pub credential_id: String,
-    pub delegation_hex: String,
-    pub invocation_hex: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// input named the service.
-    #[serde(default)]
-    pub deposits_hex: Vec<String>,
-    /// The account's X25519 recipient, when the ceremony held the secret.
-    #[serde(default)]
-    pub encryption_key: Option<String>,
-}
 
 /// Verification-only assertion input: the account passkey to assert
 /// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
@@ -200,24 +94,6 @@ async fn call<I: Serialize, O: DeserializeOwned>(
         .await
         .map_err(|error| IdentityBridgeError::Rejected(rejection_reason(error)))?;
     serde_wasm_bindgen::from_value(output).map_err(|_| IdentityBridgeError::MalformedOutput)
-}
-
-pub(crate) async fn create_account(
-    input: CreateAccountInput,
-) -> Result<CreateAccountOutput, IdentityBridgeError> {
-    call("createAccount", input).await
-}
-
-pub(crate) async fn enroll_custody_passkey(
-    input: EnrollCustodyInput,
-) -> Result<EnrollCustodyOutput, IdentityBridgeError> {
-    call("enrollCustodyPasskey", input).await
-}
-
-pub(crate) async fn unlock_with_passkey(
-    input: UnlockWithPasskeyInput,
-) -> Result<CeremonyOutput, IdentityBridgeError> {
-    call("unlockWithPasskey", input).await
 }
 
 /// Input for [`publish_encryption_key`]: the `/ucan/` endpoint the custody
@@ -315,11 +191,8 @@ mod tests {
         let window = web_sys::window().unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
@@ -328,39 +201,30 @@ mod tests {
 
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
-            IdentityBridgeError::MissingMethod("unlockWithPasskey")
+            IdentityBridgeError::MissingMethod("verifyPasskey")
         );
 
         let identity = js_sys::Object::new();
-        Reflect::set(&identity, &"unlockWithPasskey".into(), &42.into()).unwrap();
+        Reflect::set(&identity, &"verifyPasskey".into(), &42.into()).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
-            IdentityBridgeError::NotCallable("unlockWithPasskey")
+            IdentityBridgeError::NotCallable("verifyPasskey")
         );
 
-        install_method("unlockWithPasskey", "return {};");
+        install_method("verifyPasskey", "return {};");
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
@@ -368,15 +232,12 @@ mod tests {
         );
 
         install_method(
-            "unlockWithPasskey",
+            "verifyPasskey",
             "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
         );
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
@@ -386,28 +247,22 @@ mod tests {
         );
 
         install_method(
-            "unlockWithPasskey",
+            "verifyPasskey",
             "return Promise.reject('provider unavailable'); ",
         );
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),
             IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
-        install_method("unlockWithPasskey", "return Promise.resolve({});");
+        install_method("verifyPasskey", "return Promise.resolve({});");
         assert_eq!(
-            unlock_with_passkey(UnlockWithPasskeyInput {
-                device_did: "device".into(),
-                device_name: "Browser".into(),
-                endpoint: "https://tonk.space/ucan/".into(),
-                service_did: None,
+            verify_passkey(VerifyPasskeyInput {
+                credential_id: "abcd".into(),
             })
             .await
             .unwrap_err(),

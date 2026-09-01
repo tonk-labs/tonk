@@ -16,9 +16,9 @@ use crate::space::Resolved;
 
 /// Legacy version retained only for the in-process context renderer.
 ///
-/// v2 renamed every `spot` key to `space` and moved the whole document to
-/// camelCase, which is what `tonk space --json` and the registry's own
-/// account record already emit.
+/// v2 normalized the legacy key to `space` and moved the whole document to
+/// camelCase, matching `tonk space --json` and the registry's own account
+/// record.
 ///
 /// v3 absorbed the sync and account sections. Four commands used to answer
 /// "where am I" in four layouts, naming the same field three ways in the

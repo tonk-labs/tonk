@@ -377,11 +377,31 @@ pub(crate) fn lift_rule(
     // ---- Premises ----
     let mut dialog_premises: Vec<DialogPremise> = Vec::new();
     for premise in body.when {
-        let proposition = lift_premise(premise, scope, analysis)?;
-        dialog_premises.push(DialogPremise::Assert(proposition));
+        // A multi-entry dictionary binding lifts to one
+        // proposition per entry, joined on the premise's `this` —
+        // exactly the conjunction the `when:` list already is.
+        for proposition in lift_premise(premise, scope, analysis)? {
+            dialog_premises.push(DialogPremise::Assert(proposition));
+        }
     }
     for premise in body.unless {
-        let proposition = lift_premise(premise, scope, analysis)?;
+        let mut propositions = lift_premise(premise, scope, analysis)?;
+        // Negating a multi-entry binding is ambiguous — splitting
+        // would turn ¬(a ∧ b) into ¬a ∧ ¬b. One entry per negated
+        // premise keeps the meaning the author wrote.
+        if propositions.len() > 1 {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: premise.concept.value.clone(),
+                    form: "an `unless` premise binds one dictionary entry \
+                           — write one negated premise per entry",
+                },
+                premise.concept.range,
+            ));
+        }
+        let proposition = propositions
+            .pop()
+            .expect("lift_premise yields at least one proposition");
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
     }
 
@@ -737,19 +757,25 @@ fn lift_premise(
     premise: &NotationPremise,
     scope: &Scope,
     analysis: &Working,
-) -> Result<Proposition, AnalyzeError> {
+) -> Result<Vec<Proposition>, AnalyzeError> {
     let name = premise.concept.value.as_str();
 
     if let Some(formula) = lookup_formula(name) {
-        return lift_formula_premise(premise, formula, scope, analysis);
+        return Ok(vec![lift_formula_premise(
+            premise, formula, scope, analysis,
+        )?]);
     }
 
     if let Some(constraint) = lookup_constraint(name) {
-        return lift_constraint_premise(premise, constraint, scope, analysis);
+        return Ok(vec![lift_constraint_premise(
+            premise, constraint, scope, analysis,
+        )?]);
     }
 
     if let Some(resolver) = lookup_resolver(name) {
-        return lift_resolver_premise(premise, resolver, scope, analysis);
+        return Ok(vec![lift_resolver_premise(
+            premise, resolver, scope, analysis,
+        )?]);
     }
 
     let resolved = scope.concept(name).ok_or_else(|| {
@@ -765,6 +791,10 @@ fn lift_premise(
     // bound by the user or auto-filled with an anonymous
     // variable so the engine has a slot for it).
     let mut terms = Parameters::new();
+    // Dictionary entries beyond the first — each becomes its own
+    // proposition sharing this premise's `this` term.
+    let mut extra_entries: Vec<(String, Term<dialog_query::Any>, Term<dialog_query::Any>)> =
+        Vec::new();
 
     // `this` slot: explicit user binding wins; otherwise mint a
     // unique anonymous variable so the premise can still match.
@@ -796,15 +826,17 @@ fn lift_premise(
             continue;
         }
         let user_binding = premise.bindings.iter().find(|f| f.name == *field_name);
-        // A keyed collection binds an entry, `{?key: ?value}`: the
+        // A keyed collection binds entries, `{?key: ?value}`: the
         // value under the field, the key under its key operand. A
         // blank key constrains nothing, as a blank value does.
+        // Entries beyond the first become their own propositions
+        // below, joined on `this`.
         if attr.the().attribute().is_none() {
-            let (key, value) = match user_binding {
-                Some(field) if matches!(field.value, FieldValue::Blank) => (
+            let mut entries = match user_binding {
+                Some(field) if matches!(field.value, FieldValue::Blank) => vec![(
                     Term::<dialog_query::Any>::blank(),
                     Term::<dialog_query::Any>::blank(),
-                ),
+                )],
                 Some(field) => collection_entry_terms(
                     field_name,
                     &field.value,
@@ -813,13 +845,20 @@ fn lift_premise(
                     analysis,
                     attr.content_type(),
                 )?,
-                None => (
+                None => vec![(
                     Term::<dialog_query::Any>::blank(),
                     Term::<dialog_query::Any>::blank(),
-                ),
-            };
+                )],
+            }
+            .into_iter();
+            let (key, value) = entries
+                .next()
+                .expect("collection_entry_terms yields at least one entry");
             terms.insert(Relation::key_operand(field_name), key);
             terms.insert(field_name.to_string(), value);
+            for (key, value) in entries {
+                extra_entries.push((field_name.to_string(), key, value));
+            }
             continue;
         }
         let term = match user_binding {
@@ -856,10 +895,48 @@ fn lift_premise(
         }
     }
 
-    Ok(Proposition::Concept(ConceptQuery {
+    // Extra dictionary entries ride their own propositions. They
+    // join on `this`, which therefore must be a named variable —
+    // a blank binds nothing across premises.
+    if !extra_entries.is_empty()
+        && !matches!(
+            terms.get("this"),
+            Some(Term::Variable { name: Some(_), .. }) | Some(Term::Constant(_))
+        )
+    {
+        terms.insert("this".into(), Term::<dialog_query::Any>::unique());
+    }
+    let this_term = terms
+        .get("this")
+        .cloned()
+        .expect("the `this` slot is always filled above");
+    let mut propositions = vec![Proposition::Concept(ConceptQuery {
         terms,
-        predicate: descriptor,
-    }))
+        predicate: descriptor.clone(),
+    })];
+    for (entry_field, key, value) in extra_entries {
+        let mut satellite = Parameters::new();
+        satellite.insert("this".into(), this_term.clone());
+        for (field_name, attr) in descriptor.with().iter() {
+            if field_name == "this" || *field_name == entry_field {
+                continue;
+            }
+            if attr.the().attribute().is_none() {
+                satellite.insert(
+                    Relation::key_operand(field_name),
+                    Term::<dialog_query::Any>::blank(),
+                );
+            }
+            satellite.insert(field_name.to_string(), Term::<dialog_query::Any>::blank());
+        }
+        satellite.insert(Relation::key_operand(&entry_field), key);
+        satellite.insert(entry_field, value);
+        propositions.push(Proposition::Concept(ConceptQuery {
+            terms: satellite,
+            predicate: descriptor.clone(),
+        }));
+    }
+    Ok(propositions)
 }
 
 /// Lift a premise whose head names a built-in formula into a

@@ -61,7 +61,7 @@ pub struct SaveRootRequest {
     pub passkey: Option<PasskeyMetadata>,
     /// The account's X25519 recipient (`did:key:z6LS…`) when the
     /// ceremony held the secret, for the worker to publish as
-    /// `AccountEncryptionKey`.
+    /// `AccountSealedInbox`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
 }
@@ -77,6 +77,91 @@ pub struct WebAuthnRequest {
     pub message_type: String,
     /// What the ceremony must produce.
     pub request: WebAuthnKind,
+    /// What the worker will do once the page has mediated, echoed back
+    /// with the handles so the handoff carries its own reason. Only
+    /// [`WebAuthnKind::Custody`] sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment: Option<Enrollment>,
+}
+
+/// What a custody handoff should do once it holds the handles.
+///
+/// The page runs the assertion and nothing else, so the work it was
+/// asked for travels with the handles rather than being inferred.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CustodyIntent {
+    /// Register an existing account as a customer of the access
+    /// service.
+    Enroll(Enrollment),
+    /// Create an account this passkey holds, and enroll it.
+    CreateAccount(AccountCreation),
+    /// Open the account this passkey holds and link this browser to it.
+    Login(DeviceLink),
+    /// Seal the account a first passkey holds under a second one, so
+    /// either can open it. Needs two ceremonies, so the handoff carries
+    /// two sets of handles.
+    AddPasskey(PasskeyAddition),
+}
+
+impl Default for CustodyIntent {
+    fn default() -> Self {
+        Self::Enroll(Enrollment::default())
+    }
+}
+
+/// The enrollment a custody handoff should perform once it holds the
+/// handles.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Enrollment {
+    /// The address to enroll, or `None` for the account's recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+/// Adding a second passkey to an account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAddition {
+    /// The account the existing passkey must open, so a mismatched
+    /// assertion is refused rather than sealing the wrong secret.
+    pub account_did: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
+}
+
+/// The browser a custody handoff should link to the account it opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLink {
+    /// What this browser is called in the account's device list.
+    pub device_name: String,
+    /// The access service's `/ucan/` endpoint the custody cell
+    /// resolves through.
+    pub endpoint: String,
+    /// The account service's base URL.
+    pub provider: String,
+}
+
+/// The account a custody handoff should bring into being.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCreation {
+    /// The address the account is created for.
+    pub email: String,
+    /// What this browser is called in the account's device list.
+    pub device_name: String,
+    /// The account repository's remote, so the descriptor names it.
+    pub remote: String,
+    /// The account service's base URL. Travels with the request
+    /// because no account is linked yet, so the worker cannot look it
+    /// up the way every later call does.
+    pub provider: String,
+    /// Browser/OS label recorded with the created passkey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
 }
 
 /// The ceremonies a page can be asked to run.
@@ -95,6 +180,9 @@ pub enum WebAuthnKind {
     /// See [`CREATE_ACCOUNT_REQUEST`].
     #[serde(rename = "create-account")]
     CreateAccount,
+    /// See [`CUSTODY_REQUEST`].
+    #[serde(rename = "custody")]
+    Custody,
 }
 
 impl WebAuthnKind {
@@ -103,6 +191,7 @@ impl WebAuthnKind {
         match self {
             Self::EncryptionKey => ENCRYPTION_KEY_REQUEST,
             Self::CreateAccount => CREATE_ACCOUNT_REQUEST,
+            Self::Custody => CUSTODY_REQUEST,
         }
     }
 }
@@ -146,3 +235,11 @@ pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 /// enrolls it, and the outcome reaches every reader as facts — the
 /// worker is not waiting on a response body.
 pub const CREATE_ACCOUNT_REQUEST: &str = "create-account";
+
+/// Mediate a passkey so the worker can mint custody material.
+///
+/// The page runs one assertion and posts the two derivation handles it
+/// yields; the worker does the minting and drops them. Unlike
+/// [`CREATE_ACCOUNT_REQUEST`], the page holds no key material and
+/// builds nothing — it only supplies the gesture WebAuthn requires.
+pub const CUSTODY_REQUEST: &str = "custody";

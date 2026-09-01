@@ -28,6 +28,16 @@ fn host(env: &AccessServiceAddress) -> String {
         .to_string()
 }
 
+/// The service host as it appears INSIDE a `did:web`.
+///
+/// `did:web` separates path segments with `:`, so a host carrying a port
+/// percent-encodes it. The tests run against an ephemeral port, so every
+/// DID they build or take apart carries one -- spelled raw here, they
+/// were asserting a form the service does not mint.
+fn did_host(env: &AccessServiceAddress) -> String {
+    host(env).replace(':', "%3A")
+}
+
 /// The base URL, without a trailing slash.
 fn base(env: &AccessServiceAddress) -> String {
     env.access_service_url.trim_end_matches('/').to_string()
@@ -62,7 +72,7 @@ async fn it_answers_an_activated_customer_with_their_key(
     assert_eq!(status, 200, "an activated customer resolves");
     assert_eq!(
         document["id"],
-        format!("did:web:{}:customer:example.com:jsmith", host(&env)),
+        format!("did:web:{}:customer:example.com:jsmith", did_host(&env)),
         "the document names the DID that was resolved"
     );
     assert_eq!(
@@ -77,6 +87,36 @@ async fn it_answers_an_activated_customer_with_their_key(
         .as_str()
         .expect("a multikey verification method");
     assert_eq!(format!("did:key:{multibase}"), customer.did().to_string());
+    Ok(())
+}
+
+/// The document says where the account syncs, not just who it is.
+///
+/// A second device holds an email and nothing else: resolving the
+/// address has to yield both the account and its service, or the device
+/// would need an endpoint from somewhere before it could ask for one.
+#[dialog_common::test]
+async fn it_names_the_service_the_account_syncs_with(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    let customer = Ed25519Signer::generate().await?;
+    env.activate_customer(&customer, "jsmith@example.com")
+        .await?;
+
+    let (_, document) = lookup(&env, "jsmith@example.com").await?;
+    let service = &document["service"][0];
+    assert_eq!(service["type"], "TonkAccessService");
+    let endpoint = service["serviceEndpoint"]
+        .as_str()
+        .expect("the document carries a service endpoint");
+    assert!(
+        endpoint.ends_with("/ucan/"),
+        "the endpoint is the service's UCAN address, got {endpoint}"
+    );
+    assert!(
+        endpoint.contains(&host(&env)),
+        "and names the host that answered, got {endpoint}"
+    );
     Ok(())
 }
 
@@ -178,7 +218,7 @@ async fn it_resolves_a_local_part_that_needs_encoding(
     assert_eq!(document["alsoKnownAs"][0], customer.did().to_string());
     assert_eq!(
         document["id"],
-        format!("did:web:{}:customer:web.mail:tag%2Balice", host(&env)),
+        format!("did:web:{}:customer:web.mail:tag%2Balice", did_host(&env)),
         "and the DID it names carries the encoded form"
     );
     Ok(())
@@ -243,7 +283,7 @@ async fn it_resolves_a_did_built_by_a_caller(env: AccessServiceAddress) -> anyho
     // Resolution turns the method-specific id into a path and appends
     // did.json, which is the request this service answers.
     let path = did
-        .strip_prefix(&format!("did:web:{}:", host(&env)))
+        .strip_prefix(&format!("did:web:{}:", did_host(&env)))
         .expect("the DID sits under this host")
         .replace(':', "/");
     let document: serde_json::Value = reqwest::Client::new()

@@ -6,19 +6,10 @@ async fn main() -> anyhow::Result<()> {
     use tonk_access_service::helpers::{AccessServiceSettings, access_service};
     use tonk_worker_api::DeploymentConfig;
 
-    // Serve `/.well-known/tonk` when the account service's URL is in the
-    // environment. Without it the endpoint 404s, the browser reads that
-    // as "deployment configuration is invalid", and the account panel
-    // dead-ends — so a dev stack that starts an account service must
-    // pass its URL through.
-    let deployment = match std::env::var("ACCOUNT_SERVICE_URL") {
-        Ok(account) => Some(DeploymentConfig {
-            account_service_url: account.parse()?,
-            // Filled in by the server with its own generated identity.
-            service_did: None,
-        }),
-        Err(_) => None,
-    };
+    // Always serve `/.well-known/tonk`: the browser reads a 404 there
+    // as "deployment configuration is invalid" and the account panel
+    // dead-ends. The identity is filled in by the server itself.
+    let deployment = Some(DeploymentConfig::default());
 
     let service = access_service(AccessServiceSettings {
         deployment,

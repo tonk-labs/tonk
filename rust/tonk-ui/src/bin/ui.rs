@@ -17,7 +17,11 @@ fn canonical_account_url(path: &str, search: &str) -> Option<String> {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{JsCast, prelude::*};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const READINESS_FAILURE_MESSAGE: &str =
+    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
@@ -35,12 +39,10 @@ async fn main() {
     // `route!` table decides what to render.
     tonk_portal::register_site();
 
-    // Install the host IO surface and mount `<tonk-site>` right away —
-    // first paint no longer waits on any data round-trip. Every `/api/*`
-    // fetch the host issues self-gates on service-worker readiness
-    // (`tonk_host::ready::wait`, memoized), so mounting before the SW is
-    // controlling loses nothing: the site's own routing fetches block
-    // themselves until the worker is up.
+    // Install the host IO surface before awaiting readiness; it registers
+    // document-level hooks but does not mount application elements. The
+    // top-document root waits below for the strict service-worker gate, while
+    // every later `/api/*` fetch retains the tolerant memoized host gate.
     tonk_host::install();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
@@ -54,8 +56,13 @@ async fn main() {
     tonk_ui::custody_relay::install();
     // A guest asking to register raises the dialog here, in the only
     // document that can run the ceremony.
-    tonk_portal::on_register(|reason| {
-        tonk_ui::register_dialog::open();
+    tonk_portal::on_register(|reason, return_focus| {
+        match return_focus {
+            Some(return_focus) => tonk_ui::register_dialog::open_with_return_focus(move || {
+                return_focus.restore();
+            }),
+            None => tonk_ui::register_dialog::open(),
+        }
         tonk_ui::register_dialog::describe(reason);
     });
     tonk_ui::account::register();
@@ -66,7 +73,41 @@ async fn main() {
     #[cfg(debug_assertions)]
     inject_hot_swap();
 
+    if let Err(error) = tonk_host::ready::require().await {
+        web_sys::console::error_1(&error);
+        show_readiness_failure();
+        return;
+    }
     mount_root();
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_readiness_failure() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if let Ok(hook) = js_sys::Reflect::get(&window, &JsValue::from_str("tonkBootTerminal"))
+        && let Ok(hook) = hook.dyn_into::<js_sys::Function>()
+        && hook
+            .call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(READINESS_FAILURE_MESSAGE),
+            )
+            .is_ok()
+    {
+        return;
+    }
+
+    // Test harnesses and embeds may omit the boot-watchdog hook. Preserve the
+    // same visible safe-state and next-action copy there.
+    let Some(status) = window
+        .document()
+        .and_then(|document| document.query_selector("[data-boot-status]").ok().flatten())
+    else {
+        return;
+    };
+    let _ = status.set_attribute("data-failed", "");
+    status.set_text_content(Some(READINESS_FAILURE_MESSAGE));
 }
 
 /// Mount the top-document shell. Account routes bypass sealed guests because

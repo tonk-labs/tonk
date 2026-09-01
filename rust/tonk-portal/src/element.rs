@@ -124,9 +124,18 @@ impl CustomElement for TonkPortal {
         &mut self,
         this: &HtmlElement,
         name: String,
-        _old: Option<String>,
-        _new: Option<String>,
+        old: Option<String>,
+        new: Option<String>,
     ) {
+        // `attributeChangedCallback` fires on every setAttribute, same
+        // value included — and the host re-sets these on re-renders
+        // that changed nothing. A reload here is a full guest reboot:
+        // live subscriptions cancelled, DOM rebuilt, and a boot that
+        // races a busy worker sits on its loader. Only an actual change
+        // may cost that.
+        if old == new {
+            return;
+        }
         let host: Element = this.clone().into();
         // Pre-connect callbacks (during upgrade) have no state yet; the
         // initial values are read live in `connected_callback`.

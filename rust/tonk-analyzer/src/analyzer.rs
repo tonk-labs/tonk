@@ -100,6 +100,10 @@ pub(crate) struct Working {
     /// query pass, in document order. Read by the mutation pass
     /// to decide which `?var` references a preceding query binds.
     pub queries: Vec<Application>,
+    /// Non-fatal findings the lowering passes accumulate (e.g. a
+    /// domain literal diverging from a declared attribute's type).
+    /// Merged into the document's diagnostics at assembly.
+    pub warnings: Vec<error::AnalyzeDiagnostic>,
 }
 
 impl Working {
@@ -252,7 +256,7 @@ fn expand(
     resolved: graph::Resolved,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
     let graph::Resolved { mut declared } = resolved;
-    let diagnostics = scan::scan_variables(syntax);
+    let mut diagnostics = scan::scan_variables(syntax);
 
     // The `Working` scratch carries the cross-pass accumulator
     // state: the query and mutation passes read it as they build
@@ -266,6 +270,7 @@ fn expand(
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
         queries: Vec::new(),
+        warnings: Vec::new(),
     };
 
     // Per-expression tree node, by source-expression index.
@@ -445,7 +450,7 @@ fn expand(
                     // affects naming downstream.
                     let plan =
                         build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
-                    let probe = plan.assert.as_ref().or(plan.retract.as_ref());
+                    let probe = plan.assert.first().or(plan.retract.first());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
                         .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
@@ -453,12 +458,12 @@ fn expand(
                         .map(|app| app.this().clone())
                         .unwrap_or(ThisIntent::Derived);
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    if let Some(retract_app) = plan.retract {
+                    for retract_app in plan.retract {
                         collect_unbound_variables(&retract_app, &working, &mut requires);
                         claims.push(Statement::Retract(retract_app));
                         claim_labels.push(Some(a.predicate.source.clone()));
                     }
-                    if let Some(assert_app) = plan.assert {
+                    for assert_app in plan.assert {
                         collect_unbound_variables(&assert_app, &working, &mut requires);
                         // A transient-concept assertion: record the
                         // concept entity so the evaluator buckets
@@ -524,6 +529,7 @@ fn expand(
             analysis,
         });
     }
+    diagnostics.extend(std::mem::take(&mut working.warnings));
     let mut document = DocumentAnalysis {
         expressions,
         synthesized: Vec::new(),
@@ -685,6 +691,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
                         terms,
                         predicate: query.predicate.clone(),
                     },
+                    join: Vec::new(),
                     this: ThisIntent::Uri(entity),
                     name: None,
                 }
@@ -2317,9 +2324,9 @@ person!:
 
     /// A claim head (`squash.bug:`) has no schema, so its fields
     /// carry no declared type. With `expected = None`, any literal
-    /// is accepted — a bare integer stays a `SignedInt` and never
-    /// raises `TypeMismatch`. Guards the "no type specified accepts
-    /// any type" rule.
+    /// is accepted, typed by its spelling — bare `3` is unsigned —
+    /// and never raises `TypeMismatch`. Guards the "no type
+    /// specified accepts any type" rule.
     #[dialog_common::test]
     async fn it_accepts_any_literal_for_untyped_claim_field() {
         let syntax = must_parse(
@@ -2337,8 +2344,51 @@ xyz.tonk.person!:
         };
         let term = application.parameters().get("age").cloned();
         assert!(
-            matches!(term, Some(Term::Constant(Value::SignedInt(3)))),
-            "an untyped claim field must accept the integer as-is, got {term:?}"
+            matches!(term, Some(Term::Constant(Value::UnsignedInt(3)))),
+            "a bare integer on an untyped claim field is unsigned by spelling, got {term:?}"
+        );
+    }
+
+    /// A raw domain write whose literal diverges from a declared
+    /// attribute's type still analyzes — raw domains are open-ended —
+    /// but carries a warning-severity diagnostic with the spelling
+    /// that would match the declaration.
+    #[dialog_common::test]
+    async fn it_warns_when_a_domain_literal_diverges_from_a_declaration() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: signed-integer
+
+io.test.person!:
+  this: test:1
+  age: 41
+"#,
+        );
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let warnings: Vec<_> = tree
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code() == "W_DECLARED_TYPE_DIVERGENCE")
+            .collect();
+        assert_eq!(warnings.len(), 1, "one divergence warning: {warnings:?}");
+        let message = warnings[0].message();
+        assert!(
+            message.contains("signed-integer") && message.contains("+41"),
+            "the warning names the declared type and the spelling: {message}"
+        );
+        assert!(
+            matches!(
+                warnings[0].severity,
+                crate::analyzer::error::DiagnosticSeverity::Warning
+            ),
+            "advisory, not an error",
         );
     }
 
@@ -2583,8 +2633,9 @@ person!: &alice
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
-        let Statement::Assert(Application::Concept { name, this, query }) =
-            &analysis.mutate.statements[0]
+        let Statement::Assert(Application::Concept {
+            name, this, query, ..
+        }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
         };
@@ -4821,5 +4872,61 @@ attribute!:
             "meta-head declarations must not seed an auto-snapshot, got {:?}",
             analysis.query
         );
+    }
+}
+
+#[cfg(test)]
+mod library_analysis_tests {
+    use super::*;
+
+    /// Every shipped library file must analyze.
+    ///
+    /// They are fetched and lowered at repository creation, so a rule the
+    /// analyzer rejects does not fail a build — it fails every new space,
+    /// at runtime, with no test having said so.
+    #[test]
+    fn it_analyzes_the_shipped_libraries() {
+        // Core first: the other files reference concepts core declares
+        // (`view`, `route`, `name`), and lowering runs against a branch that
+        // already has them. Analyzing a file alone reports those as unknown
+        // concepts, which says nothing about the file. `profile.yaml`
+        // declares its own copies of the shared concepts, so it analyzes
+        // standalone.
+        let chained: [(&str, &str); 3] = [
+            (
+                "notebook.yaml",
+                include_str!("../../tonk-core/assets/library/notebook.yaml"),
+            ),
+            (
+                "prose.yaml",
+                include_str!("../../tonk-core/assets/library/prose.yaml"),
+            ),
+            (
+                "table.yaml",
+                include_str!("../../tonk-core/assets/library/table.yaml"),
+            ),
+        ];
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        for (name, body) in chained {
+            assert_analyzes(name, &format!("{core}\n{body}"));
+        }
+        assert_analyzes(
+            "profile.yaml",
+            include_str!("../../tonk-core/assets/library/profile.yaml"),
+        );
+    }
+
+    fn assert_analyzes(name: &str, source: &str) {
+        let parsed = tonk_notation::parse(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{name} must parse: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed
+            .syntax
+            .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+        let result = analyze_local(&syntax);
+        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
     }
 }

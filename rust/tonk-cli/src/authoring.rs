@@ -19,36 +19,27 @@ use std::fmt::Write as _;
 
 use crate::schema::SPACE_HOME_CONCEPT;
 
-/// One of the four view concepts the standard library resolves.
+/// One of the four standard `show` facets `tonk view add` authors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
-    /// A single entity's full presentation (`tonk:view`).
+    /// The detail presentation (`show: {ui: …}`).
     Detail,
-    /// Every entity of a model (`tonk:view/directory`).
+    /// The entity-set presentation (`show: {directory: …}`).
     Directory,
-    /// A compact reference label (`tonk:view/label`).
+    /// A compact reference label (`show: {label: …}`).
     Label,
-    /// A title presentation (`tonk:view/title`).
+    /// A browser-tab title (`show: {title: …}`).
     Title,
 }
 
 impl ViewKind {
-    fn notation_head(self) -> &'static str {
+    /// The `show` entry key this kind writes.
+    pub fn facet(self) -> &'static str {
         match self {
-            Self::Detail => "view!",
-            Self::Directory => "view/directory!",
-            Self::Label => "view/label!",
-            Self::Title => "view/title!",
-        }
-    }
-
-    /// Stable default anchor for this kind and model.
-    pub fn default_anchor(self, model: &str) -> String {
-        match self {
-            Self::Detail => format!("{model}-view"),
-            Self::Directory => format!("{model}-directory"),
-            Self::Label => format!("{model}-label"),
-            Self::Title => format!("{model}-title"),
+            Self::Detail => "ui",
+            Self::Directory => "directory",
+            Self::Label => "label",
+            Self::Title => "title",
         }
     }
 
@@ -310,19 +301,20 @@ fn entity_attr_values(template: &str) -> Vec<String> {
     out
 }
 
-/// Build a `view!:` declaration document with a stable, name-derived
-/// `this:` (`id:{anchor}`) so re-authoring the same view (same
-/// anchor) supersedes rather than duplicates it. `template` is
-/// emitted verbatim, line by line, under a `display: |` block
-/// indented four spaces.
-pub fn build_view_decl(kind: ViewKind, anchor: &str, model: &str, template: &str) -> String {
+/// Build a `view!:` declaration document. The view instance IS the
+/// model (`this: <model>`), and the template lands under the kind's
+/// facet in the `show` dictionary — one entry per facet, cardinality
+/// one, so re-authoring the same facet supersedes rather than
+/// duplicates it. `template` is emitted verbatim, line by line, under
+/// the facet's block scalar.
+pub fn build_view_decl(kind: ViewKind, model: &str, template: &str) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "{}: &{anchor}", kind.notation_head());
-    let _ = writeln!(out, "  this: id:{anchor}");
-    let _ = writeln!(out, "  model: {model}");
-    out.push_str("  display: |\n");
+    out.push_str("view!:\n");
+    let _ = writeln!(out, "  this: {model}");
+    out.push_str("  show:\n");
+    let _ = writeln!(out, "    {}: |", kind.facet());
     for line in template.lines() {
-        let _ = writeln!(out, "    {line}");
+        let _ = writeln!(out, "      {line}");
     }
     out
 }
@@ -359,19 +351,19 @@ pub fn build_home_recipe(models: &[String]) -> String {
     out.push_str("      as: entity\n");
     out.push('\n');
 
-    let _ = writeln!(out, "view!: &{SPACE_HOME_CONCEPT}-view");
-    out.push_str("  this: id:space:home/view\n");
-    out.push_str("  model: space:home\n");
-    out.push_str("  display: |\n");
+    out.push_str("view!:\n");
+    out.push_str("  this: space:home\n");
+    out.push_str("  show:\n");
+    out.push_str("    ui: |\n");
     let multi = models.len() >= 2;
     for m in models {
         if multi {
             let _ = writeln!(
                 out,
-                "    <section><h2>{m}</h2><tonk-display model={m} /></section>"
+                "      <section><h2>{m}</h2><tonk-display model={m} /></section>"
             );
         } else {
-            let _ = writeln!(out, "    <tonk-display model={m} />");
+            let _ = writeln!(out, "      <tonk-display model={m} />");
         }
     }
     out.push('\n');
@@ -441,41 +433,28 @@ mod tests {
         assert!(doc.contains("title: note-title"));
     }
     #[test]
-    fn it_builds_a_view_decl_with_a_stable_this() {
-        let doc = build_view_decl(ViewKind::Detail, "note-view", "note", "<b>{title}</b>");
-        assert!(doc.contains("view!: &note-view"));
-        assert!(doc.contains("this: id:note-view"));
-        assert!(doc.contains("model: note"));
+    fn it_builds_a_view_decl_on_the_model_entity() {
+        let doc = build_view_decl(ViewKind::Detail, "note", "<b>{title}</b>");
+        assert!(doc.starts_with("view!:\n"), "{doc}");
+        assert!(doc.contains("this: note"));
+        assert!(doc.contains("show:\n    ui: |\n"));
         assert!(doc.contains("<b>{title}</b>"));
     }
     #[test]
-    fn it_builds_each_view_kind_with_its_stable_default_anchor() {
-        for (kind, head, anchor) in [
-            (ViewKind::Detail, "view!", "note-view"),
-            (ViewKind::Directory, "view/directory!", "note-directory"),
-            (ViewKind::Label, "view/label!", "note-label"),
-            (ViewKind::Title, "view/title!", "note-title"),
+    fn it_builds_each_view_kind_under_its_facet() {
+        for (kind, facet) in [
+            (ViewKind::Detail, "ui"),
+            (ViewKind::Directory, "directory"),
+            (ViewKind::Label, "label"),
+            (ViewKind::Title, "title"),
         ] {
-            assert_eq!(kind.default_anchor("note"), anchor);
-            let doc = build_view_decl(kind, anchor, "note", "<b>{title}</b>");
-            assert!(doc.starts_with(&format!("{head}: &{anchor}")), "{doc}");
-            assert!(doc.contains(&format!("this: id:{anchor}")), "{doc}");
+            assert_eq!(kind.facet(), facet);
+            let doc = build_view_decl(kind, "note", "<b>{title}</b>");
+            assert!(doc.contains(&format!("    {facet}: |")), "{doc}");
+            assert!(doc.contains("this: note"), "{doc}");
         }
     }
 
-    #[test]
-    fn it_preserves_a_caller_supplied_view_anchor_for_every_kind() {
-        for kind in [
-            ViewKind::Detail,
-            ViewKind::Directory,
-            ViewKind::Label,
-            ViewKind::Title,
-        ] {
-            let doc = build_view_decl(kind, "custom-card", "note", "<b>{title}</b>");
-            assert!(doc.contains("&custom-card"), "{doc}");
-            assert!(doc.contains("this: id:custom-card"), "{doc}");
-        }
-    }
     fn fields(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
     }
@@ -543,8 +522,7 @@ mod tests {
         assert!(doc.contains("concept!: &space-home"));
         assert!(doc.contains("this: space:home"));
         assert!(doc.contains("the: dialog.replica/subject"));
-        assert!(doc.contains("view!: &space-home-view"));
-        assert!(doc.contains("this: id:space:home/view"));
+        assert!(doc.contains("view!:\n  this: space:home\n  show:\n    ui: |"));
         assert!(doc.contains("<tonk-display model=habit />"));
         assert!(doc.contains("<tonk-display model=entry />"));
         assert!(doc.contains("this: id:tonk/space"));

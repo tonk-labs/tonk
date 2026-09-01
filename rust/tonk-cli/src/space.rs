@@ -25,13 +25,11 @@
 //! go through a temp file + atomic rename. A corrupt registry is a
 //! hard error naming the file — never silently recreated.
 //!
-//! Both names were `spot` before. An installation written by that
-//! build keeps working: the first command to touch its `spots.json`,
-//! `spots` key, and `spots/` root converts the store in place (see
-//! [`SpaceStore::load`]). Nothing writes the old spelling back, so the
-//! conversion happens once. The cost of converting is that an older
-//! `tonk` sharing the same data dir stops seeing these spaces — it does
-//! not destroy them, because its unknown-field sink round-trips what it
+//! A pre-rename registry and site root remain readable. The first command to
+//! touch that layout converts the store in place (see [`SpaceStore::load`]).
+//! Nothing writes the retired spelling back, so conversion happens once. An
+//! older `tonk` sharing the same data directory then stops seeing these spaces,
+//! but does not destroy them because its unknown-field sink round-trips what it
 //! cannot read.
 
 use std::collections::BTreeMap;
@@ -73,10 +71,10 @@ pub struct Registry {
     legacy_current: Option<String>,
     /// Name → entry. Paths inside are absolute and expanded.
     ///
-    /// `alias` reads the pre-rename `spots` key. It has to be an alias
-    /// rather than a bare rename because [`Registry::extra`] would
-    /// otherwise swallow `spots` into the unknown-field sink and this
-    /// binary would report a populated installation as empty.
+    /// The alias reads the pre-rename registry key. It must be an alias rather
+    /// than a bare rename because [`Registry::extra`] would otherwise swallow
+    /// the legacy field into the unknown-field sink and report a populated
+    /// installation as empty.
     #[serde(default, alias = "spots")]
     pub spaces: BTreeMap<String, SpaceEntry>,
     /// Directories bound to a space, keyed by canonicalized absolute
@@ -440,17 +438,17 @@ impl SpaceStore {
         })
     }
 
-    /// Convert a pre-rename store (`spots.json` + `spots/`) to the
-    /// current layout, returning the registry either way.
+    /// Convert a pre-rename registry and site root to the current layout,
+    /// returning the registry either way.
     ///
     /// Only reached when `spaces.json` is absent, so a converted store
     /// never pays for this again. The order is chosen so every
     /// interruption converges on a re-run: the site directory moves
     /// first, the rewritten registry lands atomically second, and the
-    /// legacy registry is removed last. A crash before the write leaves
-    /// `spots.json` naming directories that have moved — which the next
-    /// run fixes, because the rewrite is a prefix substitution that does
-    /// not consult the filesystem.
+    /// legacy registry is removed last. A crash before the write leaves the
+    /// old registry naming directories that have moved, which the next run
+    /// fixes because the rewrite is a prefix substitution that does not
+    /// consult the filesystem.
     ///
     /// Failure is an error rather than an empty registry: silently
     /// reporting zero spaces to someone who has ten is the one outcome
@@ -1160,9 +1158,7 @@ mod tests {
     mod adopting_the_pre_rename_layout {
         use super::*;
 
-        /// Build the layout a pre-rename `tonk` left behind: a
-        /// `spots.json` keyed on `spots`, and canonical site data under
-        /// `spots/`.
+        /// Build the registry and site layout a pre-rename `tonk` left behind.
         fn legacy_store(names: &[&str]) -> (tempfile::TempDir, SpaceStore) {
             let (tmp, store) = store();
             let root = tmp.path().join("spots");
@@ -1184,7 +1180,7 @@ mod tests {
         }
 
         #[dialog_common::test]
-        fn it_reads_spaces_out_of_a_registry_that_still_says_spots() {
+        fn it_reads_spaces_from_the_legacy_registry_key() {
             let (_tmp, store) = legacy_store(&["garden", "work"]);
             let registry = store.load().expect("load");
             assert_eq!(
@@ -1297,10 +1293,10 @@ mod tests {
             assert!(!tmp.path().join("spots").exists());
         }
 
-        /// Interrupted between the directory move and the registry
-        /// write: `spots/` is gone, `spots.json` still names it. The
-        /// rewrite is a prefix substitution that never consults the
-        /// filesystem, so the re-run still lands on the right paths.
+        /// Interrupted between the directory move and the registry write: the
+        /// old root is gone while the legacy registry still names it. The
+        /// rewrite is a prefix substitution that never consults the filesystem,
+        /// so the re-run still lands on the right paths.
         #[dialog_common::test]
         fn it_recovers_when_the_move_landed_but_the_registry_write_did_not() {
             let (tmp, store) = legacy_store(&["garden"]);
@@ -1354,8 +1350,8 @@ mod tests {
         }
 
         /// A second process can enter conversion after observing no
-        /// `spaces.json`, then lose the race while the first process writes
-        /// it and removes `spots.json`. It must read the winner's registry,
+        /// `spaces.json`, then lose the race while the first process writes it
+        /// and removes the legacy registry. It must read the winner's registry,
         /// not return an empty baseline that a subsequent write can save.
         #[dialog_common::test]
         fn it_rechecks_the_current_registry_when_the_legacy_file_disappears() {

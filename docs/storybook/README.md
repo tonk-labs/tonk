@@ -222,7 +222,7 @@ coverage only; it does not mean the corresponding checks pass.
 
 No document is verified yet. The first pass should run the account P1 items,
 then the hybrid browser/CLI items, then destructive space and account actions.
-The current map contains 26 screen families, 78 stable journey IDs, 109
+The current map contains 26 screen families, 78 stable journey IDs, 112
 verification items, and 6 source-pinned triage findings. Fifteen browser screen
 families have image evidence; the eleven CLI families use isolated transcripts
 captured from the binary at the visual commit.

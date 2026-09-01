@@ -15,7 +15,7 @@
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::Result;
-use dialog_varsig::Did;
+use dialog_varsig::{Did, Principal};
 use hkdf::Hkdf;
 use sha2_0_10::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -60,24 +60,32 @@ pub enum SealedError {
 
 /// The account's X25519 private key: what opens a [`Sealed`] seed.
 /// Derived from the account secret inside a ceremony, never stored.
-pub struct EncryptionKey(StaticSecret);
+///
+/// Crate-private on purpose. Callers reach sealing through
+/// [`Secret`] and [`Seal`], which offer the capability without ever
+/// handing out the key — the way `dialog_credentials::secret` does.
+pub(crate) struct EncryptionKey(StaticSecret);
 
 impl EncryptionKey {
     /// Adopt 32 secret bytes as an X25519 key. The bytes are clamped
     /// by the curve as usual.
-    pub fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
+    pub(crate) fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(StaticSecret::from(*bytes))
     }
 
     /// The public half: the recipient every device seals to.
-    pub fn recipient(&self) -> RecipientKey {
+    pub(crate) fn recipient(&self) -> RecipientKey {
         RecipientKey(PublicKey::from(&self.0))
     }
 
     /// Open a seed sealed to this key for `subject`. Fails as
     /// [`SealedError::Sealed`] for another key, another subject, and a
     /// tampered blob alike.
-    pub fn open(&self, sealed: &Sealed, subject: &Did) -> Result<Zeroizing<[u8; 32]>, SealedError> {
+    pub(crate) fn open(
+        &self,
+        sealed: &Sealed,
+        subject: &Did,
+    ) -> Result<Zeroizing<[u8; 32]>, SealedError> {
         let recipient = self.recipient();
         let shared = Zeroizing::new(self.0.diffie_hellman(&sealed.ephemeral).to_bytes());
         let cipher = cipher(&shared, &sealed.ephemeral, &recipient.0);
@@ -107,9 +115,9 @@ impl EncryptionKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecipientKey(PublicKey);
 
-impl RecipientKey {
+impl Principal for RecipientKey {
     /// The `did:key:z6LS…` form.
-    pub fn did(&self) -> Did {
+    fn did(&self) -> Did {
         let mut bytes = Vec::with_capacity(X25519_PUB_CODEC.len() + KEY_LEN);
         bytes.extend_from_slice(&X25519_PUB_CODEC);
         bytes.extend_from_slice(self.0.as_bytes());
@@ -118,23 +126,21 @@ impl RecipientKey {
             .parse()
             .expect("a did:key with a method and identifier")
     }
+}
 
-    /// Parse a `did:key:z6LS…`.
-    pub fn from_did(did: &Did) -> Result<Self, SealedError> {
-        let invalid = || SealedError::NotAnX25519Key(did.to_string());
-        let encoded = did.as_str().strip_prefix("did:key:z").ok_or_else(invalid)?;
-        let bytes = bs58::decode(encoded).into_vec().map_err(|_| invalid())?;
-        let key = bytes
-            .strip_prefix(&X25519_PUB_CODEC[..])
-            .ok_or_else(invalid)?;
-        let key: [u8; KEY_LEN] = key.try_into().map_err(|_| invalid())?;
-        Ok(Self(PublicKey::from(key)))
+impl RecipientKey {
+    /// Seal to this recipient, holding nothing that could open.
+    ///
+    /// Mirrors `Ed25519Verifier::secret`: the public identity offers a
+    /// conceal-only capability.
+    pub fn secret(&self) -> AccountSeal {
+        AccountSeal(*self)
     }
 
     /// Seal a 32-byte seed for `subject` to this recipient. Needs no
     /// secret: a fresh ephemeral X25519 key is agreed against the
     /// recipient and discarded.
-    pub fn seal(&self, seed: &Zeroizing<[u8; 32]>, subject: &Did) -> Result<Sealed> {
+    fn seal(&self, seed: &Zeroizing<[u8; 32]>, subject: &Did) -> Result<Sealed> {
         let mut ephemeral_bytes = Zeroizing::new([0u8; 32]);
         getrandom::fill(ephemeral_bytes.as_mut())
             .map_err(|error| anyhow::anyhow!("no entropy for an ephemeral key: {error}"))?;
@@ -160,6 +166,110 @@ impl RecipientKey {
             )
             .map_err(|_| anyhow::anyhow!("failed to seal the seed"))?;
         Ok(sealed)
+    }
+}
+
+/// Seals to one recipient. Public-key only: conceals, cannot reveal.
+///
+/// Reached through [`RecipientKey::secret`], the way dialog's `Seal`
+/// comes from a verifier.
+#[derive(Debug, Clone, Copy)]
+pub struct AccountSeal(RecipientKey);
+
+impl AccountSeal {
+    /// Conceal a seed belonging to `subject` so only this recipient
+    /// can reveal it.
+    ///
+    /// `subject` is the space or invite the seed belongs to, not the
+    /// account. It binds the seal as associated data, so a blob sealed
+    /// for one subject refuses to open as another.
+    pub fn conceal(&self, seed: &Zeroizing<[u8; 32]>, subject: &Did) -> Result<Sealed> {
+        self.0.seal(seed, subject)
+    }
+}
+
+impl From<RecipientKey> for AccountSeal {
+    fn from(key: RecipientKey) -> Self {
+        Self(key)
+    }
+}
+
+impl From<AccountSecretKey<'_>> for AccountSeal {
+    /// An account that can open can also be sealed to.
+    ///
+    /// Lets a caller holding the account pass it where only sealing is
+    /// wanted — rotation's target, say — without reaching past the
+    /// capability for a key.
+    fn from(key: AccountSecretKey<'_>) -> Self {
+        key.recipient().secret()
+    }
+}
+
+impl Principal for AccountSeal {
+    fn did(&self) -> Did {
+        self.0.did()
+    }
+}
+
+/// Seals to and opens for one account.
+///
+/// Reached through [`crate::envelope::AccountSecret::secret`], the way
+/// dialog's `Secret` comes from a signer. Holds the account secret, so
+/// it derives the encryption key per call rather than storing one — the
+/// key never leaves this module.
+#[derive(Clone, Copy)]
+pub struct AccountSecretKey<'a>(&'a crate::envelope::AccountSecret);
+
+impl<'a> AccountSecretKey<'a> {
+    pub(crate) fn new(account: &'a crate::envelope::AccountSecret) -> Self {
+        Self(account)
+    }
+
+    /// Conceal a seed belonging to `subject` to this account.
+    pub fn conceal(&self, seed: &Zeroizing<[u8; 32]>, subject: &Did) -> Result<Sealed> {
+        self.0.encryption_key().recipient().seal(seed, subject)
+    }
+
+    /// Reveal a seed sealed to this account for `subject`.
+    ///
+    /// Fails as [`SealedError::Sealed`] for another account, another
+    /// subject, and a tampered blob alike.
+    pub fn reveal(
+        &self,
+        sealed: &Sealed,
+        subject: &Did,
+    ) -> Result<Zeroizing<[u8; 32]>, SealedError> {
+        self.0.encryption_key().open(sealed, subject)
+    }
+
+    /// The recipient this account is sealed to: what a ceremony
+    /// publishes as the account's `AccountSealedInbox` fact.
+    pub fn recipient(&self) -> RecipientKey {
+        self.0.encryption_key().recipient()
+    }
+}
+
+impl Principal for AccountSecretKey<'_> {
+    /// The `did:key:z6LS…` of the recipient half, not the account's
+    /// Ed25519 identity.
+    fn did(&self) -> Did {
+        self.recipient().did()
+    }
+}
+
+impl TryFrom<&Did> for RecipientKey {
+    type Error = SealedError;
+
+    /// Parse a `did:key:z6LS…`.
+    fn try_from(did: &Did) -> Result<Self, SealedError> {
+        let invalid = || SealedError::NotAnX25519Key(did.to_string());
+        let encoded = did.as_str().strip_prefix("did:key:z").ok_or_else(invalid)?;
+        let bytes = bs58::decode(encoded).into_vec().map_err(|_| invalid())?;
+        let key = bytes
+            .strip_prefix(&X25519_PUB_CODEC[..])
+            .ok_or_else(invalid)?;
+        let key: [u8; KEY_LEN] = key.try_into().map_err(|_| invalid())?;
+        Ok(Self(PublicKey::from(key)))
     }
 }
 
@@ -250,8 +360,8 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn account(byte: u8) -> EncryptionKey {
-        AccountSecret::from_bytes(Zeroizing::new([byte; 32])).encryption_key()
+    fn account(byte: u8) -> AccountSecret {
+        AccountSecret::from_bytes(Zeroizing::new([byte; 32]))
     }
 
     fn seed(byte: u8) -> Zeroizing<[u8; 32]> {
@@ -262,8 +372,8 @@ mod tests {
     fn it_seals_to_the_recipient_and_opens_with_the_account_key() {
         let key = account(1);
         let subject = did!("key:z6MkSpace");
-        let sealed = key.recipient().seal(&seed(7), &subject).unwrap();
-        let opened = key.open(&sealed, &subject).unwrap();
+        let sealed = key.secret().conceal(&seed(7), &subject).unwrap();
+        let opened = key.secret().reveal(&sealed, &subject).unwrap();
         assert_eq!(*opened, [7u8; 32]);
     }
 
@@ -271,28 +381,31 @@ mod tests {
     fn it_survives_the_wire() {
         let key = account(1);
         let subject = did!("key:z6MkSpace");
-        let sealed = key.recipient().seal(&seed(7), &subject).unwrap();
+        let sealed = key.secret().conceal(&seed(7), &subject).unwrap();
         let decoded = Sealed::decode(&sealed.encode()).unwrap();
         assert_eq!(decoded, sealed);
-        assert_eq!(*key.open(&decoded, &subject).unwrap(), [7u8; 32]);
+        assert_eq!(*key.secret().reveal(&decoded, &subject).unwrap(), [7u8; 32]);
     }
 
     #[dialog_common::test]
     fn it_refuses_another_account_key() {
         let subject = did!("key:z6MkSpace");
-        let sealed = account(1).recipient().seal(&seed(7), &subject).unwrap();
-        assert_eq!(account(2).open(&sealed, &subject), Err(SealedError::Sealed));
+        let sealed = account(1).secret().conceal(&seed(7), &subject).unwrap();
+        assert_eq!(
+            account(2).secret().reveal(&sealed, &subject),
+            Err(SealedError::Sealed)
+        );
     }
 
     #[dialog_common::test]
     fn it_refuses_another_subject() {
         let key = account(1);
         let sealed = key
-            .recipient()
-            .seal(&seed(7), &did!("key:z6MkSpace"))
+            .secret()
+            .conceal(&seed(7), &did!("key:z6MkSpace"))
             .unwrap();
         assert_eq!(
-            key.open(&sealed, &did!("key:z6MkOther")),
+            key.secret().reveal(&sealed, &did!("key:z6MkOther")),
             Err(SealedError::Sealed)
         );
     }
@@ -301,34 +414,43 @@ mod tests {
     fn it_refuses_a_tampered_blob() {
         let key = account(1);
         let subject = did!("key:z6MkSpace");
-        let mut bytes = key.recipient().seal(&seed(7), &subject).unwrap().encode();
+        let mut bytes = key.secret().conceal(&seed(7), &subject).unwrap().encode();
         let last = bytes.len() - 1;
         bytes[last] ^= 1;
         let sealed = Sealed::decode(&bytes).unwrap();
-        assert_eq!(key.open(&sealed, &subject), Err(SealedError::Sealed));
+        assert_eq!(
+            key.secret().reveal(&sealed, &subject),
+            Err(SealedError::Sealed)
+        );
     }
 
     #[dialog_common::test]
     fn it_names_the_recipient_as_an_x25519_did_key() {
-        let recipient = account(1).recipient();
+        let recipient = account(1).secret().recipient();
         let did = recipient.did();
         assert!(did.as_str().starts_with("did:key:z6LS"), "{did}");
-        assert_eq!(RecipientKey::from_did(&did).unwrap(), recipient);
+        assert_eq!(RecipientKey::try_from(&did).unwrap(), recipient);
     }
 
     #[dialog_common::test]
     fn it_refuses_an_ed25519_did_key_as_a_recipient() {
         let ed25519 = did!("key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
         assert!(matches!(
-            RecipientKey::from_did(&ed25519),
+            RecipientKey::try_from(&ed25519),
             Err(SealedError::NotAnX25519Key(_))
         ));
     }
 
     #[dialog_common::test]
     fn it_derives_the_same_recipient_from_the_same_secret() {
-        assert_eq!(account(1).recipient(), account(1).recipient());
-        assert_ne!(account(1).recipient(), account(2).recipient());
+        assert_eq!(
+            account(1).secret().recipient(),
+            account(1).secret().recipient()
+        );
+        assert_ne!(
+            account(1).secret().recipient(),
+            account(2).secret().recipient()
+        );
     }
 
     #[dialog_common::test]

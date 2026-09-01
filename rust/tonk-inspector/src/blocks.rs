@@ -133,6 +133,181 @@ pub fn split(document: &str) -> Vec<String> {
     blocks
 }
 
+/// The document's title: the text of its first ATX heading.
+///
+/// A notebook's title is not a field the author maintains beside the
+/// document. It IS the document's leading heading, so renaming a notebook
+/// is editing that line and nothing has to stay in sync by hand.
+///
+/// Returns `None` when the document opens with something other than a
+/// heading — an untitled notebook keeps whatever title it had rather than
+/// being renamed to its first paragraph.
+pub fn title_of(document: &str) -> Option<String> {
+    let first = document.trim_start().lines().next()?;
+    let trimmed = first.trim_start_matches(' ');
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let text = trimmed[hashes..].trim();
+    // A closing run of `#` is decoration in ATX headings, not content.
+    let text = text.trim_end_matches('#').trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Build the notation that inserts an edit's new blocks.
+///
+/// One `block/insert!` per created block, emitted in REVERSE document
+/// order, each naming the block it precedes (`next: ?b0`). Reverse,
+/// because a variable can only be referenced by an assertion that comes
+/// AFTER the one binding it: chaining forward means the successor has to
+/// already be named, so the successor is written first.
+///
+/// The chain ends at `next: case:none`, and that last-written block (the
+/// FIRST in document order) also carries `prev`: the existing block the run
+/// follows, or `tonk:notebook/edge` at the document head. Positions then
+/// derive by recursion from that anchor without needing a second round.
+///
+/// Returns `None` when the edit creates nothing.
+pub fn insert_notation(
+    notebook: &str,
+    order: &[Option<String>],
+    created: &[String],
+) -> Option<String> {
+    if created.is_empty() {
+        return None;
+    }
+    // The new blocks, paired with the slot they occupy, in document order.
+    let mut fresh = created.iter();
+    let mut slots: Vec<(usize, &String)> = Vec::new();
+    for (index, slot) in order.iter().enumerate() {
+        if slot.is_none()
+            && let Some(source) = fresh.next()
+        {
+            slots.push((index, source));
+        }
+    }
+    if slots.is_empty() {
+        return None;
+    }
+
+    // Runs of ADJACENT new blocks chain together; a surviving block between
+    // two new ones breaks the chain, because that block's stored position is
+    // a better anchor than a chain reaching across it.
+    let mut runs: Vec<Vec<(usize, &String)>> = Vec::new();
+    for slot in slots {
+        match runs.last_mut() {
+            Some(run) if run.last().is_some_and(|(i, _)| i + 1 == slot.0) => run.push(slot),
+            _ => runs.push(vec![slot]),
+        }
+    }
+
+    let mut out = String::new();
+    let mut nth = 0usize;
+    for run in &runs {
+        // Written last-to-first so each `next` is a backward reference.
+        let base = nth;
+        // What the whole run follows: the nearest surviving block before it.
+        let run_prev = run
+            .first()
+            .and_then(|(index, _)| order[..*index].iter().rev().find_map(|s| s.clone()));
+        let mut vars: Vec<String> = Vec::new();
+        for offset in 0..run.len() {
+            vars.push(format!("b{}", base + offset));
+        }
+        for (offset, (index, source)) in run.iter().enumerate().rev() {
+            let var = &vars[offset];
+            out.push_str("block/insert!:\n");
+            out.push_str(&format!("  this: ?{var}\n"));
+            out.push_str(&format!("  notebook: {notebook}\n"));
+            out.push_str(&format!("  source: {}\n", yaml_block(source)));
+            // The successor: the next block in this run by variable, else
+            // the nearest surviving block after the run, else the tail.
+            if offset + 1 < run.len() {
+                out.push_str(&format!("  next: ?{}\n", vars[offset + 1]));
+            } else if let Some(next) = order[index + 1..].iter().find_map(|s| s.clone()) {
+                out.push_str(&format!("  next: {next}\n"));
+            } else {
+                out.push_str("  next: case:none\n");
+            }
+            // The EXISTING block this run follows, carried on every block
+            // in the run and so the same entity for all of them. Only the
+            // run's last block (`next: case:none`) consults it, and that
+            // block's own predecessors are new, with no stored position —
+            // so the anchor has to reach past them to something placed.
+            let _ = index;
+            match &run_prev {
+                Some(prev) => out.push_str(&format!("  prev: {prev}\n")),
+                None => out.push_str("  prev: tonk:notebook/edge\n"),
+            }
+            out.push('\n');
+            nth += 1;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A source as a YAML block scalar, so markdown with newlines, colons and
+/// backticks survives without escaping.
+fn yaml_block(source: &str) -> String {
+    let mut out = String::from("|-\n");
+    for line in source.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Trim the trailing newline: the caller adds one.
+    out.pop();
+    out
+}
+
+/// The chunk range each block covers, as `(first, count)` over the
+/// document's top-level nodes.
+///
+/// [`split`] returns block TEXT; this returns the same grouping as spans,
+/// so a caret sitting in the n-th top-level node can be traced back to the
+/// block that contains it. A block is a contiguous run — a heading with the
+/// content it introduces — which is why the caret's own node index is not
+/// enough on its own.
+pub fn block_spans(document: &str) -> Vec<(usize, usize)> {
+    let chunks = split_chunks(document);
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    let mut start = 0usize;
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        if is_heading(&chunk) {
+            if pending.iter().any(|held| !is_heading(held)) {
+                spans.push((start, pending.len()));
+                pending.clear();
+                start = index;
+            }
+            if pending.is_empty() {
+                start = index;
+            }
+            pending.push(chunk);
+        } else if pending.iter().any(|held| is_heading(held)) {
+            pending.push(chunk);
+            spans.push((start, pending.len()));
+            pending.clear();
+        } else {
+            spans.push((index, 1));
+        }
+    }
+
+    if !pending.is_empty() {
+        spans.push((start, pending.len()));
+    }
+    spans
+}
+
+/// The span covering the top-level node at `index`, if any.
+pub fn span_at(document: &str, index: usize) -> Option<(usize, usize)> {
+    block_spans(document)
+        .into_iter()
+        .find(|(start, len)| index >= *start && index < start + len)
+}
+
 /// Split a document at blank lines outside fenced regions — the raw
 /// markdown block boundaries, before headings are grouped with their content.
 fn split_chunks(document: &str) -> Vec<String> {
@@ -395,6 +570,66 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// Spans cover the same grouping `split` does: one entry per block,
+    /// each naming the run of top-level nodes it occupies. The highlight
+    /// reads these to light a whole block rather than one paragraph of it.
+    #[dialog_common::test]
+    fn it_spans_the_nodes_each_block_covers() {
+        let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";
+        assert_eq!(
+            split(doc),
+            vec![
+                "intro".to_owned(),
+                "# Heading\n\nunder it".to_owned(),
+                "trailing".to_owned(),
+            ]
+        );
+        assert_eq!(
+            block_spans(doc),
+            vec![(0, 1), (1, 2), (3, 1)],
+            "the heading block covers two nodes; its neighbours one each"
+        );
+    }
+
+    /// Consecutive headings ride with the same content, so the span covers
+    /// all three nodes.
+    #[dialog_common::test]
+    fn it_spans_a_heading_run_with_its_content() {
+        let doc = "# Title\n\n## Subtitle\n\nbody";
+        assert_eq!(split(doc).len(), 1, "one block");
+        assert_eq!(block_spans(doc), vec![(0, 3)]);
+    }
+
+    /// Every node maps back to the block containing it — that is the
+    /// lookup the caret uses.
+    #[dialog_common::test]
+    fn it_finds_the_span_containing_a_node() {
+        let doc = "intro\n\n# Heading\n\nunder it\n\ntrailing";
+        assert_eq!(span_at(doc, 0), Some((0, 1)));
+        assert_eq!(span_at(doc, 1), Some((1, 2)), "the heading itself");
+        assert_eq!(span_at(doc, 2), Some((1, 2)), "its content, same block");
+        assert_eq!(span_at(doc, 3), Some((3, 1)));
+        assert_eq!(span_at(doc, 9), None, "past the end");
+    }
+
+    /// A span per block, always — whatever the document.
+    #[dialog_common::test]
+    fn it_spans_every_block_exactly_once() {
+        for doc in [
+            "one",
+            "one\n\ntwo",
+            "# a\n\nb\n\n# c\n\nd",
+            "```dialog\nconcept:\n```\n\nafter",
+            "# only a heading",
+        ] {
+            assert_eq!(
+                block_spans(doc).len(),
+                split(doc).len(),
+                "span count matches block count for {doc:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[dialog_common::test]
@@ -462,6 +697,133 @@ mod tests {
 
     /// The invariant the projection rests on: splitting a projection recovers
     /// exactly the blocks it was built from.
+    /// Blank lines inside a paragraph-ish block: does a soft line break
+    /// survive? (`a\nb` is ONE block with a line break, not two.)
+    #[dialog_common::test]
+    fn it_preserves_a_line_break_within_a_block() {
+        let doc = "first line\nsecond line";
+        let blocks = split(doc);
+        assert_eq!(blocks.len(), 1, "one block: {blocks:#?}");
+        assert_eq!(project(&blocks), doc, "the break inside survives");
+    }
+
+    /// Trailing blank lines inside a fence.
+    #[dialog_common::test]
+    fn it_preserves_trailing_blank_lines_inside_a_fence() {
+        let doc = "```dialog-yaml\ncounter/model!:\n  this: id:counter/1\n\n\n```";
+        assert_eq!(project(&split(doc)), doc);
+    }
+
+    /// A single new block names its surviving neighbours by entity.
+    #[dialog_common::test]
+    fn it_writes_notation_for_one_inserted_block() {
+        let order = vec![Some("id:a".into()), None, Some("id:b".into())];
+        let created = vec!["hello".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("this: ?b0"), "{text}");
+        assert!(text.contains("next: id:b"), "{text}");
+        assert!(text.contains("prev: id:a"), "{text}");
+    }
+
+    /// A RUN of new blocks chains FORWARD, and so is emitted back to front:
+    /// the earlier block names the later one by variable, which only
+    /// analyzes if the later one was bound first.
+    #[dialog_common::test]
+    fn it_chains_a_run_of_inserted_blocks_by_variable() {
+        let order = vec![Some("id:a".into()), None, None, Some("id:b".into())];
+        let created = vec!["one".to_owned(), "two".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("this: ?b0"), "{text}");
+        assert!(text.contains("this: ?b1"), "{text}");
+        assert!(
+            text.contains("next: ?b1"),
+            "the first precedes the second: {text}"
+        );
+        assert!(
+            text.contains("next: id:b"),
+            "the last precedes the stored block: {text}"
+        );
+        // `?b1` must be BOUND before `?b0` names it.
+        let bind = text.find("this: ?b1").expect("b1 bound");
+        let use_ = text.find("next: ?b1").expect("b1 used");
+        assert!(bind < use_, "backward reference only: {text}");
+    }
+
+    /// A run appended at the end of a document terminates its chain at the
+    /// sentinel rather than at a following block.
+    #[dialog_common::test]
+    fn it_ends_the_chain_at_the_document_tail() {
+        let order = vec![Some("id:a".into()), None];
+        let created = vec!["last".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("next: case:none"), "{text}");
+        assert!(text.contains("prev: id:a"), "{text}");
+    }
+
+    /// A block at the document head follows the edge sentinel, so the
+    /// anchoring rule still matches.
+    #[dialog_common::test]
+    fn it_anchors_on_the_edge_at_the_start_of_a_document() {
+        let order = vec![None, Some("id:b".into())];
+        let created = vec!["first".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("prev: tonk:notebook/edge"), "{text}");
+        assert!(text.contains("next: id:b"), "{text}");
+    }
+
+    /// Markdown survives: newlines, colons and backticks are carried in a
+    /// block scalar rather than escaped.
+    #[dialog_common::test]
+    fn it_carries_markdown_verbatim() {
+        let order = vec![None];
+        let created = vec!["```dialog\nnotebook:\n  title: ?t\n```".to_owned()];
+        let text = insert_notation("id:nb", &order, &created).expect("notation");
+        assert!(text.contains("source: |-"), "{text}");
+        assert!(text.contains("    ```dialog"), "{text}");
+        assert!(text.contains("      title: ?t"), "{text}");
+    }
+
+    /// The title is the leading heading's text.
+    #[dialog_common::test]
+    fn it_reads_the_title_from_the_leading_heading() {
+        assert_eq!(title_of("# Notes\n\nbody"), Some("Notes".to_owned()));
+    }
+
+    /// Any ATX level titles the document; a notebook titled with `##` is
+    /// still titled.
+    #[dialog_common::test]
+    fn it_reads_a_deeper_heading_as_the_title() {
+        assert_eq!(title_of("### Deep\n\nbody"), Some("Deep".to_owned()));
+    }
+
+    /// A closing `#` run is decoration, not part of the name.
+    #[dialog_common::test]
+    fn it_strips_a_closing_hash_run() {
+        assert_eq!(title_of("# Notes #\n"), Some("Notes".to_owned()));
+    }
+
+    /// A document that does not open with a heading has no title, so the
+    /// notebook keeps the one it has rather than being renamed to a
+    /// paragraph.
+    #[dialog_common::test]
+    fn it_reads_no_title_from_a_headingless_document() {
+        assert_eq!(title_of("just a paragraph\n\n# Later"), None);
+    }
+
+    /// `#hashtag` is not a heading (no space), and an empty heading names
+    /// nothing.
+    #[dialog_common::test]
+    fn it_reads_no_title_from_a_bare_hash() {
+        assert_eq!(title_of("#\n"), None);
+        assert_eq!(title_of("####### seven\n"), None);
+    }
+
+    /// Nothing created, nothing to send.
+    #[dialog_common::test]
+    fn it_writes_no_notation_when_nothing_was_created() {
+        assert!(insert_notation("id:nb", &[Some("id:a".into())], &[]).is_none());
+    }
+
     #[dialog_common::test]
     fn it_round_trips_blocks_through_a_document() {
         // Blocks as `split` itself would produce them: the heading is

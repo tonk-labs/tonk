@@ -633,6 +633,7 @@ pub(crate) fn attribute_application(
             terms,
             predicate: attribute_schema(),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name,
     }
@@ -700,6 +701,7 @@ pub(crate) fn concept_application(
             terms,
             predicate: concept_schema(descriptor),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name,
     }
@@ -824,6 +826,7 @@ fn concept_field_retraction(
             terms,
             predicate: concept_schema(&sub_descriptor),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name: None,
     })

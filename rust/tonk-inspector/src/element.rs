@@ -21,8 +21,9 @@ use custom_elements::CustomElement;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CustomEvent, Element, Event, HtmlElement, window};
+use web_sys::{CustomEvent, Element, Event, HtmlElement, Response, window};
 
+use crate::debug::{self, Probe};
 use crate::render::render_result;
 use crate::response::EvaluateResponse;
 
@@ -48,7 +49,7 @@ impl CustomElement for TonkInspectorElement {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let Some((repo, branch)) = resolve_context(this) else {
+        let Some(context) = resolve_context(this) else {
             this.set_inner_html(
                 "<div class=\"tonk-inspector\">\
                    <section class=\"error\">no repository in context \
@@ -58,7 +59,7 @@ impl CustomElement for TonkInspectorElement {
             return;
         };
 
-        this.set_class_name("tonk-inspector branch-cells wa-stack wa-gap-s");
+        this.set_class_name("tonk-inspector wa-stack wa-gap-m");
         this.set_inner_html("");
 
         // Mount a `<tonk-diagnostics-provider>` as the cell host. Each cell's
@@ -81,10 +82,26 @@ impl CustomElement for TonkInspectorElement {
         host.set_class_name("branch-cells wa-stack wa-gap-s");
         let _ = this.append_child(&host);
 
+        let debug_panel = if context.profile {
+            None
+        } else {
+            DebugPanel::mount(
+                context.repo.clone(),
+                context.branch.clone(),
+                self.closures.clone(),
+            )
+        };
+
+        // Diagnostics belong before the scratch notebook in reading order.
+        if let Some(panel) = debug_panel.as_ref() {
+            let _ = this.insert_before(&panel.host, Some(host.as_ref()));
+        }
+
         let notebook = Rc::new(Notebook {
             host,
-            repo,
-            branch,
+            repo: context.repo,
+            branch: context.branch,
+            debug_panel,
             next_id: Cell::new(0),
             closures: self.closures.clone(),
         });
@@ -115,12 +132,278 @@ impl CustomElement for TonkInspectorElement {
     }
 }
 
+#[derive(Default)]
+enum ProbeState {
+    #[default]
+    Idle,
+    Loading,
+    Response(String),
+    Failure(String),
+}
+
+/// Read-only repository metadata mounted above a named-space notebook.
+struct DebugPanel {
+    host: HtmlElement,
+    repo: String,
+    branch: String,
+    repository: RefCell<Option<String>>,
+    probe: RefCell<ProbeState>,
+    refreshing: Cell<bool>,
+    probing: Cell<bool>,
+}
+
+impl DebugPanel {
+    fn mount(repo: String, branch: String, closures: Closures) -> Option<Rc<Self>> {
+        let document = window()?.document()?;
+        let host = document
+            .create_element("section")
+            .ok()?
+            .dyn_into::<HtmlElement>()
+            .ok()?;
+        host.set_class_name("inspector-debug");
+        host.set_attribute("aria-label", "branch diagnostics").ok();
+        host.set_inner_html(&debug::render_loading(&repo, &branch));
+
+        let panel = Rc::new(Self {
+            host,
+            repo,
+            branch,
+            repository: RefCell::new(None),
+            probe: RefCell::new(ProbeState::Idle),
+            refreshing: Cell::new(false),
+            probing: Cell::new(false),
+        });
+
+        add(panel.host.as_ref(), "click", &closures, {
+            let panel = panel.clone();
+            move |event| panel.clone().handle_click(event)
+        });
+
+        // The panel is detached until the caller inserts it before the
+        // notebook, but its fetch may start now: the portal's window.fetch
+        // relay does not depend on DOM event bubbling.
+        panel.clone().refresh_local();
+        Some(panel)
+    }
+
+    fn handle_click(self: Rc<Self>, event: Event) {
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+        else {
+            return;
+        };
+        let Some(button) = target.closest("button").ok().flatten() else {
+            return;
+        };
+        if !self.host.contains(Some(button.as_ref())) {
+            return;
+        }
+
+        match button.get_attribute("data-debug-action").as_deref() {
+            Some("refresh") => self.refresh_local(),
+            Some("probe") => self.probe_remote(),
+            _ => {
+                if let Some(value) = button.get_attribute("data-copy-value") {
+                    self.copy(button, value);
+                }
+            }
+        }
+    }
+
+    fn refresh_local(self: Rc<Self>) {
+        if self.refreshing.get() || self.probing.get() {
+            return;
+        }
+        self.refreshing.set(true);
+        self.sync_busy_controls();
+        let panel = self.clone();
+        let path = format!("/api/repository/{}", self.repo);
+        spawn_local(async move {
+            match fetch_text(&path).await {
+                Ok(body) => {
+                    panel.repository.replace(Some(body));
+                    panel.probe.replace(ProbeState::Idle);
+                    panel.paint();
+                }
+                Err(error) if panel.repository.borrow().is_some() => {
+                    panel.feedback(&format!("refresh failed: {error}"), true);
+                }
+                Err(error) => {
+                    panel.replace_html(&debug::render_failure(&panel.repo, &panel.branch, &error))
+                }
+            }
+            panel.refreshing.set(false);
+            panel.sync_busy_controls();
+        });
+    }
+
+    fn probe_remote(self: Rc<Self>) {
+        if self.probing.get() || self.refreshing.get() || self.repository.borrow().is_none() {
+            return;
+        }
+        self.probing.set(true);
+        self.probe.replace(ProbeState::Loading);
+        self.paint();
+        let panel = self.clone();
+        let path = format!(
+            "/api/repository/{}/branch/{}/sync/status",
+            self.repo, self.branch
+        );
+        spawn_local(async move {
+            match fetch_text(&path).await {
+                Ok(body) => panel.probe.replace(ProbeState::Response(body)),
+                Err(error) => panel.probe.replace(ProbeState::Failure(error)),
+            };
+            panel.probing.set(false);
+            panel.paint();
+        });
+    }
+
+    fn paint(&self) {
+        let Some(repository) = self.repository.borrow().clone() else {
+            return;
+        };
+        let probe = self.probe.borrow();
+        let probe = match &*probe {
+            ProbeState::Idle => Probe::Idle,
+            ProbeState::Loading => Probe::Loading,
+            ProbeState::Response(body) => Probe::Response(body),
+            ProbeState::Failure(error) => Probe::Failure(error),
+        };
+        match debug::render_repository(&self.repo, &self.branch, &repository, probe) {
+            Ok(html) => self.replace_html(&html),
+            Err(error) => {
+                self.replace_html(&debug::render_failure(&self.repo, &self.branch, &error))
+            }
+        }
+        self.sync_busy_controls();
+    }
+
+    fn replace_html(&self, html: &str) {
+        let expanded = self
+            .host
+            .query_selector(".inspector-debug__disclosure")
+            .ok()
+            .flatten()
+            .is_some_and(|details| details.has_attribute("open"));
+        self.host.set_inner_html(html);
+        if expanded {
+            if let Some(details) = self
+                .host
+                .query_selector(".inspector-debug__disclosure")
+                .ok()
+                .flatten()
+            {
+                details.set_attribute("open", "").ok();
+            }
+        }
+    }
+
+    fn sync_busy_controls(&self) {
+        let busy = self.refreshing.get() || self.probing.get();
+        self.host
+            .set_attribute("aria-busy", if busy { "true" } else { "false" })
+            .ok();
+        for selector in ["[data-debug-action=refresh]", "[data-debug-action=probe]"] {
+            if let Some(button) = self.host.query_selector(selector).ok().flatten() {
+                if busy {
+                    button.set_attribute("disabled", "").ok();
+                } else {
+                    button.remove_attribute("disabled").ok();
+                }
+            }
+        }
+    }
+
+    fn copy(self: Rc<Self>, button: Element, value: String) {
+        let promise = window().map(|window| window.navigator().clipboard().write_text(&value));
+        let Some(promise) = promise else {
+            copy_failed(&button, "clipboard unavailable");
+            return;
+        };
+        spawn_local(async move {
+            match JsFuture::from(promise).await {
+                Ok(_) => {
+                    button.set_text_content(Some("copied"));
+                    button.set_attribute("aria-label", "copied").ok();
+                    button.class_list().add_1("is-copied").ok();
+                }
+                Err(error) => copy_failed(&button, &format!("{error:?}")),
+            }
+        });
+    }
+
+    fn feedback(&self, message: &str, error: bool) {
+        let feedback = self
+            .host
+            .query_selector(".inspector-debug__transient")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                let document = window()?.document()?;
+                let feedback = document.create_element("div").ok()?;
+                feedback.set_class_name("inspector-debug__transient");
+                feedback.set_attribute("role", "status").ok();
+                feedback.set_attribute("aria-live", "polite").ok();
+                self.host
+                    .query_selector(".inspector-debug__body")
+                    .ok()
+                    .flatten()?
+                    .append_child(&feedback)
+                    .ok()?;
+                Some(feedback)
+            });
+        if let Some(feedback) = feedback {
+            feedback.set_text_content(Some(message));
+            let _ = feedback.class_list().toggle_with_force("is-error", error);
+        }
+    }
+}
+
+fn copy_failed(button: &Element, message: &str) {
+    button.set_text_content(Some("retry"));
+    button
+        .set_attribute("aria-label", "copy failed; retry")
+        .ok();
+    button.set_attribute("title", message).ok();
+    button.class_list().add_1("is-error").ok();
+}
+
+async fn fetch_text(path: &str) -> Result<String, String> {
+    let window = window().ok_or_else(|| "no window available".to_owned())?;
+    let value = JsFuture::from(window.fetch_with_str(path))
+        .await
+        .map_err(|error| format!("GET {path} failed: {error:?}"))?;
+    let response: Response = value
+        .dyn_into()
+        .map_err(|_| format!("GET {path} did not return a response"))?;
+    let status = response.status();
+    let text = JsFuture::from(
+        response
+            .text()
+            .map_err(|error| format!("GET {path} body: {error:?}"))?,
+    )
+    .await
+    .map_err(|error| format!("GET {path} body: {error:?}"))?
+    .as_string()
+    .unwrap_or_default();
+    if response.ok() {
+        Ok(text)
+    } else if text.is_empty() {
+        Err(format!("GET {path} returned HTTP {status}"))
+    } else {
+        Err(format!("GET {path} returned HTTP {status}: {text}"))
+    }
+}
+
 /// Shared notebook state: where to mount cells, how to scope their LSP URIs, and
 /// the listener bag spawned cells register into.
 struct Notebook {
     host: HtmlElement,
     repo: String,
     branch: String,
+    debug_panel: Option<Rc<DebugPanel>>,
     next_id: Cell<u32>,
     closures: Closures,
 }
@@ -318,6 +601,9 @@ impl NotebookCell {
                     self.running.set(false);
                     self.sealed.set(true);
                     notify_committed();
+                    if let Some(panel) = notebook.debug_panel.as_ref() {
+                        panel.clone().refresh_local();
+                    }
                     notebook.spawn_cell(true);
                 }
                 Err(message) => {
@@ -349,7 +635,13 @@ impl NotebookCell {
 /// profile is not reachable as a repository *named* `profile`. Flattening
 /// it sent the LSP looking for a named repo that does not exist, so it
 /// opened no branch and completion fell back to built-ins only.
-pub(crate) fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
+pub(crate) struct InspectorContext {
+    pub(crate) repo: String,
+    pub(crate) branch: String,
+    pub(crate) profile: bool,
+}
+
+pub(crate) fn resolve_context(el: &HtmlElement) -> Option<InspectorContext> {
     let location: tonk_host::location::Location = el
         .get_attribute("with")
         .filter(|v| !v.is_empty() && !v.contains('{'))
@@ -361,7 +653,11 @@ pub(crate) fn resolve_context(el: &HtmlElement) -> Option<(String, String)> {
         // segment from the repo half alone.
         None => location.repo.to_string(),
     };
-    Some((repo, location.effective_branch().to_owned()))
+    Some(InspectorContext {
+        repo,
+        branch: location.effective_branch().to_owned(),
+        profile: location.profile(),
+    })
 }
 
 /// Evaluate `document` against the branch via the `<tonk-host>` consumer.
@@ -466,6 +762,43 @@ pub(crate) fn reflect_string(value: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(value, &JsValue::from_str(key))
         .ok()
         .and_then(|v| v.as_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn it_mounts_branch_diagnostics_for_spaces_but_not_profiles() {
+        crate::register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let space = document.create_element("tonk-inspector").unwrap();
+        space.set_attribute("with", "main@did:key:zSpace").unwrap();
+        body.append_child(&space).unwrap();
+        assert!(
+            space.query_selector(".inspector-debug").unwrap().is_some(),
+            "a named-space inspector should mount branch diagnostics"
+        );
+
+        let profile = document.create_element("tonk-inspector").unwrap();
+        profile.set_attribute("with", "main@profile:tonk").unwrap();
+        body.append_child(&profile).unwrap();
+        assert!(
+            profile
+                .query_selector(".inspector-debug")
+                .unwrap()
+                .is_none(),
+            "the profile inspector should keep its notebook-only surface"
+        );
+
+        space.remove();
+        profile.remove();
+    }
 }
 
 fn reflect_f64(value: &JsValue, key: &str) -> Option<f64> {

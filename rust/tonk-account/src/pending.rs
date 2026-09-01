@@ -53,7 +53,7 @@ pub enum PendingWork {
         custody: String,
         /// Hex-encoded sealed envelope, the content to publish.
         sealed_hex: String,
-        /// Hex-encoded pre-signed `/memory/publish` invocation. An
+        /// Hex-encoded pre-signed `/use/put/memory/cell` invocation. An
         /// entry from before invocations were queued decodes with an
         /// empty string and is void: dropped with a log rather than
         /// blocking the queue forever.
@@ -99,6 +99,27 @@ impl PendingQueue {
         }
     }
 
+    /// Append a related batch in its supplied order, suppressing exact work
+    /// already present without allowing a missing prerequisite to land behind
+    /// a surviving later entry. Callers serialize the queue once afterwards.
+    pub fn push_all(&mut self, work: impl IntoIterator<Item = PendingWork>) {
+        let batch = work.into_iter().collect::<Vec<_>>();
+        for (index, entry) in batch.iter().cloned().enumerate() {
+            if self.0.contains(&entry) {
+                continue;
+            }
+            let insert_at = batch[index + 1..]
+                .iter()
+                .filter_map(|later| self.0.iter().position(|queued| queued == later))
+                .min();
+            if let Some(insert_at) = insert_at {
+                self.0.insert(insert_at, entry);
+            } else {
+                self.0.push(entry);
+            }
+        }
+    }
+
     /// The entries in replay order.
     pub fn entries(&self) -> &[PendingWork] {
         &self.0
@@ -139,6 +160,22 @@ mod tests {
             matches!(queue.entries()[1], PendingWork::PublishCustody { .. }),
             "the publish must stay behind the provision that makes it servable"
         );
+    }
+
+    #[test]
+    fn it_repairs_a_surviving_publish_when_the_complete_batch_is_replayed() {
+        let provision = provision("did:key:zCustody");
+        let publish = PendingWork::PublishCustody {
+            custody: "did:key:zCustody".to_string(),
+            sealed_hex: "bb".to_string(),
+            invocation_hex: "c0de".to_string(),
+        };
+        let mut queue = PendingQueue(vec![publish.clone()]);
+
+        queue.push_all([provision.clone(), publish.clone()]);
+        queue.push_all([provision.clone(), publish.clone()]);
+
+        assert_eq!(queue.entries(), &[provision, publish]);
     }
 
     #[test]

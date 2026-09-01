@@ -268,11 +268,11 @@ async fn it_renders_the_name_from_a_delivered_frame() {
         "chip renders the placeholder before any frame arrives"
     );
 
-    deliver(&el, "reset", &reset_payload("Real Spot"));
+    deliver(&el, "reset", &reset_payload("Real Space"));
 
     assert_eq!(
         editable.text_content().as_deref(),
-        Some("Real Spot"),
+        Some("Real Space"),
         "a delivered reset frame must be consumed and rendered, not ignored"
     );
 
@@ -482,13 +482,15 @@ fn mount_switcher() -> web_sys::HtmlElement {
     el
 }
 
-/// A single replica conclusion row, shaped like a real subscription result:
-/// `{ this, fields: { subject, kind, status } }`.
-fn replica_row(this_id: &str, subject: &str, kind: &str, status: &str) -> JsValue {
+/// A single account-directory conclusion row, shaped like a real subscription
+/// result: `{ this, fields: { subject, name?, status } }`.
+fn directory_row(this_id: &str, subject: &str, name: Option<&str>, status: &str) -> JsValue {
     let fields = js_sys::Object::new();
     js_sys::Reflect::set(&fields, &"subject".into(), &JsValue::from_str(subject))
         .expect("set subject");
-    js_sys::Reflect::set(&fields, &"kind".into(), &JsValue::from_str(kind)).expect("set kind");
+    if let Some(name) = name {
+        js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
+    }
     js_sys::Reflect::set(&fields, &"status".into(), &JsValue::from_str(status))
         .expect("set status");
     let row = js_sys::Object::new();
@@ -497,25 +499,28 @@ fn replica_row(this_id: &str, subject: &str, kind: &str, status: &str) -> JsValu
     row.into()
 }
 
-/// A `reset` snapshot payload: a bare array of replica rows.
-fn switcher_reset_payload(rows: &[(&str, &str, &str, &str)]) -> JsValue {
+/// A `reset` snapshot payload: a bare array of account-directory rows.
+fn switcher_reset_payload(rows: &[(&str, &str, Option<&str>, &str)]) -> JsValue {
     let arr = js_sys::Array::new();
-    for (id, subject, kind, status) in rows {
-        arr.push(&replica_row(id, subject, kind, status));
+    for (id, subject, name, status) in rows {
+        arr.push(&directory_row(id, subject, *name, status));
     }
     arr.into()
 }
 
 /// An `update` delta payload: `{ asserted, retracted }`. Retracted rows only
 /// need to carry `this` to identify what to remove.
-fn switcher_update_payload(asserted: &[(&str, &str, &str, &str)], retracted: &[&str]) -> JsValue {
+fn switcher_update_payload(
+    asserted: &[(&str, &str, Option<&str>, &str)],
+    retracted: &[&str],
+) -> JsValue {
     let asserted_arr = js_sys::Array::new();
-    for (id, subject, kind, status) in asserted {
-        asserted_arr.push(&replica_row(id, subject, kind, status));
+    for (id, subject, name, status) in asserted {
+        asserted_arr.push(&directory_row(id, subject, *name, status));
     }
     let retracted_arr = js_sys::Array::new();
     for id in retracted {
-        retracted_arr.push(&replica_row(id, "", "", ""));
+        retracted_arr.push(&directory_row(id, "", None, ""));
     }
     let payload = js_sys::Object::new();
     js_sys::Reflect::set(&payload, &"asserted".into(), &asserted_arr).expect("set asserted");
@@ -573,7 +578,7 @@ async fn it_stamps_the_profile_routing_context_not_a_space_derived_one() {
 }
 
 #[dialog_common::test]
-async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_space() {
+async fn it_renders_every_other_account_directory_space() {
     // No host is installed in this crate's tests, so deliver frames the
     // exact way `tonk-host::ops::deliver_frame` does. This is the path that
     // shipped broken for <ui-space-name>: an element that subscribes and
@@ -588,40 +593,24 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
         &el,
         "reset",
         &switcher_reset_payload(&[
-            // The profile's own self-replica: must be filtered, kind == tonk:profile.
-            (
-                "replica:profile",
-                "did:key:z6MkProfileSelf",
-                "tonk:profile",
-                "tonk:active",
-            ),
             // The active space (this element's `exclude`): must be filtered.
-            (
-                "replica:active",
-                ACTIVE_SPACE,
-                "tonk:repository",
-                "tonk:active",
-            ),
-            // A genuine other space: must render.
-            (
-                "replica:other",
-                OTHER_SPACE,
-                "tonk:repository",
-                "tonk:active",
-            ),
+            (ACTIVE_SPACE, ACTIVE_SPACE, Some("Current"), "tonk:active"),
+            // Every genuine other directory entry must render, including an
+            // older entry whose optional name mirror has not landed yet.
+            (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
+            (THIRD_SPACE, THIRD_SPACE, None, "tonk:blank"),
         ]),
     );
 
     let subjects = rendered_row_subjects(&el);
     assert_eq!(
         subjects,
-        vec![OTHER_SPACE.to_string()],
-        "only the non-self, non-active replica renders as a row: {subjects:?}"
+        vec![OTHER_SPACE.to_string(), THIRD_SPACE.to_string()],
+        "every non-active account directory entry renders as a row: {subjects:?}"
     );
 
-    // The surviving row must wrap a <ui-space-name> for that space's OWN
-    // repo name (not the profile-side replica name), and must stamp
-    // data-status from the replica's own sync status.
+    // The surviving row must use the account-directory name mirror, which is
+    // available even when this device has not replicated the target space.
     let menu = el.parent_element().expect("switcher menu");
     let row = menu
         .query_selector(&format!("tonk-mi[data-space=\"{OTHER_SPACE}\"]"))
@@ -630,20 +619,18 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
     assert_eq!(
         row.get_attribute("data-status").as_deref(),
         Some("tonk:active"),
-        "row must stamp data-status from the replica's status"
+        "row must stamp data-status from the directory status"
     );
-    let name_el = row
-        .query_selector("ui-space-name")
-        .expect("query")
-        .expect("row must nest a <ui-space-name> for the space's own repo name");
     assert_eq!(
-        name_el.get_attribute("space").as_deref(),
-        Some(OTHER_SPACE),
-        "<ui-space-name> must be scoped to this row's own space, not the profile"
+        row.text_content().as_deref(),
+        Some("Other"),
+        "the row must render the directory mirror without querying an absent target replica"
     );
     assert!(
-        name_el.has_attribute("readonly"),
-        "a switcher row names another space without offering to rename it"
+        row.query_selector("ui-space-name")
+            .expect("query")
+            .is_none(),
+        "a switcher row must not depend on a subscription to the target repository"
     );
 
     // A subsequent `update` delta must also be consumed: retract the
@@ -654,13 +641,8 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
         &el,
         "update",
         &switcher_update_payload(
-            &[(
-                "replica:third",
-                THIRD_SPACE,
-                "tonk:repository",
-                "tonk:blank",
-            )],
-            &["replica:other"],
+            &[(THIRD_SPACE, THIRD_SPACE, Some("Third"), "tonk:blank")],
+            &[OTHER_SPACE],
         ),
     );
     let subjects = rendered_row_subjects(&el);
@@ -672,32 +654,51 @@ async fn it_renders_rows_from_delivered_frames_filtering_self_and_the_active_spa
 }
 
 #[dialog_common::test]
-async fn it_renders_each_replica_once_when_a_reset_repeats_a_conclusion() {
+async fn it_refilters_when_the_active_space_lands_after_the_directory_frame() {
+    let el = mount_switcher();
+    el.set_attribute("exclude", "")
+        .expect("clear the initially stamped active space");
+
+    deliver_switcher(
+        &el,
+        "reset",
+        &switcher_reset_payload(&[
+            (ACTIVE_SPACE, ACTIVE_SPACE, Some("Current"), "tonk:active"),
+            (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
+        ]),
+    );
+    assert_eq!(
+        rendered_row_subjects(&el),
+        vec![ACTIVE_SPACE.to_string(), OTHER_SPACE.to_string()],
+        "before routing settles, the directory frame is necessarily unfiltered"
+    );
+
+    el.set_attribute("exclude", ACTIVE_SPACE)
+        .expect("stamp the routed active space");
+    assert_eq!(
+        rendered_row_subjects(&el),
+        vec![OTHER_SPACE.to_string()],
+        "a late active-space stamp must re-filter rows already delivered by the profile"
+    );
+}
+
+#[dialog_common::test]
+async fn it_renders_each_directory_entry_once_when_a_reset_repeats_a_conclusion() {
     let el = mount_switcher();
 
     deliver_switcher(
         &el,
         "reset",
         &switcher_reset_payload(&[
-            (
-                "replica:other",
-                OTHER_SPACE,
-                "tonk:repository",
-                "tonk:active",
-            ),
-            (
-                "replica:other",
-                OTHER_SPACE,
-                "tonk:repository",
-                "tonk:active",
-            ),
+            (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
+            (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
         ]),
     );
 
     assert_eq!(
         rendered_row_subjects(&el),
         vec![OTHER_SPACE.to_string()],
-        "a reset may repeat a query conclusion, but the switcher must render one row per replica"
+        "a reset may repeat a query conclusion, but the switcher must render one row per directory entry"
     );
 }
 
@@ -707,12 +708,7 @@ async fn it_inserts_rows_before_the_authored_more_action() {
     deliver_switcher(
         &el,
         "reset",
-        &switcher_reset_payload(&[(
-            "replica:other",
-            OTHER_SPACE,
-            "tonk:repository",
-            "tonk:active",
-        )]),
+        &switcher_reset_payload(&[(OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active")]),
     );
 
     let menu = el.parent_element().expect("switcher menu");

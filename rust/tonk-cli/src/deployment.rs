@@ -21,13 +21,13 @@ pub struct DeploymentDefaults {
 }
 
 /// Discover content defaults from the exact deployment used for account
-/// linking, refusing configs that point at a different account provider.
-pub async fn discover(
-    account_url: &str,
-    expected_account_service: &str,
-) -> Result<DeploymentDefaults> {
+/// linking.
+///
+/// The config is fetched to confirm the deployment answers at all —
+/// a 404 there is what "deployment configuration is invalid" means —
+/// and the access remote comes from the origin that served it.
+pub async fn discover(account_url: &str) -> Result<DeploymentDefaults> {
     let ceremony_origin = ceremony_origin(account_url)?;
-    let expected = validated_http_url(expected_account_service, "account service URL")?;
     let endpoint = ceremony_origin
         .join("/.well-known/tonk")
         .context("failed to form deployment discovery URL")?;
@@ -46,17 +46,7 @@ pub async fn discover(
         .json::<DeploymentConfig>()
         .await
         .context("deployment discovery returned malformed configuration")?;
-    let advertised = validated_http_url(
-        config.account_service_url.as_str(),
-        "advertised account service URL",
-    )?;
-    if normalized_service(&advertised) != normalized_service(&expected) {
-        bail!(
-            "deployment advertises account service {}, expected {}",
-            advertised,
-            expected
-        );
-    }
+    let _ = config;
     let access_remote = ceremony_origin
         .join("/ucan/")
         .context("failed to form deployment access URL")?;
@@ -131,14 +121,6 @@ fn origin_url(url: &Url) -> Result<Url> {
         .context("account ceremony URL has no usable origin")
 }
 
-fn normalized_service(url: &Url) -> String {
-    let mut normalized = url.clone();
-    normalized.set_fragment(None);
-    let path = normalized.path().trim_end_matches('/').to_owned();
-    normalized.set_path(if path.is_empty() { "/" } else { &path });
-    normalized.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,10 +137,8 @@ mod tests {
             get(move || {
                 let account = account.clone();
                 async move {
-                    Json(DeploymentConfig {
-                        account_service_url: account,
-                        service_did: None,
-                    })
+                    let _ = &account;
+                    Json(DeploymentConfig::default())
                 }
             }),
         );
@@ -171,11 +151,7 @@ mod tests {
     #[tokio::test]
     async fn it_discovers_the_access_remote_from_the_ceremony_deployment() -> Result<()> {
         let (origin, server) = deployment_server("/accounts/").await?;
-        let defaults = discover(
-            &format!("{origin}/settings/link?intent=login"),
-            &format!("{origin}/accounts"),
-        )
-        .await?;
+        let defaults = discover(&format!("{origin}/settings/link?intent=login")).await?;
         assert_eq!(defaults.ceremony_origin.as_str(), format!("{origin}/"));
         assert_eq!(defaults.access_remote.as_str(), format!("{origin}/ucan/"));
         server.abort();
@@ -200,7 +176,7 @@ mod tests {
     async fn it_records_every_endpoint_the_deployment_advertised() -> Result<()> {
         let (origin, server) = deployment_server("/accounts/").await?;
         let page = format!("{origin}/settings/link?intent=login");
-        let defaults = discover(&page, &format!("{origin}/accounts")).await?;
+        let defaults = discover(&page).await?;
         let record = account_record("did:key:zRoot", &page, Some(&defaults));
         assert_eq!(record.root, "did:key:zRoot");
         assert_eq!(
@@ -237,20 +213,6 @@ mod tests {
         assert_eq!(record.root, "did:key:zRoot");
         assert_eq!(record.ceremony_origin, None);
         assert_eq!(record.access_remote, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn it_rejects_a_different_advertised_account_service() -> Result<()> {
-        let (origin, server) = deployment_server("/other/").await?;
-        let error = discover(
-            &format!("{origin}/settings/link"),
-            &format!("{origin}/accounts"),
-        )
-        .await
-        .expect_err("provider mismatch must be rejected");
-        assert!(error.to_string().contains("expected"), "{error:#}");
-        server.abort();
         Ok(())
     }
 }

@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, assign_keys, project, reconcile, split};
+use crate::blocks::{Block, assign_keys, insert_notation, project, reconcile, split, title_of};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -90,7 +90,138 @@ const OUTPUT_CSS: &str = r#"
   --tonk-code-bg: rgba(127, 127, 127, 0.11);
   --tonk-code-bg: color-mix(in srgb, currentColor 11%, transparent);
 }
-.md-code-block { margin: 0.5rem 0; }
+/* Callouts in a cell's output.
+ *
+ * A full callout is right on a page, where landing on a raw default or an
+ * empty result is a surprise worth explaining. In cell output it is noise:
+ * you ran a query to see data, and it dwarfs the result it labels — a
+ * sentence in a padded box above two lines of notation.
+ *
+ * The "no view for this model" notice goes entirely: seeing the default
+ * rendering IS the expected outcome here. The rest shrink to a thin bar.
+ */
+.notebook-cell-result [data-tonk-display-default-notice] {
+  display: none;
+}
+.notebook-cell-result wa-callout {
+  --wa-callout-padding: var(--wa-space-2xs, 0.25rem) var(--wa-space-xs, 0.5rem);
+  font-size: var(--wa-font-size-xs, 0.75rem);
+  line-height: 1.35;
+  margin-block: var(--wa-space-2xs, 0.25rem);
+}
+.notebook-cell-result wa-callout::part(icon) {
+  font-size: var(--wa-font-size-s, 0.875rem);
+}
+
+/* `<tonk-notation>`'s palette.
+ *
+ * The element renders into the light DOM and takes its colours from the
+ * app stylesheet — which does not cross into this shadow root, so a cell's
+ * notation output arrived correctly tokenized and entirely grey. The
+ * classes come from the same table `styles.css` uses; the colours come
+ * from `<tonk-code>`'s variables, which ARE in scope here, so editor and
+ * output stay in step.
+ */
+/* The palette itself, ON the element.
+ *
+ * `styles.css` declares these roles on `.query-notation` — a container the
+ * inspector provides and a cell's output does not — so every
+ * `var(--tonk-code-*)` here resolved to nothing and fell back to inherited
+ * grey. Declaring them on `tonk-notation` makes the element carry its own
+ * colours wherever it is mounted, which is what a passive renderer should
+ * do.
+ *
+ * Values track the Bauhaus roles in `styles.css`: yellow/structural for
+ * keys, alarm for effects, and so on.
+ */
+tonk-notation {
+  --tonk-code-fg: var(--wa-color-text-normal);
+  --tonk-code-key: var(--tonk-bauhaus-yellow, #c89a2b);
+  --tonk-code-effect: var(--tonk-bauhaus-alarm, #d05a4a);
+  --tonk-code-name-sigil: var(--wa-color-text-quiet);
+  --tonk-code-name: var(--tonk-bauhaus-blue, #5a7fb8);
+  --tonk-code-entity: var(--tonk-bauhaus-blue, #5a7fb8);
+  --tonk-code-variable: var(--tonk-bauhaus-grey, #8a8a8a);
+  --tonk-code-font: var(--wa-font-family-code, ui-monospace, monospace);
+  --tonk-code-font-size: var(--wa-font-size-s, 0.875rem);
+}
+tonk-notation .tonk-notation-pre {
+  margin: 0;
+  background: transparent;
+  color: var(--tonk-code-fg);
+  font-family: var(--tonk-code-font);
+  font-size: var(--tonk-code-font-size);
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+tonk-notation .tonk-cm-key { color: var(--tonk-code-key); }
+tonk-notation .tonk-cm-effect {
+  color: var(--tonk-code-effect);
+  font-weight: bold;
+}
+tonk-notation .tonk-cm-name-sigil { color: var(--tonk-code-name-sigil); }
+tonk-notation .tonk-cm-name { color: var(--tonk-code-name); }
+tonk-notation .tonk-cm-entity {
+  color: var(--tonk-code-entity);
+  text-decoration: underline;
+  text-decoration-color: var(--tonk-code-entity);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+tonk-notation .tonk-cm-variable {
+  color: var(--tonk-code-variable);
+  font-style: italic;
+}
+.md-code-block {
+  margin: 0.5rem 0;
+  /* The positioning context the zap anchors to. Without it the button's
+     `position: absolute` resolves against some ancestor further up and it
+     lands under the cell instead of on it. */
+  position: relative;
+}
+/* The zap floats over the cell's bottom-right corner, half-overlapping its
+   edge — the placement the inspector uses. Its own container must not
+   reserve space, or the button pushes the output down and stops looking
+   like it belongs to the code above it. */
+.notebook-cell-held {
+  position: static;
+  height: 0;
+}
+.notebook-cell-held .evaluate-play {
+  position: absolute;
+  bottom: calc(-1 * var(--wa-space-m, 1rem));
+  right: var(--wa-space-s, 0.75rem);
+  z-index: 1;
+}
+
+/* The block the caret is in — the unit a commit writes.
+   A block can span several nodes (a heading and the content under it), so
+   the mark goes on each of them and they read as one band: the padding
+   bleeds into the gutter on both sides, and only the outer edges of the run
+   are rounded, so a multi-node block looks like one shape rather than a
+   stack of separate ones.
+
+   Quieter than the focused code cell above, deliberately: this says "you
+   are here", not "this is selected". */
+.nb-block-active {
+  background: rgba(127, 127, 127, 0.14);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  box-shadow:
+    -0.6rem 0 0 0 rgba(127, 127, 127, 0.14),
+    0.6rem 0 0 0 rgba(127, 127, 127, 0.14);
+  box-shadow:
+    -0.6rem 0 0 0 color-mix(in srgb, currentColor 12%, transparent),
+    0.6rem 0 0 0 color-mix(in srgb, currentColor 12%, transparent);
+}
+.nb-block-active:not(.nb-block-active + .nb-block-active) {
+  border-start-start-radius: 0.25rem;
+  border-start-end-radius: 0.25rem;
+}
+.nb-block-active:not(:has(+ .nb-block-active)) {
+  border-end-start-radius: 0.25rem;
+  border-end-end-radius: 0.25rem;
+}
 
 .notebook-cell-result { display: block; margin: 0.25rem 0 0.75rem; }
 .nb-out {
@@ -169,6 +300,10 @@ type MutationClosure = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
 /// The retained MutationObserver itself.
 type ObserverCell = Rc<RefCell<Option<MutationObserver>>>;
+
+/// A single retained event closure, kept alive for as long as the listener
+/// it backs stays registered.
+type ListenerCell = RefCell<Option<Closure<dyn FnMut(Event)>>>;
 
 /// The custom element.
 #[derive(Default)]
@@ -288,7 +423,7 @@ fn mount(
         {
             return;
         }
-        let Some((repo, branch)) = resolve_context(this) else {
+        let Some(context) = resolve_context(this) else {
             this.set_inner_html(
                 "<div class=\"tonk-notebook\">\
                    <section class=\"error\">no repository in context \
@@ -328,7 +463,27 @@ fn mount(
         let Some(prose) = document.create_element("tonk-prose").ok() else {
             return;
         };
-        let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
+        // A DRAFT notebook's heading is a switcher: type a title and it
+        // suggests the notebooks that match, opens the one you pick, or
+        // creates the name you typed. A saved notebook's heading only
+        // renames - were the switcher live there, renaming onto an
+        // existing title would navigate the author out of the document
+        // they were editing.
+        let draft = this.has_attribute("draft");
+        if draft {
+            let _ = prose.set_attribute("switcher", "");
+            let _ = prose.set_attribute("auto-focus", "");
+            let _ = prose.set_attribute("value", "# ");
+            let _ = prose.set_attribute("placeholder", "Name a notebook to open or create it...");
+        } else {
+            let _ = prose.set_attribute("placeholder", "Write, and add a ```dialog-yaml block…");
+            // A notebook page is somewhere you came to WRITE, so it opens
+            // ready to: focused, caret at the end of the document. Arriving
+            // from the switcher, naming a notebook and carrying on typing
+            // is then one motion rather than two.
+            let _ = prose.set_attribute("auto-focus", "");
+            let _ = prose.set_attribute("caret", "end");
+        }
 
         // Attach the provider now, but hold the EDITOR back until
         // `<tonk-code>` is defined.
@@ -345,14 +500,18 @@ fn mount(
         let notebook = Rc::new(Notebook {
             host: this.clone(),
             prose,
-            repo,
-            branch,
+            repo: context.repo,
+            branch: context.branch,
             closures: closures.clone(),
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
             projected: RefCell::new(String::new()),
+            title: RefCell::new(None),
             next_cell: std::cell::Cell::new(0),
             projected_once: std::cell::Cell::new(false),
+            marked: std::cell::Cell::new(-1),
+            selection_listener: RefCell::new(None),
+            selection_bound: std::cell::Cell::new(false),
             settling: std::cell::Cell::new(false),
         });
 
@@ -403,11 +562,24 @@ struct Notebook {
     /// The document text last handed to the editor. Guards against writing
     /// back the editor's own echo of a store update.
     projected: RefCell<String>,
+    /// The title last emitted, so a commit that leaves the heading alone
+    /// does not rewrite the notebook's name.
+    title: RefCell<Option<String>>,
     /// Next cell id. Monotonic, so an id is never reused by a later fence.
     next_cell: std::cell::Cell<u32>,
     /// Whether the store's blocks have been projected into the editor yet.
     /// Until they have, an edit has nothing truthful to diff against.
     projected_once: std::cell::Cell<bool>,
+    /// The block index the highlight currently marks, so marking is a no-op
+    /// when the caret has not left its block. Writing `class` is a DOM
+    /// mutation that re-fires `selectionchange`; without this the marker
+    /// re-enters itself and spins.
+    marked: std::cell::Cell<i32>,
+    /// The `selectionchange` closure, kept alive and re-registered on the
+    /// prose shadow root once the lazy-loaded editor creates one.
+    selection_listener: ListenerCell,
+    /// Whether that root listener has been added, so it is added once.
+    selection_bound: std::cell::Cell<bool>,
     /// True while this element is mutating its own DOM. The observer watches
     /// the editor subtree, and binding a fence writes into it (a result slot,
     /// a `source` attribute), so without this each bind re-enters the
@@ -429,10 +601,38 @@ impl Notebook {
             if notebook.settling.get() {
                 return;
             }
-            notebook.settling.set(true);
-            notebook.project_blocks();
-            notebook.bind_fences();
-            notebook.settling.set(false);
+            // Project on a fresh task, never inline.
+            //
+            // A MutationObserver callback runs SYNCHRONOUSLY inside the DOM
+            // write that triggered it — and ProseMirror writes the editor's
+            // DOM from `dispatchTransaction`. Projecting inline therefore
+            // called `setMarkdown` in the middle of a ProseMirror
+            // transaction, replacing the document under the transaction that
+            // was still applying: "TextSelection endpoint not pointing into
+            // a node with inline content", then "no position after the
+            // top-level node" on the next keypress, with the caret landing
+            // past the end of a document that had been swapped beneath it.
+            //
+            // `settling` guards re-entry from our OWN writes; it cannot
+            // guard this, because the re-entry comes from ProseMirror's
+            // update rather than ours. Deferring lets the transaction finish
+            // and applies the projection to a settled editor.
+            let deferred_notebook = notebook.clone();
+            let deferred = Closure::once_into_js(move || {
+                if deferred_notebook.settling.get() {
+                    return;
+                }
+                deferred_notebook.settling.set(true);
+                deferred_notebook.project_blocks();
+                deferred_notebook.bind_fences();
+                deferred_notebook.settling.set(false);
+            });
+            if let Some(window) = window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    deferred.unchecked_ref(),
+                    0,
+                );
+            }
             // Re-register the shadow watch every tick: the root only exists
             // once the editor has mounted, which is after this observer was
             // created. Observing an already-observed target with the same
@@ -557,6 +757,14 @@ impl Notebook {
         // whatever order they landed. Order comes from the notebook's own
         // `block` sequence, rendered as `.notebook-order__item` rows in
         // position order with the entry's key on each.
+        //
+        // The rows come from a DIRECTORY display — every block in the
+        // space, not just this notebook's — because a block row is
+        // rendered per block entity rather than per notebook. Each row
+        // carries the notebook it belongs to, so the filter is here:
+        // without it a notebook shows every other notebook's blocks,
+        // and editing one rewrites blocks it does not own.
+        let notebook = self.host.dataset().get("notebook");
         let mut sources: HashMap<String, String> = HashMap::new();
         let mut arrival: Vec<String> = Vec::new();
         for index in 0..rows.length() {
@@ -570,6 +778,11 @@ impl Notebook {
             let (Some(entity), Some(source)) = (dataset.get("block"), dataset.get("source")) else {
                 continue;
             };
+            if let Some(notebook) = &notebook
+                && dataset.get("notebook").as_deref() != Some(notebook.as_str())
+            {
+                continue;
+            }
             if sources.insert(entity.clone(), source).is_none() {
                 arrival.push(entity);
             }
@@ -752,46 +965,85 @@ impl Notebook {
         if !self.projected_once.get() {
             return;
         }
+
+        // A DRAFT has no notebook to write to yet.
+        //
+        // Its blocks would be created against no owner, so they would
+        // render nowhere and be re-minted on the next keystroke. The
+        // author's body text is not lost: naming the notebook creates it,
+        // the page navigates there, and what was typed is projected into
+        // the real one. Until then the draft is a document in the editor
+        // and nothing else.
+        if self.host.has_attribute("draft") {
+            return;
+        }
         let next = split(&document);
         let edit = reconcile(&self.blocks.borrow(), &next);
 
         for (entity, source) in &edit.changed {
             self.dispatch_edit(entity, source);
         }
-        // A created block needs an entity before it can be written. Mint one
-        // from the notebook's own subject plus a counter, so re-running an
-        // identical edit does not mint a second entity for the same block.
-        let subject = self
-            .host
-            .dataset()
-            .get("subject")
-            .unwrap_or_else(|| "id:notebook".to_owned());
-        let mut minted: Vec<String> = Vec::new();
-        for (nth, source) in edit.created.iter().enumerate() {
-            let entity = format!("{subject}/block-{}-{nth}", edit.order.len());
-            self.dispatch_edit(&entity, source);
-            minted.push(entity);
+
+        // The document's heading IS the notebook's title, so an edit that
+        // changes the heading renames the notebook. Emitted only when it
+        // actually changed: a rename on every commit would write a fact per
+        // keystroke-flush, and the title is the one field the index reads.
+        if let Some(title) = title_of(&document)
+            && self.title.borrow().as_deref() != Some(title.as_str())
+        {
+            self.dispatch_retitle(&title);
+            *self.title.borrow_mut() = Some(title);
+        }
+        // A created block is INSERTED, and the element names no entity.
+        //
+        // Identity derives from the command body; the position derives from
+        // the predecessor's. The element used to mint the entity itself,
+        // from the document's block COUNT — a position wearing an identity's
+        // clothes, which repeats whenever the count returns to a value it
+        // held, so a new block claimed one that already existed and
+        // `reconcile` wrote one block's source onto another.
+        //
+        // Each insert names the block it FOLLOWS. For a run of new blocks
+        // only the first has a stored predecessor; the rest follow the block
+        // before them in the document, which is itself new. That resolves
+        // because the rule reads the predecessor through `block/position`,
+        // which covers a position derived in this same commit as readily as
+        // a stored one — so the element never has to name an entity that
+        // does not exist yet.
+        let notebook = self.notebook_entity();
+        let stored = self.blocks.borrow();
+        // Inserts go as NOTATION, not as one command event per block.
+        //
+        // A run of new blocks has to say which follows which, and a block
+        // created in the same transaction has no entity to name. Notation
+        // can name it by variable — `this: ?b0` on one assertion, `head:
+        // ?b0` on the next — which an event cannot carry. Backward
+        // references are the only kind that analyze, and a run only ever
+        // needs to look back.
+        if let Some(document) = insert_notation(&notebook, &edit.order, &edit.created) {
+            let consumer = self.host.clone();
+            spawn_local(async move {
+                if let Err(message) = evaluate(&consumer, &document, true).await {
+                    web_sys::console::error_1(
+                        &format!("notebook: insert failed: {message}").into(),
+                    );
+                }
+            });
         }
 
-        // Placement is per block: each block that moved, was created, or
-        // never had an entry gets a position between its neighbours, and
-        // each removed block has its entry retracted. Blocks that stayed in
-        // order keep their keys, so a reorder touches only what moved.
-        let stored = self.blocks.borrow();
-        let notebook = self.notebook_entity();
-        let mut fresh = minted.iter();
+        // Placement is for blocks that MOVED. A created block is placed by
+        // the insert rules, so re-keying it here would place it twice.
         let order: Vec<(String, Option<String>)> = edit
             .order
             .iter()
-            .filter_map(|slot| match slot {
-                Some(entity) => {
+            .filter_map(|slot| {
+                slot.as_ref().map(|entity| {
                     let key = stored
                         .iter()
                         .find(|block| &block.entity == entity)
                         .and_then(|block| block.key.clone());
-                    Some((entity.clone(), key))
-                }
-                None => fresh.next().map(|entity| (entity.clone(), None)),
+                    (entity.clone(), key)
+                })
             })
             .collect();
         for (entity, key) in assign_keys(&order) {
@@ -829,6 +1081,16 @@ impl Notebook {
         let notebook = self.notebook_entity();
         let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
         self.emit("blockedit", &detail);
+    }
+
+    /// Emit `titlechange`, which the library's `notebook/retitle` command
+    /// reads to rename the notebook.
+    fn dispatch_retitle(&self, title: &str) {
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&detail, &"title".into(), &title.into());
+        let notebook = self.notebook_entity();
+        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
+        self.emit("titlechange", &detail);
     }
 
     /// The notebook these blocks belong to.
@@ -909,11 +1171,39 @@ impl Notebook {
                 notebook.clone().commit_when_settled();
             }
             tracked.set(index);
+            notebook.mark_active_block();
         }) as Box<dyn FnMut(Event)>);
         let _ = self
             .prose
             .add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
         self.closures.borrow_mut().push(on_change);
+
+        // Moving the caret without typing still moves the block, so the
+        // highlight tracks `selectionchange` too.
+        //
+        // On the SHADOW ROOT, not on `document`: the editor's content lives
+        // inside `<tonk-prose>`'s shadow tree, and a selection there fires
+        // `selectionchange` on the root that contains it. A listener on the
+        // document sees the initial focus and nothing after — every caret
+        // move within the editor is invisible to it.
+        let notebook = self.clone();
+        let on_selection = Closure::wrap(Box::new(move |_event: Event| {
+            notebook.mark_active_block();
+        }) as Box<dyn FnMut(Event)>);
+        // On the DOCUMENT, and on the shadow root once it exists.
+        //
+        // A selection inside a shadow tree fires `selectionchange` on that
+        // root, not on the document — but the prose core is lazy-loaded, so
+        // at construction there is no root to attach to yet. Registering on
+        // the document covers the pre-upgrade window; `retarget_selection`
+        // adds the root listener the first time one is seen.
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            let _ = document.add_event_listener_with_callback(
+                "selectionchange",
+                on_selection.as_ref().unchecked_ref(),
+            );
+        }
+        self.selection_listener.borrow_mut().replace(on_selection);
 
         // Leaving the editor is also leaving the block. `focusout` (not
         // `blur`) because blur does not bubble out of the editor's inner
@@ -1002,6 +1292,109 @@ impl Notebook {
             .unwrap_or_else(|| self.prose.clone())
     }
 
+    /// Mark the top-level nodes of the block the caret sits in.
+    ///
+    /// A notebook block is the commit unit, and it can span several nodes —
+    /// a heading rides with the content under it. ProseMirror's own
+    /// selection classes are per node, so on their own they show a heading
+    /// lit while the paragraph it introduces stays dark, even though the
+    /// two save together. This marks the whole run instead, so what is
+    /// highlighted is what a commit will write.
+    fn mark_active_block(&self) {
+        // Only mark when the caret is actually in THIS notebook.
+        //
+        // The listener is document-wide, and a notebook nests: every result
+        // card renders a `<tonk-display>` whose view is itself a notebook, so
+        // one document can hold dozens, each with its own listener. Without
+        // this check every one of them runs on every caret move and clears
+        // `.md-doc > *` — including the marks the notebook the caret is
+        // actually in just set. The band appeared and was wiped in the same
+        // tick, so nothing ever rendered.
+        if !self.holds_selection() {
+            return;
+        }
+        // Writing `class` on a node is itself a DOM mutation, and mutating
+        // inside the editor re-fires `selectionchange` — so marking
+        // unconditionally re-enters this immediately and spins. Only touch
+        // the DOM when the span actually moved.
+        let caret = self.caret_block_index().unwrap_or(-1);
+        if self.marked.get() == caret {
+            return;
+        }
+        self.marked.set(caret);
+
+        // THIS editor's document, and its children only.
+        //
+        // `query_selector_all(".md-doc > *")` on the shadow root matches every
+        // `.md-doc` under it — and a notebook nests, so the six notebooks a
+        // result gallery renders each contribute their own. The node list then
+        // runs past this document's blocks and its indices no longer line up
+        // with `projected`, so the span marked the wrong nodes and the clear
+        // reached into other notebooks' documents.
+        let Ok(Some(md_doc)) = self.editor_root().query_selector(".md-doc") else {
+            return;
+        };
+        let nodes = md_doc.children();
+        // Clear first: the caret leaving a block has to unmark it even when
+        // the new position resolves to nothing.
+        for index in 0..nodes.length() {
+            if let Some(node) = nodes.item(index) {
+                let _ = node.class_list().remove_1("nb-block-active");
+            }
+        }
+        if caret < 0 {
+            return;
+        }
+        let document = self.projected.borrow().clone();
+        let Some((start, len)) = crate::blocks::span_at(&document, caret as usize) else {
+            return;
+        };
+        for index in start..start + len {
+            if let Some(node) = nodes.item(index as u32) {
+                let _ = node.class_list().add_1("nb-block-active");
+            }
+        }
+    }
+
+    /// Whether the selection sits inside this notebook's editor.
+    ///
+    /// Tested against the EDITOR ROOT, not the `<tonk-prose>` host:
+    /// `Node.contains` does not cross a shadow boundary, and the anchor the
+    /// selection reports is the text node inside prose's shadow tree — so a
+    /// containment test on the host is false even when the caret is right
+    /// there. The shadow root does contain it.
+    fn holds_selection(&self) -> bool {
+        let Some(selection) = window().and_then(|w| w.get_selection().ok().flatten()) else {
+            return false;
+        };
+        let Some(anchor) = selection.anchor_node() else {
+            return false;
+        };
+        let root: web_sys::Node = self.editor_root().into();
+        root.contains(Some(&anchor))
+    }
+
+    /// Attach the `selectionchange` listener to the prose shadow root, once
+    /// it exists. The editor is lazy-loaded, so the root is absent when the
+    /// element is constructed and a document listener alone never sees a
+    /// caret move inside it.
+    fn retarget_selection(&self) {
+        if self.selection_bound.get() {
+            return;
+        }
+        let Some(root) = self.prose.shadow_root() else {
+            return;
+        };
+        let listener = self.selection_listener.borrow();
+        let Some(listener) = listener.as_ref() else {
+            return;
+        };
+        let target: web_sys::EventTarget = root.into();
+        let _ = target
+            .add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref());
+        self.selection_bound.set(true);
+    }
+
     /// Find every `dialog` fence in the document and bind the ones not yet
     /// bound. Idempotent — the stamped id is what makes a re-scan cheap.
     fn bind_fences(self: &Rc<Self>) {
@@ -1009,6 +1402,7 @@ impl Notebook {
             return;
         };
         self.adopt_page_styles();
+        self.retarget_selection();
         for index in 0..wrappers.length() {
             let Some(wrapper) = wrappers
                 .item(index)
@@ -1174,6 +1568,13 @@ impl Cell {
         let held_closures = notebook.closures.clone();
         let notebook_for_cell = notebook.clone();
         let cell_id = id.to_owned();
+        // The notebook's own routing context, handed to every card this cell
+        // renders. Results live in prose's shadow root, and context
+        // resolution reads an element's own `with` rather than walking
+        // ancestors — so a `<tonk-display>` that is not stamped here resolves
+        // no repository, and whatever its view mounts renders "no repository
+        // in context" in place of the entity.
+        let cell_context = format!("{}@{}", notebook.branch, notebook.repo);
         let closure = Closure::wrap(Box::new(move |event: Event| {
             let detail = event
                 .dyn_ref::<CustomEvent>()
@@ -1221,37 +1622,50 @@ impl Cell {
                     .flatten()
                     .is_none()
                 {
+                    // The same control the inspector uses: a filled pill
+                    // that half-overlaps the cell's bottom-right corner. A
+                    // bare `<button>` here read as a stray glyph rather
+                    // than as the deliberate act it is.
                     cell_result.set_inner_html(
                         "<div class=\"notebook-cell-held\">\
-                           <button type=\"button\" class=\"evaluate-play is-visible\" \
-                             title=\"Run this cell (it writes)\">\
+                           <wa-button type=\"button\" class=\"evaluate-play is-visible\" \
+                             variant=\"neutral\" appearance=\"filled\" size=\"small\" pill \
+                             title=\"Run this cell — it writes (Cmd/Ctrl+Enter)\">\
                              <wa-icon name=\"bolt\" variant=\"solid\"></wa-icon>\
-                           </button>\
+                           </wa-button>\
                          </div>",
                     );
                     if let Some(play) = cell_result.query_selector(".evaluate-play").ok().flatten()
                     {
                         let consumer = cell_editor.clone();
                         let slot = cell_result.clone();
-                        let run =
-                            Closure::wrap(Box::new(move |event: Event| {
-                                event.prevent_default();
-                                event.stop_propagation();
-                                let Some(body) = reflect_string(consumer.as_ref(), "value") else {
-                                    return;
-                                };
-                                let slot = slot.clone();
-                                let consumer = consumer.clone();
-                                spawn_local(async move {
-                                    // `transact: true` — the deliberate act.
-                                    match evaluate(&consumer, &body, true).await {
-                                        Ok(response) => slot
-                                            .set_inner_html(&render_result(None, Some(&response))),
-                                        Err(message) => slot
-                                            .set_inner_html(&render_result(Some(&message), None)),
-                                    }
-                                });
-                            }) as Box<dyn FnMut(Event)>);
+                        let with = cell_context.clone();
+                        let run = Closure::wrap(Box::new(move |event: Event| {
+                            event.prevent_default();
+                            event.stop_propagation();
+                            let Some(body) = reflect_string(consumer.as_ref(), "value") else {
+                                return;
+                            };
+                            let slot = slot.clone();
+                            let consumer = consumer.clone();
+                            let with = with.clone();
+                            spawn_local(async move {
+                                // `transact: true` — the deliberate act.
+                                match evaluate(&consumer, &body, true).await {
+                                    Ok(response) => slot.set_inner_html(&render_result(
+                                        None,
+                                        Some(&response),
+                                        &with,
+                                    )),
+                                    Err(message) => slot.set_inner_html(&render_result(
+                                        Some(&message),
+                                        None,
+                                        &with,
+                                    )),
+                                }
+                            });
+                        })
+                            as Box<dyn FnMut(Event)>);
                         let _ = play.add_event_listener_with_callback(
                             "click",
                             run.as_ref().unchecked_ref(),
@@ -1268,10 +1682,15 @@ impl Cell {
             let slot = cell_result.clone();
             let consumer = cell_editor.clone();
             let in_flight = running.clone();
+            let with = cell_context.clone();
             spawn_local(async move {
                 match evaluate(&consumer, &body, false).await {
-                    Ok(response) => slot.set_inner_html(&render_result(None, Some(&response))),
-                    Err(message) => slot.set_inner_html(&render_result(Some(&message), None)),
+                    Ok(response) => {
+                        slot.set_inner_html(&render_result(None, Some(&response), &with))
+                    }
+                    Err(message) => {
+                        slot.set_inner_html(&render_result(Some(&message), None, &with))
+                    }
                 }
                 in_flight.set(false);
             });
@@ -1280,6 +1699,39 @@ impl Cell {
         let _ = editor
             .add_event_listener_with_callback("diagnostics", closure.as_ref().unchecked_ref());
         notebook.closures.borrow_mut().push(closure);
+
+        // Cmd/Ctrl+Enter (and Shift+Enter) commit the cell, without
+        // reaching for the zap.
+        //
+        // `<tonk-code>` already binds both and fires `run`; the inspector
+        // listens for it and the notebook did not, so the keystroke did
+        // nothing here. This is the zap's exact effect — a committing
+        // evaluate — so a cell that writes runs deliberately either way.
+        let run_editor = editor.clone();
+        let run_slot = self.result.clone();
+        let run_with = format!("{}@{}", notebook.branch, notebook.repo);
+        let on_run = Closure::wrap(Box::new(move |event: Event| {
+            event.prevent_default();
+            event.stop_propagation();
+            let Some(body) = reflect_string(run_editor.as_ref(), "value") else {
+                return;
+            };
+            let slot = run_slot.clone();
+            let consumer = run_editor.clone();
+            let with = run_with.clone();
+            spawn_local(async move {
+                match evaluate(&consumer, &body, true).await {
+                    Ok(response) => {
+                        slot.set_inner_html(&render_result(None, Some(&response), &with))
+                    }
+                    Err(message) => {
+                        slot.set_inner_html(&render_result(Some(&message), None, &with))
+                    }
+                }
+            });
+        }) as Box<dyn FnMut(Event)>);
+        let _ = editor.add_event_listener_with_callback("run", on_run.as_ref().unchecked_ref());
+        notebook.closures.borrow_mut().push(on_run);
     }
 }
 

@@ -1,0 +1,32 @@
+diff --git a/rust/wbg-pool/src/daemon/server.rs b/rust/wbg-pool/src/daemon/server.rs
+--- a/rust/wbg-pool/src/daemon/server.rs
++++ b/rust/wbg-pool/src/daemon/server.rs
+@@ -66,4 +66,10 @@ async fn isolate_origin_headers(mut response: Response) -> Response {
+         );
+     }
++    // Closed tabs leave Chrome's HTTP/1 keep-alive sockets open, eventually
++    // exhausting the daemon's descriptors on macOS (soft limit 256).
++    response.headers_mut().insert(
++        header::CONNECTION,
++        HeaderValue::from_static("close"),
++    );
+     response
+ }
+@@ -381,3 +387,17 @@ async fn asset(
+     )
+         .into_response()
+ }
++
++#[cfg(test)]
++mod test {
++    use super::*;
++
++    #[tokio::test]
++    async fn it_closes_browser_connections_after_each_response() {
++        let response = isolate_origin_headers(StatusCode::OK.into_response()).await;
++        assert_eq!(
++            response.headers().get(header::CONNECTION),
++            Some(&HeaderValue::from_static("close"))
++        );
++    }
++}

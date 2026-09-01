@@ -752,7 +752,7 @@ mod tests {
             .expect("device-link query runs");
 
         assert_eq!(rows.len(), 1, "exactly one device link described");
-        assert_eq!(rows[0].reason.0, tonk_schema::DEVICE_LINK);
+        assert_eq!(rows[0].reason, tonk_schema::device_link_reason());
         assert!(!rows[0].title.0.is_empty(), "a device carries a label");
         assert!(rows[0].created_at.0 > 0, "a real timestamp");
     }

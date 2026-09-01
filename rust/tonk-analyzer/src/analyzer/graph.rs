@@ -665,6 +665,20 @@ impl Graph {
                             },
                         );
                     }
+                    // Inline attributes are declarations too: record
+                    // them in scope (no anchor name) so a raw domain
+                    // head in the same document sees the declaration —
+                    // the same view a later document gets off the
+                    // branch.
+                    for attr in &plan.inline_attributes {
+                        scope.record_attribute(
+                            None,
+                            AttributeDefinition {
+                                descriptor: attr.descriptor.clone(),
+                                entity: attr.entity.clone(),
+                            },
+                        );
+                    }
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()

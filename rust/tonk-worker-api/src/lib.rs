@@ -40,7 +40,8 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    CREATE_ACCOUNT_REQUEST, ENCRYPTION_KEY_REQUEST, LINK_ACCOUNT, LinkAccountRequest,
+    AccountCreation, CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent, DeviceLink,
+    ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT, LinkAccountRequest, PasskeyAddition,
     PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
 };
 pub use invite::{
@@ -69,7 +70,7 @@ pub use sync::{
 /// `name` alone. No `remote`: where a space syncs is resolved worker-side
 /// from the account's own registration, and a page that supplied one made
 /// every create look like a deliberate choice of this server — which wired
-/// spots created before anyone registered to a service that refuses to
+/// spaces created before anyone registered to a service that refuses to
 /// serve them. No `template` either: template seeding went with the
 /// template libraries, and a field the form does not carry fails to
 /// resolve and aborts the whole command.

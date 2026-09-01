@@ -4,21 +4,20 @@
 # The profile branch only backs the Tonk Hub at `/`: a picker over the
 # spaces this profile can open. It does NOT render workspaces, boards,
 # sheets, inspectors, or any artifact view — those live on each space's
-# own content branch and are seeded from the full `core.yaml`. Seeding
-# the whole standard library here cost ~2s of DB writes on every first
-# load for 60+ expressions the profile never uses; this lean document
-# carries only the two definitions the Hub needs.
+# own content branch and are seeded from the full `core.yaml`. This
+# document carries what the Hub needs rather than the whole standard
+# library, whose 60+ expressions the profile never uses.
 #
 # Lowering runs `analyze_local` (no running system), so every
 # `&anchor` / bare-name reference must resolve within this file. Both
 # definitions below are self-contained: the directory view's
 # `model: space` resolves to the `&space` anchor here.
 
-# A space (replica) the profile has access to. These records live on
-# the profile repository's main branch — one per repository this device
-# has joined or created. The Hub queries them on the profile main branch
-# (the top site's `with="main@profile:tonk"` context) so the user can pick
-# which space to open.
+# A space the account has access to. These convergent directory records live
+# on the profile repository's main branch — one per repository across the
+# account, with `local` overlaid by each device. The Hub queries them in the
+# top site's `with="main@profile:tonk"` context so the user can pick which
+# space to open or replicate locally.
 concept!: &space
   this: tonk:space
   description: A space on this account.
@@ -59,7 +58,7 @@ concept!: &space
       description: >
         Whether THIS device holds a replica. Overlay-only (the worker
         stamps it at boot and on mount), so it never replicates; a row
-        without it renders as a hollow spot that replicates on first
+        without it renders as a hollow space that replicates on first
         visit.
       the: xyz.tonk.space/local
       cardinality: one
@@ -98,8 +97,8 @@ command!: &space/create
 # asserts this transient; the worker's `RemoveSpaceHandler` retracts the
 # replica record from this branch, evicts the space from the reactor
 # (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced spot can be rejoined via an invite link; a
-# local-only spot is gone for good, which the confirm copy states.
+# device-local — a synced space can be rejoined via an invite link; a
+# local-only space is gone for good, which the confirm copy states.
 # `subject` reads the form's `data-remove` attribute. Deliberately NOT
 # `data-subject`: `tonk/rename-repository` transients already carry
 # `dataset/subject`, and a remove command matched on that attribute
@@ -132,24 +131,20 @@ command!: &tonk/load
       the: xyz.tonk.site/path
       as: text
 
-# The `view/directory` concept — the shape `<tonk-display>` queries to
-# find a directory view (a `model` + a `display` template under
-# `xyz.tonk.view/directory`). The `view/directory!:` instance below is
-# an instance of it, so its concept must be present on this branch too.
-concept!: &view/directory
-  this: tonk:view/directory
-  description: A directory view used by tonk-display when entity is not set.
+# The `view` concept — the shape `<tonk-display>` queries: the
+# instance's `this` IS the model entity, `show` its templates keyed
+# by facet (`ui`, `directory`, `label`, `title`, …). The `view!:`
+# instances below are instances of it, so its concept must be present
+# on this branch too. Kept in step with core.yaml's declaration.
+concept!: &view
+  this: tonk:view
+  description: A model's presentations, keyed by facet (ui, directory, label, title, ...)
   with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
+    show:
+      description: HTML templates keyed by facet
+      the: xyz.tonk.view
       cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/directory
-      cardinality: one
-      as: text
+      as: {[symbol]: text}
 
 # The Hub directory view: the picker shown at `/`. One card per space,
 # linking to its `/space/{subject}` page. A space is identified by its
@@ -158,342 +153,307 @@ concept!: &view/directory
 # The card's name is NOT read from this profile-side record — it is read
 # from the listed space's OWN repository: the row's `with={subject}`
 # context opens that space's routing context and a
-# `<tonk-display model=tonk:repository view=tonk:view/label>` inside it
+# `<tonk-display model=tonk:repository view=label>` inside it
 # shows the repo's current name (the cross-device source of truth).
 # Rendered as a directory (no entity) over the `space` model on the
 # profile meta branch.
-view/directory!:
-  this: id:tonk:space/directory
-  model: space
-  display: |
-    <div class="hub-page">
-      <style>
-        /* ── The Hub — the space directory at `/`.
-           Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
-           `.hub` block from an earlier launcher (a 56rem centred column),
-           which clipped this page to a band down the middle of the viewport.
-           That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
-           more — but it is not this change's to delete.
-           Chrome, and it runs on the same material as the FAB: a neutral
-           page, 36px frost blocks with ink rings, lowercase condensed words
-           seated bottom-right, ink only. The bar's tokens are restated here
-           rather than shared, because the bar seals its own inside a shadow
-           root — a boundary custom properties would have to be invited
-           across one at a time. The two sets must agree; if the bar's
-           `skin.rs` changes, this changes with it.
+view!:
+  this: space
+  show:
+    directory: |
+      <div class="hub-page">
+        <style>
+          /* ── The Hub — the space directory at `/`.
+             Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
+             `.hub` block from an earlier launcher (a 56rem centred column),
+             which clipped this page to a band down the middle of the viewport.
+             That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
+             more — but it is not this change's to delete.
+             Chrome, and it runs on the same material as the FAB: a neutral
+             page, 36px frost blocks with ink rings, lowercase condensed words
+             seated bottom-right, ink only. The bar's tokens are restated here
+             rather than shared, because the bar seals its own inside a shadow
+             root — a boundary custom properties would have to be invited
+             across one at a time. The two sets must agree; if the bar's
+             `skin.rs` changes, this changes with it.
 
-           The dark twin keys off `.wa-dark` on the root, which is the app's
-           existing theme signal (set by index.html from the OS, overridden
-           by <ui-mode-switch>) — not a second signal of the Hub's own, which
-           would be free to disagree with the rest of the page. ── */
-        .hub-page {
-          --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
-          --ring:rgba(56,24,42,.85); --sep:rgba(56,24,42,.28);
-          /* frost pre-composited over the flat page — a flat page blurs to
-             itself, so the rows get the same look with no filter. Only the
-             genuinely overlaying surfaces (the bar and account roster) wear
-             real glass. */
-          --frost:rgba(253,252,252,.72); --frost-solid:#f7f6f5;
-          --panel:#d0ccc8; --cur:var(--panel); --card:#fcfbfb; --card-hover:#eeedec;
-          --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
-          --wash-p:rgba(56,24,42,.16); --canvas:#e4e2e0; --stub-ink:#9f968e;
-          --veil:rgba(232,230,228,.9); --dim:rgba(56,24,42,.32);
-          --track:rgba(56,24,42,.22);
-          --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
-          --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
-          --ease:cubic-bezier(.25,.46,.45,.94);
-          position:relative; min-height:100dvh; background:var(--page);
-          color:var(--ink); font-family:var(--cond);
-        }
-        :root.wa-dark .hub-page {
-          --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
-          --ring:rgba(226,223,221,.55); --sep:rgba(226,223,221,.28);
-          --frost:rgba(29,24,25,.78); --frost-solid:#1b1718;
-          --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
-          --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15);
-          --wash-p:rgba(34,28,29,.14); --canvas:#1c1718; --stub-ink:#736265;
-          --veil:#161313; --dim:rgba(0,0,0,.45); --track:rgba(226,223,221,.25);
-        }
-        .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
-        /* selection is chrome too — ink, never the browser's blue */
-        .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
-        .hub-page :focus-visible { outline:none;
-          box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
-        /* A real reset, not a token one. Web Awesome skins NATIVE controls
-           inside `@layer wa-native` — `button` gets `display:inline-flex`,
-           padding, a min-height, a radius and a border — so a cell built on
-           a <button> and one built on an <a> laid their words out
-           differently, and the mode cap came out a rounded slab instead of
-           an 18px pill. Unlayered author rules outrank layered ones, so this
-           wins without `!important`. */
-        /* `:where()` so the reset contributes NO specificity: a plain
-           `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
-           cell rule below — which stripped `.hcell`'s padding and left "new
-           space" flush against the corner while the anchor cell next to it
-           sat correctly. A reset must lose every tie it takes part in. */
-        .hub-page :where(button) {
-          font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
-          background:none; border:0; border-radius:0; margin:0; padding:0;
-          min-width:0; min-height:0; block-size:auto; inline-size:auto;
-          box-shadow:none; appearance:none; -webkit-appearance:none;
-          cursor:pointer; }
-        .hub-page :where(a) { color:inherit; text-decoration:none; }
+             The dark twin keys off `.wa-dark` on the root, which is the app's
+             existing theme signal (set by index.html from the OS, overridden
+             by <ui-mode-switch>) — not a second signal of the Hub's own, which
+             would be free to disagree with the rest of the page. ── */
+          .hub-page {
+            --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
+            --ring:rgba(56,24,42,.85); --sep:rgba(56,24,42,.28);
+            /* frost pre-composited over the flat page — a flat page blurs to
+               itself, so the rows get the same look with no filter. Only the
+               genuinely overlaying surfaces (the bar and account roster) wear
+               real glass. */
+            --frost:rgba(253,252,252,.72); --frost-solid:#f7f6f5;
+            --panel:#d0ccc8; --cur:var(--panel); --card:#fcfbfb; --card-hover:#eeedec;
+            --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
+            --wash-p:rgba(56,24,42,.16); --canvas:#e4e2e0; --stub-ink:#9f968e;
+            --veil:rgba(232,230,228,.9); --dim:rgba(56,24,42,.32);
+            --track:rgba(56,24,42,.22);
+            --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
+            --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
+            --ease:cubic-bezier(.25,.46,.45,.94);
+            position:relative; min-height:100dvh; background:var(--page);
+            color:var(--ink); font-family:var(--cond);
+          }
+          :root.wa-dark .hub-page {
+            --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
+            --ring:rgba(226,223,221,.55); --sep:rgba(226,223,221,.28);
+            --frost:rgba(29,24,25,.78); --frost-solid:#1b1718;
+            --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
+            --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15);
+            --wash-p:rgba(34,28,29,.14); --canvas:#1c1718; --stub-ink:#736265;
+            --veil:#161313; --dim:rgba(0,0,0,.45); --track:rgba(226,223,221,.25);
+          }
+          .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
+          /* selection is chrome too — ink, never the browser's blue */
+          .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
+          .hub-page :focus-visible { outline:none;
+            box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
+          /* A real reset, not a token one. Web Awesome skins NATIVE controls
+             inside `@layer wa-native` — `button` gets `display:inline-flex`,
+             padding, a min-height, a radius and a border — so a cell built on
+             a <button> and one built on an <a> laid their words out
+             differently, and the mode cap came out a rounded slab instead of
+             an 18px pill. Unlayered author rules outrank layered ones, so this
+             wins without `!important`. */
+          /* `:where()` so the reset contributes NO specificity: a plain
+             `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
+             cell rule below — which stripped `.hcell`'s padding and left "new
+             space" flush against the corner while the anchor cell next to it
+             sat correctly. A reset must lose every tie it takes part in. */
+          .hub-page :where(button) {
+            font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
+            background:none; border:0; border-radius:0; margin:0; padding:0;
+            min-width:0; min-height:0; block-size:auto; inline-size:auto;
+            box-shadow:none; appearance:none; -webkit-appearance:none;
+            cursor:pointer; }
+          .hub-page :where(a) { color:inherit; text-decoration:none; }
 
-        /* the block: 36px, frost + ink ring. every cell derives from it. */
-        .blk { height:36px; background:var(--frost);
-          -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
-          box-shadow:0 0 0 1px var(--ring); }
-        .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
-          line-height:1; letter-spacing:.02em; text-transform:lowercase; }
+          /* the block: 36px, frost + ink ring. every cell derives from it. */
+          .blk { height:36px; background:var(--frost);
+            -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
+            box-shadow:0 0 0 1px var(--ring); }
+          .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
+            line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
-        /* ── centered launcher — one proportional grid, logo above it ── */
-        .hub-logo { position:absolute; top:clamp(62px,11vh,106px); left:50%; z-index:10;
-          transform:translateX(-50%); color:var(--ink); user-select:none; }
-        .hub-logo svg { display:block; width:132px; height:auto; }
-        .hubcol { position:relative; width:min(576px, calc(100vw - 32px));
-          margin-inline:auto; padding-top:clamp(148px,23vh,220px); }
-        .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
-          width:100%; height:36px; overflow:hidden; background:var(--frost);
-          -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
-          box-shadow:0 0 0 1px var(--ring); }
-        /* every word sits bottom-right on the 9px seat */
-        .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-          padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
-          text-decoration:none; color:inherit; flex:none; }
-        .hcell:hover { background:var(--wash); }
-        .hcell:active { background:var(--wash-2); }
-        .hc-acct { width:224px; min-width:0; }
-        .hc-view { width:192px; border-left:1px solid var(--sep); }
-        .hc-cfg { width:112px; border-left:1px solid var(--sep);
-          padding-right:8px; padding-left:10px; }
-        .hc-acct[aria-current="page"], .hc-view[aria-current="page"],
-        .hc-cfg[aria-current="page"] {
-          background:var(--cur); }
-        .hcell .g { font-size:14px; font-weight:500; }
-        .settings-icon { width:9px; height:9px; flex:none; }
-        /* The mode stays in the grid but reads as a half-lit circle, centred
-           inside its own cell instead of as a second sidebar glyph. */
-        .hub-page ui-mode-switch { display:flex; flex:none; }
-        .hub-page .mode-cap { display:flex; align-items:center; justify-content:center;
-          width:48px; height:36px; padding:0; flex:none;
-          border-left:1px solid var(--sep); background:var(--frost); }
-        .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
-        .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }
-        .hub-page .mode-mark { display:block; width:10px; height:10px; border-radius:50%;
-          background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);
-          box-shadow:0 0 0 1px var(--ink); }
+          /* ── centered launcher — one proportional grid, logo above it ── */
+          .hub-logo { position:absolute; top:clamp(62px,11vh,106px); left:50%; z-index:10;
+            transform:translateX(-50%); color:var(--ink); user-select:none; }
+          .hub-logo svg { display:block; width:132px; height:auto; }
+          .hubcol { position:relative; width:min(576px, calc(100vw - 32px));
+            margin-inline:auto; padding-top:clamp(148px,23vh,220px); }
+          .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
+            width:100%; height:36px; overflow:hidden; background:var(--frost);
+            -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
+            box-shadow:0 0 0 1px var(--ring); }
+          /* every word sits bottom-right on the 9px seat */
+          .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+            padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
+            text-decoration:none; color:inherit; flex:none; }
+          .hcell:hover { background:var(--wash); }
+          .hcell:active { background:var(--wash-2); }
+          .hc-acct { width:224px; min-width:0; }
+          .hc-view { width:192px; border-left:1px solid var(--sep); }
+          .hc-cfg { width:112px; border-left:1px solid var(--sep);
+            padding-right:8px; padding-left:10px; }
+          .hc-acct[aria-current="page"], .hc-view[aria-current="page"],
+          .hc-cfg[aria-current="page"] {
+            background:var(--cur); }
+          .hcell .g { font-size:14px; font-weight:500; }
+          .settings-icon { width:9px; height:9px; flex:none; }
+          /* The mode stays in the grid but reads as a half-lit circle, centred
+             inside its own cell instead of as a second sidebar glyph. */
+          .hub-page ui-mode-switch { display:flex; flex:none; }
+          .hub-page .mode-cap { display:flex; align-items:center; justify-content:center;
+            width:48px; height:36px; padding:0; flex:none;
+            border-left:1px solid var(--sep); background:var(--frost); }
+          .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
+          .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }
+          .hub-page .mode-mark { display:block; width:10px; height:10px; border-radius:50%;
+            background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);
+            box-shadow:0 0 0 1px var(--ink); }
 
-        /* ── account roster — a third attached view below the header ── */
-        .hub-page ui-hub-account { position:relative; display:block; width:100%; }
-        .account-trigger { overflow:hidden; }
-        .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
-          white-space:nowrap; text-transform:none; }
-        .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
-          color:var(--ink); text-transform:none; }
-        .account-menu[hidden] { display:none; }
-        .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
-        .account-menu__row { display:flex; align-items:center; justify-content:space-between;
-          gap:12px; width:100%; min-height:36px; padding:8px 12px; text-align:left;
-          background:var(--frost-solid); font:inherit; color:inherit;
-          box-shadow:0 0 0 1px var(--ring);
-          overflow-wrap:anywhere; transition-property:scale; transition-duration:150ms;
-          transition-timing-function:ease-out; }
-        button.account-menu__row:hover { background:var(--wash); }
-        button.account-menu__row:active { background:var(--wash-2); scale:.96; }
-        .account-menu__profile[aria-current="true"] { color:var(--soft); }
-        .account-menu__current { flex:none; font-size:13px; text-transform:lowercase; }
-        .account-menu__error { padding:10px 12px; background:var(--frost-solid);
-          color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
-          text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
-        .account-menu__error[hidden] { display:none; }
+          /* ── account roster — a third attached view below the header ── */
+          .hub-page ui-hub-account { position:relative; display:block; width:100%; }
+          .account-trigger { overflow:hidden; }
+          .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; text-transform:none; }
+          .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
+            color:var(--ink); text-transform:none; }
+          .account-menu[hidden] { display:none; }
+          .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
+          .account-menu__row { display:flex; align-items:center; justify-content:space-between;
+            gap:12px; width:100%; min-height:36px; padding:8px 12px; text-align:left;
+            background:var(--frost-solid); font:inherit; color:inherit;
+            box-shadow:0 0 0 1px var(--ring);
+            overflow-wrap:anywhere; transition-property:scale; transition-duration:150ms;
+            transition-timing-function:ease-out; }
+          button.account-menu__row:hover { background:var(--wash); }
+          button.account-menu__row:active { background:var(--wash-2); scale:.96; }
+          .account-menu__profile[aria-current="true"] { color:var(--soft); }
+          .account-menu__current { flex:none; font-size:13px; text-transform:lowercase; }
+          .account-menu__error { padding:10px 12px; background:var(--frost-solid);
+            color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
+            text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
+          .account-menu__error[hidden] { display:none; }
 
-        /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
-        .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
-          flex-direction:column; gap:7px; }
-        .stack[hidden] { display:none; }
-        .sempty { height:36px; padding:0 10px 9px 16px; display:flex;
-          align-items:flex-end; justify-content:flex-end; color:var(--soft);
-          background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
-        .stack:has(.srow-wrap) .sempty { display:none; }
-        /* the wrapper, not the link, is the positioning context: the verbs
-           and the confirm cluster sit OUTSIDE the anchor (a control inside
-           one is invalid markup, and a label inside one navigates instead of
-           doing its job) while reading as part of the row */
-        .srow-wrap { position:relative; }
-        .srow { display:flex; align-items:flex-end;
-          justify-content:flex-end; padding:0 10px 9px 16px; cursor:pointer;
-          text-decoration:none; color:var(--ink);
-          background:var(--frost-solid);
-          -webkit-backdrop-filter:none; backdrop-filter:none; }
-        .srow:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
-        .srow:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
-        /* the ellipsis clip needs descender room: at line-height 1 the box
-           ends at the baseline's feet and takes the tails off g, p and y.
-           The padding gives the clip air; the negative margin hands it back
-           so the seat does not move. */
-        .srow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-          text-transform:none; padding-bottom:4px; margin-bottom:-4px;
-          max-width:calc(100% - 130px); }
-        /* a space still seeding, and one this device has not replicated:
-           quieter, but still openable — visiting replicates it */
-        .srow-wrap[data-status="tonk:blank"] .srow .n { opacity:.6; }
-        .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
-        /* the verbs — soft until approached, left of the row. Soft ink is
-           metadata-only, so they take full ink the moment they are live. */
-        .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
-          opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
-        .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
-        .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
-          color:inherit; font:inherit; letter-spacing:inherit;
-          text-transform:lowercase; cursor:pointer; }
-        .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
-          text-decoration:underline; text-underline-offset:3px; }
-        /* creation is the stack's final, and only, solid ink row */
-        .snew-form { display:block; }
-        .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-          width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
-          color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
-        .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
-        /* ── the remove cluster — the page dims, the surface never ──
-           Driven by the same native radios the rest of the view uses: no
-           script runs in a seeded view, so the open state has to be
-           something CSS can hold. */
-        .rm-radio { position:absolute; opacity:0; pointer-events:none; }
-        .mscrim { display:none; position:fixed; inset:0; z-index:30; background:var(--dim); }
-        .modal { display:none; position:fixed; left:50%; top:34vh;
-          transform:translateX(-50%); width:432px; z-index:31; }
-        .srow-wrap > .rm-radio:checked ~ .mscrim,
-        .srow-wrap > .rm-radio:checked ~ .modal { display:block; }
-        /* solid cards — no filter behind opaque paint */
-        .modal .blk { background:var(--card);
-          -webkit-backdrop-filter:none; backdrop-filter:none; }
-        .m-hrow { display:flex; margin-right:-36px; margin-bottom:7px; }
-        .m-head { flex:1; display:flex; align-items:flex-end; justify-content:flex-start;
-          padding:0 16px 9px; font-size:13px; }
-        .m-x { width:36px; flex:none; display:grid; place-items:center;
-          border-radius:0 18px 18px 0; font-size:15px; cursor:pointer; }
-        .m-x:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
-        .m-body { height:auto; min-height:110px; padding:16px;
-          font-family:var(--sans); font-weight:600; font-size:13.5px;
-          line-height:1.6; color:var(--ink); text-transform:none; }
-        .m-name { text-transform:none; }
-        .m-foot { display:flex; justify-content:flex-end; margin-top:7px; }
-        /* the run fuses flush — the fill boundary is the divider */
-        .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
-          min-width:144px; padding:0 10px 9px 24px; font-size:13px; cursor:pointer; }
-        .m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
-        .m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
-          min-width:144px; padding:0 10px 9px 24px; background:var(--ink);
-          color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
-          cursor:pointer; white-space:nowrap; }
-        /* brightness on near-black reads as nothing — wash it instead */
-        .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+          /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
+          .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
+            flex-direction:column; gap:7px; }
+          .stack[hidden] { display:none; }
+          .sempty { height:36px; padding:0 10px 9px 16px; display:flex;
+            align-items:flex-end; justify-content:flex-end; color:var(--soft);
+            background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
+          .stack:has(.srow-wrap) .sempty { display:none; }
+          /* the wrapper, not the link, is the positioning context: the verbs
+             and the confirm cluster sit OUTSIDE the anchor (a control inside
+             one is invalid markup, and a label inside one navigates instead of
+             doing its job) while reading as part of the row */
+          .srow-wrap { position:relative; }
+          .srow { display:flex; align-items:flex-end;
+            justify-content:flex-end; padding:0 10px 9px 16px; cursor:pointer;
+            text-decoration:none; color:var(--ink);
+            background:var(--frost-solid);
+            -webkit-backdrop-filter:none; backdrop-filter:none; }
+          .srow:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+          .srow:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
+          /* the ellipsis clip needs descender room: at line-height 1 the box
+             ends at the baseline's feet and takes the tails off g, p and y.
+             The padding gives the clip air; the negative margin hands it back
+             so the seat does not move. */
+          .srow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+            text-transform:none; padding-bottom:4px; margin-bottom:-4px;
+            max-width:calc(100% - 130px); }
+          /* a space still seeding, and one this device has not replicated:
+             quieter, but still openable — visiting replicates it */
+          .srow-wrap[data-status="tonk:blank"] .srow .n { opacity:.6; }
+          .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
+          /* the verbs — soft until approached, left of the row. Soft ink is
+             metadata-only, so they take full ink the moment they are live. */
+          .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
+            opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
+          .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
+          ui-space-remove { display:contents; }
+          .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
+            color:inherit; font:inherit; letter-spacing:inherit;
+            text-transform:lowercase; cursor:pointer; }
+          .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
+            text-decoration:underline; text-underline-offset:3px; }
+          /* creation is the stack's final, and only, solid ink row */
+          .snew-form { display:block; }
+          .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+            width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
+            color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
+          .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+          .remove-form { margin:0; font-family:var(--sans); font-weight:600;
+            font-size:13.5px; line-height:1.6; text-transform:none; }
+          .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
+            min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
+            background:var(--card); color:var(--ink); font:inherit; font-size:13px;
+            cursor:pointer; }
+          .m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
+          .m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+            min-width:144px; padding:0 10px 9px 24px; border:0; background:var(--ink);
+            color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
+            cursor:pointer; white-space:nowrap; }
+          /* brightness on near-black reads as nothing — wash it instead */
+          .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
 
-        @media (prefers-reduced-motion: reduce) {
-          .verbs, .account-menu__row { transition:none; }
-        }
+          @media (prefers-reduced-motion: reduce) {
+            .verbs, .account-menu__row { transition:none; }
+          }
 
-        /* ── one breakpoint, the bar's own fold. Approach hides nothing from
-           a hand that cannot hover. ── */
-        @media (hover:none), (max-width:640px) {
-          .verbs { opacity:1; gap:24px; }
-          /* the 44 target law, invisibly — centres 44 apart, no overlap */
-          .verbs button, .verbs .verb-remove { padding:16px; margin:-16px -12px; }
-          .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
-          .srow .n { max-width:calc(100% - 150px); }
-        }
-        @media (max-width:640px) {
-          .modal { width:min(432px, calc(100vw - 84px));
-            top:max(20vh, calc(env(safe-area-inset-top) + 90px)); }
-        }
-        @media (max-width:607px) {
-          .hubcol { width:min(432px, calc(100vw - 32px)); }
-          .hc-acct { width:168px; }
-          .hc-view { width:144px; }
-          .hc-cfg { width:84px; }
-          .hub-page .mode-cap { width:36px; }
-        }
-        @media (max-width:519px) {
-          .hub-logo { top:62px; }
-          .hub-logo svg { width:98px; }
-          .hubcol { padding-top:132px; }
-        }
-        @media (max-width:463px) {
-          .hc-acct { width:50%; }
-          .hc-view { width:auto; flex:1; }
-          .hc-cfg, .hub-page .mode-cap { width:44px; flex:0 0 44px; }
-          .hc-cfg { justify-content:center; padding-inline:0; }
-          .settings-word { position:absolute; width:1px; height:1px; padding:0;
-            margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
-            border:0; }
-        }
-      </style>
+          /* ── one breakpoint, the bar's own fold. Approach hides nothing from
+             a hand that cannot hover. ── */
+          @media (hover:none), (max-width:640px) {
+            .verbs { opacity:1; gap:24px; }
+            /* the 44 target law, invisibly — centres 44 apart, no overlap */
+            .verbs button, .verbs .verb-remove { padding:16px; margin:-16px -12px; }
+            .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
+            .srow .n { max-width:calc(100% - 150px); }
+          }
+          @media (max-width:640px) {
+            .hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }
+            .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
+            .m-cancel, .m-go { min-height:44px; }
+          }
+          @media (max-width:607px) {
+            .hubcol { width:min(432px, calc(100vw - 32px)); }
+            .hc-acct { width:168px; }
+            .hc-view { width:144px; }
+            .hc-cfg { width:76px; }
+            .hub-page .mode-cap { width:44px; flex:0 0 44px; }
+          }
+          @media (max-width:519px) {
+            .hub-logo { top:62px; }
+            .hub-logo svg { width:98px; }
+            .hubcol { padding-top:132px; }
+          }
+          @media (max-width:463px) {
+            .hc-acct { width:50%; }
+            .hc-view { width:auto; flex:1; }
+            .hc-cfg, .hub-page .mode-cap { width:44px; flex:0 0 44px; }
+            .hc-cfg { justify-content:center; padding-inline:0; }
+            .settings-word { position:absolute; width:1px; height:1px; padding:0;
+              margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
+              border:0; }
+          }
+        </style>
 
-      <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
+        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
 
-      <main class="hubcol">
-        <ui-hub-account></ui-hub-account>
+        <main class="hubcol">
+          <ui-hub-account></ui-hub-account>
 
-      <div class="stack chrome" data-spaces-view aria-label="spaces">
-        <div class="sempty">no spaces yet</div>
-        <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
-             link, so the verbs and the confirm cluster travel with the row
-             while staying outside it: reaching for remove never navigates.
-             Each per-space consumer carries its OWN subject; the routing
-             helpers read an element's own attribute and never walk ancestors. -->
-        <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
-          <!-- The confirm's open state, held by a native radio because no
-               script runs in a seeded view. `tabindex=-1`: this is invisible
-               chrome, and Tab landing on it would silently arm a destructive
-               overlay. The named group means opening one confirm closes any
-               other. -->
-          <input class="rm-radio" type="radio" name="__rm" id="rm-{subject}" tabindex="-1">
-          <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
-          <!-- Both verbs sit outside the anchor and are laid over it: a
-               <button> inside an <a> is invalid markup the parser reshapes,
-               and a <label for> inside one navigates rather than opening the
-               confirm. Hovering the row reveals them (`.srow-wrap:hover`),
-               so the reveal still follows the row and not just the verbs. -->
-          <span class="verbs">
-            <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
-            <label class="verb-remove" for="rm-{subject}">remove</label>
-          </span>
-          <div class="mscrim"></div>
-          <div class="modal chrome" role="alertdialog" aria-modal="true">
-            <form onsubmit=space/remove data-remove={subject} data-close-radio="rm-closed">
-              <div class="m-hrow">
-                <div class="m-head blk">confirm space removal</div>
-                <label class="m-x blk" for="rm-closed" aria-label="close">&#215;</label>
-              </div>
-              <div class="m-body blk">
-                Remove {name} from this device? A synced space can be rejoined with
-                a share link; a local-only space is gone for good. Removing it
-                does not delete other members' copies.
-              </div>
-              <div class="m-foot">
-                <label class="m-cancel blk" for="rm-closed">cancel</label>
-                <button class="m-go" type="submit">remove space</button>
-              </div>
-            </form>
+        <div class="stack chrome" data-spaces-view aria-label="spaces">
+          <div class="sempty">no spaces yet</div>
+          <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
+               link, so the verbs and the confirm cluster travel with the row
+               while staying outside it: reaching for remove never navigates.
+               Each per-space consumer carries its OWN subject; the routing
+               helpers read an element's own attribute and never walk ancestors. -->
+          <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
+            <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
+            <!-- Both verbs sit outside the anchor and are laid over it: a
+                 <button> inside an <a> is invalid markup the parser reshapes,
+                 and a <label for> inside one navigates rather than opening the
+                 confirm. Hovering the row reveals them (`.srow-wrap:hover`),
+                 so the reveal still follows the row and not just the verbs. -->
+            <ui-space-remove>
+              <span class="verbs">
+                <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
+                <button class="verb-remove" type="button" data-space-remove-open>remove</button>
+              </span>
+              <tonk-dialog data-space-remove-dialog heading="confirm space removal">
+                <form id="remove-{subject}" class="remove-form" onsubmit=space/remove data-remove={subject}>
+                  Remove {name} from this device? A synced space can be rejoined with
+                  a share link; a local-only space is gone for good. Removing it
+                  does not delete other members' copies.
+                </form>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}">remove space</button>
+              </tonk-dialog>
+            </ui-space-remove>
           </div>
+          <!-- Creating asks nothing up front: the space starts "Untitled" (the
+               worker uniquifies the sentinel) and is renamed in place with the
+               bar's block cursor the moment you land in it. No remote is
+               carried: the worker resolves where a space syncs from the
+               account's own registration, so a space created before anyone
+               registers stays local until it is shared. -->
+          <form class="snew-form" onsubmit=space/create>
+            <input type="hidden" name="name" value="Untitled">
+            <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
+          </form>
         </div>
-        <!-- Creating asks nothing up front: the space starts "Untitled" (the
-             worker uniquifies the sentinel) and is renamed in place with the
-             bar's block cursor the moment you land in it. No remote is
-             carried: the worker resolves where a spot syncs from the
-             account's own registration, so a spot created before anyone
-             registers stays local until it is shared. -->
-        <form class="snew-form" onsubmit=space/create>
-          <input type="hidden" name="name" value="Untitled">
-          <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
-        </form>
-      </div>
 
-      <!-- The shared "everything closed" state for the confirm radios. Last,
-           so a row's own radio can never be un-checked by it accidentally. -->
-      <input class="rm-radio" type="radio" name="__rm" id="rm-closed" checked tabindex="-1">
-      </main>
-    </div>
+        </main>
+      </div>
 
 # ============================================================
 # FAB — floating action button view (rendered in the FAB portal iframe)
@@ -648,26 +608,6 @@ concept!: &join/failure
       cardinality: one
       as: text
 
-# The `view` concept — the shape `<tonk-display>` queries to resolve a
-# default (entity-set) view: a `model` + a `display` template. The
-# join-failure `view!:` instance below is an instance of it, so its concept
-# must be present on this branch. (The Hub above gets by with only
-# `view/directory`; the join failure needs an entity-set view, hence this.)
-concept!: &view
-  this: tonk:view
-  description: A display template for rendering an entity.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/display
-      cardinality: one
-      as: text
-
 # The /join view — a directory view for `tonk:join/status`, mounted by a
 # no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the
@@ -678,51 +618,51 @@ concept!: &view
 # to the originating client (see the host's navigate provider), which redirects into
 # `/space/<subject>` while the chrome's "Joining…" stands until the page
 # leaves.
-view/directory!:
-  this: id:tonk:join/status/view
-  model: tonk:join/status
-  display: |
-    <div class="join-card-wrap">
-      <!-- Only the in-flight and failed states live here. The resting
-           (paste) state is the ROUTE view's, because this directory is
-           empty until a join starts and an empty nested directory renders
-           nothing. `data-id={this}` marks the repeat row; the wall is
-           inside it, so the whole surface is per-status. -->
-      <div class="join-status" data-id={this}>
-        <div class="join-opening" aria-live="polite">
-          <span>opening this space</span>
-          <span class="tonk-pulse" aria-hidden="true"></span>
+view!:
+  this: tonk:join/status
+  show:
+    directory: |
+      <div class="join-card-wrap">
+        <!-- Only the in-flight and failed states live here. The resting
+             (paste) state is the ROUTE view's, because this directory is
+             empty until a join starts and an empty nested directory renders
+             nothing. `data-id={this}` marks the repeat row; the wall is
+             inside it, so the whole surface is per-status. -->
+        <div class="join-status" data-id={this}>
+          <div class="join-opening" aria-live="polite">
+            <span>opening this space</span>
+            <span class="tonk-pulse" aria-hidden="true"></span>
+          </div>
+          <tonk-display entity={this} model=tonk:join/failure>
+            <span slot="no-entity"></span>
+            <span slot="no-model"></span>
+            <span slot="loading"></span>
+          </tonk-display>
         </div>
-        <tonk-display entity={this} model=tonk:join/failure>
-          <span slot="no-entity"></span>
-          <span slot="no-model"></span>
-          <span slot="loading"></span>
-        </tonk-display>
       </div>
-    </div>
 
 # The failure view — the default view for `tonk:join/failure`, so the join
 # directory's per-instance `<tonk-display model=tonk:join/failure>` renders
 # it only when a failure exists (i.e. status: failed). Shows the reason.
-view!: &join/failure-view
-  this: id:tonk:join/failure/view
-  model: tonk:join/failure
-  display: |
-    <!-- Revoked and deleted intentionally share this one screen. The
-         diagnostic reason remains in the console/worker status; rendering it
-         here would reveal whether the space still exists. -->
-    <section class="edge-wall edge-wall--closed" aria-labelledby="edge-closed-title">
-      <div class="edge-statement" id="edge-closed-title">this share link is closed</div>
-      <div class="edge-field edge-field--settled">
-        <span class="edge-noun">share link</span>
-        <span class="edge-value">closed</span>
-      </div>
-      <div class="edge-narrator">this link no longer opens a space; ask its sender for a current share link</div>
-      <div class="edge-run">
-        <a class="ebtn quiet" href="/">start a new space</a>
-        <tonk-join-retry class="ebtn solid" kind={kind}>join this space</tonk-join-retry>
-      </div>
-    </section>
+view!:
+  this: tonk:join/failure
+  show:
+    ui: |
+      <!-- Revoked and deleted intentionally share this one screen. The
+           diagnostic reason remains in the console/worker status; rendering it
+           here would reveal whether the space still exists. -->
+      <section class="edge-wall edge-wall--closed" aria-labelledby="edge-closed-title">
+        <div class="edge-statement" id="edge-closed-title">this share link is closed</div>
+        <div class="edge-field edge-field--settled">
+          <span class="edge-noun">share link</span>
+          <span class="edge-value">closed</span>
+        </div>
+        <div class="edge-narrator">this link no longer opens a space; ask its sender for a current share link</div>
+        <div class="edge-run">
+          <a class="ebtn quiet" href="/">start a new space</a>
+          <tonk-join-retry class="ebtn solid" kind={kind}>join this space</tonk-join-retry>
+        </div>
+      </section>
 
 # ============================================================
 # ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
@@ -776,11 +716,11 @@ concept!: &site
       as: entity
 
 # The site view: render the matched route concept on this same site entity.
-view!: &site-view
-  this: id:tonk:site/view
-  model: tonk:site
-  display: |
-    <tonk-display entity={this} model={concept} />
+view!:
+  this: tonk:site
+  show:
+    ui: |
+      <tonk-display entity={this} model={concept} />
 
 # The route table concept. Mirrors core.yaml's `&route`.
 concept!: &route
@@ -820,14 +760,14 @@ concept!: &hub
       cardinality: one
       as: text
 
-view!: &hub-view
-  this: id:tonk:hub/view
-  model: tonk:hub
-  display: |
-    <div class="display-view-slot">
-      <tonk-title text="Tonk"></tonk-title>
-      <tonk-display model="space"></tonk-display>
-    </div>
+view!:
+  this: tonk:hub
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-display model="space"></tonk-display>
+      </div>
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
@@ -855,136 +795,140 @@ concept!: &join/route
       cardinality: one
       as: text
 
-view!: &join/route-view
-  this: id:tonk:join/route/view
-  model: tonk:join/route
-  display: |
-    <div class="display-view-slot">
-      <tonk-title text="Tonk"></tonk-title>
-      <main class="join-view">
-        <style>
-          .join-view {
-            --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
-            --edge-soft:#5b4953; --edge-card:#f7f6f5;
-            --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
-            min-height:100vh; padding:1px; color:var(--edge-ink);
-            background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
-              'Bahnschrift','Arial Narrow',system-ui,sans-serif;
-            font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
-          }
-          :root.wa-dark .join-view {
-            --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
-            --edge-soft:#c8c3bf; --edge-card:#1b1718;
-            --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
-          }
-          .edge-mast { position:fixed; left:48px; top:48px; width:132px;
-            color:var(--edge-ink); z-index:2; }
-          .edge-mast img { display:block; width:100%; height:auto; }
-          :root.wa-dark .edge-mast img { filter:invert(1); }
-          .edge-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
-            margin-top:43px; display:flex; flex-direction:column; gap:7px; }
-          .edge-statement, .edge-field, .edge-narrator { min-height:36px;
-            background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
-          .edge-statement { padding:10px 14px; display:flex; align-items:flex-end;
-            font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
-            line-height:1.55; text-wrap:balance; }
-          .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;
-            display:flex; align-items:flex-end; gap:12px; overflow:hidden; }
-          .edge-noun { flex:none; color:var(--edge-soft); font-size:13px;
-            line-height:1; text-transform:lowercase; }
-          .edge-value { flex:1; min-width:0; color:var(--edge-ink); font:inherit;
-            font-size:13px; line-height:1; text-align:right; }
-          .edge-input { border:0; outline:0; padding:0; background:transparent;
-            caret-color:transparent; }
-          .edge-cur { width:7px; height:13px; margin-left:-7px;
-            background:var(--edge-ink); mix-blend-mode:difference;
-            animation:edge-cursor 1.05s steps(1,end) infinite; }
-          .edge-narrator { padding:10px 14px; color:var(--edge-soft);
-            font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
-            font-weight:400; line-height:1.55; text-wrap:pretty; }
-          .edge-narrator__invalid { display:none; }
-          .edge-run { display:flex; gap:0; }
-          .ebtn { min-height:40px; flex:1 1 0; padding:8px 10px; display:flex;
-            align-items:flex-end; justify-content:flex-end; color:var(--edge-ink);
-            text-decoration:none; text-transform:lowercase; cursor:pointer; }
-          .ebtn.quiet { background:var(--edge-card);
-            box-shadow:0 0 0 1px var(--edge-ring); }
-          .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
-          .ebtn.solid button { width:100%; min-height:40px; padding:8px 10px;
-            display:flex; align-items:flex-end; justify-content:flex-end;
-            border:0; color:inherit; background:transparent; font:inherit;
-            text-transform:lowercase; cursor:pointer; }
-          .ebtn:active, .ebtn.solid button:active { scale:.96; }
-          tonk-invite-link { display:none; }
-          .edge-wall:has(tonk-invite-link[data-state="invalid"]) .edge-field {
-            animation:edge-reject .45s ease 2; }
-          .edge-wall:has(tonk-invite-link[data-state="invalid"])
-            .edge-narrator__default { display:none; }
-          .edge-wall:has(tonk-invite-link[data-state="invalid"])
-            .edge-narrator__invalid { display:inline; }
-          @keyframes edge-reject { 0%,100% { background:var(--edge-card); }
-            50% { background:var(--edge-wash); } }
-          @keyframes edge-cursor { 0%,49% { opacity:1; } 50%,100% { opacity:0; } }
-          /* A join in flight or failed gives the status display a row;
-             `data-state=ready` is `<tonk-display>`'s own signal for that,
-             so the form steps aside without depending on the row's markup. */
-          .join-view:has(.join-status-slot[data-state="ready"]) .join-paste { display: none; }
-          .join-opening { width:min(432px, calc(100vw - 32px)); min-height:36px;
-            margin-left:216px; margin-top:43px; padding:10px 14px;
-            display:flex; align-items:center; justify-content:space-between;
-            background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
-          .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
-          @media (max-width:680px) {
-            .edge-mast { left:16px; top:24px; width:98px; }
-            .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
-            .edge-run { flex-direction:column; }
-            .ebtn { min-height:44px; }
-          }
-          @media (prefers-reduced-motion:reduce) {
-            .edge-cur, .edge-wall:has(tonk-invite-link[data-state="invalid"])
-              .edge-field { animation:none; }
-          }
-        </style>
-        <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-        <tonk-page onmount=tonk:join></tonk-page>
-        <!-- `onmount`, not `onsubmit`: `<tonk-invite-link>` cancels the
-             submit, resolves the pasted text (expanding a short link on
-             its minting origin), and re-fires it as a bubbling `mount`
-             carrying `detail.href` — the one read path `tonk:join`
-             declares. Same command, same handler, whether the invite
-             arrived in the address bar or in this box. -->
-        <form class="join-paste edge-wall edge-wall--no-access" onmount=tonk:join>
-          <div class="edge-statement">you do not have access to this space</div>
-          <label class="edge-field">
-            <span class="edge-noun">share link</span>
-            <input class="edge-value edge-input" name="url" type="url" autocomplete="off" required aria-label="share link">
-            <i class="edge-cur" aria-hidden="true"></i>
-          </label>
-          <tonk-invite-link field="url"></tonk-invite-link>
-          <div class="edge-narrator">
-            <span class="edge-narrator__default">paste the complete share link you were sent</span>
-            <span class="edge-narrator__invalid">a share link is a complete web address carrying its access information</span>
-          </div>
-          <div class="edge-run">
-            <a class="ebtn quiet" href="/">start a new space</a>
-            <button class="ebtn solid" type="submit">join this space</button>
-          </div>
-        </form>
-        <!-- The `tonk:join` trigger lives INSIDE the status display, not
-             beside the form. `<tonk-page>` waits for its enclosing
-             `<tonk-display>` to mark `data-bound` before firing, and a
-             trigger placed in the route view waits on the ROUTE's display —
-             which does not finish binding until its children render, so the
-             page never painted. Nested here it waits on the status display
-             instead, which binds independently, and the form above it is
-             plain markup that renders regardless of any command. -->
-        <tonk-display class="join-status-slot" model="tonk:join/status">
-          <span slot="empty"></span>
-          <span slot="loading"></span>
-          <span slot="no-entity"></span>
-        </tonk-display>
-      </main>
-    </div>
+view!:
+  this: tonk:join/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <main class="join-view">
+          <style>
+            .join-view {
+              --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+              --edge-soft:#5b4953; --edge-card:#f7f6f5;
+              --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+              min-height:100vh; min-height:100dvh; padding:1px; color:var(--edge-ink);
+              background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
+                'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+              font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
+            }
+            :root.wa-dark .join-view {
+              --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+              --edge-soft:#c8c3bf; --edge-card:#1b1718;
+              --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
+            }
+            .edge-mast { position:fixed; left:48px; top:48px; width:132px;
+              color:var(--edge-ink); z-index:2; }
+            .edge-mast img { display:block; width:100%; height:auto; }
+            :root.wa-dark .edge-mast img { filter:invert(1); }
+            .edge-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
+              margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+            .edge-statement, .edge-field, .edge-narrator { min-height:36px;
+              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .edge-statement { padding:10px 14px; display:flex; align-items:flex-end;
+              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+              line-height:1.55; text-wrap:balance; }
+            .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;
+              display:flex; align-items:flex-end; gap:12px; overflow:hidden; }
+            .edge-noun { flex:none; color:var(--edge-soft); font-size:13px;
+              line-height:1; text-transform:lowercase; }
+            .edge-value { flex:1; min-width:0; color:var(--edge-ink); font:inherit;
+              font-size:13px; line-height:1; text-align:right; }
+            .edge-input { border:0; outline:0; padding:0; background:transparent;
+              caret-color:transparent; }
+            .edge-cur { width:7px; height:13px; margin-left:-7px;
+              background:var(--edge-ink); mix-blend-mode:difference;
+              animation:edge-cursor 1.05s steps(1,end) infinite; }
+            .edge-narrator { padding:10px 14px; color:var(--edge-soft);
+              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+              font-weight:400; line-height:1.55; text-wrap:pretty; }
+            .edge-narrator__invalid { display:none; }
+            .edge-run { display:flex; gap:0; }
+            .ebtn { min-height:40px; flex:1 1 0; padding:8px 10px; display:flex;
+              align-items:flex-end; justify-content:flex-end; color:var(--edge-ink);
+              text-decoration:none; text-transform:lowercase; cursor:pointer; }
+            .ebtn.quiet { background:var(--edge-card);
+              box-shadow:0 0 0 1px var(--edge-ring); }
+            .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
+            .ebtn.solid button { width:100%; min-height:40px; padding:8px 10px;
+              display:flex; align-items:flex-end; justify-content:flex-end;
+              border:0; color:inherit; background:transparent; font:inherit;
+              text-transform:lowercase; cursor:pointer; }
+            .ebtn:active, .ebtn.solid button:active { scale:.96; }
+            tonk-invite-link { display:none; }
+            .edge-wall:has(tonk-invite-link[data-state="invalid"]) .edge-field {
+              animation:edge-reject .45s ease 2; }
+            .edge-wall:has(tonk-invite-link[data-state="invalid"])
+              .edge-narrator__default { display:none; }
+            .edge-wall:has(tonk-invite-link[data-state="invalid"])
+              .edge-narrator__invalid { display:inline; }
+            @keyframes edge-reject { 0%,100% { background:var(--edge-card); }
+              50% { background:var(--edge-wash); } }
+            @keyframes edge-cursor { 0%,49% { opacity:1; } 50%,100% { opacity:0; } }
+            /* A join in flight or failed gives the status display a row;
+               `data-state=ready` is `<tonk-display>`'s own signal for that,
+               so the form steps aside without depending on the row's markup. */
+            .join-view:has(.join-status-slot[data-state="ready"]) .join-paste { display: none; }
+            .join-opening { width:min(432px, calc(100vw - 32px)); min-height:36px;
+              margin-left:216px; margin-top:43px; padding:10px 14px;
+              display:flex; align-items:center; justify-content:space-between;
+              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
+            @media (max-width:680px) {
+              .edge-mast { left:16px; top:18px; width:98px; min-height:44px;
+                display:flex; align-items:center; }
+              .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
+              .edge-run { flex-direction:column; }
+              .edge-field, .ebtn, .ebtn.solid button { min-height:44px; }
+              .edge-field { height:44px; padding-bottom:0; align-items:stretch; }
+              .edge-input { min-height:44px; font-size:16px; }
+              .edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }
+            }
+            @media (prefers-reduced-motion:reduce) {
+              .edge-cur, .edge-wall:has(tonk-invite-link[data-state="invalid"])
+                .edge-field { animation:none; }
+            }
+          </style>
+          <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <tonk-page onmount=tonk:join></tonk-page>
+          <!-- `onmount`, not `onsubmit`: `<tonk-invite-link>` cancels the
+               submit, resolves the pasted text (expanding a short link on
+               its minting origin), and re-fires it as a bubbling `mount`
+               carrying `detail.href` — the one read path `tonk:join`
+               declares. Same command, same handler, whether the invite
+               arrived in the address bar or in this box. -->
+          <form class="join-paste edge-wall edge-wall--no-access" onmount=tonk:join>
+            <div class="edge-statement">you do not have access to this space</div>
+            <label class="edge-field">
+              <span class="edge-noun">share link</span>
+              <input class="edge-value edge-input" name="url" type="url" autocomplete="off" required aria-label="share link">
+              <i class="edge-cur" aria-hidden="true"></i>
+            </label>
+            <tonk-invite-link field="url"></tonk-invite-link>
+            <div class="edge-narrator">
+              <span class="edge-narrator__default">paste the complete share link you were sent</span>
+              <span class="edge-narrator__invalid">a share link is a complete web address carrying its access information</span>
+            </div>
+            <div class="edge-run">
+              <a class="ebtn quiet" href="/">start a new space</a>
+              <button class="ebtn solid" type="submit">join this space</button>
+            </div>
+          </form>
+          <!-- The `tonk:join` trigger lives INSIDE the status display, not
+               beside the form. `<tonk-page>` waits for its enclosing
+               `<tonk-display>` to mark `data-bound` before firing, and a
+               trigger placed in the route view waits on the ROUTE's display —
+               which does not finish binding until its children render, so the
+               page never painted. Nested here it waits on the status display
+               instead, which binds independently, and the form above it is
+               plain markup that renders regardless of any command. -->
+          <tonk-display class="join-status-slot" model="tonk:join/status">
+            <span slot="empty"></span>
+            <span slot="loading"></span>
+            <span slot="no-entity"></span>
+          </tonk-display>
+        </main>
+      </div>
 
 # The /inspector and /diagnose routes: the same query-inspector and
 # search-tree views a space exposes, but pinned to the PROFILE branch so
@@ -1009,14 +953,14 @@ concept!: &inspector/route
       cardinality: one
       as: text
 
-view!: &inspector/route-view
-  this: id:tonk:inspector/route/view
-  model: tonk:inspector/route
-  display: |
-    <div class="display-view-slot">
-      <tonk-title text="Tonk"></tonk-title>
-      <tonk-inspector with="main@profile:tonk"></tonk-inspector>
-    </div>
+view!:
+  this: tonk:inspector/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-inspector with="main@profile:tonk"></tonk-inspector>
+      </div>
 
 route!: &route/diagnose
   this: id:tonk:route/diagnose
@@ -1033,14 +977,14 @@ concept!: &diagnose/route
       cardinality: one
       as: text
 
-view!: &diagnose/route-view
-  this: id:tonk:diagnose/route/view
-  model: tonk:diagnose/route
-  display: |
-    <div class="display-view-slot">
-      <tonk-title text="Tonk"></tonk-title>
-      <tonk-tree with="main@profile:tonk"></tonk-tree>
-    </div>
+view!:
+  this: tonk:diagnose/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-tree with="main@profile:tonk"></tonk-tree>
+      </div>
 
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
@@ -1087,92 +1031,142 @@ concept!: &space-chrome
       cardinality: one
       as: text
 
-view!: &space-view
-  this: id:tonk:space/view
-  model: tonk:space/chrome
-  display: |
-    <style>
-      /* A spot this device does not hold answers every query with a
-         404, which `<tonk-display>` classifies as `unknown` — a
-         terminal state, unlike `offline`, so nothing retries and
-         nothing arrives later. The title display below is the one
-         element here that both queries the space and reports its
-         state, so it carries the notice; when it fires, the portal
-         has nothing to render and is hidden. The FAB stays: it
-         carries the space switcher, which is the way off a page
-         that is otherwise a dead end. `<tonk-fab>` hides its own
-         share and roster in this case (see fab.css's
-         `[data-unknown-space]`), since those act on a space that
-         is not here. */
-      .space-unknown { display: flex; flex-direction: column; gap: 12px;
-        align-items: center; text-align: center; margin: 15vh auto 0;
-        width: min(460px, 90%); }
-      .space-unknown h1 { margin: 0; line-height: 36px; text-wrap: balance; }
-      .space-unknown p { color: var(--wa-color-text-quiet); margin: 0; }
-      .space-unknown-join { display: inline-flex; align-items: center;
-        padding: 8px 20px; border-radius: var(--wa-border-radius-pill);
-        background: var(--wa-color-brand-fill-loud);
-        color: var(--wa-color-brand-on-loud); text-decoration: none;
-        font-weight: 500; }
-      .space-unknown-join:hover { opacity: .85; }
-      /* Keyed off the display's own state, NOT a wrapper element: wrapping
-         these siblings in a container changed which element the template
-         engine picks as the repeat node (the outermost subject-referencing
-         element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
-         was dropped from the output entirely. `:has()` reaches the sibling
-         display without adding an element. */
-      tonk-view:has(tonk-display[data-state="no-model"]) tonk-site { display: none; }
-    </style>
-    <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-    <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
-    <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
-      <!-- `no-model` is now the absent-spot panel below, which sets its
-           own title; a second `no-model` child would render alongside it
-           and fight over `document.title` (update_slot_children shows
-           EVERY matching child, not the first). `no-entity` keeps the
-           quiet placeholder: the concept resolved, the row just is not
-           here yet. -->
-      <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
-      <!-- The absent-spot case. A repository this device has not
-           replicated answers every query with the EMPTY SET, so
-           `tonk:repository` resolves to nothing and this display lands
-           in `no-model` — the same state a not-yet-synced concept
-           reaches, which is exactly right: the spot may arrive later,
-           and when it does the standing subscription delivers a real
-           frame and this panel is replaced in place.
+view!:
+  this: tonk:space/chrome
+  show:
+    ui: |
+      <style>
+        /* A space this device does not hold answers every query with a
+           404, which `<tonk-display>` classifies as `unknown` — a
+           terminal state, unlike `offline`, so nothing retries and
+           nothing arrives later. The title display below is the one
+           element here that both queries the space and reports its
+           state, so it carries the notice; when it fires, the portal
+           has nothing to render and is hidden. The FAB stays: it
+           carries the space switcher, which is the way off a page
+           that is otherwise a dead end. `<tonk-fab>` hides its own
+           share and roster in this case (see fab.css's
+           `[data-unknown-space]`), since those act on a space that
+           is not here. */
+        /* The absent-space state is profile chrome, not space content. It uses
+           the same edge wall, palette, typography, and compact geometry as the
+           `/join` ceremony instead of inheriting Web Awesome's pill skin. */
+        .space-unknown {
+          --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+          --edge-soft:#5b4953; --edge-card:#f7f6f5;
+          --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+          position:fixed; inset:0; min-height:100vh; min-height:100dvh;
+          overflow:auto; padding:1px; background:var(--edge-page);
+          color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
+            'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+          font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
+        :root.wa-dark .space-unknown {
+          --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+          --edge-soft:#c8c3bf; --edge-card:#1b1718;
+          --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15); }
+        .space-unknown *, .space-unknown *::before, .space-unknown *::after {
+          box-sizing:border-box; }
+        .space-unknown ::selection { background:var(--edge-ink); color:var(--edge-on); }
+        .space-unknown :focus-visible { outline:none;
+          box-shadow:inset 0 0 0 2px var(--edge-on),
+            inset 0 0 0 4px var(--edge-ink); }
+        .space-unknown-mast { position:fixed; left:48px; top:48px; width:132px;
+          color:var(--edge-ink); z-index:2; }
+        .space-unknown-mast img { display:block; width:100%; height:auto; }
+        :root.wa-dark .space-unknown-mast img { filter:invert(1); }
+        .space-unknown-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
+          margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+        .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+          margin:0; background:var(--edge-card);
+          box-shadow:0 0 0 1px var(--edge-ring); }
+        .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
+          color:var(--edge-ink);
+          font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+          font-weight:600; line-height:1.55; text-wrap:balance; }
+        .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+          font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+          font-weight:400; line-height:1.55; text-wrap:pretty; }
+        .space-unknown-run { display:flex; }
+        .space-unknown-join { width:100%; min-height:40px; padding:8px 10px;
+          display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+          background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
+          text-transform:lowercase; cursor:pointer; transition-property:scale;
+          transition-duration:150ms; transition-timing-function:ease-out; }
+        .space-unknown-join:hover {
+          background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
+        .space-unknown-join:active { scale:.96; }
+        @media (max-width:680px) {
+          .space-unknown-mast { left:16px; top:18px; width:98px; min-height:44px;
+            display:flex; align-items:center; }
+          .space-unknown-wall { margin-left:16px; margin-top:132px; }
+          .space-unknown-join { min-height:44px; }
+        }
+        @media (prefers-reduced-motion:reduce) {
+          .space-unknown-join { transition:none; }
+        }
+        /* Keyed off the display's own state, NOT a wrapper element: wrapping
+           these siblings in a container changed which element the template
+           engine picks as the repeat node (the outermost subject-referencing
+           element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
+           was dropped from the output entirely. `:has()` reaches the sibling
+           display without adding an element. */
+        tonk-view:has(tonk-display[data-state="no-model"]) tonk-site { display: none; }
+      </style>
+      <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
+      <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
+      <tonk-display with={id} entity={id} model=tonk:repository view=title>
+        <!-- `no-model` is now the absent-space panel below, which sets its
+             own title; a second `no-model` child would render alongside it
+             and fight over `document.title` (update_slot_children shows
+             EVERY matching child, not the first). `no-entity` keeps the
+             quiet placeholder: the concept resolved, the row just is not
+             here yet. -->
+        <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+        <!-- The absent-space case. A repository this device has not
+             replicated answers every query with the EMPTY SET, so
+             `tonk:repository` resolves to nothing and this display lands
+             in `no-model` — the same state a not-yet-synced concept
+             reaches, which is exactly right: the space may arrive later,
+             and when it does the standing subscription delivers a real
+             frame and this panel is replaced in place.
 
-           Slotted rather than left to the built-in fallback, which
-           would show "Model not found — concept: tonk:repository" to
-           someone whose actual problem is that they were never invited. -->
-      <div slot="no-model" class="space-unknown">
-        <tonk-title text="Not here — Tonk"></tonk-title>
-        <h1>You don't have this spot</h1>
-        <p>It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
-        <!-- A plain top-level path. The guest classifies this as in-app
-             (it resolves against the synthetic per-space origin) and asks
-             the host to navigate; the host recognises `/join` as a
-             PROFILE route and navigates the outer frame there instead of
-             rewriting it to `/space/{did}/join`. See `real_href` /
-             `is_top_level_route` in tonk-portal. -->
-        <!-- A plain `<a>`, NOT `<wa-button href>`: the guest's click relay
-             finds links with `closest("a[href]")`, and Web Awesome renders
-             its anchor inside a SHADOW ROOT, which `closest` does not
-             cross. The relay never matched, so the browser navigated the
-             sealed FRAME to /join instead of the host navigating the top
-             window — the join page booting inside an opaque origin with no
-             service worker. Styled as a button below. -->
-        <a class="space-unknown-join" href="/join">Join a spot</a>
-      </div>
-      <!-- A spot created before `tonk:view/title` existed has no
-           `view/title!:` row on its branch, so `view=tonk:view/title`
-           resolves nothing and the display enters `no-view` — a `danger`
-           state. `update_slot_children` toggles `hidden`, it never adds
-           or removes children, so with no matching slot child the
-           built-in red `<wa-callout>` fires. This inert child suppresses
-           that callout while pushing no title, leaving the tab exactly
-           as it was — the old spot behavior. -->
-      <span slot="no-view"></span>
-    </tonk-display>
+             Slotted rather than left to the built-in fallback, which
+             would show "Model not found — concept: tonk:repository" to
+             someone whose actual problem is that they were never invited. -->
+        <div slot="no-model" class="space-unknown">
+          <tonk-title text="Not here — Tonk"></tonk-title>
+          <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <div class="space-unknown-wall">
+            <h1 class="space-unknown-statement">you don't have this space</h1>
+            <p class="space-unknown-narrator">It isn't on this device, and this account has no access to it. If someone shared it with you, open their share link to join.</p>
+          <!-- A plain top-level path. The guest classifies this as in-app
+               (it resolves against the synthetic per-space origin) and asks
+               the host to navigate; the host recognises `/join` as a
+               PROFILE route and navigates the outer frame there instead of
+               rewriting it to `/space/{did}/join`. See `real_href` /
+               `is_top_level_route` in tonk-portal. -->
+          <!-- A plain `<a>`, NOT `<wa-button href>`: the guest's click relay
+               finds links with `closest("a[href]")`, and Web Awesome renders
+               its anchor inside a SHADOW ROOT, which `closest` does not
+               cross. The relay never matched, so the browser navigated the
+               sealed FRAME to /join instead of the host navigating the top
+               window — the join page booting inside an opaque origin with no
+               service worker. Styled as a button below. -->
+            <div class="space-unknown-run">
+              <a class="space-unknown-join" href="/join">join a space<span aria-hidden="true">&#9656;</span></a>
+            </div>
+          </div>
+        </div>
+        <!-- A space created before the title facet existed has no
+             `show: {title: …}` entry on its branch, so `view=title`
+             resolves nothing and the display enters `no-view` — a `danger`
+             state. `update_slot_children` toggles `hidden`, it never adds
+             or removes children, so with no matching slot child the
+             built-in red `<wa-callout>` fires. This inert child suppresses
+             that callout while pushing no title, leaving the tab exactly
+             as it was — the behavior for older spaces. -->
+        <span slot="no-view"></span>
+      </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
 # router matches most-specific-first, so this `{*rest}` span never shadows `/`,
@@ -1195,26 +1189,621 @@ concept!: &not-found
       cardinality: one
       as: text
 
-view!: &not-found-view
-  this: id:tonk:not-found/view
-  model: tonk:not-found
-  display: |
-    <div class="display-view-slot">
-      <style>
-        .nf { display: flex; flex-direction: column; align-items: center;
-              justify-content: center; gap: 8px; height: 100%; padding: 32px;
-              text-align: center; color: var(--wa-color-text-normal); }
-        .nf__code { font-size: 3rem; font-weight: 600; line-height: 1;
-                    color: var(--wa-color-text-quiet); }
-        .nf__msg { font-size: 1rem; color: var(--wa-color-text-quiet); }
-        .nf__path { font-family: var(--wa-font-family-code, monospace);
-                    color: var(--wa-color-text-normal); }
-        .nf__home { margin-top: 8px; text-decoration: none; }
-      </style>
-      <tonk-title text="Tonk"></tonk-title>
-      <div class="nf">
-        <div class="nf__code">404</div>
-        <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
-        <a class="nf__home" href="/"><wa-button variant="brand">Back to Hub</wa-button></a>
+view!:
+  this: tonk:not-found
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <style>
+          .nf { display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 8px; height: 100%; padding: 32px;
+                text-align: center; color: var(--wa-color-text-normal); }
+          .nf__code { font-size: 3rem; font-weight: 600; line-height: 1;
+                      color: var(--wa-color-text-quiet); }
+          .nf__msg { font-size: 1rem; color: var(--wa-color-text-quiet); }
+          .nf__path { font-family: var(--wa-font-family-code, monospace);
+                      color: var(--wa-color-text-normal); }
+          .nf__home { margin-top: 8px; text-decoration: none; }
+        </style>
+        <tonk-title text="Tonk"></tonk-title>
+        <div class="nf">
+          <div class="nf__code">404</div>
+          <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
+          <a class="nf__home" href="/"><wa-button variant="brand">Back to Hub</wa-button></a>
+        </div>
       </div>
-    </div>
+
+# ════════════════════════════════════════════════════════════════════
+# Account facts
+#
+# Everything below is true about the ACCOUNT rather than about one space
+# or one device: who the account is, which devices may act for it, what
+# holds its secret, how it is registered with an access service, and
+# which profiles this device can open. These live on the account branch
+# and replicate with it, so a new device learns them by pulling rather
+# than by asking a service.
+#
+# Not every concept here is read through its declaration today — the FAB
+# subscribes to the raw `xyz.tonk.*` attributes instead, deliberately, so
+# a space seeded from an older library does not break the read (see
+# `tonk-fab/src/member_roster.rs`). That is a fine reason to query by
+# attribute. It is not a reason to leave the schema undocumented: the
+# declaration is what says a fact exists and what it means.
+# ════════════════════════════════════════════════════════════════════
+
+# The account-wide display name, keyed by the immutable account subject.
+#
+# Cardinality-one, so two devices renaming concurrently converge on one
+# deterministic value. No wall-clock ordering is implied: this is
+# dialog's merge, not last-write-wins.
+concept!: &account/name
+  this: tonk:account/name
+  description: The account's display name.
+  # ENTITY: the account's own DID.
+  with:
+    name:
+      description: >
+        The authoritative account display name
+        (xyz.tonk.account/display-name). Distinct from
+        `tonk:profile/name`, which is one device's own override.
+      the: xyz.tonk.account/display-name
+      cardinality: one
+      as: text
+
+# The account's registration with an access service.
+#
+# Registration state as a FACT, not as a cached HTTP answer: every
+# device reads it with an ordinary query and converges through sync, so
+# a device that never ran the enrollment still knows whether the account
+# is servable. Written when enrollment records `Registered` and again
+# when activation promotes it to `Active`.
+# Registration, activation and suspension are three INDEPENDENT facts,
+# each written once by the act that proves it and never rewritten.
+#
+# They compose rather than replace: a suspended account is still a
+# registered one, and an activated account keeps its registration. That
+# is why each is its own concept with every field required, instead of
+# optional fields on one row — absence of the concept is the signal, so
+# nothing needs a field that is sometimes missing.
+#
+# This replaces a single cardinality-one `status` string, which had two
+# faults. String variants are unvalidated: `is_active()` was a `==
+# "Active"` match that a typo defeats silently. And one slot written by
+# both enrollment and activation is a race — dialog's merge picks a
+# winner, so an account that IS activated could converge back to
+# registered. Adding a fact only ever narrows, so concurrent writers
+# converge instead of fighting.
+concept!: &account/registered
+  this: tonk:account/registered
+  description: The account enrolled an address with an access service.
+  # ENTITY: the account's own DID.
+  with:
+    registered-at:
+      description: When enrollment recorded the address, unix seconds.
+      the: xyz.tonk.account/registered-at
+      cardinality: one
+      as: unsigned-integer
+    email:
+      description: The address enrollment named.
+      the: xyz.tonk.account/customer-email
+      cardinality: one
+      as: text
+    provider:
+      description: >
+        Where this account syncs: the UCAN endpoint its spaces attach
+        their remotes to. Known at enrollment and unchanged by
+        activation, so it belongs here rather than on the activation
+        fact — a client can attach its remote immediately and let the
+        gate answer.
+
+        That is what makes activation observable without asking: the
+        remote answers 403 while the customer is unconfirmed and 200
+        once the emailed link is opened, so a device learns it was
+        activated from the sync it was already doing.
+      the: xyz.tonk.account/provider-address
+      cardinality: one
+      as: text
+
+# Activation. Its PRESENCE is what makes an account served; nothing has
+# to overwrite the registration to say so.
+concept!: &account/active
+  this: tonk:account/active
+  description: The account confirmed its address and is served.
+  # ENTITY: the account's own DID.
+  with:
+    activated-at:
+      description: >
+        When the emailed link was opened and the service confirmed it,
+        unix seconds.
+      the: xyz.tonk.account/activated-at
+      cardinality: one
+      as: unsigned-integer
+
+# Suspension: the service withdrew.
+concept!: &account/suspended
+  this: tonk:account/suspended
+  description: The service withdrew from serving this account.
+  # ENTITY: the account's own DID.
+  with:
+    suspended-at:
+      description: >
+        When the withdrawal took effect, unix seconds. A support
+        conversation starts with when service stopped.
+      the: xyz.tonk.account/suspended-at
+      cardinality: one
+      as: unsigned-integer
+    reason:
+      description: Why the service withdrew, in words a person can act on.
+      the: xyz.tonk.account/suspension-reason
+      cardinality: one
+      as: text
+
+# The onboarding account: a real account this device minted for itself,
+# custodied locally, before anyone signed up.
+#
+# ENTITY: the onboarding account's own DID.
+#
+# It exists so a device can create and own spaces immediately — signup is
+# not a precondition for using Tonk. Its secret is sealed to a keypair on
+# this device rather than to a passkey, which is exactly what makes it
+# INTERIM: nothing recovers it elsewhere, and signing up rotates every
+# custodied seed onto the real account and retires this one.
+#
+# Recorded as a fact so it can be seen. The secret itself stays in a
+# credential site; this is only the DID and the moment, so an inspector can
+# answer "which account am I acting as, and is it the real one?".
+#
+# This account HAS custody before any passkey exists: a custodian keypair
+# on this device, a KEK sealed to it, and the account secret sealed under
+# that. All three live in credential sites, so unlike a passkey's envelope
+# there is no `secret:message` to find — the custodian is a local key, not
+# a principal anything else can address. `custodian` names it so the
+# arrangement is at least visible.
+concept!: &account/onboarding
+  this: tonk:account/onboarding
+  description: A locally custodied account, held until a real one replaces it.
+  with:
+    minted-at:
+      description: When this device minted the onboarding account, unix seconds.
+      the: xyz.tonk.account/onboarding-minted-at
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    custodian:
+      description: >
+        The local keypair holding this account: what its secret is sealed
+        under before a passkey exists. A device-local key, so nothing
+        addresses it and no sealed message names it as recipient — this is
+        the only record that it is what currently holds the account.
+      the: xyz.tonk.account/onboarding-custodian
+      cardinality: one
+      as: entity
+    retired-at:
+      description: >
+        When a real account took over, unix seconds. Its presence is what
+        says this account is no longer the one in use — the row stays so
+        the handover is visible rather than silently gone.
+      the: xyz.tonk.account/onboarding-retired-at
+      cardinality: one
+      as: unsigned-integer
+
+# The account's status, DERIVED from the facts above.
+#
+# ENTITY: the account's own DID.
+#
+# Deductive (`assert:`, no bang), so it is computed on read and never
+# stored. A stored status would be a writable slot that could disagree with
+# the facts it summarises; deriving it means the summary cannot drift from
+# what actually happened.
+#
+# The four cases are mutually exclusive, and each rule below states the
+# whole condition rather than relying on rule order:
+#
+#   case:onboarding  a locally custodied account, not yet registered
+#   case:registered  enrolled, and neither activated nor suspended
+#   case:active      activated and not suspended
+#   case:suspended   the service withdrew
+concept!: &account/status
+  this: tonk:account/status
+  description: The account's status, derived from its registration facts.
+  with:
+    status:
+      description: >
+        `case:onboarding`, `case:registered`, `case:active`, or
+        `case:suspended` — an entity label rather than text, so a typo
+        cannot silently read as a different state.
+      the: xyz.tonk.account/status
+      cardinality: one
+      as: entity
+
+# An onboarding account that has not been handed over is interim.
+rule!:
+  description: A live onboarding account is interim
+  assert: account/status
+  when:
+    - assert: account/onboarding
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:onboarding
+  unless:
+    - assert: account/registered
+      where: { this: ?this }
+    - assert: account/onboarding
+      where: { this: ?this, retired-at: _ }
+
+# Registered is the fallback: enrolled, and neither later fact has
+# arrived. Both are excluded, not just activation — a suspended account
+# still carries its registration, so testing activation alone would derive
+# two cases at once.
+rule!:
+  description: An account that is neither active nor suspended is registered
+  assert: account/status
+  when:
+    - assert: account/registered
+      where:
+        this: ?this
+    - assert: ==
+      where:
+        this: ?status
+        is: case:registered
+  unless:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Activated and not withdrawn.
+rule!:
+  description: An activated account that is not suspended is active
+  assert: account/status
+  when:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:active
+  unless:
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Suspension wins outright.
+rule!:
+  description: A suspended account is suspended
+  assert: account/status
+  when:
+    - assert: account/suspended
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:suspended
+
+# Where anything sealed for this account is addressed.
+#
+# A device that holds a space seed seals it to this address and publishes
+# the result as a `secret:message`, which a `secret:principal` names as
+# its seed; only a live passkey ceremony derives the private half and can
+# open one. So every device can deposit
+# and none can read, which is what lets a seed reach a new device without
+# any device holding the account's secret.
+#
+# An address, not a store: nothing is kept here. The X25519 `did:key` is
+# what `conceal` is aimed at, and the sealed bytes land in their own rows.
+#
+# Written by the ceremony that creates the account secret, and again at
+# rotation.
+concept!: &account/sealed-inbox
+  this: tonk:account/sealed-inbox
+  description: The address anything sealed for this account is sent to.
+  # ENTITY: the account's own DID.
+  with:
+    address:
+      description: >
+        The X25519 `did:key:z6LS…` as an entity — the public half of the
+        account secret, derived from it, so rotation publishes a new one.
+        Cardinality-one: sealed rows name their own recipient, so no
+        history is needed here.
+      the: xyz.tonk.account/sealed-inbox
+      cardinality: one
+      as: entity
+
+# A passkey that can recover this account.
+#
+# ENTITY: the custody DID — the principal the passkey's PRF output
+# derives. The same entity that is the `to` of the `secret:message`
+# holding that passkey's sealed envelope, so the two join on `this`.
+#
+# One row per passkey, which is the point. This used to hang off the
+# ACCOUNT, so an account with three passkeys had one creation record and
+# dialog's per-attribute merge could pair one device's timestamp with
+# another's label.
+#
+# No `account` field: the envelope already says which account this
+# recovers. Its `secret:message` names this custody DID as `to` and the
+# account as `sender`, so the link is a join, not a second copy.
+#
+# Enumerating an account's passkeys therefore means querying
+# `secret:message` by `sender` and reading the `to`s — the custody DID is
+# PRF-derived, so nothing can compute it without a live assertion.
+concept!: &recovery/passkey
+  this: recovery:passkey
+  description: A passkey that can recover this account.
+  with:
+    credential-id:
+      description: >
+        The credential id the authenticator returns, at creation and on
+        every assertion. What an assertion names to select this
+        credential.
+      the: xyz.tonk.recovery/credential-id
+      cardinality: one
+      as: text
+    created-at:
+      description: Unix seconds at credential creation.
+      the: xyz.tonk.recovery/created-at
+      cardinality: one
+      as: unsigned-integer
+    created-on:
+      description: Browser and operating-system label, e.g. "Chrome on macOS".
+      the: xyz.tonk.recovery/created-on
+      cardinality: one
+      as: text
+  maybe:
+    name:
+      description: >
+        The WebAuthn `user.name` this credential was created with — the
+        address, where one was given. What a passkey manager lists the
+        entry under, so it is what a person recognises their own passkey
+        by. Absent for a credential created without one, which the
+        ceremony names with an opaque random string instead.
+      the: xyz.tonk.recovery/name
+      cardinality: one
+      as: text
+    display-name:
+      description: >
+        The WebAuthn `user.displayName`. Usually the same address as
+        `name`; kept separately because WebAuthn keeps them separately
+        and an authenticator may show either.
+      the: xyz.tonk.recovery/display-name
+      cardinality: one
+      as: text
+
+# ── Device links ────────────────────────────────────────────────────
+
+# A device link: the authorization one device holds to act for this
+# account, and what the linked-device list renders.
+#
+# Named for what it actually is rather than for the general case. Every
+# authorization minted today is a device link, so a general
+# `account/authorization` would be a shape with one instance. A broader
+# concept can be added when a second purpose exists, with a rule
+# projecting this into it — that is cheaper than a general name whose
+# rows are all one kind.
+#
+# `this` IS THE DELEGATION — its blob hash, as dialog keyed it when the
+# chain was retained. Not a device DID, not an id of ours. That is the
+# whole design: the delegation is the authorization, it is signed, and it
+# confers the authority, so a record keyed by anything else would be a
+# second source of truth that could disagree with the proof.
+#
+# Dialog decomposes the proof onto that same entity — `dialog.ucan/issuer`,
+# `/audience`, `/subject`, `/command`, `/expiration` — so the row and the
+# proof share one subject. Joining them is `this`; there is deliberately no
+# `proof:` field, because a copy of the chain beside it is exactly the
+# second source this shape avoids. `xyz.tonk.device/*` below are only the
+# fields dialog does not carry.
+#
+# Revoking the delegation takes this row with it: an authorization cannot
+# linger in a list after the authority it describes is gone.
+#
+# The attributes stay in the `xyz.tonk.device` namespace rather than
+# `xyz.tonk.authorization`, which already means an invite's access proof —
+# one namespace holding both would make "authorization" ambiguous between
+# a device link and a share link.
+concept!: &account/device-link
+  this: tonk:account/device-link
+  description: One device's authorization to act for this account.
+  # ENTITY: THE DELEGATION — its blob hash, as dialog keyed it when
+  # the chain was retained. Not a device DID and not an id of ours.
+  with:
+    created-at:
+      description: >
+        When the authorization was minted, unix seconds. Distinct from
+        the delegation's `notBefore`, which bounds validity: this records
+        the act, so a re-issued grant with the same window still gets a
+        new time.
+      the: xyz.tonk.device/created-at
+      cardinality: one
+      as: unsigned-integer
+    title:
+      description: >
+        Human label, e.g. "Chrome on macOS". Kept here so a list renders
+        offline rather than requiring a round trip.
+      the: xyz.tonk.device/title
+      cardinality: one
+      as: text
+    reason:
+      description: >
+        Why the delegation exists — `case:device-link` for a device. An
+        entity label rather than text, so a typo cannot silently read as
+        a different reason.
+
+        Duplicated from the delegation's signed `meta` because `meta` is
+        NOT decomposed into facts: it rides inside the envelope and
+        cannot be queried. The signed copy stays authoritative; this one
+        lets a list filter without opening envelopes.
+      the: xyz.tonk.device/reason
+      cardinality: one
+      as: entity
+
+# ── Sealed messages ─────────────────────────────────────────────────
+
+# A sealed message: ciphertext only its recipient can open.
+#
+# ENTITY: derived from the MESSAGE itself, not from the parties. Sealing
+# is randomized (fresh ephemeral key and nonce per call), so sealing the
+# same plaintext twice yields different bytes and therefore a different
+# entity. That is deliberate: the row identifies THIS envelope, so a
+# re-seal adds a row rather than silently replacing what it supersedes,
+# and rotation retracts the old one explicitly.
+#
+# Deliberately general — nothing here is about accounts or seeds. What a
+# particular envelope CONTAINS is said by whatever points at it: a
+# `secret:principal` names its seed this way, and the account's own
+# secret sealed under a passkey is the same shape with `to` set to the
+# custody DID that passkey derives.
+concept!: &secret/message
+  this: secret:message
+  description: Ciphertext only its recipient can open.
+  with:
+    to:
+      description: >
+        Who can open it — the recipient the bytes were sealed to. For a
+        passkey envelope, the custody DID that passkey derives: only a
+        fresh assertion of that passkey opens it.
+      the: xyz.tonk.secret/to
+      cardinality: one
+      as: entity
+    message:
+      description: The sealed bytes.
+      the: xyz.tonk.secret/message
+      cardinality: one
+      as: bytes
+  maybe:
+    from:
+      description: >
+        Who sealed it, when that is known and worth recording. Optional
+        because most sealing has no meaningful sender: a seed sealed to a
+        recipient is just custody, and naming a sender would invent an
+        author the seal does not bind. Set it only where provenance is
+        real — the seal itself binds recipient and subject as associated
+        data, so this is description, never authority.
+      the: xyz.tonk.secret/sender
+      cardinality: one
+      as: entity
+
+# A principal whose ed25519 seed is held sealed, so it can be re-derived.
+#
+# ENTITY: the principal's own DID. One row per principal, which is the
+# thing being described — `seed` points at the envelope carrying it, and
+# that envelope already names its recipient. Sealing the same seed to a
+# second recipient (an admin as recovery custodian) adds a second
+# `secret:message` and a second `seed` relation here, rather than needing
+# the entity to carry a recipient of its own.
+concept!: &secret/principal
+  this: secret:principal
+  description: A principal whose ed25519 seed is held sealed.
+  with:
+    kind:
+      description: >
+        What this principal is: `tonk:space` for a space's signing key,
+        `tonk:invite` for an invite principal's.
+      the: xyz.tonk.secret/kind
+      cardinality: one
+      as: entity
+    seed:
+      description: >
+        The `secret:message` whose plaintext is this principal's ed25519
+        seed. Recovery reads it, opens it with the recipient's key, and
+        re-derives the principal this entity names.
+      the: xyz.tonk.secret/seed
+      cardinality: one
+      as: entity
+
+# ── Delegations ─────────────────────────────────────────────────────
+
+# A delegation this branch retained: the proof itself, as dialog stores it.
+#
+# ENTITY: the delegation's blob hash — the same entity `tonk:account/
+# device-link` and `secret:principal` hang their own fields on, so those
+# concepts join to this one on `this`.
+#
+# NOT a tonk concept in the usual sense: every field here is dialog's own
+# decomposition, written when the chain was retained (`dialog.ucan/*`).
+# Declared so an inspector can see them at all — without a concept the
+# facts exist and nothing can name them, which is why "who can act on
+# what" was queryable only by hand-rolling attribute selectors.
+#
+# `expiration` and `not-before` are optional because dialog omits them
+# entirely for a delegation that never expires or has no lower bound; a
+# required field would hide exactly the powerlines that matter most.
+concept!: &ucan/delegation
+  this: ucan:delegation
+  description: A delegation retained on this branch.
+  with:
+    issuer:
+      description: Who signed it.
+      the: dialog.ucan/issuer
+      cardinality: one
+      as: text
+    audience:
+      description: Who receives the authority.
+      the: dialog.ucan/audience
+      cardinality: one
+      as: text
+    subject:
+      description: >
+        What the authority is over. A powerline — authority over anything —
+        carries the any-subject DID rather than being absent, which keeps
+        the lookup a plain equality.
+      the: dialog.ucan/subject
+      cardinality: one
+      as: text
+    command:
+      description: The delegated command path, e.g. `/use/get`.
+      the: dialog.ucan/command
+      cardinality: one
+      as: text
+  maybe:
+    expiration:
+      description: Unix seconds, absent when the delegation never expires.
+      the: dialog.ucan/expiration
+      cardinality: one
+      as: unsigned-integer
+      # `dialog.ucan/notBefore` is deliberately not declared: the notation's
+      # attribute parser rejects a camelCase last segment, and that is the
+      # name dialog writes. A lower validity bound is therefore readable
+      # only by attribute, not through this concept.
+
+# ── Profiles this device knows ──────────────────────────────────────
+
+# One profile this browser can open.
+#
+# ENTITY: the profile's own DID, like every other identity in this file.
+# The storage name is not part of it and does not need to be: a profile
+# is opened by name (`Profile::open(name)`), so the name determines the
+# DID and the pair would carry no more information than the DID alone.
+#
+# DEVICE-LOCAL. Alone in this file, this never replicates — it is the
+# list of profiles that exist on THIS browser, which is not a fact about
+# any account.
+#
+# One field, because one is all that is original here. The handle to
+# open exists nowhere else; everything a switcher row shows about a
+# profile already exists on that profile's own account branch —
+# `tonk:account/name` for the label, `tonk:account/registered` for the
+# address — and is read from there rather than copied.
+#
+# Nothing here says whether the profile is SIGNED IN, and nothing
+# should. Being signed in is a delegation that exists and verifies: the
+# `account -> profile` device link, whose `dialog.ucan/audience` is this
+# profile and whose `dialog.ucan/issuer` is an account that is itself
+# active (`tonk:account/active`). Signing out REVOKES that delegation
+# and retracts it, so the authority is gone rather than merely
+# unrecorded — which is what makes the question answerable from the
+# proof instead of from a stamp that can disagree with it.
+concept!: &device/profile
+  this: device:profile
+  description: A profile this device can open.
+  with:
+    name:
+      description: >
+        The storage name the profile opens under — its activation
+        handle. What the switcher passes to open this profile, and the
+        only fact about a profile that lives here rather than on the
+        profile's own account branch.
+      the: xyz.tonk.roster/name
+      cardinality: one
+      as: text

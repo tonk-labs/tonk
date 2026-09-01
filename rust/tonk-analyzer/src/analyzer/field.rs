@@ -21,6 +21,70 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
     matches!(name, "this" | "..")
 }
 
+/// One dictionary entry lowered to query/mutation terms: the key
+/// half and the value half.
+pub(crate) type EntryTerms = (Term<dialog_query::Any>, Term<dialog_query::Any>);
+
+/// Lower a keyed-collection field's value to its `(key, value)`
+/// term pairs, one per entry. The entry form `{?key: ?value}`
+/// binds both halves: a `?var` key is a variable, `_` a blank,
+/// anything else a literal key. A dictionary literal may carry
+/// several entries (`{ui: ?ui, directory: ?d}`) — each becomes
+/// its own pair. A bare value binds every entry with the key
+/// left blank.
+pub(crate) fn collection_entry_terms(
+    field_name: &str,
+    value: &FieldValue,
+    range: lsp_types::Range,
+    scope: &Scope,
+    analysis: &Working,
+    expected: Option<Type>,
+) -> Result<Vec<EntryTerms>, AnalyzeError> {
+    let FieldValue::Nested(inner) = value else {
+        let value = field_value_to_term(field_name, value, range, scope, analysis, expected)?;
+        return Ok(vec![(Term::<dialog_query::Any>::blank(), value)]);
+    };
+    if inner.is_empty() {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::UnsupportedFieldValue {
+                field: field_name.into(),
+                form: "a collection binds `{key: value}` entries — an empty map binds nothing",
+            },
+            range,
+        ));
+    }
+    let mut entries = Vec::with_capacity(inner.len());
+    for entry in inner.iter() {
+        let key = match entry.name.as_str() {
+            "_" => Term::<dialog_query::Any>::blank(),
+            name => match name.strip_prefix('?') {
+                Some(variable) => Term::<dialog_query::Any>::var(variable),
+                None => Term::Constant(Value::String(name.to_owned())),
+            },
+        };
+        // `{key: _}` RETRACTS the entry, so the value must stay a true
+        // blank. `field_value_to_term` mints an auto-named variable for a
+        // blank instead — right for a query, where `_` means "match
+        // anything and project it back", but here it makes the caller's
+        // `is_blank()` check false, so the entry compiles as an assertion
+        // of an unbound variable and the mutation is rejected outright.
+        let value = if matches!(entry.value, FieldValue::Blank) {
+            Term::<dialog_query::Any>::blank()
+        } else {
+            field_value_to_term(
+                field_name,
+                &entry.value,
+                entry.value_range,
+                scope,
+                analysis,
+                expected,
+            )?
+        };
+        entries.push((key, value));
+    }
+    Ok(entries)
+}
+
 /// Translate a parsed [`FieldValue`] into the `Term<Any>` slot it
 /// belongs in. Bare symbols resolve at analysis time (against
 /// in-doc declarations first, then the branch's name table);
@@ -36,49 +100,6 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// field declared `as: unsigned-integer` needs schema-directed
 /// coercion. Pass `None` for slots with no declared type (`this`,
 /// claim attributes, formula operands).
-/// Lower a keyed-collection field's value to its `(key, value)`
-/// terms. The entry form `{?key: ?value}` binds both halves: a
-/// `?var` key is a variable, `_` a blank, anything else a literal
-/// key. A bare value binds every entry with the key left blank.
-pub(crate) fn collection_entry_terms(
-    field_name: &str,
-    value: &FieldValue,
-    range: lsp_types::Range,
-    scope: &Scope,
-    analysis: &Working,
-    expected: Option<Type>,
-) -> Result<(Term<dialog_query::Any>, Term<dialog_query::Any>), AnalyzeError> {
-    let FieldValue::Nested(inner) = value else {
-        let value = field_value_to_term(field_name, value, range, scope, analysis, expected)?;
-        return Ok((Term::<dialog_query::Any>::blank(), value));
-    };
-    let [entry] = inner.as_slice() else {
-        return Err(AnalyzeError::at(
-            AnalyzeErrorKind::UnsupportedFieldValue {
-                field: field_name.into(),
-                form: "a collection entry is one `{key: value}` pair",
-            },
-            range,
-        ));
-    };
-    let key = match entry.name.as_str() {
-        "_" => Term::<dialog_query::Any>::blank(),
-        name => match name.strip_prefix('?') {
-            Some(variable) => Term::<dialog_query::Any>::var(variable),
-            None => Term::Constant(Value::String(name.to_owned())),
-        },
-    };
-    let value = field_value_to_term(
-        field_name,
-        &entry.value,
-        entry.value_range,
-        scope,
-        analysis,
-        expected,
-    )?;
-    Ok((key, value))
-}
-
 pub(crate) fn field_value_to_term(
     field_name: &str,
     value: &FieldValue,
@@ -194,6 +215,19 @@ pub(crate) fn field_value_to_term(
 ///
 /// A `None` `expected` (untyped slots — `this`, claim attributes,
 /// formula operands) keeps the parsed scalar's natural mapping.
+/// The declared attribute with its value type stripped: a domain head
+/// takes a declaration's identity and cardinality, but never its type
+/// — raw domains are open-ended and mixed-type attributes are legal.
+pub(crate) fn untyped_descriptor(
+    descriptor: &dialog_query::AttributeDescriptor,
+) -> dialog_query::AttributeDescriptor {
+    let mut json = serde_json::to_value(descriptor).expect("a descriptor serializes");
+    if let Some(map) = json.as_object_mut() {
+        map.remove("as");
+    }
+    serde_json::from_value(json).expect("a descriptor without `as` deserializes")
+}
+
 pub(crate) fn scalar_to_value(
     scalar: &Scalar,
     expected: Option<Type>,
@@ -204,6 +238,12 @@ pub(crate) fn scalar_to_value(
         && *i >= 0
     {
         return Ok(Value::UnsignedInt(*i as u128));
+    }
+    // ...and a bare (unsigned-spelled) literal fills a signed field.
+    if let (Scalar::UnsignedInteger(u), Some(Type::SignedInt)) = (scalar, expected)
+        && *u <= i128::MAX as u128
+    {
+        return Ok(Value::SignedInt(*u as i128));
     }
 
     let value = match scalar {

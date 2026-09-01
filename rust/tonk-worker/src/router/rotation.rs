@@ -25,7 +25,7 @@ use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_identity::sealed::RecipientKey;
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-use tonk_schema::CustodiedSeed;
+use tonk_schema::SecretMessage;
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
 
 use crate::TonkWorkerError;
@@ -47,14 +47,13 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let Ok(secret) = crate::onboarding::account(tonk).await else {
         return;
     };
-    let old_key = secret.encryption_key();
     // The published fact is the account's word; the root record is the
     // ceremony's. Either names the same recipient, and the record is
     // available even while the account repository is still unhydrated
     // (a pending email activation blocks the sweep that publishes the
     // fact), so rotation must not wait on the publish.
     let new_recipient =
-        match super::account_state::published_encryption_key(tonk, &root.root_did).await {
+        match super::account_state::published_sealed_inbox(tonk, &root.root_did).await {
             Ok(Some(recipient)) => recipient,
             Ok(None) => match root.encryption_key.clone() {
                 Some(recipient) => recipient,
@@ -68,7 +67,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
                 return;
             }
         };
-    let new_key = match RecipientKey::from_did(&new_recipient) {
+    let new_key = match RecipientKey::try_from(&new_recipient) {
         Ok(key) => key,
         Err(error) => {
             log!("account rotation deferred: {error}");
@@ -95,8 +94,8 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     // adapter's.
     let outcome = match tonk_schema::custody::rotate(
         branch.handle(),
-        &old_key,
-        &new_key,
+        secret.secret(),
+        new_key,
         &tonk.operator,
         async |kind, signer, row, replacement| {
             match kind {
@@ -115,7 +114,8 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
                 .retract(row.clone())
-                .assert(replacement)
+                .assert(replacement.message)
+                .assert(replacement.principal)
                 .commit()
                 .perform(&tonk.operator)
                 .await
@@ -147,12 +147,12 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     retire_onboarding(tonk, &onboarding).await;
 }
 
-/// Every custodied seed sealed to `recipient`.
+/// Every sealed message addressed to `recipient`.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 async fn sealed_to(
     tonk: &TonkState,
     recipient: &Did,
-) -> Result<Vec<CustodiedSeed>, TonkWorkerError> {
+) -> Result<Vec<SecretMessage>, TonkWorkerError> {
     use dialog_query::{Output as _, Query, Term};
     let branch = tonk
         .reactor
@@ -164,17 +164,16 @@ async fn sealed_to(
     branch
         .handle()
         .query()
-        .select(Query::<CustodiedSeed> {
+        .select(Query::<SecretMessage> {
             this: Term::var("this"),
-            subject: Term::var("subject"),
-            kind: Term::var("kind"),
-            recipient: Term::from(tonk_schema::domain::custody::Recipient(recipient.this())),
-            sealed: Term::var("sealed"),
+            to: Term::from(tonk_schema::domain::custody::To(recipient.this())),
+            message: Term::var("message"),
+            from: Term::var("from"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
-        .map_err(|error| TonkWorkerError::Internal(format!("read custodied seeds: {error:?}")))
+        .map_err(|error| TonkWorkerError::Internal(format!("read sealed messages: {error:?}")))
 }
 
 /// Mint `space -> root` from the space's own signer and install it the
@@ -571,7 +570,7 @@ async fn retract_onboarding_facts(
     onboarding: &Did,
 ) -> Result<(), TonkWorkerError> {
     use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{AccountEncryptionKey, DeviceLink};
+    use tonk_schema::{AccountSealedInbox, DeviceLink};
 
     let branch = tonk
         .reactor
@@ -580,12 +579,12 @@ async fn retract_onboarding_facts(
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
-    let keys: Vec<AccountEncryptionKey> = branch
+    let keys: Vec<AccountSealedInbox> = branch
         .handle()
         .query()
-        .select(Query::<AccountEncryptionKey> {
+        .select(Query::<AccountSealedInbox> {
             this: Term::from(onboarding.this()),
-            key: Term::var("key"),
+            address: Term::var("address"),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -744,8 +743,7 @@ mod tests {
         let old_recipient = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
         assert_eq!(sealed_to(&tonk, &old_recipient).await.unwrap().len(), 2);
 
@@ -774,7 +772,7 @@ mod tests {
             sealed_to(&tonk, &old_recipient).await.unwrap().is_empty(),
             "nothing stays sealed to the onboarding account",
         );
-        let new_recipient = super::super::account_state::published_encryption_key(&tonk, &root_did)
+        let new_recipient = super::super::account_state::published_sealed_inbox(&tonk, &root_did)
             .await
             .unwrap()
             .unwrap();
@@ -795,12 +793,12 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let keys: Vec<tonk_schema::AccountEncryptionKey> = branch
+        let keys: Vec<tonk_schema::AccountSealedInbox> = branch
             .handle()
             .query()
-            .select(Query::<tonk_schema::AccountEncryptionKey> {
+            .select(Query::<tonk_schema::AccountSealedInbox> {
                 this: Term::from(onboarding.this()),
-                key: Term::var("key"),
+                address: Term::var("address"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -939,12 +937,11 @@ mod tests {
         let old_recipient = crate::onboarding::account(&tonk)
             .await
             .unwrap()
-            .encryption_key()
-            .recipient()
+            .secret()
             .did();
 
         // Save the root record with its recipient, without asserting the
-        // `AccountEncryptionKey` fact `persist_test_root` would publish.
+        // `AccountSealedInbox` fact `persist_test_root` would publish.
         let root = Ed25519Signer::import(&test_root_seed(&tonk.profile_name))
             .await
             .unwrap();
@@ -955,8 +952,7 @@ mod tests {
         let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
             zeroize::Zeroizing::new(test_root_seed(&tonk.profile_name)),
         )
-        .encryption_key()
-        .recipient()
+        .secret()
         .did();
         super::super::identity::persist_root(
             &tonk,

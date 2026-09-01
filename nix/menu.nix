@@ -129,15 +129,36 @@ let
       export -f showTonkMenu
     '';
 
-  makeMenuTestCommand = package: ''
-    nix build .#${package}
+  makeMenuTestCommand =
+    {
+      package,
+      runner ? null,
+      clearPoolEnv ? false,
+    }:
+    ''
+        ${pkgs.lib.optionalString clearPoolEnv ''
+          unset \
+            WBG_POOL_BROWSER \
+            WBG_POOL_BROWSER_ARGS \
+            WBG_POOL_DIR \
+            WBG_POOL_FALLBACK_RUNNER \
+            WBG_POOL_NO_SANDBOX \
+            WBG_POOL_URL
+        ''}
 
-    TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+          ${pkgs.lib.optionalString (runner != null) ''
+            export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=${pkgs.lib.escapeShellArg runner}
+          ''}
 
-    cargo nextest run \
-      --workspace-remap ./ \
-      --archive-file "$TESTS_PATH/${package}.tar.zst" \
-  '';
+        nix build .#${package}
+
+        TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+
+      cargo nextest run \
+        --workspace-remap ./ \
+        --archive-file "$TESTS_PATH/${package}.tar.zst" \
+        "$@"
+    '';
 
   menuTestEnv =
     with pkgs;
@@ -150,10 +171,15 @@ let
     };
 
   menuTestCommand =
-    { description, package }:
+    {
+      description,
+      package,
+      runner ? null,
+      clearPoolEnv ? false,
+    }:
     {
       inherit description;
-      command = makeMenuTestCommand package;
+      command = makeMenuTestCommand { inherit package runner clearPoolEnv; };
       env = menuTestEnv;
     };
 in

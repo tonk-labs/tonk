@@ -8,13 +8,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use ipld_core::cid::Cid;
-use tonk_account::customer::deposit_scopes;
 
 use crate::delegation::mint_device_delegation;
 
@@ -50,34 +49,8 @@ pub struct RootCeremony {
     pub passkey: Option<PasskeyCreationMetadata>,
     /// The account's X25519 recipient (`did:key:z6LS…`) when this
     /// ceremony held the secret, for the worker to publish as
-    /// `AccountEncryptionKey`.
+    /// `AccountSealedInbox`.
     pub encryption_key: Option<String>,
-}
-
-/// A fresh account, its first custody passkey, and its creation
-/// invocation, produced from one in-memory secret.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustodyAccountCeremony {
-    /// Material the browser persists only after credential creation succeeds.
-    pub root: RootCeremony,
-    /// Root-signed request submitted to the account service.
-    pub account: AccountCeremony,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// caller named the service; empty otherwise.
-    pub deposits_hex: Vec<String>,
-    /// The passkey-derived custody DID — the custody space's subject.
-    pub custody_did: String,
-    /// Hex-encoded consent chain for `/provider/add`.
-    pub consent_hex: String,
-    /// Hex-encoded sealed account secret. Ciphertext under the
-    /// passkey's KEK: queued for the vault publish, and recorded on
-    /// profile main so the account's own sync carries the recovery
-    /// envelope.
-    pub sealed_hex: String,
-    /// Hex-encoded pre-signed publish invocation: the ceremony's
-    /// authorization for the worker to upload the cell once activation
-    /// lands, with no further assertion, page, or button.
-    pub publish_invocation_hex: String,
 }
 
 /// Informational metadata captured by the browser that created a passkey.
@@ -89,7 +62,6 @@ pub struct PasskeyCreationMetadata {
     pub created_on: String,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn root_ceremony(
     root: Ed25519Signer,
     credential_id: String,
@@ -166,7 +138,7 @@ async fn build(
 /// resulting artifact carries the exact signed path and can be verified
 /// without an account provider.
 pub async fn sign_revocation(
-    root: Ed25519Signer,
+    root: impl Into<Signer>,
     path: &DelegationChain,
     target: &Cid,
 ) -> Result<String> {
@@ -228,66 +200,31 @@ pub async fn create_account(
     .await
 }
 
-/// Create a passkey root and sign its account request without immediately
-/// asking the new passkey for a second assertion.
-/// Create an account and its first custody passkey in one ceremony
-/// (`plan/Account custody.md`): generate the secret, create the
-/// custody credential, seal the secret under its KEK, publish the
-/// custody cell, and sign the account-creation request. The secret
-/// exists only inside this function — no KEK and no wrapping is ever
-/// stored anywhere; every later custody operation derives its keys
-/// inside a fresh assertion.
+/// Sign an account-creation request for a root the caller already
+/// holds.
 ///
-/// The cell cannot publish here: the account has not enrolled yet, let
-/// alone confirmed its email, and the access service serves nothing for
-/// an unactivated customer. The sealed envelope comes back instead, for
-/// the caller to queue and publish once activation lands
-/// (`plan/account-activation-gate.md` §5). It is ciphertext under the
-/// passkey's KEK, so holding it is not holding key material — but until
-/// it is published the account can only be unlocked on this browser.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn create_custody_account(
-    email: String,
-    device_did: dialog_varsig::Did,
-    device_name: String,
-    remote: String,
-    created_on: Option<&str>,
-    service: Option<&dialog_varsig::Did>,
-) -> Result<CustodyAccountCeremony> {
-    use crate::envelope::{AccountSecret, KekMethod, custody_kek, custody_signer};
-
-    let secret = AccountSecret::generate()?;
-    let root = secret.signer().await?;
-    let account_did = root.did().to_string();
-
-    let created = crate::passkey::create_custody_passkey(Some(&email), &account_did).await?;
-    let credential_id = hex::encode(&created.id);
+/// The half of [`create_custody_account`] that needs no passkey: the
+/// custodian has already been asserted, the secret already derived, and
+/// what remains is minting the device grant and signing the request.
+/// Callable off the page, which is the point — the worker holds the
+/// secret now, and the browser never does.
+pub async fn create_custody_request(
+    root: Ed25519Signer,
+    request: AccountRequest,
+) -> Result<CustodyAccountRequest> {
+    let AccountRequest {
+        credential_id,
+        device_did,
+        email,
+        device_name,
+        remote,
+        created_on,
+        encryption_key,
+    } = request;
     let passkey = created_on.map(|created_on| PasskeyCreationMetadata {
-        created_at: (js_sys::Date::now() / 1000.0) as u64,
-        created_on: created_on.to_string(),
+        created_at: now_seconds(),
+        created_on,
     });
-    let evaluation = match created.evaluation {
-        Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
-            .await?
-            .evaluation
-            .context("the authenticator returned no PRF outputs")?,
-    };
-    let custody = custody_signer(&evaluation.key).await?;
-    let kek = custody_kek(&evaluation.kek);
-    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-    let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
-    let consent_hex = hex::encode(
-        consent
-            .to_bytes()
-            .context("failed to serialize the custody consent")?,
-    );
-
-    let deposits_hex = match service {
-        Some(service) => mint_service_deposits(&root, service).await?,
-        None => Vec::new(),
-    };
-    let encryption_key = secret.encryption_key().recipient().did().to_string();
     let root_ceremony = root_ceremony(
         root.clone(),
         credential_id.clone(),
@@ -307,21 +244,57 @@ pub async fn create_custody_account(
         passkey,
     )
     .await?;
-    // The one moment the custody key is in hand is now, so it signs the
-    // deferred publish here: once activation and provisioning land, the
-    // worker redeems this invocation and uploads the sealed bytes — no
-    // further assertion, no page, no button.
-    let publish_invocation =
-        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed).await?;
-    Ok(CustodyAccountCeremony {
+    Ok(CustodyAccountRequest {
         root: root_ceremony,
         account,
-        deposits_hex,
-        custody_did: custody.did().to_string(),
-        consent_hex,
-        sealed_hex: hex::encode(&sealed),
-        publish_invocation_hex: hex::encode(&publish_invocation),
     })
+}
+
+/// Seconds since the epoch, however this target tells the time.
+fn now_seconds() -> u64 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        (js_sys::Date::now() / 1000.0) as u64
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or_default()
+    }
+}
+
+/// What an account-creation request is for: the passkey that holds it,
+/// the browser making it, and where the account lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRequest {
+    /// The WebAuthn credential the custody passkey is reached through.
+    pub credential_id: String,
+    /// The browser receiving the account's stable grant.
+    pub device_did: dialog_varsig::Did,
+    /// The address the account is created for.
+    pub email: String,
+    /// What the browser is called in the account's device list.
+    pub device_name: String,
+    /// The account repository's remote, so the descriptor names it.
+    pub remote: String,
+    /// Browser/OS label to record with the passkey, when this request
+    /// follows its creation.
+    pub created_on: Option<String>,
+    /// The account's X25519 recipient, published as
+    /// `AccountSealedInbox`.
+    pub encryption_key: String,
+}
+
+/// What signing an account-creation request produces: the root record
+/// to persist, and the request to submit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustodyAccountRequest {
+    /// Material to record before the request is submitted.
+    pub root: RootCeremony,
+    /// The root-signed request for the account service.
+    pub account: AccountCeremony,
 }
 
 /// One assertion, one presigned GET, one unwrap: evaluate a custody
@@ -343,9 +316,10 @@ async fn assert_unlock(
         .context("the authenticator returned no PRF outputs")?;
     let custody = custody_signer(&evaluation.key).await?;
     let kek = custody_kek(&evaluation.kek);
-    let sealed = crate::custody::resolve_secret(custody, endpoint)
-        .await?
-        .context("no account custody is published for this passkey")?;
+    let sealed =
+        crate::custody::resolve_secret(dialog_credentials::Signer::from(custody), endpoint)
+            .await?
+            .context("no account custody is published for this passkey")?;
     let envelope = Envelope::decode(&sealed)
         .map_err(|error| anyhow::anyhow!("the custody cell is unreadable: {error}"))?;
     let secret = kek
@@ -371,189 +345,7 @@ pub async fn publish_encryption_key(
     credential_id: Option<&[u8]>,
 ) -> Result<String> {
     let (secret, _) = assert_unlock(endpoint, credential_id).await?;
-    Ok(secret.encryption_key().recipient().did().to_string())
-}
-
-/// A custody passkey enrollment's outcome: the custody DID and consent
-/// the worker provisions with, and the credential the browser records.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustodyEnrollment {
-    /// The passkey-derived custody DID — the custody space's subject.
-    pub custody_did: String,
-    /// Opaque WebAuthn credential identifier, hex-encoded.
-    pub credential_id: String,
-    /// Hex-encoded consent chain for `/provider/add`: the custody
-    /// key's agreement to being provided by the account.
-    pub consent_hex: String,
-    /// Hex-encoded sealed account secret — ciphertext under the new
-    /// passkey's KEK, recorded on profile main either way.
-    pub sealed_hex: String,
-    /// Hex-encoded pre-signed publish invocation, present when the cell
-    /// could not be published during the ceremony (the new custody DID
-    /// awaits provisioning): the worker redeems it once the deposit
-    /// lands. `None` once the cell is already published.
-    pub publish_invocation_hex: Option<String>,
-}
-
-/// Enroll an additional custody passkey: unlock the account through an
-/// existing one, create the new credential, seal the secret under its
-/// KEK, and publish its cell. The caller provisions the custody DID
-/// with the returned consent afterwards — best-effort and retryable,
-/// where the published cell is the account's durability.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn enroll_custody(
-    account_did: &str,
-    label: Option<&str>,
-    endpoint: &str,
-) -> Result<CustodyEnrollment> {
-    use crate::envelope::{Envelope, KekMethod, custody_kek, custody_signer};
-
-    // Unlock through an existing passkey: one assertion recovers the
-    // secret, and the new credential seals that same secret. Nothing is
-    // read from, or written to, any local store.
-    let (secret, _) = assert_unlock(endpoint, None).await?;
-    let root = secret.signer().await?;
-    if root.did().to_string() != account_did {
-        anyhow::bail!("the asserted passkey unlocks a different account");
-    }
-
-    let created = crate::passkey::create_custody_passkey(label, account_did).await?;
-    let credential_id = hex::encode(&created.id);
-    let evaluation = match created.evaluation {
-        Some(evaluation) => evaluation,
-        None => crate::passkey::evaluate_custody_passkey(Some(&created.id))
-            .await?
-            .evaluation
-            .context("the authenticator returned no PRF outputs")?,
-    };
-    let custody = custody_signer(&evaluation.key).await?;
-    let kek = custody_kek(&evaluation.kek);
-    let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
-
-    // A brand new custody DID is nobody's consumer until the caller
-    // deposits the consent below, and the access service serves no
-    // unprovisioned subject — so a refusal here is the expected first
-    // outcome, not a failure. Hand the sealed bytes back to be queued
-    // and published once provisioning lands.
-    let mut queued = Some(
-        crate::custody::build_deferred_publish_invocation(custody.clone(), &sealed)
-            .await
-            .map(|invocation| hex::encode(&invocation))?,
-    );
-    if let Err(publish_error) =
-        crate::custody::publish_secret(custody.clone(), &sealed, endpoint, None).await
-    {
-        // The cell may already exist: the same credential re-enrolled
-        // names the same space. Anything that opens to this account is
-        // that case, and needs no republish; anything else waits.
-        match crate::custody::resolve_secret(custody.clone(), endpoint).await {
-            Ok(Some(existing)) => {
-                let published = Envelope::decode(&existing)
-                    .ok()
-                    .and_then(|envelope| kek.open(&envelope).ok());
-                match published {
-                    Some(open) if open.signing_seed() == secret.signing_seed() => {
-                        queued = None;
-                    }
-                    _ => anyhow::bail!("the custody space already holds a different account"),
-                }
-            }
-            // Not published, and not already ours: leave `sealed_hex`
-            // set so the caller queues it. The error itself is the
-            // caller's to report, once it knows whether provisioning is
-            // still pending.
-            _ => {
-                let _ = publish_error;
-            }
-        }
-    } else {
-        queued = None;
-    }
-
-    let consent = crate::custody::mint_custody_consent(custody.clone(), &root.did()).await?;
-    let consent_hex = hex::encode(
-        consent
-            .to_bytes()
-            .context("failed to serialize the custody consent")?,
-    );
-    Ok(CustodyEnrollment {
-        custody_did: custody.did().to_string(),
-        credential_id,
-        consent_hex,
-        sealed_hex: hex::encode(&sealed),
-        publish_invocation_hex: queued,
-    })
-}
-
-/// A passkey unlock's outcome: the device-link ceremony minted from
-/// the unwrapped account, and the credential that unlocked it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustodyUnlock {
-    /// The root-signed link request, exactly as `link_device` mints it.
-    pub account: AccountCeremony,
-    /// Opaque WebAuthn credential identifier, hex-encoded.
-    pub credential_id: String,
-    /// Hex-encoded account-signed access-service deposits, when the
-    /// caller named the service; empty otherwise.
-    pub deposits_hex: Vec<String>,
-    /// The account's X25519 recipient (`did:key:z6LS…`), for the worker
-    /// to publish as `AccountEncryptionKey`.
-    pub encryption_key: String,
-}
-
-/// Unlock the account with a custody passkey on a fresh browser: one
-/// assertion derives the custody keypair and KEK, one presigned GET
-/// fetches the sealed envelope, and the unwrapped secret self-issues
-/// the direct `account → device` delegation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn unlock_account(
-    device_did: dialog_varsig::Did,
-    device_name: String,
-    endpoint: &str,
-    service: Option<&dialog_varsig::Did>,
-) -> Result<CustodyUnlock> {
-    let (secret, credential_id) = assert_unlock(endpoint, None).await?;
-    let root = secret.signer().await?;
-    let encryption_key = secret.encryption_key().recipient().did().to_string();
-    let deposits_hex = match service {
-        Some(service) => mint_service_deposits(&root, service).await?,
-        None => Vec::new(),
-    };
-    let account = link_device(root, device_did, device_name).await?;
-    Ok(CustodyUnlock {
-        account,
-        credential_id,
-        deposits_hex,
-        encryption_key,
-    })
-}
-
-/// Mint the scoped access-service deposits enrollment presents, issued
-/// directly by the account root while a ceremony holds it. An
-/// account-signed deposit outlives the device that carried it: revoking
-/// that device leaves the service's grant standing, where a
-/// device-issued chain would die with its link. Returned hex-encoded so
-/// they cross the JS bridge and ride callback payloads as-is.
-pub async fn mint_service_deposits(
-    root: &Ed25519Signer,
-    service: &dialog_varsig::Did,
-) -> Result<Vec<String>> {
-    let mut deposits = Vec::new();
-    for scope in deposit_scopes(&root.did(), service) {
-        let deposit = DelegationBuilder::new()
-            .issuer(dialog_credentials::Signer::from(root.clone()))
-            .audience(service)
-            .subject(scope.subject.clone())
-            .command(scope.command.segments().clone())
-            .policy(scope.policy())
-            .try_build()
-            .await
-            .context("failed to mint the access-service deposit")?;
-        deposits.push(hex::encode(deposit.encoded()));
-    }
-    Ok(deposits)
+    Ok(secret.secret().did().to_string())
 }
 
 /// Build the root-signed request that links a new device to an existing account.

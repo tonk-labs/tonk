@@ -19,7 +19,7 @@ use js_sys::Object;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
-use web_sys::{Element, HtmlDialogElement, HtmlElement, window};
+use web_sys::{Element, HtmlDialogElement, HtmlElement, KeyboardEvent, window};
 
 use crate::shadow::{self, Bound};
 
@@ -44,6 +44,11 @@ dialog::backdrop{ background:rgba(16,16,12,.32); }
   max-height:min(60vh, 420px); overflow:auto; }
 .frow{ display:none; gap:0; justify-content:flex-end; margin-right:43px; }
 .w.has-acts .frow{ display:flex; }
+@media(max-width:519px){
+  .t,.x{ height:44px; }
+  .x{ width:44px; border-radius:0 22px 22px 0; }
+  ::slotted([slot=actions]){ min-height:44px !important; }
+}
 "#;
 
 const HTML: &str = r#"<dialog>
@@ -117,6 +122,15 @@ impl CustomElement for TonkDialog {
                     {
                         close_dialog(&host);
                     }
+                }));
+
+            let host = this.clone();
+            self.listeners
+                .push(shadow::bind(&dialog, "keydown", move |event| {
+                    let Ok(event) = event.dyn_into::<KeyboardEvent>() else {
+                        return;
+                    };
+                    guard_tab_boundary(&host, &event);
                 }));
         }
 
@@ -230,6 +244,131 @@ fn native_dialog(this: &HtmlElement) -> Option<HtmlDialogElement> {
         .and_then(|d| d.dyn_into::<HtmlDialogElement>().ok())
 }
 
+fn guard_tab_boundary(this: &HtmlElement, event: &KeyboardEvent) {
+    if event.key() != "Tab" {
+        return;
+    }
+    let focusables = composed_focusables(this);
+    let Some(first) = focusables.first() else {
+        return;
+    };
+    let Some(last) = focusables.last() else {
+        return;
+    };
+    let path = event.composed_path();
+    let at_first = path
+        .iter()
+        .any(|node| first.is_same_node(node.dyn_ref::<web_sys::Node>()));
+    let at_last = path
+        .iter()
+        .any(|node| last.is_same_node(node.dyn_ref::<web_sys::Node>()));
+
+    let target = if event.shift_key() && at_first {
+        Some(last)
+    } else if !event.shift_key() && at_last {
+        Some(first)
+    } else {
+        None
+    };
+    if let Some(target) = target {
+        event.prevent_default();
+        let _ = target.focus();
+    }
+}
+
+fn composed_focusables(this: &HtmlElement) -> Vec<HtmlElement> {
+    let mut focusables = Vec::new();
+    if let Some(close) = this
+        .shadow_root()
+        .and_then(|root| root.query_selector(".x").ok().flatten())
+        .and_then(focus_target)
+    {
+        focusables.push(close);
+    }
+    let Ok(elements) = this.query_selector_all("*") else {
+        return focusables;
+    };
+    for index in 0..elements.length() {
+        let Some(element) = elements
+            .item(index)
+            .and_then(|node| node.dyn_into::<Element>().ok())
+        else {
+            continue;
+        };
+        if let Some(target) = focus_target(element) {
+            if !focusables
+                .iter()
+                .any(|known| known.is_same_node(Some(target.as_ref())))
+            {
+                focusables.push(target);
+            }
+        }
+    }
+    focusables
+}
+
+fn focus_target(element: Element) -> Option<HtmlElement> {
+    if element.has_attribute("hidden")
+        || element.has_attribute("disabled")
+        || element
+            .closest("[hidden]")
+            .ok()
+            .flatten()
+            .is_some_and(|hidden| hidden != element)
+        || element
+            .get_attribute("tabindex")
+            .and_then(|value| value.parse::<i32>().ok())
+            .is_some_and(|tabindex| tabindex < 0)
+    {
+        return None;
+    }
+
+    if element.tag_name().contains('-')
+        && let Some(shadow) = element.shadow_root()
+        && let Ok(candidates) =
+            shadow.query_selector_all("button,input,select,textarea,a[href],[tabindex]")
+    {
+        for index in 0..candidates.length() {
+            let Some(candidate) = candidates
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            if let Some(target) = ordinary_focus_target(candidate) {
+                return Some(target);
+            }
+        }
+    }
+    ordinary_focus_target(element)
+}
+
+fn ordinary_focus_target(element: Element) -> Option<HtmlElement> {
+    if element.has_attribute("hidden")
+        || element.has_attribute("disabled")
+        || element
+            .get_attribute("tabindex")
+            .and_then(|value| value.parse::<i32>().ok())
+            .is_some_and(|tabindex| tabindex < 0)
+        || (element.tag_name() == "INPUT"
+            && element.get_attribute("type").as_deref() == Some("hidden"))
+    {
+        return None;
+    }
+    let naturally_focusable = matches!(
+        element.tag_name().as_str(),
+        "BUTTON" | "INPUT" | "SELECT" | "TEXTAREA"
+    ) || (element.tag_name() == "A" && element.has_attribute("href"));
+    if !naturally_focusable && !element.has_attribute("tabindex") {
+        return None;
+    }
+    let rect = element.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    element.dyn_into::<HtmlElement>().ok()
+}
+
 /// Open the cluster modally.
 pub(crate) fn show_dialog(this: &HtmlElement) {
     shadow::apply_mode(this);
@@ -294,5 +433,84 @@ pub(crate) fn register() {
     let Some(win) = window() else { return };
     if win.custom_elements().get("tonk-dialog").is_undefined() {
         TonkDialog::define("tonk-dialog");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_sys::{HtmlElement, KeyboardEvent, KeyboardEventInit, window};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn presses_tab(target: &HtmlElement, shift: bool) {
+        let init = KeyboardEventInit::new();
+        init.set_key("Tab");
+        init.set_bubbles(true);
+        init.set_composed(true);
+        init.set_cancelable(true);
+        init.set_shift_key(shift);
+        let event =
+            KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).expect("Tab event");
+        target.dispatch_event(&event).expect("dispatch Tab");
+    }
+
+    #[wasm_bindgen_test]
+    fn it_cycles_tab_across_shadow_and_slotted_dialog_controls() {
+        super::register();
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-dialog")
+            .expect("dialog host")
+            .dyn_into()
+            .expect("HtmlElement");
+        host.set_inner_html(
+            r#"<button type="button">body control</button>
+               <button slot="actions" type="button">cancel</button>
+               <button slot="actions" type="button">remove space</button>"#,
+        );
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("append dialog");
+        super::show_dialog(&host);
+
+        let close: HtmlElement = host
+            .shadow_root()
+            .expect("shadow root")
+            .query_selector(".x")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let actions = host.query_selector_all("[slot=actions]").unwrap();
+        let last: HtmlElement = actions.item(1).unwrap().dyn_into().unwrap();
+
+        last.focus().unwrap();
+        presses_tab(&last, false);
+        assert!(
+            document
+                .active_element()
+                .is_some_and(|active| active.is_same_node(Some(&host))),
+            "the document focus path must remain rooted at the dialog host"
+        );
+        assert!(
+            host.shadow_root()
+                .and_then(|root| root.active_element())
+                .is_some_and(|active| active.is_same_node(Some(&close))),
+            "forward Tab on the last action must wrap to the shadow close button"
+        );
+
+        presses_tab(&close, true);
+        assert!(
+            document
+                .active_element()
+                .is_some_and(|active| active.is_same_node(Some(&last))),
+            "Shift+Tab on the close button must wrap to the final action"
+        );
+        super::close_dialog(&host);
+        host.remove();
     }
 }

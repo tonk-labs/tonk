@@ -221,7 +221,7 @@ pub struct LinkOutcome {
 }
 
 async fn decode_provider(
-    root_did: &dialog_varsig::Did,
+    _root_did: &dialog_varsig::Did,
     bytes: Result<Vec<u8>, dialog_effects::credential::CredentialError>,
 ) -> Result<Option<AccountProviderRecord>> {
     let bytes = match bytes {
@@ -229,9 +229,7 @@ async fn decode_provider(
         Err(error) if crate::account_state::credential_is_missing(&error) => return Ok(None),
         Err(error) => return Err(error).context("failed to load the account provider"),
     };
-    AccountProviderRecord::decode(&bytes, root_did)
-        .await
-        .context("stored account provider is unusable")
+    AccountProviderRecord::decode(&bytes).context("stored account provider is unusable")
 }
 
 /// Load the provider attachment through an already-mounted site operator and
@@ -364,7 +362,7 @@ pub async fn status_in(
             device_did,
         }),
         Some(provider) => {
-            let account_state = if provider.descriptor().is_some() {
+            let account_state = if provider.remote().is_some() {
                 crate::account_state::status_in(profile, store).await?
             } else {
                 AccountStateStatus::Unconfigured
@@ -429,23 +427,20 @@ async fn account_from_callback(
     let provider_url = Some(authorization.service_url.trim())
         .filter(|value| !value.is_empty())
         .unwrap_or(&options.service_url);
-    let descriptor = hex::decode(&authorization.descriptor_hex)
-        .context("authorization descriptor is not hex")?;
+    let remote = authorization.remote.trim().to_owned();
     let attached_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let provider =
-        AccountProviderRecord::attach(provider_url, &descriptor, &account_did, attached_at)
-            .await
-            .context("authorization returned an unusable repository descriptor")?;
+    let provider = AccountProviderRecord::attach(provider_url, &remote, attached_at)
+        .context("authorization returned an unusable provider")?;
     Ok(crate::account_session::ActiveAccount {
         provider: provider.provider().to_owned(),
         credential_id: authorization.credential_id,
         root_did: account_did.to_string(),
         delegation_cid: chain.proof_cids()[0].to_string(),
         delegation_hex: hex::encode(grant_bytes),
-        descriptor_hex: Some(hex::encode(descriptor)),
+        remote: Some(remote),
         attachment_id: attachment_id.to_owned(),
         attached_at,
     })
@@ -477,24 +472,13 @@ async fn project_staged_account(
         bail!("staged account activation has no service attachment generation");
     }
     let (_, chain) = recorded_account_grant(profile, account).await?;
-    let root_did: Did = account
+    let _root_did: Did = account
         .root_did
         .parse()
         .context("staged account root DID is invalid")?;
-    let descriptor_hex = account
-        .descriptor_hex
-        .as_deref()
-        .context("staged account activation has no repository descriptor")?;
-    let descriptor =
-        hex::decode(descriptor_hex).context("staged account repository descriptor is not hex")?;
-    let provider = AccountProviderRecord::attach(
-        &account.provider,
-        &descriptor,
-        &root_did,
-        account.attached_at,
-    )
-    .await
-    .context("staged account repository descriptor is unusable")?;
+    let remote = account.remote.as_deref().unwrap_or_default();
+    let provider = AccountProviderRecord::attach(&account.provider, remote, account.attached_at)
+        .context("staged account provider is unusable")?;
     if provider.provider() != account.provider {
         bail!("staged account provider is not canonical");
     }
@@ -633,7 +617,7 @@ async fn link_via_callback(
 #[serde(rename_all = "camelCase")]
 struct CallbackAuthorization {
     delegation_hex: String,
-    descriptor_hex: String,
+    remote: String,
     #[serde(default)]
     credential_id: String,
     /// The service-issued attachment generation the approving page
@@ -804,7 +788,7 @@ pub async fn attach_for_integration_test(
     service_url: &str,
     credential_id: &str,
     link: DelegationChain,
-    descriptor: &[u8],
+    remote: &str,
 ) -> Result<()> {
     use dialog_ucan::UcanDelegation;
 
@@ -828,14 +812,12 @@ pub async fn attach_for_integration_test(
         .await?;
     let provider = AccountProviderRecord::attach(
         service_url,
-        descriptor,
-        &root_did,
+        remote,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
-    )
-    .await?;
+    )?;
     profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
@@ -850,7 +832,7 @@ pub async fn attach_for_integration_test(
             root_did: root_did.to_string(),
             delegation_cid: record.delegation_cid.clone(),
             delegation_hex: record.delegation_hex.clone(),
-            descriptor_hex: Some(hex::encode(descriptor)),
+            remote: Some(remote.to_owned()),
             attachment_id: record.delegation_cid.clone(),
             attached_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1020,13 +1002,9 @@ async fn publish_revocation(
 
     let mut endpoints = std::collections::BTreeSet::new();
     if let Some(provider) = stored_provider_in(profile, operator, store).await?
-        && let Some(descriptor) = provider.descriptor()
+        && let Some(remote) = provider.remote()
     {
-        endpoints.insert(
-            UcanAddress::new(descriptor.remote().as_str())
-                .endpoint()
-                .to_string(),
-        );
+        endpoints.insert(UcanAddress::new(remote).endpoint().to_string());
     }
     endpoints.extend(
         tonk_schema::directory::access_endpoints(branch, operator)
@@ -1297,19 +1275,11 @@ mod tests {
             .unwrap();
         let delegation_cid = link.proof_cids()[0].to_string();
         let delegation_hex = hex::encode(link.to_bytes().unwrap());
-        let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(
-            &root,
-            "https://content.example/ucan/",
-        )
-        .await
-        .unwrap();
         let provider = AccountProviderRecord::attach(
             "https://accounts.example",
-            descriptor.bytes(),
-            &root_did,
+            "https://content.example/ucan/",
             1,
         )
-        .await
         .unwrap();
         let account = crate::account_session::ActiveAccount {
             provider: provider.provider().to_owned(),
@@ -1317,7 +1287,7 @@ mod tests {
             root_did: root_did.to_string(),
             delegation_cid,
             delegation_hex,
-            descriptor_hex: Some(hex::encode(descriptor.bytes())),
+            remote: Some("https://content.example/ucan/".to_owned()),
             attachment_id: "attachment".to_owned(),
             attached_at: 1,
         };
@@ -1353,7 +1323,7 @@ mod tests {
             profile
                 .credential()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(descriptor.content_hash().to_vec())
+                .save(root_did.as_str().as_bytes().to_vec())
                 .perform(&operator)
                 .await
                 .unwrap();
@@ -1465,7 +1435,7 @@ mod tests {
             delegation_hex: "00".to_string(),
         };
         let local_root_bytes = serde_json::to_vec(&local_root).unwrap();
-        let provider = AccountProviderRecord::attach_unconfigured("https://accounts.example", 1)
+        let provider = AccountProviderRecord::attach("https://accounts.example", "", 1)
             .unwrap()
             .encode()
             .unwrap();
@@ -1676,7 +1646,7 @@ mod tests {
             },
             CallbackAuthorization {
                 delegation_hex: authorized.delegation_hex,
-                descriptor_hex: authorized.descriptor_hex,
+                remote: "https://accounts.example/ucan/".to_owned(),
                 credential_id: authorized.root_did,
                 attachment_id: "  ".to_owned(),
                 service_url,
@@ -1743,7 +1713,7 @@ mod tests {
                 root_did: grant.issuer().to_string(),
                 delegation_cid: grant.proof_cids()[0].to_string(),
                 delegation_hex: hex::encode(grant_bytes),
-                descriptor_hex: Some(authorized.descriptor_hex),
+                remote: Some("https://accounts.example/ucan/".to_owned()),
                 attachment_id: "service-generation-7".to_owned(),
                 attached_at: 7,
             };

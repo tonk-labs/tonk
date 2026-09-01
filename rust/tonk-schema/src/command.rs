@@ -66,6 +66,23 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
+/// Create a notebook from the index's heading switcher, and drop the
+/// author into it.
+///
+/// The handler does both halves: it writes the notebook and then posts a
+/// `navigate` to the originating client. The navigation cannot happen in
+/// the page, because the notebook's entity is derived when the fact is
+/// written — the element that fired the command never learns it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateNotebook {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The title typed into the heading.
+    pub title: crate::domain::command::notebook::CreatedTitle,
+    /// The draft's document, blocks and all.
+    pub body: crate::domain::command::notebook::CreatedBody,
+}
+
 /// Ask whether an address is already registered, so the form can route
 /// before anyone runs a ceremony.
 ///
@@ -420,12 +437,29 @@ pub struct EnrollCustomer {
     /// The address to enroll. Empty means the account's recorded one,
     /// which is what the login and resend paths want.
     pub email: crate::domain::command::enroll::Email,
-    /// Comma-separated hex deposits from a passkey ceremony. Empty means
-    /// the worker mints a device-chained set instead.
-    pub deposits: crate::domain::command::enroll::Deposits,
 }
 
 impl Command for EnrollCustomer {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Ask the access service to mail this account's activation link again.
+///
+/// No address and no ceremony: the enrollment's rows stand at the
+/// service, so the only thing left is the mail, and the worker signs the
+/// self-subjected `/customer/resend` invocation with its own device key.
+/// Deliberately NOT a re-enrollment — that path runs a passkey ceremony
+/// the person waiting on an email never asked for.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResendActivation {
+    /// The command entity (a fresh id per press).
+    pub this: Entity,
+    /// When the resend was pressed, so a second press re-fires.
+    pub at: crate::domain::command::resend::At,
+}
+
+impl Command for ResendActivation {
     type Input = Self;
     type Output = ();
 }
