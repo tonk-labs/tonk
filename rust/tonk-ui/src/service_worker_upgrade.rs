@@ -677,6 +677,7 @@ mod tests {
                     && last["documentBuild"] == incumbent
                     && last["discovery"]["build"] == successor
                     && last["active"] == "activated"
+                    && last["waiting"] == "installed"
                     && last["controlled"] == true
                 {
                     return Ok(last);
@@ -1110,7 +1111,15 @@ mod tests {
         let initial = wait_for_mounted_build(&driver, &build).await?;
         assert_eq!(initial["health"]["build"], build, "{initial}");
         create_state_sentinels(&driver).await?;
-        let caches_before = initial["cacheNames"].clone();
+        let caches_before = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                caches.keys().then(done).catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
 
         std::fs::write(
             env.deployment_root
@@ -1159,7 +1168,11 @@ mod tests {
             )
             .await?;
         assert_eq!(after.json()["registration"], true, "{after:?}");
-        assert_eq!(after.json()["cacheNames"], caches_before, "{after:?}");
+        assert_eq!(
+            &after.json()["cacheNames"],
+            caches_before.json(),
+            "{after:?}"
+        );
         assert_eq!(after.json()["refused"]["status"], 503, "{after:?}");
         assert_eq!(
             after.json()["refused"]["body"]["error"]["kind"],
