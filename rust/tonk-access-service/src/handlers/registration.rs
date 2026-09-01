@@ -50,11 +50,88 @@ impl crate::email::EmailSender for MaybeEmail {
 #[cfg(target_arch = "wasm32")]
 pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Response> {
     match handle_inner(body, req, env).await {
-        Ok(receipt) => Response::from_json(&receipt),
+        Ok(receipt) => {
+            replicate_verdicts(&receipt, env).await;
+            Response::from_json(&receipt)
+        }
         Err(err) => {
             let response = Response::from_json(&serde_json::json!({ "error": err }))?;
             Ok(response.with_status(err.status()))
         }
+    }
+}
+
+/// Write the fresh servability verdicts for every subject a completed
+/// registration command changed, so the change propagates to the
+/// presign path as itself rather than waiting out a cached entry's
+/// validity. `/provider/add` touches the provisioned consumer;
+/// `/customer/enroll` and `/customer/activate` touch the customer and
+/// every consumer it funds. Best-effort: a failed write costs at most
+/// one stale validity window, which the verdicts are sized for.
+#[cfg(target_arch = "wasm32")]
+async fn replicate_verdicts(answer: &crate::registration::Answer, env: &Env) {
+    use worker::Date;
+
+    use crate::handlers::ucan::{derive_verdict, servability_kv};
+    use crate::registration::Answer;
+    use crate::store::Store;
+    use crate::store::d1::D1Store;
+
+    let customer = match answer {
+        Answer::Subscription(receipt) => {
+            let now = Date::now().as_millis() / 1_000;
+            let _ = derive_verdict(
+                receipt.consumer.as_str(),
+                now,
+                env,
+                servability_kv(env).as_ref(),
+            )
+            .await;
+            return;
+        }
+        Answer::Customer(receipt) => receipt.customer.as_str().to_string(),
+        // The operator commands answer nothing; their consumer rides
+        // out the cached verdict's validity instead.
+        Answer::Done => return,
+    };
+    let kv = servability_kv(env);
+    let now = Date::now().as_millis() / 1_000;
+    let mut subjects = vec![customer.clone()];
+    match env.d1("CONTROL") {
+        Ok(control) => {
+            let store = D1Store::new(control);
+            match store.subscriptions_by_provider(&customer).await {
+                Ok(subscriptions) => subjects.extend(
+                    subscriptions
+                        .into_iter()
+                        .map(|subscription| subscription.consumer)
+                        .filter(|consumer| *consumer != customer),
+                ),
+                Err(err) => {
+                    worker::console_error!(
+                        "verdicts for {customer}'s consumers not refreshed: {err}"
+                    );
+                }
+            }
+            // The row itself, for the probe and the email lookup: both
+            // poll it, and the write-through is how a poll notices the
+            // enrollment or activation that just happened.
+            if let Some(kv) = &kv {
+                match store.customer(&customer).await {
+                    Ok(Some(row)) => crate::store::replica::replicate(kv, &row, now).await,
+                    Ok(None) => {}
+                    Err(err) => {
+                        worker::console_error!(
+                            "customer replica for {customer} not written: {err}"
+                        );
+                    }
+                }
+            }
+        }
+        Err(err) => worker::console_error!("verdicts not refreshed, no CONTROL binding: {err}"),
+    }
+    for subject in subjects {
+        let _ = derive_verdict(&subject, now, env, kv.as_ref()).await;
     }
 }
 
@@ -168,14 +245,26 @@ pub async fn handle_customer(_req: Request, _ctx: RouteContext<()>) -> worker::R
 /// body; see the native twin above).
 #[cfg(target_arch = "wasm32")]
 pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
-    use tonk_account::customer::{CustomerStatus, Receipt};
-
     use crate::store::Store;
     use crate::store::d1::D1Store;
+    use crate::store::replica;
 
     let Some(did) = ctx.param("did") else {
         return Response::error("Not Found", 404);
     };
+
+    // This is a poll — the enrolling client watches it for activation —
+    // so it reads the KV replica first and reaches D1 only on a miss,
+    // backfilling what it finds. Enrollment and activation write the
+    // replica through, which is how the poll notices them.
+    let now = worker::Date::now().as_millis() / 1_000;
+    let kv = super::ucan::servability_kv(&ctx.env);
+    if let Some(kv) = &kv
+        && let Some(cached) = replica::load(kv, &replica::did_key(did), now).await
+    {
+        return answer_probe(cached.customer, &req);
+    }
+
     let store = match ctx.env.d1("CONTROL") {
         Ok(database) => D1Store::new(database),
         Err(err) => {
@@ -184,7 +273,29 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
         }
     };
     match store.customer(did).await {
-        Ok(Some(customer)) => {
+        Ok(row) => {
+            if let Some(kv) = &kv {
+                replica::backfill(kv, &replica::did_key(did), row.clone(), now).await;
+            }
+            answer_probe(row, &req)
+        }
+        Err(err) => {
+            worker::console_error!("customer probe failed: {err}");
+            Response::error("Customer registry is unavailable", 500)
+        }
+    }
+}
+
+/// The probe's answer for a customer row, or for its absence.
+#[cfg(target_arch = "wasm32")]
+fn answer_probe(
+    customer: Option<crate::store::Customer>,
+    req: &Request,
+) -> worker::Result<Response> {
+    use tonk_account::customer::{CustomerStatus, Receipt};
+
+    match customer {
+        Some(customer) => {
             let receipt = Receipt {
                 customer: customer.account.parse().map_err(|err| {
                     worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
@@ -206,14 +317,10 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
             };
             Response::from_json(&receipt)
         }
-        Ok(None) => {
+        None => {
             let refusal = RegistrationError::UnknownCustomer;
             let response = Response::from_json(&serde_json::json!({ "error": refusal }))?;
             Ok(response.with_status(refusal.status()))
-        }
-        Err(err) => {
-            worker::console_error!("customer probe failed: {err}");
-            Response::error("Customer registry is unavailable", 500)
         }
     }
 }

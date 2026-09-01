@@ -49,8 +49,9 @@ pub async fn handle(_req: Request, _ctx: RouteContext<()>) -> worker::Result<Res
 /// twin above, and the helpers server for the native implementation).
 #[cfg(target_arch = "wasm32")]
 pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
-    use crate::lookup::{address_from_segments, customer_did, resolve};
+    use crate::lookup::{address_from_segments, customer_did, found_of};
     use crate::store::d1::D1Store;
+    use crate::store::{Store, replica};
     use worker::Cache;
 
     // A cached answer skips both the limiter and D1. That is the right
@@ -92,14 +93,6 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         return not_found();
     };
 
-    let store = match ctx.env.d1("CONTROL") {
-        Ok(database) => D1Store::new(database),
-        Err(err) => {
-            worker::console_error!("email lookup unavailable, no CONTROL binding: {err}");
-            return with_cors(Response::error("Customer registry is not configured", 500));
-        }
-    };
-
     let url = req.url()?;
     let host = url.host_str().map(ToString::to_string).unwrap_or_default();
     let origin = url.origin().ascii_serialization();
@@ -107,8 +100,45 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         return not_found();
     };
 
-    match resolve(&store, &did, &address, &origin).await {
-        Ok(Some(found)) => {
+    // The replica answers the poll phases HTTP caching cannot hold —
+    // an address not yet registered, a registration awaiting its email
+    // — so waiting on either stops being a D1 read per poll. A fresh
+    // record, present or recorded-absent, is the answer; anything else
+    // falls through to D1 and backfills.
+    let now = worker::Date::now().as_millis() / 1_000;
+    let kv = crate::handlers::ucan::servability_kv(&ctx.env);
+    let cached = match &kv {
+        Some(kv) => replica::load(kv, &replica::email_key(&address), now).await,
+        None => None,
+    };
+    let customer = match cached {
+        Some(cached) => cached.customer,
+        None => {
+            let store = match ctx.env.d1("CONTROL") {
+                Ok(database) => D1Store::new(database),
+                Err(err) => {
+                    worker::console_error!("email lookup unavailable, no CONTROL binding: {err}");
+                    return with_cors(Response::error("Customer registry is not configured", 500));
+                }
+            };
+            match store.customer_by_email(&address).await {
+                Ok(row) => {
+                    if let Some(kv) = &kv {
+                        replica::backfill(kv, &replica::email_key(&address), row.clone(), now)
+                            .await;
+                    }
+                    row
+                }
+                Err(err) => {
+                    worker::console_error!("email lookup failed: {err}");
+                    return with_cors(Response::error("Customer registry is unavailable", 500));
+                }
+            }
+        }
+    };
+
+    match customer.map(|customer| found_of(&did, &customer, &origin)) {
+        Some(found) => {
             let body = serde_json::to_string_pretty(&found.document)
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
             let response = Response::ok(body)?.with_status(found.status).with_headers({
@@ -132,11 +162,7 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
             }
             Ok(response)
         }
-        Ok(None) => not_found(),
-        Err(err) => {
-            worker::console_error!("email lookup failed: {err}");
-            with_cors(Response::error("Customer registry is unavailable", 500))
-        }
+        None => not_found(),
     }
 }
 
