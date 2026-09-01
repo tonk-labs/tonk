@@ -692,7 +692,7 @@ pub mod tests {
             session_expires_at: session.expires_at,
             profile_name,
             reactor,
-            retiring: std::sync::atomic::AtomicBool::new(false),
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),

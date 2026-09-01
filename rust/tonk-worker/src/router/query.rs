@@ -165,6 +165,7 @@ async fn query_on_branch<'a>(
         }
         let subscriber = match subscribe.perform(&tonk.operator).await {
             Ok(subscriber) => subscriber,
+            Err(ReactorError::Shutdown) => return Ok(retry_later()),
             // The branch is not here YET. Absence is a result, not a
             // failure, so answer with an open stream carrying the empty
             // set and keep watching: when the repo mounts (a join in
@@ -184,15 +185,21 @@ async fn query_on_branch<'a>(
                 // The honest current answer, delivered immediately so the
                 // consumer leaves `loading` and renders its empty state.
                 let _ = sender.send(Bytes::from_static(b"[]"));
-                tonk.reactor.register_pending(
-                    branch.repository.name(),
-                    branch.name,
-                    dialog_reactor::PendingSubscription {
-                        query,
-                        client,
-                        sender,
-                    },
-                );
+                if tonk
+                    .reactor
+                    .register_pending(
+                        branch.repository.name(),
+                        branch.name,
+                        dialog_reactor::PendingSubscription {
+                            query,
+                            client,
+                            sender,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(retry_later());
+                }
                 return Ok(sse_response(receiver));
             }
             Err(error) => return Err(reactor_to_error(error)),
@@ -225,6 +232,7 @@ fn retry_later() -> Response {
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     match err {
+        ReactorError::Shutdown => TonkWorkerError::Internal(err.to_string()),
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
             TonkWorkerError::NotFound(err.to_string())
         }
@@ -317,6 +325,7 @@ mod tests {
     fn it_classifies_every_variant_deliberately() {
         fn absent(error: &ReactorError) -> bool {
             match error {
+                ReactorError::Shutdown => false,
                 ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
                     true
                 }

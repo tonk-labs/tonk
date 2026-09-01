@@ -274,15 +274,22 @@ mod native {
             .to_string();
         // Polled from the test side: a single waiting script is bounded
         // by chromedriver's script timeout, which a cold machine still
-        // compiling the app's wasm can outlast. A boot that WEDGES
-        // rather than runs slow is the page's own problem now — its
-        // watchdog (index.html) reloads a boot with no signs of life
-        // and escalates to clearing caches and workers — so this wait
-        // only has to outlast the ladder, not run it.
+        // compiling the app's wasm can outlast. Account tests navigate
+        // immediately after this helper returns, so identity alone is
+        // insufficient: the app can expose it while the first worker is
+        // still verifying its immutable asset graph. Wait for control as
+        // well so the next navigation cannot race the initial install.
+        // A boot that WEDGES rather than runs slow is the page's own
+        // problem now — its watchdog (index.html) reloads a boot with no
+        // signs of life and escalates to terminal recovery — so this wait
+        // only has to outlast that ladder, not run it.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
         loop {
             let ready = driver
-                .execute("return !!window.tonkIdentity;", vec![])
+                .execute(
+                    "return !!window.tonkIdentity && !!navigator.serviceWorker?.controller;",
+                    vec![],
+                )
                 .await
                 .ok()
                 .and_then(|ret| ret.json().as_bool());
@@ -308,7 +315,7 @@ mod native {
                     .map(|ret| ret.json().clone())
                     .unwrap_or(serde_json::Value::Null);
                 return Err(anyhow!(
-                    "the page never exposed tonkIdentity; page state: {state}"
+                    "the page never exposed tonkIdentity under service-worker control; page state: {state}"
                 ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -318,6 +325,11 @@ mod native {
 
     /// Manages test server processes for integration testing.
     pub struct TestServers {
+        /// Owns the generated Caddy CA and mutable deployment fixture. Keeping
+        /// it beside the child handles makes every success/failure path remove
+        /// its test state after the children have stopped, rather than filling
+        /// one long-lived test shell across the serialized browser suite.
+        _scratch: tempfile::TempDir,
         web_server: ManagedChild,
         chromedriver: Option<ManagedChild>,
         access_service:
@@ -352,8 +364,10 @@ mod native {
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
                 .port()
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
-            let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
-            std::fs::create_dir_all(&caddy_data)?;
+            let scratch = tempfile::Builder::new()
+                .prefix(&format!("tonk-e2e-caddy-{web_port}-"))
+                .tempdir()?;
+            let caddy_data = scratch.path().to_owned();
             // The runner's variable wins over the compile-time constant:
             // a binary out of the `tests-e2e` archive was compiled in the
             // Nix sandbox, whose source path no longer exists, while
@@ -554,6 +568,7 @@ mod native {
 
             Ok((
                 Self {
+                    _scratch: scratch,
                     web_server,
                     chromedriver,
                     access_service: Some(access_service),

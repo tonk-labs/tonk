@@ -231,7 +231,15 @@ async fn handle_post(
 /// SSE framing: `data: <json>\n\n`. The client side parses these
 /// and hands the JSON to its message dispatcher.
 #[wasm_compat]
-async fn handle_events(Extension(hub): Extension<Arc<LspHub>>) -> Response {
+async fn handle_events(
+    Extension(hub): Extension<Arc<LspHub>>,
+    State(state): State<AppState>,
+) -> Response {
+    let retiring = state.read().await.is_retiring();
+    handle_events_for(hub, retiring).await
+}
+
+async fn handle_events_for(hub: Arc<LspHub>, retiring: bool) -> Response {
     // Refuse to open a long-lived stream while a successor is waiting.
     // An SSE body is a fetch event that never settles, and the spec
     // keeps a worker alive while any fetch event is in flight — so one
@@ -240,7 +248,7 @@ async fn handle_events(Extension(hub): Extension<Arc<LspHub>>) -> Response {
     // refused for the same reason; this one didn't, and the LSP
     // client's reconnect timer made it the reliable way to wedge an
     // update.
-    if update_pending() {
+    if retiring || update_pending() {
         return retry_later("a newer service worker is waiting to activate");
     }
     // `None` means `shutdown` already ran on this hub. Same answer:
@@ -341,7 +349,7 @@ mod tests {
         let hub = LspHub::new();
         hub.shutdown().await;
 
-        let response = handle_events(Extension(hub)).await;
+        let response = handle_events_for(hub, false).await;
 
         assert_eq!(
             response.status(),
@@ -386,7 +394,7 @@ mod tests {
     async fn it_opens_a_stream_while_not_retiring() {
         let hub = LspHub::new();
 
-        let response = handle_events(Extension(hub)).await;
+        let response = handle_events_for(hub, false).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -396,6 +404,24 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("text/event-stream"),
             "the normal path is still a live SSE subscription"
+        );
+    }
+
+    /// The synchronous generation latch is sufficient to refuse a reconnect
+    /// even before the asynchronous hub drain acquires its state lock.
+    #[dialog_common::test]
+    async fn it_refuses_a_stream_once_the_worker_is_retiring() {
+        let hub = LspHub::new();
+
+        let response = handle_events_for(hub, true).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("5")
         );
     }
 

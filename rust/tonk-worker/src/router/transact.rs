@@ -449,6 +449,7 @@ fn is_absence(err: &ReactorError) -> bool {
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     match err {
+        ReactorError::Shutdown => TonkWorkerError::Internal(err.to_string()),
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
             TonkWorkerError::NotFound(err.to_string())
         }

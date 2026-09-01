@@ -68,6 +68,12 @@ pub use transaction::{Commit, TransactionBuilder};
 /// application state (e.g. the worker's `TonkState`).
 pub struct Reactor {
     profile: Profile,
+    /// Serializes every subscription registration/adoption with terminal
+    /// shutdown. Once closed, the gate never reopens: a registration that
+    /// wins the lock is guaranteed to be drained by the following shutdown,
+    /// while one that loses is refused instead of recreating a sender after
+    /// the drain has passed it.
+    subscription_lifecycle: SubscriptionLifecycle,
     repos: RwLock<HashMap<String, Arc<RepositoryState>>>,
     /// Cached `RepositoryState` for the profile-as-repository.
     /// Lazily populated on first `profile_repository().acquire()`
@@ -116,6 +122,35 @@ pub struct PendingSubscription {
     pub sender: tokio::sync::mpsc::UnboundedSender<bytes::Bytes>,
 }
 
+/// One-way gate around the synchronous point where a subscriber sender is
+/// installed. Kept separate from the reactor caches so its concurrency
+/// contract can be tested without opening a profile or storage backend.
+struct SubscriptionLifecycle {
+    open: Mutex<bool>,
+}
+
+impl SubscriptionLifecycle {
+    fn new() -> Self {
+        Self {
+            open: Mutex::new(true),
+        }
+    }
+
+    fn register<T>(&self, install: impl FnOnce() -> T) -> Option<T> {
+        let open = self.open.lock();
+        if !*open {
+            return None;
+        }
+        Some(install())
+    }
+
+    fn shutdown(&self, drain: impl FnOnce()) {
+        let mut open = self.open.lock();
+        *open = false;
+        drain();
+    }
+}
+
 impl Reactor {
     /// Construct a reactor over the given profile. The reactor
     /// doesn't own an operator — every effect takes one at
@@ -123,6 +158,7 @@ impl Reactor {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
+            subscription_lifecycle: SubscriptionLifecycle::new(),
             repos: RwLock::new(HashMap::new()),
             profile_repo: RwLock::new(None),
             pending_polls: Mutex::new(Vec::new()),
@@ -137,34 +173,56 @@ impl Reactor {
     /// — which [`BranchReference::acquire`] does the moment that branch
     /// materializes, whether because a space was joined elsewhere or a
     /// branch was created.
-    pub fn register_pending(&self, repo: &str, branch: &str, pending: PendingSubscription) {
-        self.pending_subscriptions
-            .lock()
-            .entry((repo.to_owned(), branch.to_owned()))
-            .or_default()
-            .push(pending);
+    pub fn register_pending(
+        &self,
+        repo: &str,
+        branch: &str,
+        pending: PendingSubscription,
+    ) -> Result<(), ReactorError> {
+        self.subscription_lifecycle
+            .register(|| {
+                self.pending_subscriptions
+                    .lock()
+                    .entry((repo.to_owned(), branch.to_owned()))
+                    .or_default()
+                    .push(pending);
+            })
+            .ok_or(ReactorError::Shutdown)
     }
 
-    /// Take every subscription registered against `(repo, branch)`.
-    ///
-    /// Called from [`BranchReference::acquire`] once the branch exists.
-    /// Draining (rather than copying) means each pending subscription is
-    /// adopted exactly once; a consumer that has since gone away is
-    /// pruned by the ordinary dead-subscriber sweep after adoption.
-    pub fn take_pending(&self, repo: &str, branch: &str) -> Vec<PendingSubscription> {
-        self.pending_subscriptions
-            .lock()
-            .remove(&(repo.to_owned(), branch.to_owned()))
-            .unwrap_or_default()
+    /// Install a subscriber on a materialized branch unless shutdown has
+    /// terminally closed the subscription boundary.
+    fn register_subscription(
+        &self,
+        session: &BranchSession,
+        query: dialog_query::ConceptQuery,
+        client: Option<String>,
+    ) -> Result<Subscriber, ReactorError> {
+        self.subscription_lifecycle
+            .register(|| session.subscribe(query, client))
+            .ok_or(ReactorError::Shutdown)?
     }
 
-    /// Whether any subscription is waiting on `(repo, branch)`. Lets
-    /// `acquire` skip the drain entirely in the overwhelmingly common
-    /// case where nothing was waiting.
-    pub fn has_pending(&self, repo: &str, branch: &str) -> bool {
-        self.pending_subscriptions
-            .lock()
-            .contains_key(&(repo.to_owned(), branch.to_owned()))
+    /// Move every waiting subscriber onto a newly materialized branch.
+    /// Adoption is registration too, so it uses the same gate as a fresh
+    /// subscription; otherwise shutdown could drain the waiting room and a
+    /// concurrent acquire could install one of its senders afterward.
+    fn adopt_pending(&self, repo: &str, branch: &str, state: &Arc<BranchState>) {
+        let _ = self.subscription_lifecycle.register(|| {
+            let pending = self
+                .pending_subscriptions
+                .lock()
+                .remove(&(repo.to_owned(), branch.to_owned()))
+                .unwrap_or_default();
+            if pending.is_empty() {
+                return;
+            }
+            for pending in pending {
+                state.adopt_subscriber(pending.query, pending.client, pending.sender);
+            }
+            // Evaluate once so adopted subscribers get a real frame now.
+            self.schedule_poll(Arc::clone(state));
+        });
     }
 
     /// Schedule a poll of `state`'s subscriptions. Called by mutating
@@ -213,31 +271,34 @@ impl Reactor {
     /// and ends the SSE response stream regardless of who else
     /// holds the state.
     pub fn shutdown(&self) {
-        // Pending subscriptions own the sender for an SSE response even
-        // though their repository/branch has not materialized yet. They are
-        // not reachable through either cache below, so drain them explicitly
-        // or an absent-branch stream can keep the retiring worker alive.
-        self.pending_subscriptions.lock().clear();
-        self.pending_polls.lock().clear();
-        let repos = {
-            let mut map = self.repos.write();
-            std::mem::take(&mut *map)
-        };
-        // The profile-as-repository lives in its own slot, not in
-        // `repos`. The Hub subscribes to its main branch
-        // (`/api/profile/branch/main/query` SSE), so it must be drained
-        // too — otherwise that one stream stays open and pins the
-        // outgoing worker in `waiting` on every update.
-        let profile = self.profile_repo.write().take();
-        for repo in repos.into_values().chain(profile) {
-            let branches = {
-                let mut map = repo.branches().write();
+        self.subscription_lifecycle.shutdown(|| {
+            // Pending subscriptions own the sender for an SSE response even
+            // though their repository/branch has not materialized yet. They
+            // are not reachable through either cache below, so drain them
+            // explicitly or an absent-branch stream can keep the retiring
+            // worker alive.
+            self.pending_subscriptions.lock().clear();
+            self.pending_polls.lock().clear();
+            let repos = {
+                let mut map = self.repos.write();
                 std::mem::take(&mut *map)
             };
-            for (_, branch) in branches {
-                branch.clear_subscribers();
+            // The profile-as-repository lives in its own slot, not in
+            // `repos`. The Hub subscribes to its main branch
+            // (`/api/profile/branch/main/query` SSE), so it must be drained
+            // too — otherwise that one stream stays open and pins the
+            // outgoing worker in `waiting` on every update.
+            let profile = self.profile_repo.write().take();
+            for repo in repos.into_values().chain(profile) {
+                let branches = {
+                    let mut map = repo.branches().write();
+                    std::mem::take(&mut *map)
+                };
+                for (_, branch) in branches {
+                    branch.clear_subscribers();
+                }
             }
-        }
+        });
     }
 
     /// Drop one repository's cached handles and active subscribers —
@@ -391,5 +452,47 @@ impl Reactor {
     /// repositories on cache miss.
     pub fn profile(&self) -> &Profile {
         &self.profile
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod lifecycle_tests {
+    use std::sync::{Arc, Barrier, mpsc};
+
+    use super::SubscriptionLifecycle;
+
+    /// A registration already inside the gate is drained before shutdown
+    /// returns, while every later registration is rejected. The barriers keep
+    /// the two operations overlapped so this exercises the interleaving that
+    /// a sequential "retire, then reconnect" regression cannot cover.
+    #[test]
+    fn shutdown_is_atomic_with_subscription_registration() {
+        let lifecycle = Arc::new(SubscriptionLifecycle::new());
+        let release_registration = Arc::new(Barrier::new(2));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (drained_tx, drained_rx) = mpsc::channel();
+
+        let registering = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let release_registration = Arc::clone(&release_registration);
+            std::thread::spawn(move || {
+                lifecycle.register(|| {
+                    entered_tx.send(()).unwrap();
+                    release_registration.wait();
+                })
+            })
+        };
+        entered_rx.recv().unwrap();
+
+        let shutting_down = {
+            let lifecycle = Arc::clone(&lifecycle);
+            std::thread::spawn(move || lifecycle.shutdown(|| drained_tx.send(()).unwrap()))
+        };
+
+        release_registration.wait();
+        assert_eq!(registering.join().unwrap(), Some(()));
+        shutting_down.join().unwrap();
+        drained_rx.recv().unwrap();
+        assert_eq!(lifecycle.register(|| "late"), None);
     }
 }

@@ -416,7 +416,7 @@ pub struct TonkState {
     /// Terminal lifecycle latch for this worker generation. Once a verified
     /// successor installs, no later query reconnect may recreate an SSE stream
     /// on the outgoing worker, even after `registration.waiting` clears.
-    pub(crate) retiring: AtomicBool,
+    pub(crate) retiring: Arc<AtomicBool>,
     /// View-iframe bindings keyed by service-worker Client ID.
     /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
@@ -1873,7 +1873,7 @@ pub(crate) async fn boot_state(
         session_expires_at: session.expires_at,
         profile_name,
         reactor,
-        retiring: AtomicBool::new(false),
+        retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
         commands: crate::router::command_registry(),
@@ -1902,6 +1902,11 @@ pub struct TonkServiceWorker {
     /// (with optional path rewriting) or passed through to the
     /// network.
     state: AppState,
+    /// Lock-free twin of [`TonkState::retiring`]. The JavaScript-facing
+    /// `onupdatefound` callback sets it synchronously, before constructing the
+    /// async drain promise, so a state writer cannot delay the terminal 503
+    /// decision for a queued query/LSP reconnect.
+    retiring: Arc<AtomicBool>,
     /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
     /// to release in-flight SSE responses when a newer worker
     /// version begins installing — without this the active worker
@@ -1972,6 +1977,7 @@ impl TonkServiceWorker {
         // returns the LSP hub *and* a cloneable `AppState` handle:
         // the worker keeps the latter so `on_fetch` can read the
         // guest-binding map without going through the router.
+        let retiring = Arc::clone(&state.retiring);
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
@@ -2011,6 +2017,7 @@ impl TonkServiceWorker {
         Ok(Self {
             router,
             state,
+            retiring,
             lsp,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             sync_scheduler: SyncScheduler::default(),
@@ -2035,6 +2042,10 @@ impl TonkServiceWorker {
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
+        // This must precede every await, including acquisition of the shared
+        // state lock. A long-running state writer may delay the drain, but it
+        // must never let a later stream-open observe this generation as live.
+        self.retiring.store(true, Ordering::Release);
         // Stop all sync work FIRST. The spec keeps this worker alive until
         // every in-flight fetch and every `waitUntil` promise settles; a drain
         // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
@@ -2048,13 +2059,16 @@ impl TonkServiceWorker {
         let lsp = self.lsp.clone();
         let state = self.state.clone();
         future_to_promise(async move {
+            // Latch query retirement before the first independent await. If
+            // LSP shutdown ran first, the successor could activate and clear
+            // `registration.waiting` while query reconnects still saw this
+            // generation as live. The reactor gate makes the latch and every
+            // active/pending subscriber registration atomic.
+            {
+                let tonk = state.read().await;
+                tonk.retire();
+            }
             lsp.shutdown().await;
-            // Also drain every query subscription. Each carries an
-            // `mpsc::Sender` whose receiver drives an SSE response
-            // body; dropping the sender ends the body so the fetch
-            // settles.
-            let tonk = state.read().await;
-            tonk.retire();
             log!("Streams are released");
             Ok(JsValue::UNDEFINED)
         })
