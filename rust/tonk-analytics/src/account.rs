@@ -466,8 +466,10 @@ mod tests {
     #[test]
     fn it_serializes_only_the_account_event_allowlist() {
         let start = started().validated_properties().unwrap();
+        let mut keys = start.keys().cloned().collect::<Vec<_>>();
+        keys.sort_unstable();
         assert_eq!(
-            start.keys().cloned().collect::<Vec<_>>(),
+            keys,
             [
                 "account_state",
                 "action",
