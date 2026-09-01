@@ -373,7 +373,118 @@ mod tests {
                 )
                 .await?;
         }
+
+        // What the copy above loses: the credential's PRF secret.
+        // `WebAuthn.getCredentials` exports the signing key but not the
+        // hmac-secret, so the copied passkey signs fine and yields no
+        // PRF outputs — and custody derives its keys from those, so a
+        // login on the second device dies at "this platform cannot
+        // unlock custody". A real synced passkey carries the secret
+        // with it. Model that: evaluate the custody salts once on the
+        // device that holds the secret, and graft the outputs into the
+        // second device's assertions.
+        let (key_output, kek_output) = custody_prf_outputs(first).await?;
+        graft_prf_outputs(&second, &key_output, &kek_output).await?;
         Ok((second, authenticator))
+    }
+
+    /// The PRF outputs this driver's authenticator derives for the two
+    /// custody salts — the values a platform keychain syncs with the
+    /// passkey and CDP cannot export. One silent assertion; the page
+    /// must be on the passkey's relying-party origin.
+    async fn custody_prf_outputs(driver: &WebDriver) -> Result<(String, String)> {
+        let outcome = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                const [keyContext, kekContext] = [arguments[0], arguments[1]];
+                navigator.credentials.get({ publicKey: {
+                    challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    userVerification: "required",
+                    extensions: { prf: { eval: {
+                        first: new TextEncoder().encode(keyContext),
+                        second: new TextEncoder().encode(kekContext),
+                    }}},
+                }}).then(credential => {
+                    const prf = (credential.getClientExtensionResults() || {}).prf;
+                    if (!prf || !prf.results || !prf.results.first || !prf.results.second) {
+                        return done({ error: "the source authenticator returned no PRF outputs" });
+                    }
+                    const b64 = buffer => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                    done({ first: b64(prf.results.first), second: b64(prf.results.second) });
+                }).catch(error => done({ error: String(error) }));
+                "#,
+                vec![
+                    serde_json::json!(std::str::from_utf8(
+                        tonk_identity::envelope::CUSTODY_KEY_CONTEXT
+                    )?),
+                    serde_json::json!(std::str::from_utf8(
+                        tonk_identity::envelope::CUSTODY_KEK_CONTEXT
+                    )?),
+                ],
+            )
+            .await?;
+        let outcome = outcome.json().clone();
+        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not read the custody PRF outputs: {error}"));
+        }
+        let field = |name: &str| -> Result<String> {
+            outcome[name]
+                .as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("PRF read returned no {name} output"))
+        };
+        Ok((field("first")?, field("second")?))
+    }
+
+    /// Make every future document on `driver` answer custody assertions
+    /// with `key_output`/`kek_output` (base64) as its PRF results.
+    ///
+    /// The assertion itself still runs against the local authenticator —
+    /// the signature is real — only the extension outputs are replaced,
+    /// which is the one thing the credential copy cannot carry.
+    async fn graft_prf_outputs(
+        driver: &WebDriver,
+        key_output: &str,
+        kek_output: &str,
+    ) -> Result<()> {
+        let script = format!(
+            r#"
+            (() => {{
+                const outputs = {{ first: "{key_output}", second: "{kek_output}" }};
+                const unb64 = text =>
+                    Uint8Array.from(atob(text), letter => letter.charCodeAt(0)).buffer;
+                const real = navigator.credentials.get.bind(navigator.credentials);
+                navigator.credentials.get = async options => {{
+                    const credential = await real(options);
+                    const asked = options && options.publicKey
+                        && options.publicKey.extensions && options.publicKey.extensions.prf;
+                    if (asked) {{
+                        const results = credential.getClientExtensionResults.bind(credential);
+                        Object.defineProperty(credential, "getClientExtensionResults", {{
+                            value: () => {{
+                                const r = results();
+                                r.prf = Object.assign({{}}, r.prf, {{ results: {{
+                                    first: unb64(outputs.first),
+                                    second: unb64(outputs.second),
+                                }}}});
+                                return r;
+                            }},
+                        }});
+                    }}
+                    return credential;
+                }};
+            }})();
+            "#
+        );
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({ "source": script }),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn credential_count(driver: &WebDriver, authenticator_id: &str) -> Result<usize> {
@@ -676,9 +787,15 @@ mod tests {
         let (device_a, authenticator_a) = driver_with_prf_authenticator(&env).await?;
         enroll_only(&device_a, &env, email).await?;
 
-        // Device B: a separate browser holding the same passkey.
+        // Device B: a separate browser holding the same passkey. The
+        // credential copy carries the signing key but not the PRF
+        // secret custody derives its keys from, so the second half of
+        // what a platform keychain syncs is grafted alongside it — see
+        // `second_device_with_same_passkey`.
         let (device_b, authenticator_b) = driver_with_prf_authenticator(&env).await?;
         copy_credentials(&device_a, &authenticator_a, &device_b, &authenticator_b).await?;
+        let (key_output, kek_output) = custody_prf_outputs(&device_a).await?;
+        graft_prf_outputs(&device_b, &key_output, &kek_output).await?;
         goto(&device_b, env.tonk_web.join("settings")?.as_str()).await?;
         element(&device_b, "tonk-account[data-mode=\"choice\"]").await?;
         element(&device_b, "#account-choose-link")
