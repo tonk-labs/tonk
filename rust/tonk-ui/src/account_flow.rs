@@ -220,7 +220,33 @@ mod tests {
     /// touches the bar or a space page goes through here.
     async fn enter_guest(driver: &WebDriver) -> Result<()> {
         driver.enter_default_frame().await?;
-        let frame = element(driver, "tonk-site > iframe").await?;
+        let frame = match element(driver, "tonk-site > iframe").await {
+            Ok(frame) => frame,
+            Err(error) => {
+                let state = driver
+                    .execute(
+                        r##"const site = document.querySelector("tonk-site");
+                           return {
+                             url: String(location.href),
+                             ready: document.readyState,
+                             controlled: !!navigator.serviceWorker?.controller,
+                             bodyChildren: [...document.body.children].map(node => node.localName),
+                             root: document.querySelector("#tonk-root")?.outerHTML || null,
+                             site: site ? {
+                               attributes: Object.fromEntries([...site.attributes].map(attr => [attr.name, attr.value])),
+                               children: [...site.children].map(node => node.localName),
+                             } : null,
+                             errors: globalThis.__tonkTestErrors || [],
+                             installProgress: globalThis.__tonkTestInstallProgress || [],
+                           };"##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|result| result.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error).context(format!("top-document guest state: {state}"));
+            }
+        };
         frame.enter_frame().await?;
         Ok(())
     }
