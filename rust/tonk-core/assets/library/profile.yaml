@@ -63,6 +63,20 @@ concept!: &space
       the: xyz.tonk.space/local
       cardinality: one
       as: boolean
+    provider:
+      description: >
+        The account providing this space with the access service. Its
+        presence records that the space is provisioned (its remote is
+        served): `/provider/add` runs when the upstream is attached,
+        never per share, and this fact is what a share consults. The
+        sync engine retracts it when the service answers that the
+        subject is no longer served, returning the space to local-only.
+        The value is the providing account's DID entity — identical
+        from every replica, so the record converges where per-device
+        timestamps would not.
+      the: xyz.tonk.space/provider
+      cardinality: one
+      as: entity
 
 # The Add Space command. Asserted by the Hub's two create forms (the bar's
 # `new space` rung and the stack's ghost) and by the FAB's `new` row; the

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_capability::access::AuthorizeError;
+use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use serde::Deserialize;
@@ -258,8 +258,17 @@ async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, bra
         Ok(remote) => remote,
         Err(e) => {
             log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
-            publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::offline_status())
-                .await;
+            // An unserved subject is not offline: the service answered,
+            // and said no. Settle on `local` — the same status the
+            // failure path stamps — or the chip would flap between the
+            // two on every sweep.
+            let status = match classified_service_failure(&e) {
+                Some(TonkWorkerError::Upstream {
+                    code: Some(code), ..
+                }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
+                _ => tonk_schema::Replica::offline_status(),
+            };
+            publish_sync_status_attr(tonk, repo, branch, status).await;
             return;
         }
     };
@@ -364,6 +373,24 @@ fn classified_service_failure(
                     message: "synchronization is temporarily unavailable".to_string(),
                 }
             }
+            // The gate's own policy refusal. Retry means the condition
+            // clears by itself (an activation email waiting to be
+            // opened), so it reads as ordinary unavailability. None
+            // means the service stopped serving this subject — nothing
+            // this client can wait out — which is what lets the sync
+            // engine return the space to local-only.
+            AuthorizeError::Declined { recourse, .. } => match recourse {
+                Recourse::Retry => TonkWorkerError::Upstream {
+                    status: 503,
+                    code: Some("SYNC_UNAVAILABLE".to_string()),
+                    message: "synchronization is temporarily unavailable".to_string(),
+                },
+                Recourse::None => TonkWorkerError::Upstream {
+                    status: 403,
+                    code: Some("NOT_PROVISIONED".to_string()),
+                    message: "the service no longer serves this space".to_string(),
+                },
+            },
             _ => TonkWorkerError::Upstream {
                 status: 502,
                 code: Some("UPSTREAM_ERROR".to_string()),
@@ -424,9 +451,44 @@ async fn publish_failure_status(
         TonkWorkerError::Upstream {
             code: Some(code), ..
         } if code == "SYNC_CONFLICT" => tonk_schema::Replica::conflict_status(),
+        TonkWorkerError::Upstream {
+            code: Some(code), ..
+        } if code == "NOT_PROVISIONED" => {
+            // The service stopped serving this subject, and waiting will
+            // not bring it back: drop the account-db provider record so
+            // the directory reads the space as local-only again, and
+            // stamp `local` — the status that drives the connect
+            // affordance whose enable-sync is the re-provisioning path.
+            forget_space_provider(tonk, repo, branch).await;
+            tonk_schema::Replica::local_status()
+        }
         _ => tonk_schema::Replica::unavailable_status(),
     };
     publish_sync_status_attr(tonk, repo, branch, status).await;
+}
+
+/// Retract the account-db [`SpaceProvider`](tonk_schema::SpaceProvider)
+/// record for the subject `repo`/`branch` belongs to — the "update the
+/// record" half of observing a deprovisioned space. Best-effort: a
+/// record that outlives its provisioning only costs the next share one
+/// refused mint.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn forget_space_provider(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+    let session = match tonk
+        .reactor
+        .repository(repo)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("forget_space_provider: failed to acquire {repo}/{branch}: {e}");
+            return;
+        }
+    };
+    let subject = session.handle().of().clone();
+    super::customer::retract_space_provider(tonk, &subject).await;
 }
 
 /// Branch names in `branches` that have an upstream, sorted for a

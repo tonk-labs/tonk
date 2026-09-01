@@ -675,14 +675,148 @@ pub(crate) async fn provision_consumer(
         })?;
     let origin = service_origin()?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            record_space_provider(state, consumer).await;
+            Ok(())
+        }
         Err(HttpError::Upstream(failure))
             if failure.code.as_deref() == Some("ConsumerProvided") =>
         {
+            // Another customer provides it — the space is served, but
+            // not under this account, so there is nothing to record.
             log!("consumer {consumer} already has a provider; leaving it");
             Ok(())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// Record that this account provides `consumer`, on the space's
+/// directory entity in the account db. The write side of the fact
+/// [`space_provider_recorded`] reads: its presence is what lets a share
+/// skip the `/provider/add` ceremony. Best-effort — provisioning stands
+/// in D1 whether or not the fact records it, and the next share heals a
+/// missing row by provisioning again.
+pub(crate) async fn record_space_provider(
+    state: &crate::worker::TonkState,
+    consumer: &dialog_varsig::Did,
+) {
+    use tonk_schema::SpaceProvider;
+
+    let Ok(account) = super::identity::root_did(state).await else {
+        return;
+    };
+    if let Err(error) = state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .transaction()
+        .assert(SpaceProvider::new(consumer, &account))
+        .commit()
+        .perform(&state.operator)
+        .await
+    {
+        log!("space provider for {consumer} not recorded: {error}");
+    }
+}
+
+/// Drop the record that this account provides `consumer` — the space is
+/// back to local-only. Called when deprovisioning succeeds and when the
+/// sync engine observes the gate refusing the subject with a denial
+/// retrying cannot clear. Best-effort, like the record.
+pub(crate) async fn retract_space_provider(
+    state: &crate::worker::TonkState,
+    consumer: &dialog_varsig::Did,
+) {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{SpaceProvider, prelude::DidExt as _};
+
+    let branch = match state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("space provider for {consumer} not read: {error}");
+            return;
+        }
+    };
+    let recorded: Vec<SpaceProvider> = match branch
+        .handle()
+        .query()
+        .select(Query::<SpaceProvider> {
+            this: Term::from(consumer.this()),
+            provider: Term::var("provider"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            log!("space provider for {consumer} not read: {error}");
+            return;
+        }
+    };
+    for row in recorded {
+        if let Err(error) = branch
+            .handle()
+            .transaction()
+            .retract(row)
+            .commit()
+            .perform(&state.operator)
+            .await
+        {
+            log!("space provider for {consumer} not retracted: {error}");
+        }
+    }
+}
+
+/// Whether the account db records a provider for `consumer` — the read
+/// a share consults instead of running `/provider/add` per click.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn space_provider_recorded(
+    state: &crate::worker::TonkState,
+    consumer: &dialog_varsig::Did,
+) -> bool {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{SpaceProvider, prelude::DidExt as _};
+
+    let branch = match state
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("space provider for {consumer} not read: {error}");
+            return false;
+        }
+    };
+    match branch
+        .handle()
+        .query()
+        .select(Query::<SpaceProvider> {
+            this: Term::from(consumer.this()),
+            provider: Term::var("provider"),
+        })
+        .perform(&state.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => {
+            let rows: Vec<SpaceProvider> = rows;
+            !rows.is_empty()
+        }
+        Err(error) => {
+            log!("space provider for {consumer} not read: {error}");
+            false
+        }
     }
 }
 
@@ -706,6 +840,7 @@ pub(crate) async fn deprovision_consumer(
             TonkWorkerError::Internal(format!("failed to build the remove invocation: {error}"))
         })?;
     post_cbor(&ucan_endpoint(origin)?, &body).await?;
+    retract_space_provider(state, consumer).await;
     Ok(())
 }
 
