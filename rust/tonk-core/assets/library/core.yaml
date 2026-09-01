@@ -1465,12 +1465,25 @@ concept!: &space/route
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
+# `with=` here, like every other route view: the space view's own content
+# can nest routing consumers (the notebook space mounts an editor), and
+# context reaches them only by cascading down stamped `with` attributes.
 view!:
   this: tonk:space/route
   show:
     ui: |
-      <tonk-display entity={replica} model=tonk/space />
+      <tonk-display with="{branch}@{repo}" entity={replica} model=tonk/space />
 
 # The workspace shell — the declarative two-portal composition the space route
 # resolves to. It renders OUTER-side (the top document mounts

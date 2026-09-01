@@ -2214,8 +2214,13 @@ fn forward_with(host: &Element, view_el: &Element) {
     }
     // Stamp the view root and every routing consumer inside it that lacks
     // its own `with`. `:scope, …` selects the view element too, so a view
-    // that IS a single routing consumer is covered.
-    let selector = "[data-tonk-with], tonk-tree, tonk-inspector, tonk-notebook, ui-sync-status";
+    // that IS a single routing consumer is covered. Nested `tonk-display`s
+    // inherit too, so context CASCADES: a view that wraps another display
+    // (the notebook space wraps the scratch notebook's) hands its context
+    // down, and that display's own forward reaches the consumers inside
+    // its view — context never dies at a display boundary.
+    let selector = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, tonk-notebook, \
+                    ui-sync-status";
     if view_el
         .matches(&format!("{selector}, [with]"))
         .unwrap_or(false)
@@ -2826,6 +2831,46 @@ mod tests {
                 .get_attribute("with")
                 .is_none(),
             "a plain element gets no routing context",
+        );
+    }
+
+    /// A nested `tonk-display` inherits the context too, so it CASCADES:
+    /// the nested display's own forward pass hands it on to the consumers
+    /// inside its view. Without this, a view that wraps another display
+    /// (the notebook space wrapping the scratch notebook's) starves the
+    /// editor two hops down of its `with`.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_its_with_onto_nested_displays() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        view.set_inner_html(concat!(
+            r#"<div><tonk-display entity="id:scratch" model="tonk:notebook"></tonk-display></div>"#,
+            r#"<tonk-display with="main@did:key:zOther"></tonk-display>"#,
+        ));
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        assert_eq!(
+            view.query_selector("div > tonk-display")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "a nested display without its own with inherits the context",
+        );
+        assert_eq!(
+            view.query_selector("tonk-display[with]:not(div > *)")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zOther"),
+            "a nested display with its own with is left untouched",
         );
     }
 
