@@ -79,6 +79,18 @@ button{ font:inherit; letter-spacing:inherit; color:inherit; background:none; bo
   animation:fabb-hardblink 1.05s steps(1,end) infinite; }
 .dark .cur, .w.dark .cur{ mix-blend-mode:exclusion; }
 .edit{ outline:none !important; caret-color:transparent; min-width:1ch; text-transform:none; user-select:text; }
+/* engines with a native block caret draw the terminal cursor themselves:
+   the caret takes the block shape and the hard blink, follows mid-text
+   edits, and the faked tail block stands down (each component hides its
+   own `.cur`). caret-color is solid under the animation so reduced
+   motion's `animation:none` leaves a visible caret. */
+@supports (caret-shape: block){
+  .edit, input.value{ caret-shape:block; caret-animation:manual; caret-color:var(--_ink);
+    animation:fabb-caret 1.05s steps(1,end) infinite; }
+  .edit:not(:focus), input.value:not(:focus){ animation:none; caret-color:transparent; }
+  .edit + .cur{ display:none; }
+}
+@keyframes fabb-caret{ 0%,49%{caret-color:var(--_ink)} 50%,100%{caret-color:transparent} }
 /* a hidden tab spends nothing — every animation holds its frame */
 .w.vispause *, .w.vispause *::before, .w.vispause *::after{ animation-play-state:paused !important; }
 @media (prefers-reduced-motion: reduce){ .disc.alert{ animation:none !important; } .cur{ animation:none; } }

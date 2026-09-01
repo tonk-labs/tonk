@@ -33,6 +33,11 @@ const CSS: &str = r#"
 :host([changeable]) .noun:hover .noun-change,
 :host([changeable]) .noun:focus-visible .noun-change{ display:inline-flex; align-items:flex-end; }
 .row.rejecting{ animation:fabb-wash .45s var(--_ease) 2; }
+/* the skin gives `input.value` the native block caret where the engine
+   draws one; the tail block would double the cursor, so it stands down */
+@supports (caret-shape: block){
+  .value-cur{ display:none; }
+}
 @media (pointer:coarse){
   :host([changeable]) .noun-current{ display:none; }
   :host([changeable]) .noun-change{ display:inline-flex; align-items:flex-end; }

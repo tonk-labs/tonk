@@ -178,6 +178,25 @@
     text-align: right;
 }
 
+/* The same matrix caret as every other Tonk field: an ink block where
+   the engine draws one (`tonk-block-caret` is page-level in styles.css,
+   always loaded beside this sheet), an ink line where it cannot. */
+:is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+    caret-color: var(--ink);
+}
+
+@supports (caret-shape: block) {
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+        caret-shape: block;
+        caret-animation: manual;
+        animation: tonk-block-caret 1.05s steps(1, end) infinite;
+    }
+
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]):not(:focus) {
+        animation: none;
+    }
+}
+
 .account__row--action {
     align-items: center;
     width: 100%;
@@ -881,7 +900,8 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 
     tonk-account[data-busy="true"] .account__run[data-initiating="true"],
     .account__error[data-flash="true"],
-    .account__inline-error[data-flash="true"] {
+    .account__inline-error[data-flash="true"],
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
         animation: none;
     }
 }

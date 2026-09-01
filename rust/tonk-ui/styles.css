@@ -2886,11 +2886,13 @@ tonk-code:focus-within {
      study's editor — no chrome, right-aligned, the row's own type. */
   /* A real input, wearing the study's editor.
      `caret-color: transparent` hides the native caret so the block
-     cursor beside it is the only seat marker — the same trick the study
-     plays on its contenteditable. */
+     cursor over it is the only seat marker — the same trick the study
+     plays on its contenteditable. The trailing padding reserves the
+     seat the block takes when the caret is on the tail. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
-    background: none; border: 0; outline: none; padding: 0; margin: 0;
+    background: none; border: 0; outline: none; margin: 0;
+    padding: 0 8px 0 0;
     font: inherit; letter-spacing: inherit; text-transform: none;
     color: var(--ink); caret-color: transparent;
     text-align: right; width: 100%; min-width: 0;
@@ -2903,16 +2905,62 @@ tonk-code:focus-within {
     color: var(--soft); opacity: .55; text-transform: none;
   }
 
-  /* The block cursor: hard-blinking, on the tail of the value. Hidden
-     while the field is unfocused, since the seat is only meaningful
-     where the typing goes. */
+  /* Autofill (an address fill or a passkey's) otherwise repaints the
+     field yellow with the vendor's own ink. */
+  .tonk-ceremony .ed:-webkit-autofill,
+  .tonk-ceremony .ed:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--ink);
+    box-shadow: 0 0 0 100px var(--card) inset;
+  }
+
+  /* The block cursor: hard-blinking, over the character the caret sits
+     on. Absolute so `follow_caret` (register_dialog.rs) can seat it by
+     its offset from the field's right edge; it rests on the tail until
+     that wiring places it. Hidden while the field is unfocused, since
+     the seat is only meaningful where the typing goes. */
+  .tonk-ceremony .v { position: relative; }
+  /* The blend renders the covered glyph in negative rather than hiding
+     it under the block — the same difference/exclusion pair the FABB
+     skin's terminal cursor wears. */
   .tonk-ceremony .cur {
-    display: inline-block; width: 7px; height: 13px;
-    background: var(--ink); vertical-align: -1px; margin-left: 1px;
+    position: absolute; right: 1px; bottom: 3px;
+    width: 7px; height: 13px;
+    background: var(--ink); pointer-events: none;
+    mix-blend-mode: difference;
     animation: tonk-register-caret 1.05s steps(1, end) infinite;
   }
+  :root.wa-dark .tonk-ceremony .cur { mix-blend-mode: exclusion; }
   .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
   @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+
+  /* The mirror `follow_caret` measures with: the text after the caret,
+     in the field's own type. `text-transform: none` has to match the
+     field, or a capital measures wider than it renders. */
+  .tonk-ceremony .measure {
+    position: absolute; visibility: hidden; pointer-events: none;
+    white-space: pre; text-transform: none;
+  }
+
+  /* Engines that draw a block caret natively need none of the above:
+     the real caret takes the block shape and the hard blink, and the
+     faked one stands down. `tonk-block-caret` is page-level on purpose —
+     account.css leans on it for the same treatment. */
+  @supports (caret-shape: block) {
+    .tonk-ceremony .ed {
+      caret-shape: block;
+      caret-animation: manual;
+      /* Solid under the animation, so reduced-motion's `animation: none`
+         leaves a visible caret rather than the transparent base. */
+      caret-color: var(--ink);
+      animation: tonk-block-caret 1.05s steps(1, end) infinite;
+    }
+    .tonk-ceremony .ed:not(:focus) { animation: none; }
+    .tonk-ceremony .cur { display: none; }
+  }
+  @keyframes tonk-block-caret {
+    0%, 49% { caret-color: var(--ink); }
+    50%, 100% { caret-color: transparent; }
+  }
 
   /* An action step: solid ink, full rung, the word bottom-right. While a
      ceremony is out of our hands the block blinks rather than spins. */
@@ -2982,6 +3030,13 @@ tonk-code:focus-within {
       font-size: 16px;
       line-height: 44px;
     }
+    /* The row centres at this size, so the block centres with it — and
+       the mirror has to wear the field's grown type to measure true. */
+    .tonk-ceremony .cur {
+      bottom: calc(50% - 8px);
+      height: 16px;
+    }
+    .tonk-ceremony .measure { font-size: 16px; }
     .tonk-ceremony .ghost {
       min-height: 44px;
       display: flex;
@@ -2996,6 +3051,7 @@ tonk-code:focus-within {
       transition: none;
     }
     .tonk-ceremony .cur,
+    .tonk-ceremony .ed,
     .tonk-ceremony .obtn.wait,
     .tonk-ceremony .flash {
       animation: none;
