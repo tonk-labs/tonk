@@ -131,6 +131,12 @@ The bottom-right label placement is deliberate. It applies to compact chrome
 labels, not to paragraphs, form explanations, or data-heavy content rows.
 Symbol-only controls are centered geometrically.
 
+Two label seats may leave the right edge, both still bottom-seated. A two-sided
+row holds a noun or name at its left end while the actionable word keeps the
+bottom-right seat (`oat works · switch account ▸`). A label may also flush a
+terminal edge it owns, such as the hub account tab's name against the bar's
+left end.
+
 | Measure | Value | Notes |
 | --- | --- | --- |
 | Compact block | `36px` high | Bar cells, compact rows, headers |
@@ -139,14 +145,17 @@ Symbol-only controls are centered geometrically.
 | Stack gap | `7px` | Page color shows between separate blocks |
 | Inline glyph gap | `8px` | Use `6px` inside tight buttons |
 | Symbol cell | `36px` | Sync disc and compact icon cells |
-| Small column | `144px` | Actions, menus, settings rail |
-| Medium column | `216px` | Account and space controls |
-| Main column | `432px` | Lists, forms, and dialogs |
+| Small column | `144px` | Actions, menus, the hub account tab |
+| Medium column | `216px` | The bar's space cell and its menus |
+| Paired column | `288px` | Two fused small columns — the hub spaces tab |
+| Main column | `432px` | Lists, forms, dialogs, and the hub column |
 | Page inset | At least `16px` | Add safe-area insets on touch devices |
 
 These widths are a compositional grid, not a requirement to make prose fit a
 small box. Combine the units for larger panels. At narrow widths, stack or swap
-whole regions instead of squeezing every cell around its text.
+whole regions instead of squeezing every cell around its text. A cell may
+follow its column — a split choice rung is two half cells of the column, and a
+remaining cell may absorb a departed neighbor's room — but never its content.
 
 ## Edges, shape, and depth
 
@@ -180,6 +189,10 @@ Standard press feedback is `scale: 0.96` over `150ms`. Do not scale drag handles
 long-press controls, or any control whose state change already provides the
 physical feedback.
 
+Near-ink current marks a place, never a fact. A cell that only states a fact,
+such as `no spaces available`, stays soft on its resting surface rather than
+wearing the current fill.
+
 ### Rows, fields, and menus
 
 - Compact action rows use the block geometry. Reading rows use normal Plex Sans
@@ -195,6 +208,25 @@ physical feedback.
 - State the absence of a capability in plain text instead of leaving a dead or
   unexplained control.
 
+### Tabs and pages
+
+- A tab is a place, not a popover. Selecting a tab replaces the page below it;
+  there is no overlay, no outside-click dismissal, and no open state to manage.
+  In the hub, the bar's two cells — account and spaces — work this way: the
+  account page (settings, switch-account rows, add account) replaces the
+  spaces list rather than floating over it.
+- The current tab wears near-ink. A section reached through a tab's page keeps
+  that tab current: hub settings lives under the account tab, and the account
+  tab stays current while settings is open, leading back to its page when
+  pressed.
+- The way home is one hop from anywhere: the home tab itself, or Escape. Keep
+  the home tab visible on touch layouts, where there is no Escape.
+- Switching to another context, such as another account, lands on that
+  context's main page, not back on the switcher.
+- Secondary navigation, such as the settings sections, is a run of square tabs
+  above its body at every width. The current tab shares the body's surface and
+  fuses with it; cover the joining seam explicitly.
+
 ### Dialogs
 
 Use native `<dialog>` behavior where possible. A Tonk dialog is a small cluster
@@ -205,6 +237,27 @@ rounded exposed end.
 
 Dialogs must remain usable in short viewports. Constrain and scroll the dialog
 body so the title, close control, and actions remain reachable.
+
+### Gates, ceremonies, and reminders
+
+- When someone opens a shared space, ask the account question first. A
+  doorstep cluster stands over the dimmed space: the space's name as a header
+  value, the account that would enter (with an in-cluster picker when the
+  device holds several — no floating menu), and one split rung offering both
+  answers at once: `continue without account` on a frost cell, the account
+  door on solid ink. Declining is a real answer, so it gets a real control,
+  never a ghost link.
+- Write the account door as `add an account`. The phrase is deliberately wide:
+  it covers creating an account and signing back in, and the passkey prompt
+  resolves which, so the label never has to.
+- A ceremony meant to be finished may omit the close control entirely. The way
+  out is then a quiet word plus Escape; a gate's own decline cell counts.
+- A decline is answered by silence. The reminder returns only after a pause
+  (about ten seconds), rises without taking focus, and says: "Add an account
+  to keep your data safe and access it from other devices." Its verb answers
+  the device — `add an account ▸` when none is present, `join ▸` when one is.
+  Opening any account door cancels the pending reminder. Never re-ask at the
+  moment of decline.
 
 ### Glyphs and branding
 
@@ -221,6 +274,7 @@ Use these text glyphs consistently:
 | `↖` | Leave the current environment |
 | `×` | Close |
 | `+` | Create or add |
+| `▾` | Unfold a picker in place, normally on the row it expands |
 
 The sync disc communicates state through fill: filled for online/syncing,
 hollow for offline, and diagonally divided for deliberately paused. Every glyph
@@ -268,9 +322,9 @@ and flashes while preserving immediate state changes and gesture thresholds.
 ## Voice
 
 Product-owned labels are short, direct, and lowercase. Prefer capability or
-state language such as `copy link`, `create account`, or `no spaces available`.
-Use “people” rather than “users” in product copy. Preserve the spelling and case
-of names and other user-authored content.
+state language such as `copy link`, `create account`, `continue without
+account`, or `no spaces available`. Use “people” rather than “users” in product
+copy. Preserve the spelling and case of names and other user-authored content.
 
 Errors should say what happened and what the person can do next. Success,
 warning, and destructive actions use the same ink palette; wording and layout
