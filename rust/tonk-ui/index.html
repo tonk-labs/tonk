@@ -644,6 +644,16 @@
 
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
 
+            navigator.serviceWorker.addEventListener("message", (event) => {
+                const message = event.data;
+                if (
+                    message?.type === "tonk-install-progress" &&
+                    message?.build === globalThis.tonkBuild
+                ) {
+                    self.tonkBootLife?.();
+                }
+            });
+
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Every caller receives this exact promise, so the
             // pre-mount gate and later host IO cannot start duplicate updates.

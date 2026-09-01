@@ -243,9 +243,40 @@ async function fetchVerifiedAssetManifest() {
     return validateAssetManifest(manifest);
 }
 
+let installProgressReportedAt = 0;
+
+/// Keep the uncontrolled bootstrap document's stall watchdog informed while
+/// this worker verifies and seals a large production graph. Progress is a
+/// liveness hint only: failures are deliberately ignored and cannot make an
+/// incomplete generation installable.
+async function reportInstallProgress(phase, completed, total, force = false) {
+    const now = Date.now();
+    if (!force && now - installProgressReportedAt < 5_000) return;
+    installProgressReportedAt = now;
+    try {
+        const windows = await self.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true,
+        });
+        for (const client of windows) {
+            client.postMessage({
+                type: "tonk-install-progress",
+                build: BUILD_ID,
+                phase,
+                completed,
+                total,
+            });
+        }
+    } catch {
+        // This signal exists only to distinguish a slow verified install from
+        // a silent stall; install correctness never depends on delivery.
+    }
+}
+
 async function fetchVerifiedAssets(entries) {
     const results = new Array(entries.length);
     let next = 0;
+    let completed = 0;
     const fetchNext = async () => {
         while (next < entries.length) {
             const index = next++;
@@ -253,6 +284,8 @@ async function fetchVerifiedAssets(entries) {
             const url = new URL(path, self.location.origin).href;
             const { response } = await fetchVerified(url, hash, `asset ${path}`);
             results[index] = { path, response };
+            completed += 1;
+            await reportInstallProgress("verify", completed, entries.length);
         }
     };
     const concurrency = Math.min(8, entries.length);
@@ -368,6 +401,7 @@ async function cleanInterruptedGeneration(marker) {
 /// incomplete. Only caches newly created by this install are cleanup targets.
 async function installGeneration() {
     const entries = await fetchVerifiedAssetManifest();
+    await reportInstallProgress("verify", 0, entries.length, true);
     const retainedMarker = await readGenerationMarker();
     let names = new Set(await caches.keys());
     let hadShell = names.has(SHELL_CACHE);
@@ -422,8 +456,11 @@ async function installGeneration() {
         markerWritten = true;
         const shellStage = await caches.open(marker.shellStage);
         const workerStage = await caches.open(marker.workerStage);
+        let staged = 0;
         for (const { path, response } of assets) {
             await shellStage.put(assetCacheKey(path), response.clone());
+            staged += 1;
+            await reportInstallProgress("stage", staged, assets.length);
         }
         await workerStage.put(
             WORKER_WASM_URL,
@@ -442,8 +479,11 @@ async function installGeneration() {
         await writeGenerationMarker(marker);
         const shell = await caches.open(SHELL_CACHE);
         const worker = await caches.open(WORKER_CACHE);
+        let published = 0;
         for (const { path, response } of assets) {
             await shell.put(assetCacheKey(path), response);
+            published += 1;
+            await reportInstallProgress("publish", published, assets.length);
         }
         await worker.put(
             WORKER_WASM_URL,
@@ -463,6 +503,7 @@ async function installGeneration() {
             caches.delete(marker.shellStage),
             caches.delete(marker.workerStage),
         ]);
+        await reportInstallProgress("adopted", assets.length, assets.length, true);
     } catch (error) {
         if (markerWritten && marker.state !== "adopted") {
             const cleaned = await cleanInterruptedGeneration(marker);

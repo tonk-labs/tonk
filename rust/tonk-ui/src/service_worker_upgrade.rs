@@ -586,6 +586,7 @@ mod tests {
                             waiting: registration?.waiting?.state || null,
                             mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
+                            testErrors: globalThis.__tonkTestErrors || [],
                         };
                         // Polling the retiring worker's fetch boundary can
                         // itself keep that worker alive and prevent Chrome
@@ -596,12 +597,27 @@ mod tests {
                             done(lifecycle);
                             return;
                         }
-                        const [health, cacheNames, manifest] = await Promise.all([
-                            fetch("/api/health").then(response => response.json()),
+                        const [healthResponse, cacheNames, manifestResponse] = await Promise.all([
+                            fetch("/api/health"),
                             caches.keys(),
-                            fetch("/asset-manifest.json", { cache: "no-store" }).then(response => response.json()),
+                            fetch("/asset-manifest.json", { cache: "no-store" }),
                         ]);
-                        done({ ...lifecycle, health, cacheNames, manifest });
+                        const healthBody = await healthResponse.text();
+                        const manifestBody = await manifestResponse.text();
+                        const parse = body => {
+                            try { return JSON.parse(body); } catch { return null; }
+                        };
+                        const parsedManifest = parse(manifestBody);
+                        done({
+                            ...lifecycle,
+                            health: parse(healthBody),
+                            healthStatus: healthResponse.status,
+                            healthBody: healthBody.slice(0, 200),
+                            cacheNames,
+                            manifest: parsedManifest && { build: parsedManifest.build },
+                            manifestStatus: manifestResponse.status,
+                            manifestBody: manifestBody.slice(0, 200),
+                        });
                     })().catch(error => done({ error: String(error) }));
                     "##,
                     vec![build.into()],

@@ -307,4 +307,10 @@ describe("boot script contract with the worker", () => {
       "the later update-prompt module must not surface raw exception text",
     );
   });
+
+  test("a verified install's progress keeps the bootstrap watchdog alive", () => {
+    const registering = moduleBlockContaining("tonk-install-progress");
+    assert.match(registering, /message\?\.build === globalThis\.tonkBuild/);
+    assert.match(registering, /self\.tonkBootLife\?\.\(\)/);
+  });
 });
