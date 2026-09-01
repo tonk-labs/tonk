@@ -1129,7 +1129,7 @@ mod when_listing_views {
         Ok(())
     }
 
-    /// `view add` writes `xyz.tonk.view/display`; the listing used to
+    /// `view add` writes a `show` entry; the listing used to
     /// select on `text/html` alone and so came back empty right after
     /// a successful add.
     #[dialog_common::test]
@@ -1141,7 +1141,6 @@ mod when_listing_views {
             &test.site,
             "task",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{title}</b>",
             false,
             Default::default(),
@@ -1151,7 +1150,7 @@ mod when_listing_views {
         let listed = views::list(&test.site).await?;
         let row = listed
             .iter()
-            .find(|row| row.name.as_deref() == Some("task-view"))
+            .find(|row| row.name.as_deref() == Some("task"))
             .expect("the authored view should be listed");
         assert_eq!(row.model.as_deref(), Some("task"));
         // The `display: |` block scalar keeps its trailing newline.
@@ -1172,7 +1171,6 @@ mod when_listing_views {
             &test.site,
             "task",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{title}</b>",
             false,
             Default::default(),

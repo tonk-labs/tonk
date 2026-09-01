@@ -43,9 +43,10 @@ use web_sys::{
     MutationRecord, Node, window,
 };
 
+use crate::fold::show_template;
 use crate::resolve::{
-    directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
-    view_predicate,
+    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
+    view_query,
 };
 use crate::state::{self, State};
 
@@ -201,11 +202,13 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
-    /// The view-concept descriptor used to resolve a view by model.
-    /// Retained so the `_:_` default-view fallback can re-query against
-    /// the same view concept when the model-specific view frame is
-    /// empty.
-    view_descriptor: Option<serde_json::Value>,
+    /// The explicit `view=` facet, when the host names one. `None`
+    /// means the mode default (`ui` with an entity, `directory`
+    /// without) — see [`effective_facet`]. Explicitness matters when
+    /// nothing carries the facet: an explicitly named facet that
+    /// resolves nowhere is `no-view`, while a default facet falls
+    /// through to the notation dump.
+    view_facet: Option<String>,
     /// The resolved model entity (`model_entity`), retained for the
     /// `_:_` fallback query and for comparison.
     model_entity: Option<String>,
@@ -219,6 +222,18 @@ struct Inner {
     /// unbound) and the frame is grouped by `this` (`select_rows`)
     /// rather than folded to one conclusion.
     directory: bool,
+    /// This display renders its model inside that model's own view (the
+    /// default carousel's per-instance card is the common case). The
+    /// view flow is skipped — resolving it would re-enter the same view
+    /// forever — and entity frames render as the notation dump instead.
+    self_render: bool,
+    /// At least one view frame arrived for the current downstream run.
+    /// Gates the late-data fallback re-run in `handle_entity_frame`: an
+    /// entity frame that lands BEFORE the first view frame must not
+    /// mount the fallback (the real view is still on its way), while
+    /// one that lands after the chain settled on nothing must (a
+    /// mismatching entity healed; the absence callout would latch).
+    view_settled: bool,
 }
 
 impl Inner {
@@ -244,10 +259,12 @@ impl Inner {
             host_watch: None,
             portal_descriptor: None,
             portal_model: None,
-            view_descriptor: None,
+            view_facet: None,
             model_entity: None,
             default_slide: false,
             directory: false,
+            self_render: false,
+            view_settled: false,
         }
     }
 
@@ -897,64 +914,31 @@ async fn start_downstream(
     //
     // Fall back to the notation dump rather than rendering nothing: the
     // entity's data is still worth showing, and a card that silently
-    // disappears is worse than one that shows what it holds.
-    if renders_itself(host, &model_entity) {
-        state::set(host, State::NoView);
-        return Ok(());
-    }
+    // disappears is worse than one that shows what it holds. So a
+    // self-rendering display skips only the VIEW flow (no view
+    // subscription, no facet fallback) and keeps the entity
+    // subscription; `handle_entity_frame` mounts the notation dump.
+    let self_render = renders_itself(host, &model_entity);
 
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
-    // Resolve the view *concept*'s descriptor — the query predicate.
-    // When `view` is omitted, the built-in `view` concept's
-    // descriptor is known (`view_predicate`), so no resolve is
-    // needed; a named/URI view concept is resolved from the branch.
-    // The descriptor maps the `display` field name to whatever
-    // attribute that view kind declares it under, so `view_by_model`
-    // reads the right template regardless of the kind.
-    let view_descriptor: serde_json::Value = match view.as_deref() {
-        // No explicit `view`: the built-in detail view (`tonk:view`) in
-        // single mode, or the directory view (`tonk:view/directory`) in
-        // directory mode. Both fall back to their `_:_` default when
-        // the model has no specific view of that kind.
-        None if directory => directory_view_predicate(),
-        None => view_predicate(),
-        Some(view_ref) => {
-            // An explicit `view` whose concept is not on the branch is
-            // `no-view`, not a hard error: a recoverable absence the
-            // model subscription leaves once the view concept lands and
-            // the next model frame re-runs this. Other resolve failures
-            // still propagate.
-            match resolve_model(host, view_ref).await {
-                Ok((_, view_descriptor_json)) => {
-                    check_downstream(&state, downstream_generation)?;
-                    serde_json::from_str(&view_descriptor_json).map_err(|e| {
-                        ErrorDetail::new(ErrorKind::Descriptor, format!("view descriptor: {e}"))
-                    })?
-                }
-                Err(err) if err.kind == ErrorKind::UnknownSource => {
-                    let model = host.get_attribute("model").unwrap_or_default();
-                    state::set_absence(
-                        host,
-                        State::NoView,
-                        "View not found",
-                        &format!(
-                            r#"view:
-  this: {view_ref}
-  model: {model}"#
-                        ),
-                    );
-                    return Ok(());
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    };
-    let view_q = view_by_model_query(&view_descriptor, &model_entity).map_err(|e| {
-        ErrorDetail::new(ErrorKind::Descriptor, format!("view-by-model query: {e}"))
-    })?;
+    // The `view` attribute names a FACET — a `show` entry key of the
+    // model's view instance (`ui`, `directory`, `label`, `title`, …)
+    // — not a concept. The view query is the same either way: the
+    // whole `show` dictionary of the model entity; the facet is
+    // picked when frames arrive.
+    if let Some(facet) = view.as_deref()
+        && facet.contains(':')
+    {
+        return Err(ErrorDetail::new(
+            ErrorKind::Descriptor,
+            "`view` names a show facet (e.g. `label`), not a concept URI",
+        ));
+    }
+    let view_q = view_query(&model_entity)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("view query: {e}")))?;
     let view_body = to_body(&view_q)?;
 
     // Single mode pins `this` to the entity; directory mode leaves
@@ -983,8 +967,12 @@ async fn start_downstream(
     // Open the view subscription via the host. Frames arrive through
     // our `__tonkReset` delegate, which routes to `handle_view_frame`
     // (or `handle_entity_frame`) by `opts.tag`.
-    let view_tag = JsValue::from_str("view");
-    let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
+    let view_sub = if self_render {
+        None
+    } else {
+        let view_tag = JsValue::from_str("view");
+        Some(host_consumer::subscribe(host, &view_body, Some(&view_tag))?)
+    };
     check_downstream(&state, downstream_generation)?;
 
     let entity_tag = JsValue::from_str("entity");
@@ -998,14 +986,28 @@ async fn start_downstream(
         if s.downstream_generation != downstream_generation {
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
-        s.view_sub = Some(view_sub);
+        s.view_sub = view_sub;
         s.entity_sub = Some(entity_sub);
         s.directory = directory;
-        // Retained for the `_:_` default-view fallback: if the
-        // model-specific view frame is empty, `handle_view_frame`
-        // re-queries the same view concept with `model = _:_`.
-        s.view_descriptor = Some(view_descriptor.clone());
+        s.self_render = self_render;
+        s.view_settled = false;
+        // The explicit facet (if any) and the model entity, retained
+        // for the facet pick on each view frame and the `tonk:_`
+        // default fallback.
+        s.view_facet = view.clone();
         s.model_entity = Some(model_entity.clone());
+        // Advertise the effective facet so the default-view notice can
+        // say WHICH view was not found — a directory's default and its
+        // cards' defaults otherwise read as the same message twice.
+        let facet = view.clone().unwrap_or_else(|| {
+            if directory {
+                DIRECTORY_FACET
+            } else {
+                DETAIL_FACET
+            }
+            .to_owned()
+        });
+        let _ = host.set_attribute("data-view-facet", &facet);
         // Context handed to a `<tonk-portal>` if a view frame routes
         // here in portal mode: the subject's model entity (the
         // bridge's `context.model`) and its descriptor (so the bridge
@@ -1213,68 +1215,88 @@ fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, St
     Some((first.this, source))
 }
 
-/// Key each incoming view-frame conclusion by its view entity
-/// (`this`), paired with the `display` template. The view query is
-/// model-constrained, so each row is a distinct view instance keyed
-/// by its own entity URI. A conclusion with no `display` string is
-/// dropped.
-fn slide_keys(conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
-    conclusions
-        .into_iter()
-        .filter_map(|c| {
-            let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
-            Some((c.this, display))
-        })
-        .collect()
+/// The facet this display renders: the explicit `view=` facet, else
+/// the mode default (`ui` with an entity, `directory` without).
+fn effective_facet(s: &Inner) -> String {
+    s.view_facet.clone().unwrap_or_else(|| {
+        if s.directory {
+            DIRECTORY_FACET
+        } else {
+            DETAIL_FACET
+        }
+        .to_owned()
+    })
 }
 
-/// Diff the incoming view frame against currently mounted slides.
-/// Slides are keyed by the view entity URI; we add/remove/replace as
-/// needed, then push the cached entity conclusion into any fresh
-/// slide so it has data to render right away.
+/// Handle a view frame: fold the flat entry rows into the model's
+/// `show` dictionary, pick the facet this display renders, and diff
+/// the resulting slide against what is mounted. The cached entity
+/// conclusion is pushed into a fresh slide so it has data to render
+/// right away.
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
+    s.view_settled = true;
 
-    // A view whose projected `type` is `text/html` is a full HTML
-    // document mounted into a `<tonk-portal>` — whose bridge fetches
-    // the entity's own data through the live `tonk` object — rather
-    // than interpolated inline. `type` rides the view query only when
-    // the view concept declares it (see `view_by_model_query`), so an
-    // ordinary view never trips this; a `display` change just reloads
-    // the portal's `content` in place.
-    // No model-specific view resolved: fall back to the `_:_` default
-    // view (a directory carousel, or the notation dump for a detail
-    // view). Re-query the same view concept with `model = _:_` and
-    // render its result. The model-specific subscription stays live, so
-    // if a view for this model is defined later its frame is non-empty
-    // and the branch below mounts it, replacing the default. Skip if
-    // we're already showing the default (avoid re-querying every empty
-    // frame).
-    if conclusions.is_empty() {
+    // One flat row per `show` entry; the fold merges them into
+    // `show: {facet: template}` on the model entity's conclusion.
+    let facet = effective_facet(&s);
+    let folded = crate::fold::select_rows(conclusions);
+    let resolved = folded
+        .first()
+        .and_then(|c| show_template(c, &facet).map(str::to_owned));
+
+    // No entry for this facet: fall back to the `tonk:_` default
+    // dictionary (a directory carousel, or the notation dump for a
+    // detail view). The subscription stays live, so if the facet is
+    // defined later its frame carries it and the branch below mounts
+    // it, replacing the default. Skip if we're already showing the
+    // default (avoid re-querying every empty frame).
+    let Some(display) = resolved else {
+        // The frame is authoritative: the facet is absent — never
+        // authored, or just RETRACTED. A mounted specific slide is
+        // stale; drop it so the fallback can take its place (the
+        // notation path refuses to mount over an existing slide).
+        if !s.default_slide {
+            for (_, slide) in std::mem::take(&mut s.slides) {
+                if let Some(parent) = slide.item.parent_node() {
+                    let _: Result<Node, _> = parent.remove_child(&slide.item);
+                }
+            }
+        }
         let need_default = !s.default_slide;
         drop(s);
         if need_default {
             spawn_default_view(host, state);
         }
         return;
-    }
-    // A model-specific view arrived: it wins over any default slide.
-    // Clearing the flag lets the normal slide reconciliation below
-    // replace the default `<tonk-view>` (keyed differently) and the
-    // stale default slide is dropped as a vanished key.
+    };
+    // A facet entry arrived: it wins over any default slide. Clearing
+    // the flag lets the normal slide reconciliation below replace the
+    // default `<tonk-view>` (keyed differently) and the stale default
+    // slide is dropped as a vanished key.
     s.default_slide = false;
 
-    if conclusions
-        .iter()
-        .any(|c| ipld_str(c.fields.get("type")) == Some("text/html"))
+    // The slide, keyed by the model entity (the view instance IS the
+    // model). At most one — the query pins `this`.
+    let incoming: BTreeMap<String, String> = folded
+        .first()
+        .map(|c| BTreeMap::from([(c.this.clone(), display)]))
+        .unwrap_or_default();
+
+    // A `type: text/html` entry says the templates are full HTML
+    // documents mounted into a `<tonk-portal>` — whose bridge fetches
+    // the entity's own data through the live `tonk` object — rather
+    // than interpolated inline. A `display` change just reloads the
+    // portal's `content` in place.
+    if folded
+        .first()
+        .is_some_and(|c| show_template(c, TYPE_FACET) == Some("text/html"))
     {
-        handle_portal_view_frame(host, &mut s, conclusions);
+        handle_portal_view_frame(host, &mut s, incoming);
         drop(s);
         dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
         return;
     }
-
-    let incoming = slide_keys(conclusions);
 
     // Remove vanished slides.
     let stale: Vec<String> = s
@@ -1318,7 +1340,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         {
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
-        if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
+        if let Some(new_slide) = mount_view_slide(host, &mut s, &display, &name) {
             call_render(&new_slide.view_el, &cached_detail);
             s.slides.insert(name, new_slide);
         }
@@ -1343,25 +1365,26 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
 }
 
-/// The sentinel model entity for a default view: a `view!`/
-/// `view/directory!` declared with `model: tonk:_` matches any model
-/// that has no specific view of that kind. `tonk:_` is the
-/// wildcard-model entity seeded by core.yaml. See
-/// `tonk-core/docs/templates.md`.
+/// The sentinel model entity for a default view: a `view!:` declared
+/// with `this: tonk:_` matches any model whose own `show` dictionary
+/// lacks the facet. `tonk:_` is the wildcard-model entity seeded by
+/// core.yaml. See `tonk-core/docs/templates.md`.
 const DEFAULT_MODEL: &str = "tonk:_";
 
-/// Query the `_:_` default view (same view concept, `model = _:_`) and
-/// mount its template as the default slide. Spawned from
-/// `handle_view_frame` when the model-specific view frame is empty. The
-/// model-specific subscription stays live; a later non-empty frame
-/// replaces this default (see the `default_slide` flag).
+/// Query the `tonk:_` default dictionary and mount its facet template
+/// as the default slide. Spawned from `handle_view_frame` when the
+/// model's own dictionary lacks the facet. The subscription stays
+/// live; a later frame carrying the facet replaces this default (see
+/// the `default_slide` flag).
 fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
-    let descriptor = {
+    let (facet, explicit, model) = {
         let s = state.borrow();
-        s.view_descriptor.clone()
+        (
+            effective_facet(&s),
+            s.view_facet.is_some(),
+            s.model_entity.clone().unwrap_or_default(),
+        )
     };
-    let Some(descriptor) = descriptor else { return };
-
     let host = host.clone();
     let state = state.clone();
     spawn_local(async move {
@@ -1370,17 +1393,40 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
         // forever — there is genuinely no presentation for this model
         // (not even the `_:_` default is seeded).
         let resolved = async {
-            let query = view_by_model_query(&descriptor, DEFAULT_MODEL).ok()?;
+            let query = view_query(DEFAULT_MODEL).ok()?;
             let body = to_body(&query).ok()?;
             let result = host_consumer::query(&host, &body).await.ok()?;
-            first_field(&result, "display").ok().flatten()
+            let conclusions: Vec<Conclusion> =
+                serde_wasm_bindgen::from_value(result.clone()).ok()?;
+            let folded = crate::fold::select_rows(conclusions);
+            folded
+                .first()
+                .and_then(|c| show_template(c, &facet).map(str::to_owned))
         }
         .await;
         let Some(display) = resolved else {
-            // No specific view and no `_:_` default view for this model.
-            // If the entity has data, fall back to a notation dump so
-            // it's still inspectable; otherwise settle (the entity
-            // frame decides not-found vs empty).
+            // Neither the model nor `tonk:_` carries the facet. An
+            // EXPLICIT facet that resolves nowhere is a config error:
+            // `no-view`, loudly, naming the missing entry. A default
+            // facet falls back to a notation dump when the entity has
+            // data, so it's still inspectable; otherwise settle (the
+            // entity frame decides not-found vs empty).
+            if explicit {
+                if state.borrow().disposed {
+                    return;
+                }
+                state::set_absence(
+                    &host,
+                    State::NoView,
+                    "View not found",
+                    &format!(
+                        r#"view:
+  this: {model}
+  show: {{{facet}: …}}"#
+                    ),
+                );
+                return;
+            }
             let conclusion = {
                 let s = state.borrow();
                 if s.disposed || s.default_slide || !s.slides.is_empty() {
@@ -1406,7 +1452,7 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 let _: Result<Node, _> = parent.remove_child(&slide.item);
             }
         }
-        if let Some(slide) = mount_view_slide(&host, &mut s, &display) {
+        if let Some(slide) = mount_view_slide(&host, &mut s, &display, DEFAULT_MODEL) {
             // Replay the whole cached frame (directory mode has one
             // conclusion per instance; a single replay would drop all
             // but the first).
@@ -1481,13 +1527,11 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
-/// slide keyed by the view entity URI. A new row mounts a
+/// slide keyed by the model entity URI. A new row mounts a
 /// `<tonk-portal>` scoped to the entity; a changed `display` updates
 /// the portal's `content` in place (it reloads itself); a vanished row
 /// removes the portal.
-fn handle_portal_view_frame(host: &Element, s: &mut Inner, conclusions: Vec<Conclusion>) {
-    let incoming = slide_keys(conclusions);
-
+fn handle_portal_view_frame(host: &Element, s: &mut Inner, incoming: BTreeMap<String, String>) {
     // Remove a vanished portal.
     let stale: Vec<String> = s
         .slides
@@ -1838,6 +1882,27 @@ fn handle_entity_frame(
         call_render(&slide.view_el, &detail);
     }
     update_notation(host, &s, &first);
+    // A self-rendering display has no view flow to mount a slide; its
+    // data still shows — as the notation dump, mounted on the first
+    // non-empty frame and updated in place from then on.
+    if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
+        drop(s);
+        mount_notation_fallback(host, state, &first);
+        dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
+        return;
+    }
+    // Data arrived with NOTHING mounted and the view chain already
+    // settled: it ran against an empty frame (the entity didn't match
+    // the concept yet — a mismatch since healed, or a late-seeded
+    // instance) and concluded there was nothing to show. Re-run the
+    // fallback with data in hand so the notation (or the default)
+    // mounts and a latched absence callout clears.
+    if s.view_settled && !s.default_slide && s.slides.is_empty() && s.notation_source.is_none() {
+        drop(s);
+        spawn_default_view(host, state);
+        dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
+        return;
+    }
     if !s.slides.is_empty() || s.notation_source.is_some() {
         // A default (`_:_`) slide renders through the generic fallback,
         // so the display is `default-view`, not `ready`. A frame with a
@@ -1898,22 +1963,9 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
     // carry the attribute URI (`the:`) so the diagnostic can name it.
     let mut present: Vec<(String, String)> = Vec::new();
     let mut missing: Vec<(String, String)> = Vec::new();
+    let mut mistyped: Vec<(String, String, String)> = Vec::new();
     for (field, spec) in with {
-        let one = serde_json::json!({
-            "terms": { "this": entity, field: { "?": { "name": field } } },
-            "predicate": { "with": { field: spec } },
-        });
-        let value = match serde_json::from_value::<Query>(one).ok().as_ref() {
-            Some(query) => match to_body(query) {
-                Ok(body) => host_consumer::query(host, &body)
-                    .await
-                    .ok()
-                    .and_then(|result| first_field(&result, field).ok().flatten()),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        match value {
+        match probe_field(host, &entity, field, spec).await {
             Some(value) => present.push((field.clone(), value)),
             None => {
                 // The dialog attribute key (`the:`), so the tooltip can name
@@ -1924,12 +1976,106 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
                     .and_then(|t| t.as_str())
                     .unwrap_or(field)
                     .to_owned();
-                missing.push((field.clone(), uri));
+                // The typed probe missed. Re-probing under the OTHER
+                // value types tells a mistyped fact (present under a
+                // different spelling) from a truly absent one — and
+                // pins which type actually holds it, so the value can
+                // be shown in ITS spelling (`+33`, not a bare `33`
+                // that would read as the very type it is not).
+                let declared_wire = spec.get("as").and_then(|t| t.as_str());
+                let mut found: Option<(String, &str)> = None;
+                if let Some(declared_wire) = declared_wire {
+                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                        if candidate == declared_wire {
+                            continue;
+                        }
+                        let mut probe = spec.clone();
+                        if let Some(probe) = probe.as_object_mut() {
+                            probe.insert("as".into(), serde_json::json!(candidate));
+                        }
+                        if let Some(value) = probe_field(host, &entity, field, &probe).await {
+                            found = Some((spell_value(&value, candidate), candidate));
+                            break;
+                        }
+                    }
+                }
+                match (found, declared_wire) {
+                    (Some((spelled, actual)), Some(declared_wire)) => {
+                        let message = format!(
+                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                             concept reads it as {declared}",
+                            actual = type_spelling(actual),
+                            declared = type_spelling(declared_wire),
+                        );
+                        mistyped.push((field.clone(), spelled, message));
+                    }
+                    _ => missing.push((field.clone(), uri)),
+                }
             }
         }
     }
 
-    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing);
+    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing, &mistyped);
+}
+
+/// One single-field probe of `entity`: a one-field predicate built
+/// from `spec`, read back as display text whatever the value type.
+async fn probe_field(
+    host: &Element,
+    entity: &str,
+    field: &str,
+    spec: &serde_json::Value,
+) -> Option<String> {
+    let one = serde_json::json!({
+        "terms": { "this": entity, field: { "?": { "name": field } } },
+        "predicate": { "with": { field: spec } },
+    });
+    let query = serde_json::from_value::<Query>(one).ok()?;
+    let body = to_body(&query).ok()?;
+    let result = host_consumer::query(host, &body).await.ok()?;
+    first_field_text(&result, field)
+}
+
+/// Read the first conclusion's `field` as display text, whatever its
+/// value type — the diagnosis needs numbers and booleans too, not
+/// just strings.
+fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone()).ok()?;
+    let first = conclusions.into_iter().next()?;
+    match first.fields.get(field)? {
+        Ipld::String(s) => Some(s.clone()),
+        Ipld::Integer(i) => Some(i.to_string()),
+        Ipld::Float(f) => Some(format!("{f:?}")),
+        Ipld::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Spell a probed value the way its type is written in notation:
+/// signed integers carry an explicit sign, floats their decimal
+/// point, text its quotes.
+fn spell_value(value: &str, wire_type: &str) -> String {
+    match wire_type {
+        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
+        "Float" if !value.contains('.') => format!("{value}.0"),
+        "Text" => format!("{value:?}"),
+        _ => value.to_owned(),
+    }
+}
+
+/// The `as:` spelling of a wire descriptor type, for the diagnosis
+/// message.
+fn type_spelling(ty: &str) -> String {
+    match ty {
+        "Text" => "text".into(),
+        "UnsignedInteger" => "unsigned-integer".into(),
+        "SignedInteger" => "signed-integer".into(),
+        "Float" => "float".into(),
+        "Boolean" => "boolean".into(),
+        "Entity" => "entity".into(),
+        "Symbol" => "symbol".into(),
+        other => other.to_owned(),
+    }
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -2088,7 +2234,12 @@ fn forward_with(host: &Element, view_el: &Element) {
     }
 }
 
-fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
+fn mount_view_slide(
+    host: &Element,
+    inner: &mut Inner,
+    display: &str,
+    owner: &str,
+) -> Option<Slide> {
     let document = window()?.document()?;
 
     let view_el = document.create_element("tonk-view").ok()?;
@@ -2107,11 +2258,14 @@ fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<
     }
     view_el.set_inner_html(display);
     forward_with(host, &view_el);
-    // Record what is being rendered here, so a display mounted inside this
-    // view can tell whether it would be re-entering its own model.
-    if let Some(model) = inner.model_entity.as_deref() {
-        stamp_model_chain(host, &view_el, model);
-    }
+    // Record whose template is being rendered here, so a display mounted
+    // inside this view can tell whether it would be re-entering its own
+    // view. The owner is the view instance the template came from — the
+    // model entity for a specific view, `tonk:_` for the default — NOT
+    // the model being rendered: a counter card inside the DEFAULT
+    // carousel must still resolve counter's own view, while a counter
+    // display inside counter's OWN template must not.
+    stamp_model_chain(host, &view_el, owner);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -2815,7 +2969,8 @@ mod tests {
             }"#
             .to_owned(),
         );
-        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>").expect("slide mounts");
+        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>", "tonk:test")
+            .expect("slide mounts");
         let view = host
             .query_selector("tonk-view")
             .unwrap()
@@ -2899,47 +3054,6 @@ mod tests {
         });
         let field = Reflect::get(&detail, &JsValue::from_str("label")).expect("reflect get");
         assert_eq!(field.as_string().as_deref(), Some("hi"));
-    }
-
-    fn view_row(this: &str, display: Option<&str>) -> Conclusion {
-        let mut fields = BTreeMap::new();
-        if let Some(d) = display {
-            fields.insert("display".to_owned(), Ipld::String(d.to_owned()));
-        }
-        Conclusion {
-            this: this.to_owned(),
-            fields,
-        }
-    }
-
-    // Each slide keys off its own view entity URI (`this`), paired
-    // with the view's `display` template. The model-constrained
-    // query resolves to one row in the common case, but the keying
-    // is uniform regardless of how many rows arrive.
-    #[dialog_common::test]
-    fn it_keys_slides_by_view_entity() {
-        let rows = vec![
-            view_row("did:key:zViewA", Some("<p>A</p>")),
-            view_row("did:key:zViewB", Some("<p>B</p>")),
-        ];
-        let keyed = slide_keys(rows);
-        assert_eq!(keyed.len(), 2);
-        assert_eq!(
-            keyed.get("did:key:zViewA").map(String::as_str),
-            Some("<p>A</p>")
-        );
-        assert_eq!(
-            keyed.get("did:key:zViewB").map(String::as_str),
-            Some("<p>B</p>")
-        );
-    }
-
-    // A frame row with no `display` field can't render; it's dropped
-    // rather than producing a blank slide.
-    #[dialog_common::test]
-    fn it_drops_a_frame_row_with_no_display_field() {
-        let rows = vec![view_row("did:key:zView", None)];
-        assert!(slide_keys(rows).is_empty());
     }
 
     // An empty model frame is the `no-model` steady state, not an error:
@@ -3098,6 +3212,35 @@ mod tests {
                 })
                 .collect();
             serde_wasm_bindgen::to_value(&conclusions).unwrap()
+        }
+
+        /// A view frame in wire shape: one flat row per `show` entry,
+        /// each row's `show` a one-entry `{facet: template}` map (the
+        /// worker's per-row fold), sharing the model entity as `this`.
+        fn show_rows(this: &str, entries: &[(&str, &str)]) -> JsValue {
+            let conclusions: Vec<Conclusion> = entries
+                .iter()
+                .map(|(facet, template)| Conclusion {
+                    this: this.to_owned(),
+                    fields: BTreeMap::from([(
+                        "show".to_owned(),
+                        Ipld::Map(BTreeMap::from([(
+                            (*facet).to_owned(),
+                            Ipld::String((*template).to_owned()),
+                        )])),
+                    )]),
+                })
+                .collect();
+            serde_wasm_bindgen::to_value(&conclusions).unwrap()
+        }
+
+        /// The model's view frame carrying `template` under both mode
+        /// facets, so single and directory displays alike resolve it.
+        fn view_frame(template: &str) -> JsValue {
+            show_rows(
+                "did:key:zModel",
+                &[("ui", template), ("directory", template)],
+            )
         }
 
         struct FakeHost {
@@ -3262,26 +3405,26 @@ mod tests {
         fn mount_display(host: &FakeHost, view: &str, model: &str, entity: &str) -> Element {
             register();
             let display = document().create_element("tonk-display").unwrap();
-            display.set_attribute("view", view).unwrap();
+            if !view.is_empty() {
+                display.set_attribute("view", view).unwrap();
+            }
             display.set_attribute("model", model).unwrap();
             display.set_attribute("entity", entity).unwrap();
             host.container.append_child(&display).unwrap();
             display
         }
 
-        // The flow resolves two concepts in order: the subject `model`
-        // concept (projected for the entity query) then the `view`
-        // concept (the query predicate). The view concept declares a
-        // `type` attribute, so `view_by_model_query` projects `type` and
-        // each view frame carries the value that decides portal mode.
+        // The flow resolves ONE concept: the subject `model` concept
+        // (projected for the entity query). The view query needs no
+        // resolve — its predicate is the built-in `view` concept and a
+        // `type: text/html` entry in the `show` dictionary decides
+        // portal mode.
         //
         // `resolve_model` resolves a bare name through the Name concept
         // first (`id:<name>` → `db.name/referent`), then runs the
-        // Phase-1 concept query by `this`. So each bare-name resolution
-        // is TWO queries: a name lookup, then the concept lookup. The
-        // fixture answers in dispatch order, so a name-resolution row
-        // precedes each concept row. `mount_display` uses bare names for
-        // both `model` and `view`, hence two name/concept pairs.
+        // Phase-1 concept query by `this` — so the model's bare name
+        // costs one name-lookup one-shot; the concept row itself is
+        // auto-pushed on the `"model"` subscription.
         fn name_row(entity: &str) -> JsValue {
             rows(&[("did:key:zName", &[("entity", entity)])])
         }
@@ -3318,15 +3461,6 @@ mod tests {
             vec![
                 // model name `counter` → did:key:zModel
                 name_row("did:key:zModel"),
-                // view name `counter` → did:key:zViewConcept
-                name_row("did:key:zViewConcept"),
-                rows(&[(
-                    "did:key:zViewConcept",
-                    &[(
-                        "source",
-                        r#"{"with":{"model":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
-                    )],
-                )]),
             ]
         }
 
@@ -3334,7 +3468,7 @@ mod tests {
         async fn it_mounts_a_portal_for_a_text_html_view_frame() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             // Wait for the flow to open its subscriptions (model, then
             // view + entity once the model frame resolves).
@@ -3344,18 +3478,14 @@ mod tests {
                 }
                 sleep(5).await;
             }
-            // The view frame carries the projected `type` and the HTML
-            // document, which routes the row to a portal.
+            // The view frame carries a `type: text/html` entry beside the
+            // document, which routes the facet to a portal.
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[
-                        ("display", "<h1>monolith</h1>"),
-                        ("type", "text/html"),
-                        ("model", "did:key:zModel"),
-                    ],
-                )]),
+                &show_rows(
+                    "did:key:zModel",
+                    &[("ui", "<h1>monolith</h1>"), ("type", "text/html")],
+                ),
             );
 
             let portal = await_selector(&display, "tonk-portal")
@@ -3396,7 +3526,7 @@ mod tests {
         async fn it_renders_inline_and_subscribes_to_the_entity_when_no_type() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
                 if host.subscribe_tags().len() >= 3 {
@@ -3404,10 +3534,7 @@ mod tests {
                 }
                 sleep(5).await;
             }
-            host.push_frame(
-                "view",
-                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
-            );
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
 
             assert!(
                 await_selector(&display, "tonk-view").await.is_some(),
@@ -3436,7 +3563,7 @@ mod tests {
             // No auto model frame: the model subscription opens, and its
             // first frame is empty (the concept has not synced yet).
             let host = FakeHost::install(resolve_responses());
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             // Wait for the model subscription, then deliver an empty frame
             // — that lands the display in `no-model`.
@@ -3471,10 +3598,7 @@ mod tests {
                 }
                 sleep(5).await;
             }
-            host.push_frame(
-                "view",
-                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
-            );
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
             host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
 
             assert!(
@@ -3494,7 +3618,7 @@ mod tests {
         async fn it_goes_malformed_on_a_bad_entity_attribute() {
             let host = FakeHost::install(Vec::new());
             // `entity` must be a URI (contain `:`); `oops` is not.
-            let display = mount_display(&host, "counter", "counter", "oops");
+            let display = mount_display(&host, "", "counter", "oops");
             for _ in 0..200 {
                 if display.get_attribute("data-state").as_deref() == Some("malformed") {
                     break;
@@ -3522,7 +3646,7 @@ mod tests {
         async fn it_goes_offline_on_a_subscription_error() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
                 if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
@@ -3553,7 +3677,7 @@ mod tests {
         async fn it_goes_unauthorized_on_a_403() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
                 if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
@@ -3581,15 +3705,23 @@ mod tests {
         // name + concept one-shots return empty, so the view resolve fails
         // with `UnknownSource`.
         #[dialog_common::test]
-        async fn it_goes_no_view_when_an_explicit_view_is_absent() {
-            // One-shot responses: the model name lookup resolves; the view
-            // name lookup + view concept lookup are left empty (default
-            // empty array), so the explicit view never resolves.
+        async fn it_goes_no_view_when_an_explicit_facet_is_absent() {
+            // One-shots: the model name lookup resolves; the `tonk:_`
+            // default-dictionary query (the facet fallback) comes back
+            // empty, so the explicit facet resolves nowhere.
             let host = FakeHost::install_with_model(
-                vec![name_row("did:key:zModel")],
+                vec![name_row("did:key:zModel"), rows(&[])],
                 Some(model_concept_frame()),
             );
-            let display = mount_display(&host, "missing-view", "counter", "id:demo-counter");
+            let display = mount_display(&host, "label", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // The model's own dictionary has no `label` entry.
+            host.push_frame("view", &rows(&[]));
             for _ in 0..200 {
                 if display.get_attribute("data-state").as_deref() == Some("no-view") {
                     break;
@@ -3599,7 +3731,7 @@ mod tests {
             assert_eq!(
                 display.get_attribute("data-state").as_deref(),
                 Some("no-view"),
-                "an absent explicit view is `no-view`",
+                "an absent explicit facet is `no-view`",
             );
             let callout = display
                 .query_selector("wa-callout")
@@ -3627,7 +3759,7 @@ mod tests {
             let host = FakeHost::install_with_model(
                 vec![
                     name_row("did:key:zModel"),
-                    rows(&[("did:key:zDefaultView", &[("display", "<p>{count}</p>")])]),
+                    show_rows("tonk:_", &[("ui", "<p>{count}</p>")]),
                 ],
                 Some(model_concept_frame()),
             );
@@ -3664,6 +3796,16 @@ mod tests {
                 Some("default-view"),
                 "rendering through the `_:_` fallback reports `default-view`",
             );
+            let notice = display
+                .query_selector("wa-callout[variant=warning]")
+                .unwrap()
+                .expect("the default notice renders")
+                .text_content()
+                .unwrap_or_default();
+            assert!(
+                notice.contains("`ui` view"),
+                "the notice names the facet that was not found: {notice}",
+            );
         }
 
         // The model subscription re-pushes on EVERY branch revision,
@@ -3676,7 +3818,7 @@ mod tests {
         async fn it_does_not_remount_on_a_repeat_model_frame() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
                 if host.subscribe_tags().len() >= 3 {
@@ -3684,10 +3826,7 @@ mod tests {
                 }
                 sleep(5).await;
             }
-            host.push_frame(
-                "view",
-                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
-            );
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
             host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "1")])]));
             let view = await_selector(&display, "tonk-view")
                 .await
@@ -3783,13 +3922,9 @@ mod tests {
             // reference, so it renders once regardless of instance count).
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">empty</p></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">empty</p></div>",
+                ),
             );
 
             // The collection starts empty.
@@ -3829,19 +3964,321 @@ mod tests {
             // ...then the view template.
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">Nothing yet</p></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">Nothing yet</p></div>",
+                ),
             );
 
             let fallback = await_selector(&display, "p.fallback")
                 .await
                 .expect("the fallback chrome should render on an empty collection at mount");
             assert_eq!(fallback.text_content().as_deref(), Some("Nothing yet"));
+        }
+
+        // With no view for the model at all, directory mode falls back
+        // to the `tonk:_` default dictionary's `directory` facet and
+        // renders the instances through it. This is the live `/{model}`
+        // route for a model that never declared views.
+        #[dialog_common::test]
+        async fn it_renders_a_directory_through_the_default_dictionary() {
+            let host = FakeHost::install_with_model(
+                vec![
+                    name_row("did:key:zModel"),
+                    // The `tonk:_` fallback one-shot: the default dictionary.
+                    show_rows(
+                        "tonk:_",
+                        &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                    ),
+                ],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // No view facts for `item` at all.
+            host.push_frame("view", &rows(&[]));
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            let row = await_selector(&display, "li[data-id]")
+                .await
+                .expect("the default directory template renders the instances");
+            assert_eq!(row.text_content().as_deref(), Some("Hello"));
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("default-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("default-view"),
+                "rendering through the fallback dictionary reports default-view",
+            );
+            let notice = display
+                .query_selector("wa-callout[variant=warning]")
+                .unwrap()
+                .expect("the default notice renders")
+                .text_content()
+                .unwrap_or_default();
+            assert!(
+                notice.contains("`directory` view"),
+                "the directory default names its facet: {notice}",
+            );
+            // The default slide is stamped with the WILDCARD owner, not the
+            // model — a per-instance card of the same model inside it must
+            // still resolve that model's own view.
+            let chain = display
+                .query_selector("tonk-view")
+                .unwrap()
+                .and_then(|v| v.get_attribute(MODEL_CHAIN))
+                .unwrap_or_default();
+            assert!(chain.contains("tonk:_"), "chain: {chain}");
+            assert!(
+                !chain.contains("did:key:zModel"),
+                "the default slide must not claim the model itself: {chain}",
+            );
+        }
+
+        // With no view AND no `tonk:_` entry for the facet, an entity
+        // with data still shows as a notation dump — the ultimate
+        // fallback that keeps every entity inspectable.
+        #[dialog_common::test]
+        async fn it_falls_back_to_notation_when_nothing_carries_the_facet() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "an entity with data but no view anywhere dumps notation",
+            );
+        }
+
+        // A model nested under the DEFAULT template (a carousel card) is
+        // NOT self-rendering: it runs the full view flow and resolves the
+        // model's own `ui` facet — including one authored after mount,
+        // since the view subscription stays live.
+        #[dialog_common::test]
+        async fn it_resolves_a_view_for_a_model_nested_under_the_default() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            register();
+            let outer = document().create_element("div").unwrap();
+            outer.set_attribute(MODEL_CHAIN, "tonk:_").unwrap();
+            host.container.append_child(&outer).unwrap();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            outer.append_child(&display).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                host.subscribe_tags().contains(&"view".to_owned()),
+                "under the default template the view flow must run",
+            );
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            let view = await_selector(&display, "tonk-view")
+                .await
+                .expect("the model's own ui facet mounts inside the default card");
+            let chain = view.get_attribute(MODEL_CHAIN).unwrap_or_default();
+            assert!(
+                chain.contains("did:key:zModel"),
+                "the specific slide claims its model: {chain}",
+            );
+        }
+
+        // Retracting a facet (`show: {ui: _}`) drops the display back
+        // down the fallback chain: the stale template is unmounted and
+        // the notation dump takes its place, live.
+        #[dialog_common::test]
+        async fn it_returns_to_notation_when_the_facet_is_retracted() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup, then the `tonk:_`
+                // default query the retraction triggers (a miss).
+                vec![name_row("did:key:zModel"), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the authored facet renders first",
+            );
+
+            // The facet is retracted: the next frame carries no entry.
+            host.push_frame("view", &rows(&[]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "a retracted facet falls back to the notation dump",
+            );
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_none(),
+                "the stale template is unmounted",
+            );
+        }
+
+        // An entity that starts matching its concept AFTER the view
+        // chain settled (the healed-mismatch case) re-runs the
+        // fallback: the notation mounts and the latched absence
+        // clears, live — no reload.
+        #[dialog_common::test]
+        async fn it_recovers_when_the_entity_matches_late() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup, then the `tonk:_`
+                // default query the empty view frame triggers (a
+                // miss), then the re-run once data lands (also a
+                // miss — notation is the terminal fallback).
+                vec![name_row("did:key:zModel"), rows(&[]), rows(&[])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // No view anywhere, and no data yet: nothing mounts.
+            host.push_frame("view", &rows(&[]));
+            sleep(50).await;
+            assert!(
+                display.query_selector("tonk-notation").unwrap().is_none(),
+                "nothing to show before the entity matches",
+            );
+
+            // The entity starts matching (the mismatch healed).
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "late-matching data mounts the notation fallback in place",
+            );
+        }
+
+        // A concept mismatch caused by a TYPE divergence names the
+        // stored value instead of claiming the field is missing: the
+        // typed probe misses, the untyped re-probe finds the fact.
+        #[dialog_common::test]
+        async fn it_diagnoses_a_mistyped_field_instead_of_missing() {
+            let host = FakeHost::install_with_model(
+                vec![
+                    // model name lookup
+                    name_row("did:key:zModel"),
+                    // `tonk:_` default view query (no view anywhere)
+                    rows(&[]),
+                    // TYPED probe of `count`: no unsigned value
+                    rows(&[]),
+                    // SignedInteger re-probe: the fact lives there
+                    rows(&[("id:demo-counter", &[("count", "41")])]),
+                ],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &rows(&[]));
+            // The entity does not match the concept: empty frame.
+            host.push_frame("entity", &rows(&[]));
+
+            let query = await_selector(&display, ".tonk-display-query")
+                .await
+                .expect("the mismatch diagnosis renders");
+            for _ in 0..200 {
+                if (query.text_content().unwrap_or_default()).contains("+41") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let text = query.text_content().unwrap_or_default();
+            assert!(
+                text.contains("count") && text.contains("+41"),
+                "the stored value shows in ITS spelling, not a blank: {text}"
+            );
+            let notation = display
+                .query_selector("[data-error-2]")
+                .unwrap()
+                .expect("the mistyped line carries its story");
+            let message = notation.get_attribute("data-error-2").unwrap_or_default();
+            assert!(
+                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                "the squiggle names both types: {message}"
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("the callout renders");
+            assert!(
+                callout
+                    .text_content()
+                    .unwrap_or_default()
+                    .contains("value type differs"),
+                "the headline stops claiming the attribute is missing",
+            );
+        }
+
+        // A model rendered inside its own view (the default carousel's
+        // per-instance card) must not vanish into a blank `no-view`: the
+        // view flow is skipped, and the entity's data dumps as notation.
+        #[dialog_common::test]
+        async fn it_dumps_notation_when_a_model_renders_inside_itself() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            register();
+            let outer = document().create_element("div").unwrap();
+            outer.set_attribute(MODEL_CHAIN, "did:key:zModel").unwrap();
+            host.container.append_child(&outer).unwrap();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            outer.append_child(&display).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            assert!(
+                await_selector(&display, "tonk-notation").await.is_some(),
+                "a self-rendered model shows its data as notation, not a blank",
+            );
+            assert!(
+                !host.subscribe_tags().contains(&"view".to_owned()),
+                "the view flow is skipped — it would re-enter the same view",
+            );
         }
 
         // A static element that is a direct *sibling* of the repeat root
@@ -3869,13 +4306,9 @@ mod tests {
             // `<p class="after">` is its direct following sibling (chrome).
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><span data-id={this}>{title}</span><p class=\"after\">keep me</p></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><span data-id={this}>{title}</span><p class=\"after\">keep me</p></div>",
+                ),
             );
             host.push_frame(
                 "entity",
@@ -3913,13 +4346,9 @@ mod tests {
             // custom element); the `<p class="after">` follows it.
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><tonk-display entity={this} model=item data-id={this}></tonk-display><p class=\"after\">keep me</p></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><tonk-display entity={this} model=item data-id={this}></tonk-display><p class=\"after\">keep me</p></div>",
+                ),
             );
             host.push_frame(
                 "entity",
@@ -3958,13 +4387,9 @@ mod tests {
             // ref, so it renders once) plus a per-instance row.
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
+                ),
             );
             host.push_frame(
                 "entity",
@@ -3998,13 +4423,9 @@ mod tests {
 
             host.push_frame(
                 "view",
-                &rows(&[(
-                    "did:key:zView",
-                    &[(
-                        "display",
-                        "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
-                    )],
-                )]),
+                &view_frame(
+                    "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
+                ),
             );
             host.push_frame(
                 "entity",

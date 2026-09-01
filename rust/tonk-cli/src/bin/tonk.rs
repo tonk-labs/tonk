@@ -248,10 +248,11 @@ enum Command {
     /// Render a view to HTML, headlessly
     ///
     /// Route grammar: `{model}` (directory), `{entity}@{model}`
-    /// (one entity), `{entity}@{model}!{view}` (explicit view).
-    /// Writes HTML to stdout unless `--out <file>` is given.
+    /// (one entity), `{entity}@{model}!{view}` (explicit `show`
+    /// facet, e.g. `label`). Writes HTML to stdout unless
+    /// `--out <file>` is given.
     #[command(
-        after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!card --out alice.html"
+        after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!label --out alice.html"
     )]
     Render {
         /// The render route (e.g. `alice@person!card`).
@@ -904,7 +905,7 @@ enum ViewCommand {
     /// A first detail or directory view is auto-surfaced when the home is
     /// blank. --home explicitly replaces an existing home.
     #[command(
-        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --name habit-card\n  tonk view add habit --kind directory --template-file habit.html --home"
+        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --kind directory --template-file habit.html --home"
     )]
     Add {
         /// The concept this view renders.
@@ -921,10 +922,7 @@ enum ViewCommand {
         /// Read the template from a file instead.
         #[arg(long, value_name = "PATH")]
         template_file: Option<PathBuf>,
-        /// Anchor name (default depends on --kind).
-        #[arg(long, value_name = "NAME")]
-        name: Option<String>,
-        /// Which standard view concept to author.
+        /// Which `show` facet to author (ui, directory, label, title).
         #[arg(long, value_enum, default_value_t = ViewKindArg::Detail)]
         kind: ViewKindArg,
         /// Atomically replace the current home with this concept's directory.
@@ -3730,7 +3728,6 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
             model,
             template,
             template_file,
-            name,
             kind,
             home,
             notation,
@@ -3757,7 +3754,6 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
                 &site,
                 &model,
                 kind.into(),
-                name.as_deref(),
                 &template,
                 home,
                 write.options(notation),
@@ -4271,8 +4267,6 @@ mod account_spaces_parser_tests {
                 "view",
                 "add",
                 "note",
-                "--name",
-                "note-card",
                 "--template",
                 "<p>{title}</p>",
             ],
@@ -4280,7 +4274,7 @@ mod account_spaces_parser_tests {
             &["tonk", "space", "new", "scratch", "--site", "./scratch"],
             &["tonk", "space", "use", "scratch"],
             &["tonk", "space", "unbind"],
-            &["tonk", "render", "alice@person!tonk:view/label"],
+            &["tonk", "render", "alice@person!label"],
             &[
                 "tonk",
                 "remote",

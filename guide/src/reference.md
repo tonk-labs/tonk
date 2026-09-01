@@ -11,8 +11,7 @@ A head ending in `!` writes; without `!` it queries.
 | `concept!:`     | Define a concept (a named set of relations).    |
 | `command!:`     | Define a command (a transient, event-fed concept). |
 | `rule!:`        | Define a rule (a deduction).                     |
-| `view!:`        | Define a view (renders one entity).             |
-| `view/directory!:` | Define a directory view (renders every instance). |
+| `view!:`        | Define a model's views: `this:` is the model, `show:` its templates keyed by facet (`ui`, `directory`, `label`, …). |
 | `<concept>!:`   | Assert an instance of a concept.                |
 | `<concept>:`    | Query instances of a concept.                   |
 
@@ -52,7 +51,7 @@ A head ending in `!` writes; without `!` it queries.
 |-----------|--------------------------------------------------------------|
 | `model`   | The concept to render. Required.                             |
 | `entity`  | The single entity to render. Absent renders every instance.  |
-| `view`    | A specific view to use. Omitted uses the model's default.    |
+| `view`    | The `show` facet to render (`label`, `title`, …). Omitted uses `ui` (entity set) or `directory`. |
 
 ## Template placeholders
 

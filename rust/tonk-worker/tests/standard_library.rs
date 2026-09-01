@@ -315,12 +315,12 @@ fn it_keeps_the_retired_inline_settings_surface_out_of_the_hub() {
 #[test]
 fn it_renders_join_refusals_as_neutral_edge_walls() {
     let failure = PROFILE_LIBRARY
-        .split("view!: &join/failure-view")
+        .split("view!:\n  this: tonk:join/failure")
         .nth(1)
         .and_then(|tail| tail.split("# ROUTING (profile branch)").next())
         .expect("join failure view");
     let route = PROFILE_LIBRARY
-        .split("view!: &join/route-view")
+        .split("view!:\n  this: tonk:join/route")
         .nth(1)
         .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
         .expect("join route view");

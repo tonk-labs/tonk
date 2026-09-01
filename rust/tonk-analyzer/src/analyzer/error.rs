@@ -218,6 +218,22 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
+    /// A raw domain write's literal carries a different value type
+    /// than a branch-declared attribute advertises. The write still
+    /// commits — raw domains are open-ended — but typed readers (a
+    /// concept declaring this attribute) will not see the fact, so
+    /// the author gets a heads-up with the spelling that would.
+    #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
+    DeclaredTypeDivergence {
+        /// The declared attribute URI (`io.gozala.person/age`).
+        attribute: String,
+        /// The declared value type, in `as:` spelling.
+        declared: String,
+        /// The literal's value type, in `as:` spelling.
+        found: String,
+        /// How to spell the literal for the declared type.
+        hint: String,
+    },
 }
 
 impl AnalyzeDiagnosticKind {
@@ -236,6 +252,7 @@ impl AnalyzeDiagnosticKind {
             Self::SingleOccurrenceVariableAssertionField { .. } => {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
+            Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
         }
     }
 }

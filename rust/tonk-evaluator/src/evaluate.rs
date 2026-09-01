@@ -788,10 +788,41 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 }
 
 /// Run a single expression's [`Application`] against the branch
-/// and collect every match frame as a [`Parameters`] by
-/// extracting every bound variable from each
-/// [`ConceptConclusion`].
+/// and collect every match frame as a [`Parameters`].
+///
+/// A multi-entry dictionary query (`show: {ui: ?ui, directory:
+/// ?d}`) arrives as a primary query plus satellite `join` queries
+/// — one per extra entry, sharing the primary's `this` term. Each
+/// evaluates on its own and their frames natural-join, so one
+/// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
+    application: Application,
+    txn: &Transaction<'_>,
+    env: &Env,
+) -> Result<Vec<Parameters>, EvaluateError> {
+    if let Application::Concept {
+        query, join, this, ..
+    } = &application
+        && !join.is_empty()
+    {
+        let mut relations = Vec::with_capacity(1 + join.len());
+        for q in std::iter::once(query).chain(join.iter()) {
+            let single = Application::Concept {
+                query: q.clone(),
+                join: Vec::new(),
+                this: this.clone(),
+                name: None,
+            };
+            relations.push(collect_single_matches(single, txn, env).await?);
+        }
+        return Ok(natural_join(&relations));
+    }
+    collect_single_matches(application, txn, env).await
+}
+
+/// [`collect_matches`] for one [`ConceptQuery`]-shaped application:
+/// extracts every bound variable from each [`ConceptConclusion`].
+async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
     txn: &Transaction<'_>,
     env: &Env,
@@ -951,13 +982,21 @@ fn render_block(
             unreachable!("filtered above")
         }
     };
-    for (_, term) in terms.iter() {
-        if let Term::Variable {
-            name: Some(name), ..
-        } = term
-            && !my_vars.contains(name)
-        {
-            my_vars.push(name.clone());
+    // Satellite `join` queries bind extra dictionary entries;
+    // their variables distinguish rows too.
+    let satellite_terms = match application {
+        Application::Concept { join, .. } => join.iter().map(|q| &q.terms).collect(),
+        _ => Vec::new(),
+    };
+    for terms in std::iter::once(terms).chain(satellite_terms) {
+        for (_, term) in terms.iter() {
+            if let Term::Variable {
+                name: Some(name), ..
+            } = term
+                && !my_vars.contains(name)
+            {
+                my_vars.push(name.clone());
+            }
         }
     }
 
@@ -978,8 +1017,77 @@ fn render_block(
     }
     QueryMatchBlock {
         label,
-        results: block_results,
+        results: fold_dictionary_rows(&descriptor, block_results),
     }
+}
+
+/// Fold per-entry rows of an open dictionary query back into one
+/// row per entity.
+///
+/// A keyed collection stores one fact per entry, so a query that
+/// leaves the key open (`view:`) matches once per entry — the raw
+/// rows read as three views when one view carries three facets.
+/// Rows that agree on `this` and every non-collection field merge,
+/// unioning their entry objects, so the match reads
+/// `show: {ui: …, directory: …}` — the shape you would write to
+/// assert it.
+fn fold_dictionary_rows(
+    descriptor: &ConceptDescriptor,
+    results: Vec<QueryResult>,
+) -> Vec<QueryResult> {
+    let collection_fields: Vec<&str> = descriptor
+        .with()
+        .iter()
+        .filter(|(_, attr)| attr.the().attribute().is_none())
+        .map(|(name, _)| name)
+        .collect();
+    if collection_fields.is_empty() {
+        return results;
+    }
+    let mut folded: Vec<QueryResult> = Vec::new();
+    let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for result in results {
+        // An entity-less row has nothing sound to group on.
+        if result.this.is_empty() {
+            folded.push(result);
+            continue;
+        }
+        let mut key = result.this.clone();
+        for (name, value) in &result.fields {
+            if collection_fields.contains(&name.as_str()) {
+                continue;
+            }
+            key.push_str(&format!("\u{0}{name}\u{0}{value}"));
+        }
+        match by_key.get(&key) {
+            Some(&index) => {
+                let target = &mut folded[index];
+                for field in &collection_fields {
+                    let Some(serde_json::Value::Object(incoming)) = result.fields.get(*field)
+                    else {
+                        continue;
+                    };
+                    match target.fields.get_mut(*field) {
+                        Some(serde_json::Value::Object(existing)) => {
+                            for (k, v) in incoming {
+                                existing.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                        _ => {
+                            target
+                                .fields
+                                .insert((*field).to_owned(), result.fields[*field].clone());
+                        }
+                    }
+                }
+            }
+            None => {
+                by_key.insert(key, folded.len());
+                folded.push(result);
+            }
+        }
+    }
+    folded
 }
 
 fn render_one_result(
@@ -1011,26 +1119,54 @@ fn render_one_result(
         })
         .unwrap_or_default();
 
-    let mut fields = BTreeMap::new();
-    for (field_name, _attr) in descriptor.with().iter() {
-        let Some(term) = terms.get(field_name) else {
-            continue;
-        };
-        let value = match term {
-            Term::Constant(value) => value_to_json(value),
-            // Named variables — user `?var` and analyzer-minted
-            // `__N` from `_` blanks both land here. The frame
-            // binds them either way, so the same lookup works
-            // for both. The auto name leaks into nothing
-            // user-visible because we project under
-            // `field_name`, not the variable name.
+    // Resolve one term to its bound JSON value. Named variables —
+    // user `?var` and analyzer-minted `__N` from `_` blanks — both
+    // land in the frame; the auto name leaks into nothing
+    // user-visible because projection is under the field name.
+    let resolve = |term: Option<&Term<dialog_query::Any>>| -> Option<serde_json::Value> {
+        match term? {
+            Term::Constant(value) => Some(value_to_json(value)),
             Term::Variable {
                 name: Some(name), ..
             } => match frame.get(name) {
-                Some(Term::Constant(value)) => value_to_json(value),
-                _ => continue,
+                Some(Term::Constant(value)) => Some(value_to_json(value)),
+                _ => None,
             },
-            _ => continue,
+            _ => None,
+        }
+    };
+
+    let satellite_terms: Vec<&Parameters> = match application {
+        Application::Concept { join, .. } => join.iter().map(|q| &q.terms).collect(),
+        _ => Vec::new(),
+    };
+
+    let mut fields = BTreeMap::new();
+    for (field_name, attr) in descriptor.with().iter() {
+        // A collection field's entry key rides its own operand
+        // (`show/key`); fold the pair into the entry form, so the
+        // match reads — and re-evaluates — as `show: {ui: <template>}`
+        // rather than leaking the flat wire shape. Extra entries of
+        // a multi-entry query ride satellite `join` terms — fold
+        // them into the same object.
+        if attr.the().attribute().is_none() {
+            let key_operand = dialog_query::attribute::Relation::key_operand(field_name);
+            let mut entry = serde_json::Map::new();
+            for terms in std::iter::once(terms).chain(satellite_terms.iter().copied()) {
+                let Some(value) = resolve(terms.get(field_name)) else {
+                    continue;
+                };
+                if let Some(serde_json::Value::String(key)) = resolve(terms.get(&key_operand)) {
+                    entry.insert(key, value);
+                }
+            }
+            if !entry.is_empty() {
+                fields.insert(field_name.to_owned(), serde_json::Value::Object(entry));
+            }
+            continue;
+        }
+        let Some(value) = resolve(terms.get(field_name)) else {
+            continue;
         };
         fields.insert(field_name.to_owned(), value);
     }
@@ -1099,8 +1235,20 @@ fn render_resolver_block(
     QueryMatchBlock { label, results }
 }
 
+/// Lower a typed [`Value`] into the JSON a match block carries.
+///
+/// Numbers keep their notation SPELLING: a JSON number cannot tell a
+/// non-negative signed integer from an unsigned one, so a signed
+/// integer rides as an explicitly signed string (`"+41"`, `"-7"`) and
+/// the notation printers emit it bare. Unsigned integers stay bare
+/// JSON numbers; floats stay JSON floats (serde_json prints the
+/// `.0`).
 fn value_to_json(value: &Value) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+    match value {
+        Value::SignedInt(i) if *i >= 0 => serde_json::Value::String(format!("+{i}")),
+        Value::SignedInt(i) => serde_json::Value::String(i.to_string()),
+        other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 #[cfg(test)]
@@ -1339,6 +1487,541 @@ attribute!: &foo/title
             2,
             "a cardinality-many attribute accumulates through a domain head; stored: {edges:?}"
         );
+        Ok(())
+    }
+
+    /// A collection field's match folds the entry back together: the
+    /// key operand never leaks as a sibling field, and the value sits
+    /// under its key — the form you would evaluate to get it.
+    #[dialog_common::test]
+    async fn it_folds_collection_entries_in_match_json() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        for doc in [
+            r#"concept!: &deck
+  description: "A deck of named cards"
+  with:
+    card:
+      description: "Cards by facet"
+      the: io.test.deck
+      cardinality: one
+      as: {[symbol]: text}
+"#,
+            r#"deck!:
+  this: id:deck/1
+  card: {alpha: "A"}
+"#,
+        ] {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        let parsed = parse("deck:\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
+        let result = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .next()
+            .expect("one deck row");
+        assert_eq!(
+            result.fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A"})),
+            "the entry folds under its key: {:?}",
+            result.fields,
+        );
+        assert!(
+            !result.fields.contains_key("card/key"),
+            "the key operand does not leak as a field",
+        );
+
+        // A literal key with a `_` value filters to decks carrying
+        // that entry AND projects the value back — a blank is a
+        // question here, not a retraction.
+        let parsed = parse("deck:\n  card:\n    alpha: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("blank-entry query failed: {e}"))?;
+        let result = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .next()
+            .expect("the deck with an `alpha` entry matches");
+        assert_eq!(
+            result.fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A"})),
+            "the blank value projects back under its key: {:?}",
+            result.fields,
+        );
+        Ok(())
+    }
+
+    /// A dictionary literal binds several entries at once, on both
+    /// sides: `card: {alpha: "A", beta: "B"}` asserts two entries
+    /// in one statement, and the matching query joins per entry —
+    /// one match row carries every requested entry, and an entity
+    /// missing any requested key does not match at all.
+    #[dialog_common::test]
+    async fn it_binds_several_dictionary_entries_at_once() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        for doc in [
+            r#"concept!: &deck
+  description: "A deck of named cards"
+  with:
+    card:
+      description: "Cards by facet"
+      the: io.test.deck
+      cardinality: one
+      as: {[symbol]: text}
+"#,
+            // Two entries in ONE assertion.
+            r#"deck!:
+  this: id:deck/1
+  card: {alpha: "A", beta: "B"}
+"#,
+            // A second deck carrying only one of the keys.
+            r#"deck!:
+  this: id:deck/2
+  card: {alpha: "A2"}
+"#,
+        ] {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        // Blank form: both entries requested — only deck/1 has
+        // both, and its row folds them into one object.
+        let parsed = parse("deck:\n  card:\n    alpha: _\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("multi-entry query failed: {e}"))?;
+        let results: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "only the deck carrying BOTH keys matches: {results:?}"
+        );
+        assert_eq!(
+            results[0].fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A", "beta": "B"})),
+            "both entries fold into one object: {:?}",
+            results[0].fields,
+        );
+
+        // Named-variable form binds each entry's value.
+        let parsed = parse("deck:\n  card:\n    alpha: ?a\n    beta: ?b\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("named multi-entry query failed: {e}"))?;
+        let results: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .collect();
+        assert_eq!(results.len(), 1, "one joined row: {results:?}");
+        assert_eq!(
+            results[0].fields.get("card"),
+            Some(&serde_json::json!({"alpha": "A", "beta": "B"})),
+            "named variables bind per entry: {:?}",
+            results[0].fields,
+        );
+
+        // An OPEN query (key unconstrained) folds per-entry rows
+        // back to one row per entity: deck/1's two entries land
+        // under one `card`, deck/2 keeps its single entry.
+        let parsed = parse("deck:\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("open query failed: {e}"))?;
+        let mut cards: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|r| r.fields.get("card").cloned())
+            .collect();
+        cards.sort_by_key(|c| format!("{c:?}"));
+        assert_eq!(
+            cards,
+            vec![
+                Some(serde_json::json!({"alpha": "A", "beta": "B"})),
+                Some(serde_json::json!({"alpha": "A2"})),
+            ],
+            "open rows fold per entity, not per entry"
+        );
+
+        // Mixed mutation: one statement asserts `alpha` anew and
+        // retracts `beta`.
+        let parsed = parse("deck!:\n  this: id:deck/1\n  card:\n    alpha: \"A1\"\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("mixed mutation failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("mixed commit failed: {e}"))?;
+
+        let parsed = parse("deck:\n  card:\n    beta: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("post-retract query failed: {e}"))?;
+        assert!(
+            evaluated
+                .matches
+                .iter()
+                .flat_map(|block| block.results.iter())
+                .next()
+                .is_none(),
+            "the `beta` entry was retracted by the mixed statement"
+        );
+        let parsed = parse("deck:\n  card:\n    alpha: _\n");
+        assert!(parsed.diagnostics.is_empty());
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("post-assert query failed: {e}"))?;
+        let alphas: Vec<_> = evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|r| r.fields.get("card").cloned())
+            .collect();
+        assert!(
+            alphas.contains(&Some(serde_json::json!({"alpha": "A1"}))),
+            "the mixed statement's assert half landed: {alphas:?}"
+        );
+        Ok(())
+    }
+
+    /// The read side of the open-ended ruling: a domain query's `_`
+    /// matches a value of ANY type — a branch-declared attribute
+    /// imposes nothing on reads — and a literal matches by its own
+    /// spelling (`+41` finds the signed fact, bare `41` does not).
+    #[dialog_common::test]
+    async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // A concept DECLARES age as unsigned; the raw write stores a
+        // deliberately signed value anyway (allowed, with a warning).
+        let docs = [
+            r#"concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: unsigned-integer
+"#,
+            r#"io.test.person!:
+  this: test:q
+  age: +41
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+
+        let query = |doc: &str| {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed.syntax.expect("syntax")
+        };
+        let ask = |syntax: tonk_notation::Syntax| {
+            let branch = &branch;
+            let operator = &operator;
+            async move {
+                let evaluated = syntax
+                    .evaluate(branch.transaction())
+                    .perform(operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("query evaluate failed: {e}"))?;
+                let results: usize = evaluated
+                    .matches
+                    .iter()
+                    .map(|block| block.results.len())
+                    .sum();
+                let age = evaluated
+                    .matches
+                    .first()
+                    .and_then(|block| block.results.first())
+                    .and_then(|result| result.fields.get("age").cloned());
+                Ok::<_, anyhow::Error>((results, age))
+            }
+        };
+
+        // `_` matches the signed value despite the unsigned
+        // declaration — and it comes back spelled.
+        let (blank_matches, age) =
+            ask(query("io.test.person:\n  this: test:q\n  age: _\n")).await?;
+        assert_eq!(blank_matches, 1, "a blank matches any value type");
+        assert_eq!(
+            age,
+            Some(serde_json::json!("+41")),
+            "and the value rides out in its spelling",
+        );
+
+        // A literal matches by its own spelling.
+        let (signed_matches, _) =
+            ask(query("io.test.person:\n  this: test:q\n  age: +41\n")).await?;
+        assert_eq!(signed_matches, 1, "+41 finds the signed fact");
+        let (unsigned_matches, _) =
+            ask(query("io.test.person:\n  this: test:q\n  age: 41\n")).await?;
+        assert_eq!(unsigned_matches, 0, "bare 41 (unsigned) does not");
+        Ok(())
+    }
+
+    /// Match JSON spells signed integers explicitly, so notation
+    /// printers can tell +41 from 41 (JSON numbers cannot).
+    #[dialog_common::test]
+    fn it_spells_signed_values_in_match_json() {
+        assert_eq!(
+            value_to_json(&Value::SignedInt(41)),
+            serde_json::json!("+41")
+        );
+        assert_eq!(
+            value_to_json(&Value::SignedInt(-7)),
+            serde_json::json!("-7")
+        );
+        assert_eq!(
+            value_to_json(&Value::UnsignedInt(41)),
+            serde_json::json!(41)
+        );
+    }
+
+    /// Integer spelling picks the value type on a raw domain write:
+    /// bare `41` is unsigned, `+41` signed, `41.0` float — no schema
+    /// consulted. The unsigned spelling is what a concept declaring
+    /// the attribute as unsigned reads, so the raw write and the
+    /// typed read agree without the domain head imposing anything.
+    #[dialog_common::test]
+    async fn it_types_a_domain_write_by_its_spelling() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let docs = [
+            r#"concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name"
+      the: io.test.person/name
+      as: text
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: unsigned-integer
+"#,
+            // The raw domain write carries a bare literal for the
+            // unsigned-declared attribute.
+            r#"io.test.person!:
+  this: test:1
+  name: "Gozala"
+  age: 41
+"#,
+        ];
+        for doc in docs {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "parse diagnostics for {doc:?}: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        // The stored value carries the DECLARED type, so the concept's
+        // typed read matches it.
+        let entity: dialog_artifacts::Entity = "test:1".parse()?;
+        let the: dialog_artifacts::Attribute = "io.test.person/age".parse()?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::new(
+                Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                Term::<dialog_artifacts::Entity>::from(entity),
+                Term::<dialog_query::Any>::var("age"),
+                Term::blank(),
+                None,
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(claims.len(), 1, "one age fact");
+        assert_eq!(
+            claims[0].is,
+            Value::UnsignedInt(41),
+            "the bare spelling is unsigned, which is what the declared reader expects",
+        );
+        Ok(())
+    }
+
+    /// Raw domains are open-ended: every spelling lands with its own
+    /// type, side by side, no declaration anywhere — and a blank in a
+    /// domain query matches values of every type.
+    #[dialog_common::test]
+    async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let doc = r#"io.test.raw!:
+  this: test:raw
+  bare: 41
+  signed: +41
+  negative: -7
+  float: 41.5
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+
+        let entity: dialog_artifacts::Entity = "test:raw".parse()?;
+        let mut by_field = std::collections::BTreeMap::new();
+        for field in ["bare", "signed", "negative", "float"] {
+            let the: dialog_artifacts::Attribute = format!("io.test.raw/{field}").parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                    Term::<dialog_artifacts::Entity>::from(entity.clone()),
+                    Term::<dialog_query::Any>::var("v"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), 1, "{field}: one fact");
+            by_field.insert(field, claims[0].is.clone());
+        }
+        assert_eq!(by_field["bare"], Value::UnsignedInt(41));
+        assert_eq!(by_field["signed"], Value::SignedInt(41));
+        assert_eq!(by_field["negative"], Value::SignedInt(-7));
+        assert_eq!(by_field["float"], Value::Float(41.5));
         Ok(())
     }
 

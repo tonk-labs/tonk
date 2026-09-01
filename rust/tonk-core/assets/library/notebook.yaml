@@ -157,37 +157,37 @@ name!:
   entity: tonk:notebook/space
 
 view!:
-  this: id:notebook/space/view
-  model: tonk:notebook/space
-  display: |
-    <div class="notebook-space">
-      <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
-    </div>
+  this: tonk:notebook/space
+  show:
+    ui: |
+      <div class="notebook-space">
+        <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
+      </div>
 
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
 view!:
-  this: id:notebook/view
-  model: tonk:notebook
-  display: |
-    <tonk-notebook
-      data-subject={this}
-      data-notebook={this}
-      title={title}
-      onblockedit=block/edit
-      onplace=block/place
-      onremove=block/remove
-      ontitlechange=notebook/retitle
-      style="display: block;"
-    >
-      <div class="notebook-data" hidden>
-        <div class="notebook-order">
-          <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
+  this: tonk:notebook
+  show:
+    ui: |
+      <tonk-notebook
+        data-subject={this}
+        data-notebook={this}
+        title={title}
+        onblockedit=block/edit
+        onplace=block/place
+        onremove=block/remove
+        ontitlechange=notebook/retitle
+        style="display: block;"
+      >
+        <div class="notebook-data" hidden>
+          <div class="notebook-order">
+            <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
+          </div>
+          <tonk-display model=tonk:notebook/block></tonk-display>
         </div>
-        <tonk-display model=tonk:notebook/block></tonk-display>
-      </div>
-    </tonk-notebook>
+      </tonk-notebook>
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
 # renders at `/space/{repo}/notebook`. A list of links, one per notebook.
@@ -200,33 +200,33 @@ view!:
 #
 # These rows are the switcher's candidates as well as the plain list, so an
 # index whose script never loads is still a working set of links.
-view/directory!:
-  this: id:notebook/directory
-  model: tonk:notebook
-  display: |
-    <div class="notebook-index">
-      <!-- ABSOLUTE, like every other link in the library. The guest
-           believes it is at a fake origin (`https://{label}.tonk.network/`),
-           so a relative `notebook/{this}` resolves against that origin's
-           ROOT rather than the current path: picking a notebook took you
-           somewhere that does not exist. -->
-      <a class="notebook-index__item" href="/notebook/{this}">
-        <span class="notebook-index__title">{title}</span>
-      </a>
-    </div>
+view!:
+  this: tonk:notebook
+  show:
+    directory: |
+      <div class="notebook-index">
+        <!-- ABSOLUTE, like every other link in the library. The guest
+             believes it is at a fake origin (`https://{label}.tonk.network/`),
+             so a relative `notebook/{this}` resolves against that origin's
+             ROOT rather than the current path: picking a notebook took you
+             somewhere that does not exist. -->
+        <a class="notebook-index__item" href="/notebook/{this}">
+          <span class="notebook-index__title">{title}</span>
+        </a>
+      </div>
 
 # The block rows the element reads: one per block, its source on the row.
-view/directory!:
-  this: id:notebook/block/rows
-  model: tonk:notebook/block
-  display: |
-    <div class="notebook-block-rows">
-      <div class="notebook-block-row"
-        subject={this}
-        data-block={this}
-        data-notebook={notebook}
-        data-source={source}></div>
-    </div>
+view!:
+  this: tonk:notebook/block
+  show:
+    directory: |
+      <div class="notebook-block-rows">
+        <div class="notebook-block-row"
+          subject={this}
+          data-block={this}
+          data-notebook={notebook}
+          data-source={source}></div>
+      </div>
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -273,21 +273,21 @@ concept!: &notebook/index-route
 # The nested display renders the notebook rows the switcher matches
 # against; they are its data and the no-script fallback both.
 view!:
-  this: id:notebook/index/route/view
-  model: tonk:notebook/index-route
-  display: |
-    <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
-      <tonk-notebook
-        draft
-        with="{branch}@{repo}"
-        onblockedit=block/edit
-        onplace=block/place
-        onremove=block/remove
-        ontitlechange=notebook/retitle
-        style="display: block;"
-      ></tonk-notebook>
-      <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
-    </tonk-notebook-index>
+  this: tonk:notebook/index-route
+  show:
+    ui: |
+      <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
+        <tonk-notebook
+          draft
+          with="{branch}@{repo}"
+          onblockedit=block/edit
+          onplace=block/place
+          onremove=block/remove
+          ontitlechange=notebook/retitle
+          style="display: block;"
+        ></tonk-notebook>
+        <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+      </tonk-notebook-index>
 
 route!: &route/notebook
   this: id:notebook/route
@@ -315,12 +315,12 @@ concept!: &notebook/route
       as: text
 
 view!:
-  this: id:notebook/route/view
-  model: tonk:notebook/route
-  display: |
-    <div class="notebook-space">
-      <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
-    </div>
+  this: tonk:notebook/route
+  show:
+    ui: |
+      <div class="notebook-space">
+        <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
+      </div>
 
 # ---------------------------------------------------------------------------
 # Commands and rules
