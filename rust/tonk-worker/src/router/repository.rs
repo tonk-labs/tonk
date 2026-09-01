@@ -6021,7 +6021,6 @@ block/insert!:
         )
         .await;
 
-        let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
         let blocks = count(
             &state,
             repo,
@@ -6030,22 +6029,29 @@ block/insert!:
         .await;
         let chains = count(&state, repo, "block/chain:\n  this: ?this\n  next: ?next\n").await;
         let positions = count(&state, repo, "block/position:\n  this: ?this\n  at: ?at\n").await;
-        assert_eq!(
-            count(&state, repo, entries).await,
-            6,
-            "three seeded blocks plus the three inserted ones \
-             (blocks={blocks} chains={chains} positions={positions})"
-        );
 
-        // The sequence scans in POSITION order — an EAV range scan over
-        // `xyz.tonk.notebook/<position>` yields members already sorted — so
-        // the row order IS the document order.
+        // An open collection query folds per entity: ONE row for the
+        // notebook, its entries under `block` keyed by position. Order
+        // lives in the KEYS: positions are fractional indices, ordered
+        // lexicographically.
         let placed = rows(
             &state,
             repo,
             "notebook:\n  this: id:notebook/scratch\n  block: {?block/key: ?block}\n",
         )
         .await;
+        let entry_map = placed
+            .first()
+            .and_then(|row| row.get("block"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            entry_map.len(),
+            6,
+            "three seeded blocks plus the three inserted ones \
+             (blocks={blocks} chains={chains} positions={positions} placed={placed:#?})"
+        );
         let sources = rows(
             &state,
             repo,
@@ -6062,9 +6068,12 @@ block/insert!:
             })
             .collect();
 
-        let document: Vec<&str> = placed
-            .iter()
-            .filter_map(|row| source_of.get(row.get("block")?.as_str()?))
+        // Position keys are fractional indices: their LEXICOGRAPHIC
+        // order is the document order, which `serde_json`'s BTreeMap
+        // iteration yields directly.
+        let document: Vec<&str> = entry_map
+            .values()
+            .filter_map(|block| source_of.get(block.as_str()?))
             .map(String::as_str)
             .collect();
 
