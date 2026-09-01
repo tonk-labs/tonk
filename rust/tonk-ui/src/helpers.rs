@@ -7,7 +7,7 @@ use url::Url;
 pub struct TestEnvironment {
     /// URL of the Tonk web server (Caddy proxies /ucan/* to the access service).
     pub tonk_web: Url,
-    /// URL of the ChromeDriver server.
+    /// URL of the WebDriver server selected by the integration harness.
     pub chromedriver: Url,
     /// Base URL of the live native access service, reached directly
     /// (unproxied) for test inspection such as captured activation emails.
@@ -105,41 +105,48 @@ mod native {
     impl TestEnvironment {
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
-            let mut caps = DesiredCapabilities::chrome();
-            // NOTE: Discovered arcana while reverse engineering
-            // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
-            // root in GHA runners unless you launch with certain flags
-            // SEE: https://stackoverflow.com/a/50642913
-            caps.add_arg("--disable-dev-shm-usage")?;
-            caps.add_arg("--no-sandbox")?;
-            if std::env::var("NO_HEADLESS").ok().is_none() {
-                caps.set_headless()?;
-            }
+            let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
+            let driver = if safari {
+                let mut caps = DesiredCapabilities::safari();
+                caps.accept_insecure_certs(true)?;
+                WebDriver::new(&self.chromedriver.to_string(), caps).await?
+            } else {
+                let mut caps = DesiredCapabilities::chrome();
+                // NOTE: Discovered arcana while reverse engineering
+                // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
+                // root in GHA runners unless you launch with certain flags
+                // SEE: https://stackoverflow.com/a/50642913
+                caps.add_arg("--disable-dev-shm-usage")?;
+                caps.add_arg("--no-sandbox")?;
+                if std::env::var("NO_HEADLESS").ok().is_none() {
+                    caps.set_headless()?;
+                }
 
-            caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
-            caps.accept_insecure_certs(true)?;
-            let secure_origin = format!(
-                "--unsafely-treat-insecure-origin-as-secure={}",
-                self.tonk_web.origin().ascii_serialization()
-            );
-            caps.add_arg(&secure_origin)?;
-
-            if let Ok(chrome_binary) = std::env::var("CHROME") {
-                caps.set_binary(&chrome_binary)?;
-            }
-
-            // Diagnostic tap, off unless asked for: makes chromedriver
-            // retain every console message (page and service worker
-            // alike) for the classic /se/log endpoint, so a wedged async
-            // flow can be read from the test log instead of guessed at.
-            if std::env::var("TONK_E2E_CHROME_LOG").is_ok() {
-                caps.insert_base_capability(
-                    "goog:loggingPrefs".to_string(),
-                    serde_json::json!({ "browser": "ALL" }),
+                caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
+                caps.accept_insecure_certs(true)?;
+                let secure_origin = format!(
+                    "--unsafely-treat-insecure-origin-as-secure={}",
+                    self.tonk_web.origin().ascii_serialization()
                 );
-            }
+                caps.add_arg(&secure_origin)?;
 
-            let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
+                if let Ok(chrome_binary) = std::env::var("CHROME") {
+                    caps.set_binary(&chrome_binary)?;
+                }
+
+                // Diagnostic tap, off unless asked for: makes chromedriver
+                // retain every console message (page and service worker
+                // alike) for the classic /se/log endpoint, so a wedged async
+                // flow can be read from the test log instead of guessed at.
+                if std::env::var("TONK_E2E_CHROME_LOG").is_ok() {
+                    caps.insert_base_capability(
+                        "goog:loggingPrefs".to_string(),
+                        serde_json::json!({ "browser": "ALL" }),
+                    );
+                }
+
+                WebDriver::new(&self.chromedriver.to_string(), caps).await?
+            };
             // Bound each navigation well under the suite's patience. The
             // default page-load allowance is five minutes, so one wedged
             // renderer would eat the whole run before `goto` below ever
@@ -148,7 +155,7 @@ mod native {
                 .set_page_load_timeout(std::time::Duration::from_secs(60))
                 .await?;
             #[cfg(test)]
-            {
+            if !safari {
                 // Install before the first navigation so failures from the
                 // eager service-worker registration are still available when
                 // an integration wait times out. The user-facing boot surface
@@ -312,7 +319,7 @@ mod native {
     /// Manages test server processes for integration testing.
     pub struct TestServers {
         web_server: ManagedChild,
-        chromedriver: ManagedChild,
+        chromedriver: Option<ManagedChild>,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
     }
@@ -323,8 +330,10 @@ mod native {
         /// Startup order:
         /// 1. Start the access service with deployment discovery configured
         /// 2. Start Caddy web server with access service port
-        /// 3. Start ChromeDriver
+        /// 3. Start the selected WebDriver server
         pub async fn start() -> Result<(Self, TestEnvironment)> {
+            let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
+            let web_host = if safari { "localhost" } else { "tonk.network" };
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
             // access service's own port.
@@ -333,7 +342,7 @@ mod native {
             let settings = AccessServiceSettings {
                 // The identity is filled in by the server itself.
                 deployment: Some(DeploymentConfig::default()),
-                public_origin: Some(format!("https://tonk.network:{web_port}")),
+                public_origin: Some(format!("https://{web_host}:{web_port}")),
                 ..Default::default()
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
@@ -469,32 +478,79 @@ mod native {
             // the wrong root and fail to connect.
             let ca_certificate = Some(caddy_root);
 
-            // Start ChromeDriver
-            let chromedriver_port =
-                free_local_port().expect("Could not get a free local port for chromedriver");
-            let chromedriver_binary =
-                std::env::var("CHROMEDRIVER").unwrap_or_else(|_| "chromedriver".to_string());
-            let mut chromedriver = ManagedChild::new(
-                std::process::Command::new(chromedriver_binary)
-                    .args([&format!("--port={chromedriver_port}")])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()?,
-            );
-
-            let stdout = chromedriver
-                .child_mut()
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow!("Failed to capture chromedriver stdout"))?;
-
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let line = line?;
-                if line.contains("ChromeDriver was started successfully") {
-                    break;
-                }
-            }
+            // Safari has no host-resolver rule equivalent, so its release gate
+            // uses the loopback hostname that the same Caddy fixture also
+            // serves. Chrome retains the production-shaped tonk.network host.
+            let (chromedriver, chromedriver_url) =
+                if let Some(webdriver_url) = std::env::var_os("TONK_WEBDRIVER_URL") {
+                    (
+                        None,
+                        Url::parse(
+                            webdriver_url
+                                .to_str()
+                                .ok_or_else(|| anyhow!("TONK_WEBDRIVER_URL is not valid UTF-8"))?,
+                        )?,
+                    )
+                } else {
+                    let chromedriver_port = free_local_port()
+                        .expect("Could not get a free local port for chromedriver");
+                    let mut chromedriver = if safari {
+                        let safaridriver = std::env::var("SAFARIDRIVER")
+                            .unwrap_or_else(|_| "safaridriver".to_string());
+                        ManagedChild::new(
+                            std::process::Command::new(safaridriver)
+                                .args(["--port", &chromedriver_port.to_string()])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::inherit())
+                                .spawn()?,
+                        )
+                    } else {
+                        let chromedriver_binary = std::env::var("CHROMEDRIVER")
+                            .unwrap_or_else(|_| "chromedriver".to_string());
+                        ManagedChild::new(
+                            std::process::Command::new(chromedriver_binary)
+                                .args([&format!("--port={chromedriver_port}")])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::inherit())
+                                .spawn()?,
+                        )
+                    };
+                    let mut webdriver_listening = false;
+                    for _ in 0..100 {
+                        if tokio::net::TcpStream::connect(("127.0.0.1", chromedriver_port))
+                            .await
+                            .is_ok()
+                        {
+                            webdriver_listening = true;
+                            break;
+                        }
+                        if let Some(status) = chromedriver.child_mut().try_wait()? {
+                            return Err(anyhow!(
+                                "{} exited before binding: {status}",
+                                if safari {
+                                    "SafariDriver"
+                                } else {
+                                    "ChromeDriver"
+                                }
+                            ));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    if !webdriver_listening {
+                        return Err(anyhow!(
+                            "{} did not bind port {chromedriver_port}",
+                            if safari {
+                                "SafariDriver"
+                            } else {
+                                "ChromeDriver"
+                            }
+                        ));
+                    }
+                    (
+                        Some(chromedriver),
+                        Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    )
+                };
 
             Ok((
                 Self {
@@ -503,8 +559,8 @@ mod native {
                     access_service: Some(access_service),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
-                    chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    tonk_web: Url::parse(&format!("https://{web_host}:{web_port}"))?,
+                    chromedriver: chromedriver_url,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
                     deployment_root,
@@ -516,7 +572,11 @@ mod native {
         /// Stops all test server processes.
         pub async fn stop(mut self) -> Result<()> {
             let web_result = self.web_server.terminate();
-            let chromedriver_result = self.chromedriver.terminate();
+            let chromedriver_result = if let Some(chromedriver) = self.chromedriver.as_mut() {
+                chromedriver.terminate()
+            } else {
+                Ok(())
+            };
             let access_result = if let Some(access_service) = self.access_service.take() {
                 access_service.stop().await
             } else {
@@ -532,7 +592,9 @@ mod native {
     impl Drop for TestServers {
         fn drop(&mut self) {
             let _ = self.web_server.terminate();
-            let _ = self.chromedriver.terminate();
+            if let Some(chromedriver) = self.chromedriver.as_mut() {
+                let _ = chromedriver.terminate();
+            }
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
