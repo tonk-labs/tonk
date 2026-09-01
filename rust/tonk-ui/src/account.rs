@@ -2461,6 +2461,13 @@ fn bind(host: &HtmlElement) {
                     // flag default.
                     let payload = serde_json::json!({
                         "delegationHex": authorized.delegation_hex,
+                        // The CLI records the account repository under this
+                        // remote — the same one the grant above was minted
+                        // for. Its schema requires the field, so omitting it
+                        // fails the whole handoff as "payload is not
+                        // readable"; the descriptor stays alongside for CLIs
+                        // from before the remote rode the callback.
+                        "remote": proposed_remote()?,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,

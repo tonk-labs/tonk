@@ -2243,8 +2243,12 @@ mod tests {
                 .args([
                     "account",
                     "devices",
+                    // The flag is a consistency guard against the account's
+                    // RECORDED provider, which the approving page named:
+                    // the page-origin endpoint, not the direct address the
+                    // harness spawned the service on.
                     "--service-url",
-                    env.access_service.as_str(),
+                    env.tonk_web.join("ucan")?.as_str(),
                     "--json",
                 ])
                 .env("TONK_TRACE", "1")
@@ -5038,7 +5042,11 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.access_service);
+        // The approving page names the service its deployment uses, and
+        // the CLI records that answer over its own `--service-url` guess
+        // — so the record is the page-origin endpoint Caddy proxies, not
+        // the direct address the harness spawned the service on.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
@@ -5125,7 +5133,9 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.access_service);
+        // Same page-named record as the flagged variant above: the
+        // deployment's own endpoint, not the harness's direct address.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
 
         // The endpoints are what `space new` and `space link` need; the
         // registry is where they are read from, and status does not print
