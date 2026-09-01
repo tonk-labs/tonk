@@ -241,10 +241,15 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
 /// never reach here — `serve` answers them before the presign path —
 /// so enrolling and activating stay possible while the gate denies the
 /// data plane.
+///
+/// The verdict resolves per plan/Access metering.md §11.3: isolate
+/// cache, then KV, then control D1 on a miss, writing the derived
+/// verdict back. D1 is the authority; the caches only remember its
+/// answers until their `not_after`.
 #[cfg(target_arch = "wasm32")]
 async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
-    use crate::provisioning::{container_subject, screen};
-    use crate::store::d1::D1Store;
+    use crate::provisioning::cache::{self, CachedVerdict};
+    use crate::provisioning::container_subject;
 
     let Some(subject) = container_subject(body_bytes) else {
         // The authorizer accepted these bytes, so a subject we cannot
@@ -253,15 +258,99 @@ async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Resul
         console_error!("provisioning screen unavailable, container has no readable subject");
         return Err(provisioning_unavailable());
     };
+    let now = Date::now().as_millis() / 1_000;
+
+    if let Some(cached) = cache::isolate_lookup(&subject, now) {
+        return cached.verdict().map_err(Into::into);
+    }
+
+    let kv = servability_kv(env);
+    if let Some(kv) = &kv {
+        match kv.get(&cache::key(&subject)).text().await {
+            Ok(Some(text)) => {
+                if let Some(cached) = CachedVerdict::decode(&text).filter(|c| c.fresh(now)) {
+                    cache::isolate_store(&subject, cached.clone(), now);
+                    return cached.verdict().map_err(Into::into);
+                }
+            }
+            // A miss is not an answer — KV is eventually consistent —
+            // so it falls through to authoritative D1.
+            Ok(None) => {}
+            Err(err) => {
+                // A KV read error is served, per the plan: the gate
+                // exists for billing, and its cache being unreachable
+                // is the service's own trouble, not the caller's.
+                console_error!("servability cache unreadable, serving {subject} unscreened: {err}");
+                return Ok(());
+            }
+        }
+    }
+
+    let outcome = derive_verdict(&subject, now, env, kv.as_ref()).await?;
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            worker::console_log!("presign rejected: {subject} is not servable ({reason})");
+            Err(reason.into())
+        }
+    }
+}
+
+/// The verdict-cache KV namespace, if this deployment has one. Serving
+/// degrades to per-request D1 reads without it rather than refusing.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn servability_kv(env: &Env) -> Option<worker::kv::KvStore> {
+    use crate::provisioning::cache;
+
+    match env.kv(cache::BINDING) {
+        Ok(kv) => Some(kv),
+        Err(err) => {
+            console_error!(
+                "servability cache absent, no {} binding: {err}",
+                cache::BINDING
+            );
+            None
+        }
+    }
+}
+
+/// Derive `subject`'s verdict from control D1 and remember it in the
+/// isolate cache and KV. The single write path for cached verdicts:
+/// the presign path calls it on a cache miss, the registration and
+/// deletion handlers after a state change, so a change propagates as
+/// itself rather than waiting out a stale entry's validity.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn derive_verdict(
+    subject: &str,
+    now: u64,
+    env: &Env,
+    kv: Option<&worker::kv::KvStore>,
+) -> std::result::Result<std::result::Result<(), AuthorizeError>, Refusal> {
+    use crate::provisioning::cache::{self, CachedVerdict};
+    use crate::provisioning::screen;
+    use crate::store::d1::D1Store;
+
     let store = D1Store::new(env.d1("CONTROL").map_err(|err| {
         console_error!("provisioning screen unavailable, no CONTROL binding: {err}");
         provisioning_unavailable()
     })?);
-    match screen(&store, &subject, Date::now().as_millis() / 1_000).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(reason)) => {
-            worker::console_log!("presign rejected: {subject} is not servable ({reason})");
-            Err(reason.into())
+    match screen(&store, subject, now).await {
+        Ok(outcome) => {
+            let cached = CachedVerdict::record(&outcome, subject, now);
+            cache::isolate_store(subject, cached.clone(), now);
+            if let Some(kv) = kv {
+                let write = kv
+                    .put(&cache::key(subject), cached.encode())
+                    .map(|put| put.expiration_ttl(cached.retention(now)));
+                let written = match write {
+                    Ok(put) => put.execute().await.map_err(|err| err.to_string()),
+                    Err(err) => Err(err.to_string()),
+                };
+                if let Err(err) = written {
+                    console_error!("servability verdict for {subject} not cached: {err}");
+                }
+            }
+            Ok(outcome)
         }
         Err(err) => {
             // The gate fails closed, but a store failure is the
