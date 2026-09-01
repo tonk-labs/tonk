@@ -40,6 +40,23 @@ but round-trip count and the per-request redeem.
 
 ## What changed in this audit
 
+- **The staging pool's fetches now survive the join.**
+  `install_claim_nodes` (`router/join.rs`) no longer copies only the
+  claim's diff-novel nodes: it walks the staged head over the staging
+  pool *without* remote fallback, pruning at the by-reference frontier,
+  and imports every locally held node into the durable archive. That is
+  the claim's novelty (covered by structural sharing) plus exactly the
+  blocks staging paid the network for — so the first render no longer
+  re-fetches them. The copy stays bounded by what staging fetched; it is
+  not a full replication.
+- **The first-push repair no longer full-scans.** `dialog-reactor`'s
+  push fallback (which fires only on a typed missing-local-node failure;
+  dialog's boundary-tolerant push diff handles the lazy case since
+  dialog-db#454) now hydrates via `TreeDifference::compute` over the
+  networked index — only the divergent paths the retried diff will
+  visit — instead of streaming both entire trees one block per request.
+  A test pins that a single-commit divergence over a 2 000-item base
+  fetches a small fraction of the store.
 - `claim_changes` (`router/join.rs`) now runs its three roster queries
   concurrently — one descent of latency instead of three.
 - `join_invite` logs per-phase wall clock (`prepared`/`staged`/
@@ -74,34 +91,18 @@ renewals of large spaces.
    instead of one per object. Measured ~2x on lazy-join latency at 4G;
    it also removes an ed25519 signature per block. This is the highest
    leverage change available.
-2. **Stop discarding the staging pool's blocks.** Options, in
-   increasing order of invasiveness: (a) after `install_claim_nodes`,
-   also import into the durable archive every block the staging pool
-   holds (they are exactly the blocks the first render needs: spine,
-   name, roster); (b) run staging reads through an index whose local
-   half *is* the durable replica's archive (writes stay volatile;
-   block-level caching is content-addressed and safe pre-validation);
-   (c) keep (a) but bound it to a size budget. Either way the join's
-   network work is paid once instead of twice.
-3. **Reduce validation reads.** The `RepositoryName` select in
+2. **Reduce validation reads.** The `RepositoryName` select in
    `validate_content` is an unbounded concept query used as an
    existence probe; a point read on the subject's entity would touch
    one path. The second `validate_content` pass is warm and fine.
-4. **Batch block reads at the dialog layer** (`GetMany`): collapses the
+3. **Batch block reads at the dialog layer** (`GetMany`): collapses the
    16-wide fetch windows into single round trips. Pairs with (1).
-5. **Sync drain fan-out** (`router/sync.rs`): repositories and branches
+4. **Sync drain fan-out** (`router/sync.rs`): repositories and branches
    sync strictly sequentially under one global lock. Fine for one
    space; a many-space account multiplies full round-trip chains.
    Bounded concurrency (2-4 repos) would cut multi-space sync time
    roughly proportionally.
-6. **First push after a lazy join** (`dialog-reactor/src/push.rs`):
-   `hydrate_tree_roots` full-scans `Key::min()..=Key::max()` through
-   the networked index to make the push diff computable — the
-   replication the join deferred, paid un-batched at 2 round trips per
-   block. With dialog's push already using boundary-tolerant diffs,
-   verify the reactor still needs this at all; if it does, it should
-   hydrate with `download()` (16-wide) rather than a serial scan.
-7. **Progress signal.** The join holds the worker's write lock with a
+5. **Progress signal.** The join holds the worker's write lock with a
    single pending→terminal status; a per-phase status (staging n/m)
    would make a slow join legible instead of indistinguishable from a
    hang.

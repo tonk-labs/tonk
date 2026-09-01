@@ -1035,12 +1035,15 @@ async fn save_authority(
 /// How much content moves depends on what the durable replica can read for
 /// itself. A synced replica reads through a remote-backed index on every
 /// ordinary path — `select`, `session`, `commit`, `pull`, `blob` — so a
-/// fresh remote-backed join only has to carry the nodes this claim created;
-/// the rest of the tree resolves on demand against the same `origin` the
-/// invite named. Copying it eagerly instead meant one authorized round trip
-/// per node and per blob, strictly sequential, before the recipient could
-/// see anything (~500 requests and ~110s on a modest space), which is a full
-/// replication masquerading as a join.
+/// fresh remote-backed join only has to carry the nodes the staging pool
+/// holds: the claim's own novelty (which the remote cannot serve) plus the
+/// nodes staging already paid the network for, carried across so the first
+/// render does not fetch them a second time. The rest of the tree resolves
+/// on demand against the same `origin` the invite named. Copying it eagerly
+/// instead meant one authorized round trip per node and per blob, strictly
+/// sequential, before the recipient could see anything (~500 requests and
+/// ~110s on a modest space), which is a full replication masquerading as a
+/// join.
 ///
 /// Everything else still moves whole, because there is nowhere to read the
 /// remainder back from: see [`StagedContent::remote_head`].
@@ -1065,9 +1068,16 @@ async fn install_revision(
     let revision = revision.clone();
 
     match remote_head {
-        Some(base) => {
-            let nodes = install_claim_nodes(tonk, source, source_env, &revision, base).await?;
-            log!("join: installed {nodes} claim node(s); the rest reads through the remote");
+        // A fresh remote-backed join: the remote can serve everything but
+        // the claim's own nodes, so only the staging pool's contents move
+        // (claim novelty plus the already-fetched spine) and the rest
+        // reads through the remote on demand.
+        Some(_) => {
+            let nodes = install_claim_nodes(tonk, source, source_env, &revision).await?;
+            log!(
+                "join: installed {nodes} staged node(s) (claim novelty + warmed reads); \
+                 the rest reads through the remote"
+            );
         }
         None => {
             install_revision_between(source, repository, &revision, source_env, &tonk.operator)
@@ -1188,79 +1198,67 @@ where
     Ok(())
 }
 
-/// Copy only the tree nodes this claim created — the difference between
-/// what the remote served and the staged head committed on top of it.
+/// Copy every tree node the staging pool holds under the staged head into
+/// the durable archive: the nodes this claim created plus every node the
+/// staging phase fetched from the remote to validate and claim.
 ///
-/// The nodes left behind are exactly those reachable from `base`, which is
-/// the head the remote handed back and can hand back again. The durable
-/// replica tracks that same remote, so its own reads resolve them on demand.
+/// The claim's own novelty MUST move — the remote cannot serve nodes that
+/// were minted locally — and it is covered here by structural sharing:
+/// every node the staged commit created is local to the pool and reachable
+/// from the staged head. The rest of the pool's nodes (the spine and the
+/// leaves the validation and roster reads descended through) are exactly
+/// the blocks the first render would otherwise re-fetch over the network,
+/// one authorized round trip each; carrying them across costs local copies
+/// only. Content-addressed blocks are unobservable until a head references
+/// them, so landing them before the reset is the same install order the
+/// claim nodes already used.
 ///
-/// Blobs are skipped for the same reason and are never novel here anyway: a
-/// claim writes roster facts, not blobs.
+/// The walk reads the staging pool ONLY (no remote fallback) and prunes at
+/// absent nodes — the by-reference frontier the pull adopted and nobody
+/// read. That bound is what keeps this from being dialog's
+/// `Branch::install` (which diffs from `Index::empty()` over a networked
+/// store and therefore replicates the whole tree): the copy is capped by
+/// what staging actually fetched.
 ///
-/// This is dialog's `Branch::install` with a real diff base. That command
-/// hardcodes `Index::empty()`, which makes every node in the tree novel and
-/// turns the walk into a full replication.
-/// Returns how many nodes were copied — the number this change exists to
-/// keep small, and the one a regression would blow up.
+/// Blobs are skipped: the durable replica reads them through the same
+/// remote on demand, and a claim writes roster facts, not blobs.
+///
+/// Returns how many nodes were copied — bounded by the staging phase's own
+/// fetch count, and the number a "join re-fetches everything" regression
+/// would blow up.
 async fn install_claim_nodes<Source>(
     tonk: &TonkState,
     source: &Branch,
     source_env: &Source,
     revision: &Revision,
-    base: &Revision,
 ) -> Result<usize, JoinFailure>
 where
-    Source: Provider<Get>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<Fork<RemoteSite, Get>>
-        + ConditionalSync
-        + 'static,
+    Source: Provider<Get> + Provider<Put> + Provider<Resolve> + ConditionalSync + 'static,
 {
     use dialog_artifacts::tree::TreeStorageBridge;
     use dialog_common::Blake3Hash;
     use dialog_effects::archive::prelude::CatalogExt as _;
-    use dialog_repository::{
-        Index, NetworkedIndex, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Upstream,
-    };
-    use dialog_search_tree::{ContentAddressedStorage, TreeDifference};
-
-    // The staged branch reads through its own upstream, so a node the diff
-    // needs but the volatile pool never fetched still resolves.
-    let remote = match source.upstream() {
-        Some(Upstream::Remote { remote, .. }) => Some(
-            source
-                .subject()
-                .remote(remote)
-                .load()
-                .perform(source_env)
-                .await
-                .map_err(|error| {
-                    JoinFailure::claim_failed(format!("failed to read the staged remote: {error}"))
-                })?,
-        ),
-        _ => None,
-    };
+    use dialog_repository::{Index, LocalIndex, RepositoryArchiveExt as _};
+    use dialog_search_tree::{ContentAddressedStorage, Traversable as _, Visit};
 
     let catalog = source.archive().index();
-    let index = NetworkedIndex::new(source_env, catalog.clone(), remote);
+    let index = LocalIndex::new(source_env, catalog.clone());
     let storage = ContentAddressedStorage::new(TreeStorageBridge(index));
-    let from = Index::from_hash(Blake3Hash::from(*base.tree.hash()));
-    let to = Index::from_hash(Blake3Hash::from(*revision.tree.hash()));
+    let tree = Index::from_hash(Blake3Hash::from(*revision.tree.hash()));
 
-    let difference = TreeDifference::compute(&from, &to, &storage, &storage)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to diff the staged claim: {error}"))
-        })?;
-    let nodes = difference.novel_nodes();
-    futures_util::pin_mut!(nodes);
+    let visits = tree.traverse_available(&storage);
+    futures_util::pin_mut!(visits);
     let mut installed = 0usize;
-    while let Some(node) = nodes.next().await {
-        let node = node.map_err(|error| {
+    while let Some(visit) = visits.next().await {
+        let node = match visit.map_err(|error| {
             JoinFailure::claim_failed(format!("staged claim node did not read back: {error}"))
-        })?;
+        })? {
+            Visit::Present(node) => node,
+            // The by-reference frontier: subtrees the pull adopted by hash
+            // and no staged read ever touched. The durable replica reads
+            // them through the same remote on demand.
+            Visit::Absent(_) => continue,
+        };
         catalog
             .clone()
             .put(node.buffer().clone())
