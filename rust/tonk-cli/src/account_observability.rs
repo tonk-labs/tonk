@@ -8,7 +8,7 @@ use tonk_analytics::account::{
 };
 
 /// The narrow stage interface used by native account workflows.
-pub trait CliAccountObserver {
+pub trait CliAccountObserver: Send {
     /// Record a native-owned stage.
     fn checkpoint(&mut self, stage: Stage);
     /// Record a non-transactional follow-up that did not complete.
