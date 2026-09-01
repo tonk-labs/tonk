@@ -207,6 +207,12 @@
             "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
             "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
             "WBG_POOL_FALLBACK_RUNNER" = "${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner";
+            # Pooled tests run in sibling tabs. Keep Chrome from stretching
+            # their millisecond-scale DOM polling timers to one second when a
+            # tab is not foregrounded, which otherwise trips the runner's
+            # per-test timeout under full-suite concurrency.
+            "WBG_POOL_BROWSER_ARGS" =
+              "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
           }
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
