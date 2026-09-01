@@ -1863,18 +1863,29 @@ pub fn account_customer_query_body() -> String {
 pub fn account_active_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "activated_at": {
+            ACTIVATION_FIELD: {
                 "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
                 "cardinality": "one"
             }
         } },
         "terms": {
             "this": { "?": { "name": "account" } },
-            "activated_at": { "?": { "name": "activated_at" } },
+            ACTIVATION_FIELD: { "?": { "name": ACTIVATION_FIELD } },
         }
     })
     .to_string()
 }
+
+/// The frame field whose presence says the account activated.
+///
+/// Named once because the subscription that asks for it
+/// ([`account_active_query_body`]) and the banner reader that looks for
+/// it (`activation::apply`) must agree. They drifted once — the query
+/// moved from carrying a `provider` to the bare activation timestamp and
+/// the reader kept probing `provider` — so every activation frame read
+/// as not-yet-active and the pending banner lingered for the life of the
+/// page after the account was served.
+pub const ACTIVATION_FIELD: &str = "activated_at";
 
 /// The share control's single subscription: where this space's invite
 /// has got to.
@@ -2086,6 +2097,31 @@ mod share_blocked_query {
     #[test]
     fn it_rejects_an_empty_subject() {
         assert!(share_blocked_query_body("").is_err());
+    }
+
+    /// The activation subscription asks for the field its reader checks.
+    ///
+    /// Two halves of one contract, held together only by this test. They
+    /// came apart once: the query moved from carrying a `provider` to
+    /// the bare activation timestamp, the banner reader kept probing
+    /// `provider`, and because a field that is not requested is simply
+    /// absent from every frame, activation was never noticed — the
+    /// pending banner lingered for the life of the page after the
+    /// account was served.
+    #[test]
+    fn it_reads_the_field_the_activation_subscription_asks_for() {
+        let body: serde_json::Value =
+            serde_json::from_str(&account_active_query_body()).expect("the query body is JSON");
+        assert!(
+            body["predicate"]["with"][ACTIVATION_FIELD].is_object(),
+            "the subscription must request `{ACTIVATION_FIELD}`, which is what the \
+             banner reader checks; got {}",
+            body["predicate"]["with"],
+        );
+        assert!(
+            body["terms"][ACTIVATION_FIELD].is_object(),
+            "`{ACTIVATION_FIELD}` must be bound in `terms` or it never reaches a frame",
+        );
     }
 }
 

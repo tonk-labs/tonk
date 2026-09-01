@@ -138,12 +138,18 @@ fn apply(host: &HtmlElement, payload: &JsValue, is_delta: bool) {
             .and_then(|value| value.as_string())
     };
     // A registration frame carries the address; an activation frame
-    // carries the provider. Whichever arrived, the pair of latched
-    // values is what the banner renders from.
+    // carries `activated_at`, and its PRESENCE is the whole signal —
+    // there is no provider on it any more. The reader once looked for
+    // `provider` here after the query had moved on, so every activation
+    // frame read as not-activated and the banner lingered for the life
+    // of the page. [`crate::logic::ACTIVATION_FIELD`] is what the query
+    // binds, pinned to this reader by a test.
     if let Some(email) = read("email") {
         REGISTERED_EMAIL.with(|cell| *cell.borrow_mut() = Some(email));
     }
-    if read("provider").is_some() {
+    let activated_frame = Reflect::get(&fields, &crate::logic::ACTIVATION_FIELD.into())
+        .is_ok_and(|value| !value.is_undefined() && !value.is_null());
+    if activated_frame {
         ACTIVATED.with(|cell| *cell.borrow_mut() = true);
     }
     let email = REGISTERED_EMAIL.with(|cell| cell.borrow().clone());
