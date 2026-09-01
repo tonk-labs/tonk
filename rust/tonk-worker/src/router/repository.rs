@@ -5975,15 +5975,19 @@ mod tests {
         );
     }
 
-    /// Reconciling the cached handle swaps in a fresh `BranchState`, but it
-    /// must carry the live subscriptions across so in-flight SSE streams
-    /// don't silently freeze on the discarded handle.
+    /// Reconciling the cached handle refreshes it IN PLACE, so everything
+    /// hanging off the `BranchState` — live subscriptions AND the session
+    /// overlay — survives. An earlier version opened a fresh handle and
+    /// swapped it in: the swap adopted subscriptions but a fresh open
+    /// mints an empty overlay, so a tab's `tonk:site` stamp vanished the
+    /// moment the share flow wired a remote and the space view sat on its
+    /// placeholder dot indefinitely.
     #[dialog_common::test]
-    async fn it_keeps_live_subscriptions_when_refreshing_a_branch() {
+    async fn it_keeps_subscriptions_and_overlay_when_refreshing_a_branch() {
         use std::sync::Arc;
 
         use dialog_query::{ConceptQuery, Query};
-        use tonk_schema::meta::Name;
+        use tonk_schema::meta::{Name, name::Referent};
 
         let (app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
         let repo = repo.as_str();
@@ -6009,7 +6013,32 @@ mod tests {
             before_ptr = Arc::as_ptr(&session.state);
         }
         // Drain whatever subscribing itself delivered, so anything that
-        // arrives next can only be the refresh's own doing.
+        // arrives next can only be a later write's doing.
+        while subscriber.receiver.try_recv().is_ok() {}
+
+        // An ephemeral session fact — the kind a tab's `tonk:site` stamp
+        // or the sync status is made of. It must survive the refresh.
+        {
+            let guard = state.read().await;
+            guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .overlay()
+                .assert(Name {
+                    this: "id:overlay-survivor".parse().expect("entity"),
+                    entity: Referent("id:overlay-target".parse().expect("entity")),
+                })
+                .write()
+                .perform(&guard.operator)
+                .await
+                .expect("overlay write");
+            guard.reactor.run_scheduled_polls(&guard.operator).await;
+        }
+        assert!(
+            subscriber.receiver.try_recv().is_ok(),
+            "the overlay write must reach the live subscriber",
+        );
         while subscriber.receiver.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
@@ -6023,23 +6052,40 @@ mod tests {
             .await
             .expect("re-acquire main");
         assert!(
-            !std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
-            "refresh must swap in a fresh BranchState",
+            std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
+            "refresh must keep the cached BranchState, not swap it",
         );
         assert_eq!(
             session.state.subscriptions().lock().len(),
             1,
             "the live subscription must survive the refresh",
         );
-        // Surviving is not enough: the rebound subscription's retained
-        // result was discarded with the old engine, so it must be handed
-        // a fresh snapshot NOW. Left waiting for the next commit, a live
-        // view over a just-wired quiet space showed its loading state
-        // indefinitely — the share flow's infinite loader.
+        // The refreshed handle must still track the wired upstream…
         assert!(
-            subscriber.receiver.try_recv().is_ok(),
-            "the rebound subscription must be handed a fresh snapshot",
+            session.state.branch.upstream().is_some(),
+            "the in-place refresh must pick up the wired upstream",
         );
+        // …and still fold the session overlay: a fresh subscriber's
+        // snapshot carries the ephemeral fact. Before the in-place
+        // refresh this was the share-flow regression — the swapped-in
+        // handle's empty overlay silently dropped every session fact.
+        let mut fresh = session
+            .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
+            .expect("subscribe after refresh");
+        // A new subscriber is Pending until a poll serves its snapshot;
+        // drive one the way the request dispatcher would.
+        guard.reactor.schedule_poll(Arc::clone(&session.state));
+        guard.reactor.run_scheduled_polls(&guard.operator).await;
+        let mut snapshot = Vec::new();
+        while let Ok(bytes) = fresh.receiver.try_recv() {
+            snapshot.extend_from_slice(&bytes);
+        }
+        let snapshot = String::from_utf8_lossy(&snapshot);
+        assert!(
+            snapshot.contains("overlay-survivor"),
+            "the session overlay must survive the refresh; snapshot: {snapshot}",
+        );
+        drop(fresh);
         drop(subscriber);
     }
 

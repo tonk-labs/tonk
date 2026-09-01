@@ -1549,10 +1549,12 @@ pub mod tests {
                 .expect("SSE-framed body"),
         )
         .expect("delta is JSON");
-        // Refreshing the branch handle deliberately rebinds its subscription
-        // engine, so this is a replacement snapshot; an ordinary mint on an
-        // unchanged handle is an incremental `asserted` delta. The FAB accepts
-        // both frame kinds.
+        // An ordinary mint on a quiet handle broadcasts an incremental
+        // `asserted` delta; a snapshot (`conclusions`) arrives when a poll
+        // serves a pending subscriber instead. The FAB accepts both frame
+        // kinds, so this does too. (The in-place `refresh_branch` no longer
+        // rebinds the engine mid-flow, so no empty replacement snapshot can
+        // race in front of the invite delta — that was a CI flake.)
         let rows = delta["conclusions"]
             .as_array()
             .or_else(|| delta["asserted"].as_array())

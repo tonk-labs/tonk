@@ -264,12 +264,16 @@ impl Reactor {
     /// freshly loaded handle publishes to durable storage but never
     /// touches that cached cell, so sync — which reads through this
     /// cache — sees no upstream and fails with `BranchHasNoUpstream`.
-    /// Re-opening re-resolves the upstream from durable storage, so the
-    /// fresh handle reflects the change; we swap it into the cache and
-    /// rebind the existing subscriptions to it so live SSE streams keep
-    /// updating. Rebinding sends a fresh snapshot on the next poll because
-    /// the discarded engine's retained result cannot be used as a delta base
-    /// for the new branch handle.
+    /// [`Branch::refresh`](dialog_repository::Branch::refresh)
+    /// re-resolves the head and upstream cells from durable storage IN
+    /// PLACE on the cached handle, so everything hanging off it — the
+    /// session overlay (a tab's `tonk:site` stamp, sync status), the
+    /// registered subscriptions, the warm tree caches — survives
+    /// untouched. An earlier version opened a fresh handle and swapped
+    /// it into the cache; the swap adopted subscriptions but silently
+    /// discarded the overlay (a fresh open mints an empty one), which
+    /// surfaced as a space view stuck on its placeholder after the
+    /// share flow wired a remote.
     ///
     /// No-op when the repo or branch isn't cached: the next `acquire`
     /// opens a fresh handle that already reflects durable state.
@@ -288,42 +292,27 @@ impl Reactor {
         };
         // An uncached branch opens fresh on next acquire — already
         // current, nothing to reconcile.
-        if !repo_state.branches().read().contains_key(branch) {
+        let Some(state) = repo_state.branches().read().get(branch).map(Arc::clone) else {
             return Ok(());
-        }
+        };
 
-        // Re-open outside the lock (open is async). This re-resolves the
-        // branch's upstream cell from durable storage, so the fresh
-        // handle reflects a `set_upstream` performed elsewhere.
-        let handle = repo_state
-            .repository()
-            .branch(branch)
-            .open()
-            .perform(env)
+        state
+            .branch
+            .refresh(env)
             .await
             .map_err(|e| ReactorError::BranchNotFound {
                 repo: repo.to_owned(),
                 branch: branch.to_owned(),
                 reason: e.to_string(),
             })?;
-        let fresh = Arc::new(BranchState::new(handle));
 
-        // Swap under the branches lock so a concurrent subscribe can't
-        // land on the discarded state between the adopt and the insert.
-        {
-            let mut branches = repo_state.branches().write();
-            if let Some(old) = branches.get(branch) {
-                fresh.adopt_subscriptions_from(old);
-            }
-            branches.insert(branch.to_owned(), Arc::clone(&fresh));
-        }
-        // The adopted subscriptions need that fresh snapshot DELIVERED:
-        // nothing else is going to poll on their behalf. The rebind used
-        // to leave them waiting for whatever commit happened to come
-        // next — and on a quiet branch none does, so a live view sat on
-        // its loading state indefinitely after its space was wired to a
-        // remote. The caller's next `run_scheduled_polls` drains this.
-        self.schedule_poll(fresh);
+        // The head or upstream may have moved: deliver fresh snapshots
+        // to the branch's subscriptions. Nothing else polls on their
+        // behalf — on a quiet branch no commit follows, and a live view
+        // would sit on its stale state indefinitely after its space was
+        // wired to a remote. The caller's next `run_scheduled_polls`
+        // drains this.
+        self.schedule_poll(state);
         Ok(())
     }
 
