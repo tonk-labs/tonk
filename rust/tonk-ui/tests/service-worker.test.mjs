@@ -1476,6 +1476,26 @@ describe("the failure page", () => {
     assert.doesNotMatch(html, /Reset and reload|unregister|caches\.delete|getRegistrations/);
   });
 
+  test("adopts a healthy successor before reloading a withdrawn page", async () => {
+    withGlobals();
+    const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
+    mod.workerHealth.state = "failed";
+    mod.workerHealth.error = "This Tonk version was withdrawn";
+    mod.workerHealth.attempts = 1;
+
+    const html = await mod.failurePage().text();
+    assert.match(html, /registration\.update\(\)/);
+    assert.match(html, /successor\.postMessage\(\{ type: "activate" \}\)/);
+    assert.match(html, /successor\.postMessage\(\{ type: "claim" \}\)/);
+    assert.match(html, /navigator\.serviceWorker\.controller === incumbent/);
+    assert.match(html, /await adoptSuccessor\(registration\);\s*location\.reload\(\)/);
+    assert.doesNotMatch(
+      html,
+      /registration\?\.update\(\)[\s\S]{0,200}location\.reload\(\)/,
+      "an update probe must not reload back into the withdrawn incumbent",
+    );
+  });
+
   test("escapes the error text", async () => {
     withGlobals();
     const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
