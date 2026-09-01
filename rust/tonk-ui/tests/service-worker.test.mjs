@@ -402,6 +402,19 @@ describe("exact fetch routing", () => {
     assert.equal(await response.text(), "OPTIONS");
   });
 
+  test("adds CORS to the JavaScript health shortcut", async () => {
+    const { self } = withGlobals();
+    await loadWith({});
+    const fetch = fetchEvent(new Request("https://tonk.test/api/health"));
+
+    self.onfetch(fetch.event);
+
+    const response = await fetch.response();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.equal((await response.json()).build, "testbuild");
+  });
+
   test("serves exact controlled static pages while app routes use the root shell", async () => {
     const { self, caches } = withGlobals();
     self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });

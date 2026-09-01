@@ -49,15 +49,7 @@ pub struct BranchReference<'a> {
 fn adopt_waiting(reference: &BranchReference<'_>, state: &Arc<BranchState>, name: &str) {
     let reactor = reference.reactor();
     let repo = reference.repository.name();
-    if !reactor.has_pending(repo, name) {
-        return;
-    }
-    for pending in reactor.take_pending(repo, name) {
-        state.adopt_subscriber(pending.query, pending.client, pending.sender);
-    }
-    // Evaluate once so the adopted subscribers get a real frame now,
-    // rather than waiting for somebody else's commit to schedule a poll.
-    reactor.schedule_poll(Arc::clone(state));
+    reactor.adopt_pending(repo, name, state);
 }
 
 impl<'a> BranchReference<'a> {
@@ -78,9 +70,11 @@ impl<'a> BranchReference<'a> {
         // room — a subscriber can register while the branch is absent
         // and the branch appear via a DIFFERENT path (another request
         // acquiring it first), so the cached case is a real arrival too.
-        if let Some(state) = repository.branches().read().get(name) {
-            let state = Arc::clone(state);
-            drop(repository.branches().read());
+        let cached = {
+            let branches = repository.branches().read();
+            branches.get(name).cloned()
+        };
+        if let Some(state) = cached {
             adopt_waiting(self, &state, name);
             return Ok(BranchSession { state });
         }

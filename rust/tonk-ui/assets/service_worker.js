@@ -66,6 +66,10 @@ self.addEventListener("unhandledrejection", event => {
 // times initialization has been attempted.
 const workerHealth = {
     state: "idle", // idle | initializing | ok | failed
+    // Digest of the exact ArrayBuffer handed to wasm-bindgen init. This is
+    // runtime evidence that the active glue booted its own verified Wasm, not
+    // merely that the expected bytes existed in an install fixture.
+    workerWasm: null,
     error: null,
     attempts: 0,
     lastAttemptAt: null,
@@ -77,13 +81,23 @@ function healthResponse() {
         JSON.stringify({
             build: BUILD_ID,
             worker: workerHealth.state,
+            workerWasm: workerHealth.workerWasm,
             error: workerHealth.error,
             attempts: workerHealth.attempts,
             lastAttemptAt: workerHealth.lastAttemptAt,
             startedAt: workerHealth.startedAt,
             log: logRing.slice(-200),
         }),
-        { status: 200, headers: { "content-type": "application/json" } },
+        {
+            status: 200,
+            headers: {
+                "content-type": "application/json",
+                // `/api/health` is answered by this JS shortcut rather than
+                // Rust's common CORS layer. Opaque-origin guests still need
+                // the actual response to pass CORS after their preflight.
+                "access-control-allow-origin": "*",
+            },
+        },
     );
 }
 
@@ -558,7 +572,20 @@ async function activateWorker() {
         workerHealth.attempts += 1;
         workerHealth.lastAttemptAt = now;
         tonkServiceWorkerResolves = workerWasmModule()
-            .then(module_or_path => init({ module_or_path }))
+            .then(async module_or_path => {
+                if (WORKER_WASM_HASH === "dev") {
+                    workerHealth.workerWasm = "dev";
+                    return init({ module_or_path });
+                }
+                const actual = await digestOf(module_or_path);
+                if (actual.slice(0, WORKER_WASM_HASH.length) !== WORKER_WASM_HASH) {
+                    throw new Error(
+                        `worker wasm hash mismatch: expected ${WORKER_WASM_HASH}, got ${actual}`,
+                    );
+                }
+                workerHealth.workerWasm = actual.slice(0, WORKER_WASM_HASH.length);
+                return init({ module_or_path });
+            })
             .then(() => activate(BUILD_ID, ASSET_PATHS))
             .then(worker => {
                 workerHealth.state = "ok";
@@ -567,6 +594,7 @@ async function activateWorker() {
             })
             .catch(error => {
                 workerHealth.state = "failed";
+                workerHealth.workerWasm = null;
                 workerHealth.error = String(error?.message || error).slice(0, 2000);
                 // Un-memoize so a later fetch retries instead of
                 // replaying this rejection for the worker's lifetime.

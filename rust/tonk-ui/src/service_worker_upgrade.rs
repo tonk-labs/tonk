@@ -206,6 +206,9 @@ mod tests {
     #[derive(Debug)]
     struct GenerationContract {
         build: String,
+        /// Digest prefix stamped into the worker glue and re-observed from the
+        /// exact ArrayBuffer handed to wasm-bindgen initialization.
+        worker_wasm: String,
         /// Stable-URL members whose bytes must stay coherent with the
         /// document/worker build. Values are their manifest SHA-256 digests.
         probes: BTreeMap<String, String>,
@@ -220,7 +223,13 @@ mod tests {
         let build = worker_build_id(&root.join("service_worker.js"))?;
         let manifest: Value =
             serde_json::from_slice(&std::fs::read(root.join("asset-manifest.json"))?)?;
+        let version: Value = serde_json::from_slice(&std::fs::read(root.join("version.json"))?)?;
         ensure!(manifest["build"] == build, "manifest/worker build mismatch");
+        ensure!(version["build"] == build, "version/worker build mismatch");
+        let worker_wasm = version["workerWasm"]
+            .as_str()
+            .ok_or_else(|| anyhow!("version has no worker Wasm digest"))?
+            .to_owned();
         let assets = manifest["assets"]
             .as_object()
             .ok_or_else(|| anyhow!("asset manifest has no asset map"))?;
@@ -269,6 +278,7 @@ mod tests {
             .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(GenerationContract {
             build,
+            worker_wasm,
             probes,
             worker_members,
         })
@@ -350,6 +360,65 @@ mod tests {
         Ok(())
     }
 
+    /// Put the navigation counter in the served document itself so every
+    /// WebDriver observes the same lifecycle evidence. Session storage spans
+    /// same-tab reloads but not test environments; the root map distinguishes
+    /// the deliberately unmounted alignment document from mounted A/B pages.
+    fn instrument_generation_documents(root: &Path) -> Result<()> {
+        let index_path = root.join("index.html");
+        let index = std::fs::read_to_string(&index_path)?;
+        let marker = "data-tonk-test-sw-documents";
+        ensure!(
+            !index.contains(marker),
+            "document probe is already installed"
+        );
+        let probe = r##"<script data-tonk-test-sw-documents>
+            (() => {
+                const countKey = "tonk:test:sw-documents";
+                const rootsKey = "tonk:test:sw-roots";
+                const documentNumber = (Number(sessionStorage.getItem(countKey)) || 0) + 1;
+                sessionStorage.setItem(countKey, String(documentNumber));
+                const roots = JSON.parse(sessionStorage.getItem(rootsKey) || "{}");
+                roots[documentNumber] = false;
+                sessionStorage.setItem(rootsKey, JSON.stringify(roots));
+                const recordRoot = () => {
+                    if (!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate")) return;
+                    const roots = JSON.parse(sessionStorage.getItem(rootsKey) || "{}");
+                    roots[documentNumber] = true;
+                    sessionStorage.setItem(rootsKey, JSON.stringify(roots));
+                };
+                new MutationObserver(recordRoot).observe(document, { childList: true, subtree: true });
+                recordRoot();
+            })();
+        </script>
+        "##;
+        let instrumented = index.replacen("</head>", &format!("{probe}</head>"), 1);
+        ensure!(
+            instrumented != index,
+            "generation document has no closing head"
+        );
+        std::fs::write(&index_path, instrumented)?;
+        Ok(())
+    }
+
+    fn stamp_generation(root: &Path) -> Result<()> {
+        let stamp = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join("stamp-service-worker.sh");
+        let output = Command::new(&stamp)
+            .arg(root)
+            .output()
+            .with_context(|| format!("run {}", stamp.display()))?;
+        ensure!(
+            output.status.success(),
+            "generation stamp failed: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
     fn copy_artifact_tree(source: &Path, destination: &Path) -> Result<()> {
         std::fs::create_dir(destination)
             .with_context(|| format!("create generation {}", destination.display()))?;
@@ -390,26 +459,15 @@ mod tests {
             "second generation already exists at {}",
             generation_b.display()
         );
+        instrument_generation_documents(&generation_a)?;
+        stamp_generation(&generation_a)?;
         let generation_a_contract = generation_contract(&generation_a)?;
         copy_artifact_tree(&generation_a, &generation_b)?;
 
         // Make every load-bearing layer byte-distinct while keeping each Wasm
         // module valid, then run the real publisher over the complete graph.
         distinguish_generation_b(&generation_b)?;
-        let stamp = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("stamp-service-worker.sh");
-        let output = Command::new(&stamp)
-            .arg(&generation_b)
-            .output()
-            .with_context(|| format!("run {}", stamp.display()))?;
-        ensure!(
-            output.status.success(),
-            "second-generation stamp failed: status={} stdout={} stderr={}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        stamp_generation(&generation_b)?;
         let generation_b_contract = generation_contract(&generation_b)?;
         ensure!(
             generation_a_contract.build != generation_b_contract.build,
@@ -588,6 +646,8 @@ mod tests {
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
                             testErrors: globalThis.__tonkTestErrors || [],
                             testInstallProgress: (globalThis.__tonkTestInstallProgress || []).slice(-5),
+                            documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
+                            roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
                         };
                         // Polling the retiring worker's fetch boundary can
                         // itself keep that worker alive and prevent Chrome
@@ -746,11 +806,11 @@ mod tests {
                     if (event.source !== iframe.contentWindow || event.data?.token !== token) return;
                     if (event.data.type === "request") {
                         try {
-                            // Exercise the actual browser-to-worker OPTIONS
-                            // response. Opaque author code cannot itself be a
-                            // controlled client; Tonk's trusted parent relay
-                            // owns this fetch and stamps the build.
-                            const preflight = await fetch("/api/health", {
+                            // A sandboxed opaque document is not a service-
+                            // worker client in Chrome. Mirror the production
+                            // portal boundary: the trusted parent performs the
+                            // authorized fetch and stamps immutable provenance.
+                            const options = await fetch("/api/health", {
                                 method: "OPTIONS",
                             });
                             const response = await fetch("/api/health", {
@@ -759,8 +819,8 @@ mod tests {
                             iframe.contentWindow.postMessage({
                                 token,
                                 type: "result",
-                                preflightStatus: preflight.status,
-                                allowed: preflight.headers.get("access-control-allow-headers"),
+                                optionsStatus: options.status,
+                                allowed: options.headers.get("access-control-allow-headers"),
                                 status: response.status,
                                 body: await response.json(),
                             }, "*");
@@ -793,55 +853,24 @@ mod tests {
             .await?;
         ensure!(
             result.json()["opaqueOrigin"] == true
-                && result.json()["preflightStatus"] == 204
+                && result.json()["optionsStatus"] == 204
                 && result.json()["allowed"]
                     .as_str()
                     .is_some_and(|allowed| allowed.split(", ").any(|name| name == "x-tonk-build"))
                 && result.json()["status"] == 200
                 && result.json()["body"]["build"] == build,
-            "opaque relay did not preserve build provenance through the browser CORS boundary: {}",
+            "opaque relay did not preserve trusted build provenance or the worker OPTIONS contract: {}",
             result.json()
         );
         Ok(result.json().clone())
-    }
-
-    async fn install_document_probe(driver: &WebDriver) -> Result<()> {
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools
-            .execute_cdp_with_params(
-                "Page.addScriptToEvaluateOnNewDocument",
-                serde_json::json!({
-                    "source": r##"
-                        (() => {
-                            const countKey = "tonk:test:sw-documents";
-                            const rootsKey = "tonk:test:sw-roots";
-                            const documentNumber = (Number(sessionStorage.getItem(countKey)) || 0) + 1;
-                            sessionStorage.setItem(countKey, String(documentNumber));
-                            const roots = JSON.parse(sessionStorage.getItem(rootsKey) || "{}");
-                            roots[documentNumber] = false;
-                            sessionStorage.setItem(rootsKey, JSON.stringify(roots));
-                            const recordRoot = () => {
-                                if (!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate")) return;
-                                const roots = JSON.parse(sessionStorage.getItem(rootsKey) || "{}");
-                                roots[documentNumber] = true;
-                                sessionStorage.setItem(rootsKey, JSON.stringify(roots));
-                            };
-                            new MutationObserver(recordRoot).observe(document, { childList: true, subtree: true });
-                            recordRoot();
-                        })();
-                    "##
-                }),
-            )
-            .await?;
-        Ok(())
     }
 
     #[dialog_common::test]
     async fn it_adopts_a_complete_second_generation_without_mixing_assets(
         env: TestEnvironment,
     ) -> Result<()> {
-        let driver = env.driver().await?;
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
         let build_a = &generation_a.build;
         let build_b = &generation_b.build;
         let initial = wait_for_mounted_build(&driver, build_a).await?;
@@ -850,9 +879,13 @@ mod tests {
             Some(build_a.as_str()),
             "{initial}"
         );
+        assert_eq!(
+            initial["health"]["workerWasm"].as_str(),
+            Some(generation_a.worker_wasm.as_str()),
+            "{initial}"
+        );
         fetched_asset_digests(&driver, &generation_a.probes).await?;
         create_state_sentinels(&driver).await?;
-        install_document_probe(&driver).await?;
         // Hold the old page/controller across publication so requests issued
         // while B is live must still resolve as one coherent A graph.
         set_update_hold(&driver, true).await?;
@@ -862,6 +895,11 @@ mod tests {
         assert_eq!(
             held["health"]["build"].as_str(),
             Some(build_a.as_str()),
+            "{held}"
+        );
+        assert_eq!(
+            held["health"]["workerWasm"].as_str(),
+            Some(generation_a.worker_wasm.as_str()),
             "{held}"
         );
         fetched_asset_digests(&driver, &generation_a.probes).await?;
@@ -877,6 +915,15 @@ mod tests {
         assert!(state["installing"].is_null(), "{state}");
         assert!(state["waiting"].is_null(), "{state}");
         assert_eq!(state["mounted"], true, "{state}");
+        assert_eq!(state["documents"], 3, "{state}");
+        assert_eq!(state["roots"]["1"], true, "{state}");
+        assert_eq!(state["roots"]["2"], false, "{state}");
+        assert_eq!(state["roots"]["3"], true, "{state}");
+        assert_eq!(
+            state["health"]["workerWasm"].as_str(),
+            Some(generation_b.worker_wasm.as_str()),
+            "{state}"
+        );
         assert!(state["guard"].is_null(), "{state}");
         assert!(
             state["cacheNames"].as_array().is_some_and(|names| names
@@ -901,7 +948,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_answers_browser_preflight_and_relays_opaque_build_provenance(
+    async fn it_answers_options_and_relays_opaque_build_provenance(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = env.driver().await?;
@@ -916,8 +963,8 @@ mod tests {
     async fn it_releases_a_waiting_successor_after_old_streams_try_to_reconnect(
         env: TestEnvironment,
     ) -> Result<()> {
-        let driver = env.driver().await?;
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
         let build_a = generation_a.build;
         let build_b = generation_b.build;
         wait_for_mounted_build(&driver, &build_a).await?;
@@ -1057,9 +1104,9 @@ mod tests {
     async fn it_keeps_sibling_tabs_on_their_controller_until_claim_is_safe(
         env: TestEnvironment,
     ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
         let primary = driver.window().await?;
-        let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let build_a = generation_a.build;
         let build_b = generation_b.build;
         let initial = wait_for_mounted_build(&driver, &build_a).await?;

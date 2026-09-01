@@ -312,15 +312,22 @@ mod native {
             .to_string();
         // Polled from the test side: a single waiting script is bounded
         // by chromedriver's script timeout, which a cold machine still
-        // compiling the app's wasm can outlast. A boot that WEDGES
-        // rather than runs slow is the page's own problem now — its
-        // watchdog (index.html) reloads a boot with no signs of life
-        // and escalates to clearing caches and workers — so this wait
-        // only has to outlast the ladder, not run it.
+        // compiling the app's wasm can outlast. Account tests navigate
+        // immediately after this helper returns, so identity alone is
+        // insufficient: the app can expose it while the first worker is
+        // still verifying its immutable asset graph. Wait for control as
+        // well so the next navigation cannot race the initial install.
+        // A boot that WEDGES rather than runs slow is the page's own
+        // problem now — its watchdog (index.html) reloads a boot with no
+        // signs of life and escalates to terminal recovery — so this wait
+        // only has to outlast that ladder, not run it.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
         loop {
             let ready = driver
-                .execute("return !!window.tonkIdentity;", vec![])
+                .execute(
+                    "return !!window.tonkIdentity && !!navigator.serviceWorker?.controller;",
+                    vec![],
+                )
                 .await
                 .ok()
                 .and_then(|ret| ret.json().as_bool());
@@ -346,7 +353,7 @@ mod native {
                     .map(|ret| ret.json().clone())
                     .unwrap_or(serde_json::Value::Null);
                 return Err(anyhow!(
-                    "the page never exposed tonkIdentity; page state: {state}"
+                    "the page never exposed tonkIdentity under service-worker control; page state: {state}"
                 ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
