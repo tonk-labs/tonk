@@ -627,7 +627,7 @@ pub(crate) async fn provision_or_defer(
 /// that was unreachable. Those clear on their own, and the drain is
 /// idempotent, so queuing a call that turns out to be unnecessary costs
 /// one round trip while dropping one costs the account.
-fn is_retryable(error: &TonkWorkerError) -> bool {
+pub(crate) fn is_retryable(error: &TonkWorkerError) -> bool {
     match error {
         TonkWorkerError::Upstream { code, status, .. } => match code.as_deref() {
             // The service's own state, not this request: the customer row

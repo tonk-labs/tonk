@@ -659,6 +659,28 @@ pub async fn pull(
             {
                 log!("account-state convergence after pull failed: {error}");
             }
+            // A pull that moved the head changed what every live view
+            // over this branch shows; deliver it. Nothing else will — a
+            // pull commits nothing locally, so no commit-time poll runs,
+            // and a view left waiting repainted only on its next
+            // unrelated poll (or a manual refresh).
+            if after != before {
+                let session = tonk_state
+                    .reactor
+                    .repository(&params.repo)
+                    .branch(&params.branch)
+                    .acquire(&tonk_state.operator)
+                    .await;
+                if let Ok(session) = session {
+                    tonk_state
+                        .reactor
+                        .schedule_poll(std::sync::Arc::clone(&session.state));
+                    tonk_state
+                        .reactor
+                        .run_scheduled_polls(&tonk_state.operator)
+                        .await;
+                }
+            }
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
@@ -1034,6 +1056,19 @@ pub async fn sync(
         return Err(error);
     }
     let after_pull = after_pull.flatten();
+    // A pull that moved the head changed what every live view over this
+    // branch shows; deliver it now rather than after the push settles —
+    // a refused or empty push left views waiting on a repaint that only
+    // a manual refresh provided.
+    if after_pull.is_some() && after_pull != before {
+        tonk_state
+            .reactor
+            .schedule_poll(std::sync::Arc::clone(&session.state));
+        tonk_state
+            .reactor
+            .run_scheduled_polls(&tonk_state.operator)
+            .await;
+    }
 
     match tonk_state
         .reactor

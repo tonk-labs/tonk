@@ -1081,16 +1081,31 @@ async fn run_invite(
     // enable-sync attach: a foreign remote (self-hosted, a test server)
     // is not our access service, and refusing the mint over it would
     // make those unshareable.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
-            }
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        // Our own service said no, and waiting will not change the
+        // answer. A link minted anyway points at a space the service
+        // will not serve — the recipient meets "you don't have this
+        // space" — so the share is refused with the reason instead.
+        Err(error)
+            if remote_is_own_service(remote_execution.access_url.as_str())
+                && !super::customer::is_retryable(&error) =>
+        {
+            log!("Invite for repo '{repo_name}': the service refused to provision: {error}");
+            drop(tonk);
+            publish_share_blocked(
+                env.state(),
+                repo_name,
+                subject_entity,
+                tonk_worker_api::share::BLOCKED_NOT_PROVISIONED,
+                &error.to_string(),
+                time,
+            )
+            .await;
+            return Ok(RunInvite::Settled);
         }
         Err(error) => {
-            log!("Invite for repo '{repo_name}': no prefix to provision with: {error}");
+            log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
         }
     }
 
@@ -2398,23 +2413,25 @@ async fn enable_sync_inner(
     // local-only space earns its remote, so it is where the consumer row
     // has to be created.
     //
-    // Best effort, not fatal. A remote is not necessarily OUR access
-    // service — a self-hosted endpoint or a test server is attached the
-    // same way, and `/provider/add` against our own service is beside
-    // the point there. Refusing the attach on a failed provision would
-    // make those unreachable, so the attach proceeds and a space that
-    // does need provisioning surfaces it as a refused presign rather
-    // than a refused attach.
-    match space_root_prefix(&tonk, &repository.did()).await {
-        Ok(prefix) => {
-            if let Err(error) =
-                super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None).await
-            {
-                log!("enable sync '{key}': provisioning skipped: {error}");
-            }
+    // Best effort ONLY for a remote that is not our access service — a
+    // self-hosted endpoint or a test server is attached the same way,
+    // and `/provider/add` against our own service is beside the point
+    // there. But when the remote IS our service and it refuses with an
+    // answer waiting will not change, attaching anyway wires the space
+    // to an upstream that refuses every presign terminally: the sync
+    // loop hammers it forever and a link handed out against it answers
+    // "you don't have this space". That refusal fails the attach.
+    match provision_space_consumer(&tonk, &repository.did()).await {
+        Ok(()) => {}
+        Err(error) if remote_is_own_service(remote) && !super::customer::is_retryable(&error) => {
+            return Err(RepositoryError::Internal(format!(
+                "enable sync '{key}': the service refused to provision this space, and \
+                 attaching its own remote anyway would wire the space to an upstream \
+                 that refuses every request: {error}"
+            )));
         }
         Err(error) => {
-            log!("enable sync '{key}': no root delegation to consent with: {error}")
+            log!("enable sync '{key}': provisioning skipped: {error}");
         }
     }
 
@@ -2900,6 +2917,53 @@ pub async fn create_repository(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision `subject` under this profile's account, repairing a stale
+/// consent first.
+///
+/// A space created before sign-in mints its consent to the account the
+/// profile held THEN — the onboarding account — and the stored chain
+/// does not change when the real account arrives. Presenting it earns
+/// `consent was issued to <onboarding>, not the invoking customer`, and
+/// treating that refusal as skippable wired spaces to remotes that then
+/// refused every presign terminally, with an invite already handed out:
+/// the recipient met "you don't have this space" while this device's
+/// sync hammered an unprovisionable upstream. The rotation sweep is the
+/// repair — it re-issues from the space's own key — so when the stored
+/// audience is not the current root it runs HERE, before anything is
+/// presented, rather than whenever the next boot chore gets to it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn provision_space_consumer(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), TonkWorkerError> {
+    let mut prefix = space_root_prefix(tonk, subject).await?;
+    if let Ok(root) = super::identity::root_did(tonk).await
+        && prefix.audience() != &root
+    {
+        log!("{subject}: consent audienced to a retired account; re-issuing before provisioning");
+        super::rotation::rotate_from_onboarding(tonk).await;
+        match space_root_prefix(tonk, subject).await {
+            Ok(fresh) => prefix = fresh,
+            Err(error) => log!("{subject}: consent not re-issued: {error}"),
+        }
+    }
+    super::customer::provision_consumer(tonk, subject, &prefix, None).await
+}
+
+/// Whether `remote` is this deployment's own access service — the one
+/// party whose provisioning refusal is authoritative for it. A foreign
+/// remote (self-hosted, a test server) is attached and shared without
+/// asking our service's opinion.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn remote_is_own_service(remote: &str) -> bool {
+    let Ok(own) = super::customer::service_origin() else {
+        return false;
+    };
+    url::Url::parse(remote)
+        .map(|remote| remote.origin() == own.origin())
+        .unwrap_or(false)
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
