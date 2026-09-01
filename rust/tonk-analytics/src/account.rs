@@ -268,6 +268,9 @@ pub enum ValidationError {
 }
 
 impl AccountEvent {
+    // The public constructors expose the seven canonical event dimensions;
+    // this shared helper additionally receives their non-terminal phase.
+    #[allow(clippy::too_many_arguments)]
     fn non_terminal(
         phase: Phase,
         journey: Journey,
