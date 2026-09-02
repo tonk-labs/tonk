@@ -51,6 +51,7 @@ use tonk_language_server::Server;
 
 use crate::router::AppState;
 use crate::router::lsp_env::LspEnvProvider;
+use crate::router::update_pending;
 
 /// Channel capacity for outbound LSP notifications.
 ///
@@ -133,43 +134,43 @@ impl LspHub {
         reply
     }
 
-    /// Subscribe to the outbound channel. The slot is always
-    /// populated — `shutdown` swaps in a fresh sender rather than
-    /// leaving the slot empty — so this never fails.
-    async fn subscribe(&self) -> broadcast::Receiver<Bytes> {
-        self.outbound
-            .lock()
-            .await
-            .as_ref()
-            .expect("outbound channel always populated")
-            .subscribe()
+    /// Subscribe to the outbound channel, or `None` once
+    /// [`shutdown`](Self::shutdown) has run — matching what the
+    /// `outbound` field documents.
+    ///
+    /// This used to hand back a receiver unconditionally, because
+    /// `shutdown` installed a FRESH sender instead of emptying the
+    /// slot. That made the hub's teardown reversible by any client
+    /// that redialed, and the LSP client redials on a flat timer: the
+    /// old worker dropped its streams during retirement, then ~5 s
+    /// later handed out a brand new one and kept itself serving stale
+    /// clients after replacement.
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Bytes>> {
+        Some(self.outbound.lock().await.as_ref()?.subscribe())
     }
 
-    /// Hang up every active SSE subscriber.
+    /// Hang up every active SSE subscriber, terminally.
     ///
-    /// Called from the worker's `onupdatefound` export when a
-    /// newer SW version begins installing. We *swap* the sender
-    /// for a fresh one rather than `take`-ing it: the old sender
-    /// drops (receivers see `Closed`, response bodies finish),
-    /// and the freshly-installed sender means future subscribers
-    /// on this same worker get a working channel.
+    /// Called from the worker's `onupdatefound` export when a newer
+    /// SW version begins installing. Taking the sender (rather than
+    /// swapping in a fresh one) drops it: every receiver surfaces
+    /// `Closed`, each `BroadcastStream` ends, and the SSE response
+    /// bodies finish — which settles the in-flight fetch events the
+    /// spec was using to keep this worker alive.
     ///
-    /// That last property matters: `onupdatefound` can fire for
-    /// reasons that don't actually replace the worker (upgrade
-    /// canceled, etc.), and we don't want to leave the hub
-    /// permanently dead in those cases. With rebuild-on-drop on
-    /// the client, the editor reconnects after a polite delay; if
-    /// the worker hasn't been replaced by then, it lands here
-    /// with a working subscriber. If it *has* been replaced, the
-    /// page's `controllerchange`-equivalent (which we don't even
-    /// need to track explicitly) sends the next fetch to the new
-    /// worker.
+    /// Terminal is the point. Installing a fresh sender here left the
+    /// hub able to serve a NEW stream moments later, and the LSP
+    /// client's reconnect timer did exactly that — re-pinning the
+    /// worker this teardown existed to release.
+    ///
+    /// Once retirement begins, `handle_events` also reads the shared one-way
+    /// latch. It answers `503` + `Retry-After` instead of a dead 200, and the
+    /// client's next dial after `controllerchange` lands on the successor's
+    /// hub, which has a sender of its own.
     pub async fn shutdown(&self) {
-        let mut slot = self.outbound.lock().await;
-        let (fresh, _drop) = broadcast::channel(OUTBOUND_BUFFER);
-        *slot = Some(fresh);
-        // The previous sender drops at the end of this scope —
-        // receivers tied to it surface `Closed` on next poll.
+        self.outbound.lock().await.take();
+        // The sender drops here — receivers tied to it surface
+        // `Closed` on next poll.
     }
 }
 
@@ -228,8 +229,32 @@ async fn handle_post(
 /// SSE framing: `data: <json>\n\n`. The client side parses these
 /// and hands the JSON to its message dispatcher.
 #[wasm_compat]
-async fn handle_events(Extension(hub): Extension<Arc<LspHub>>) -> Response {
-    let receiver = hub.subscribe().await;
+async fn handle_events(
+    Extension(hub): Extension<Arc<LspHub>>,
+    State(state): State<AppState>,
+) -> Response {
+    let retiring = state.read().await.is_retiring();
+    handle_events_for(hub, retiring).await
+}
+
+async fn handle_events_for(hub: Arc<LspHub>, retiring: bool) -> Response {
+    // Refuse to open a long-lived stream while a successor is taking over.
+    // An SSE body is a fetch event that never settles, and the spec
+    // keeps a worker alive while any fetch event is in flight — so one
+    // stream opened here keeps this retiring worker serving stale clients
+    // after replacement. The query-subscription route has
+    // refused for the same reason; this one didn't, and the LSP
+    // client's reconnect timer made it the reliable way to wedge an
+    // update.
+    if retiring || update_pending() {
+        return retry_later("a newer service worker is taking over");
+    }
+    // `None` means `shutdown` already ran on this hub. Same answer:
+    // the client should come back, and by then the successor will be
+    // the controller and will answer with its own live hub.
+    let Some(receiver) = hub.subscribe().await else {
+        return retry_later("the language server hub has shut down");
+    };
     // `BroadcastStream` adapts the receiver into a `Stream`. Lagged
     // items surface as `Err(BroadcastStreamRecvError::Lagged(n))`
     // which we silently filter — a slow consumer just catches up
@@ -255,4 +280,164 @@ async fn handle_events(Extension(hub): Extension<Arc<LspHub>>) -> Response {
         .header("Connection", "keep-alive")
         .body(Body::from_stream(body_stream))
         .unwrap()
+}
+
+/// Tell the client to come back rather than handing it a stream this
+/// worker must not open. `Retry-After` is advisory; the client's own
+/// held reconnect (it waits for `controllerchange`) is what actually
+/// paces the redial onto the successor.
+fn retry_later(reason: &str) -> Response {
+    log!("[lsp] refusing SSE subscription: {reason}");
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::RETRY_AFTER, "5")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "control": "update-pending", "reason": reason }).to_string(),
+        ))
+        .expect("response builder failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// `shutdown` must be TERMINAL. It used to install a fresh sender,
+    /// so a client that redialed moments later got a working stream on
+    /// a worker that was trying to retire — and an SSE body is a fetch
+    /// event that never settles, so that stream kept the outgoing worker
+    /// alive after replacement. That is the "Safari keeps the old version
+    /// through every reload" symptom: stale clients continue redialing the
+    /// old worker.
+    #[dialog_common::test]
+    async fn it_refuses_to_subscribe_after_shutdown() {
+        let hub = LspHub::new();
+        assert!(
+            hub.subscribe().await.is_some(),
+            "a live hub hands out receivers"
+        );
+
+        hub.shutdown().await;
+        assert!(
+            hub.subscribe().await.is_none(),
+            "a hub that has shut down must not hand out a new receiver"
+        );
+
+        // And it stays terminal: a second dial doesn't revive it either.
+        assert!(
+            hub.subscribe().await.is_none(),
+            "shutdown is one-way for this hub's lifetime"
+        );
+    }
+
+    /// The route — not just the hub — must decline after shutdown, and
+    /// it must decline in the shape the client can act on: a `503`
+    /// carrying `update-pending`, so the consumer HOLDS its reconnect
+    /// for `controllerchange` instead of redialing this worker on a
+    /// timer. A plain error would be indistinguishable from a network
+    /// blip and would be retried on the short backoff, which is what
+    /// re-pinned the outgoing worker.
+    #[dialog_common::test]
+    async fn it_answers_retry_later_after_shutdown() {
+        let hub = LspHub::new();
+        hub.shutdown().await;
+
+        let response = handle_events_for(hub, false).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a retiring worker declines rather than opening a stream"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("5"),
+            "the client is told to come back"
+        );
+        assert_ne!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "declining must NOT hand back a stream — that is the whole bug"
+        );
+
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("update-pending"),
+            "the client distinguishes this from a blip by the control \
+             signal, and holds its reconnect on it: {text}"
+        );
+    }
+
+    /// A live hub still opens a real stream. The refusal must be
+    /// conditional — a worker that is not retiring has to keep serving
+    /// diagnostics, or this "fix" would simply break the LSP.
+    #[dialog_common::test]
+    async fn it_opens_a_stream_while_not_retiring() {
+        let hub = LspHub::new();
+
+        let response = handle_events_for(hub, false).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "the normal path is still a live SSE subscription"
+        );
+    }
+
+    /// The synchronous generation latch is sufficient to refuse a reconnect
+    /// even before the asynchronous hub drain acquires its state lock.
+    #[dialog_common::test]
+    async fn it_refuses_a_stream_once_the_worker_is_retiring() {
+        let hub = LspHub::new();
+
+        let response = handle_events_for(hub, true).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("5")
+        );
+    }
+
+    /// Shutting down ends the streams already open, which is what
+    /// settles the in-flight fetch events keeping the worker alive.
+    #[dialog_common::test]
+    async fn it_closes_open_subscribers_on_shutdown() {
+        let hub = LspHub::new();
+        let mut receiver = hub.subscribe().await.expect("live hub");
+
+        hub.shutdown().await;
+
+        assert!(
+            matches!(
+                receiver.recv().await,
+                Err(broadcast::error::RecvError::Closed)
+            ),
+            "an open receiver must see Closed so its SSE response body ends"
+        );
+    }
 }

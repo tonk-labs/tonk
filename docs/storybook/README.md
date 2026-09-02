@@ -8,9 +8,8 @@ journey works.
 ## Open the explorer
 
 From the repository development shell, run `dev:storybook`, then open
-<http://127.0.0.1:4173/docs/storybook/app/>. The explorer also ships in the
-Cloudflare asset bundle at `/storybook/`; availability on a shared environment
-depends on that environment being deployed from a commit containing this work.
+<http://127.0.0.1:4173/docs/storybook/app/>. The explorer is a local repository
+tool and is not included in Tonk's deployed Cloudflare assets.
 
 The static files are dependency-free. Search by user language or stable IDs,
 open any screen to see its source owners and flows, and use the Gaps view to

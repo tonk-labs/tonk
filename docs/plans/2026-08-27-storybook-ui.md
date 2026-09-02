@@ -61,9 +61,8 @@ repository.
 - This slice does not mark the source-derived feature documents `verified`.
   Runtime screenshots prove appearance at one state, not the interrupt and
   recovery matrix.
-- The Cloudflare bundle packages the explorer at `/storybook/`; confirming a
-  particular shared environment has deployed that artifact is a separate live
-  verification step.
+- The explorer is a local repository tool and is not packaged into Tonk's
+  deployed Cloudflare assets.
 - Screenshot diffs are review evidence, not automatic product correctness.
 
 ## Follow-up polish

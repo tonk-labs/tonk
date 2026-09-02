@@ -1022,7 +1022,14 @@ mod tests {
             .ok()
             .flatten()
             .expect("the dialog should be on the page");
-        dialog.unchecked_ref::<HtmlDialogElement>().close();
+        // This test owns our listener lifecycle, not the user agent's dialog
+        // implementation. Pooled browser tabs are background targets, where
+        // Chrome may suppress the native event queued by `close()`. Dispatch
+        // the same event directly so the test reaches the production teardown
+        // seam without depending on target foreground state.
+        dialog
+            .dispatch_event(&web_sys::Event::new("close").expect("a close event"))
+            .expect("the dialog should dispatch close");
         wait_for_teardown(document).await;
     }
 

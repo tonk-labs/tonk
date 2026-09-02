@@ -13,6 +13,7 @@ helpers = [
     "dialog-common/helpers",
     "dep:thirtyfour",
     "dep:port_check",
+    "dep:tempfile",
     "dep:tonk-access-service",
 ]
 integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
@@ -52,6 +53,7 @@ url = { workspace = true }
 dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 tonk-access-service = { workspace = true, features = ["helpers"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

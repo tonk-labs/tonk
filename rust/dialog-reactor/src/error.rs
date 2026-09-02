@@ -8,6 +8,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum ReactorError {
+    /// This reactor has terminally shut down and cannot open another
+    /// subscription.
+    #[error("reactor is shut down")]
+    Shutdown,
     /// The named repository couldn't be loaded from the profile.
     #[error("repository {repo:?} not found: {reason}")]
     RepositoryNotFound { repo: String, reason: String },

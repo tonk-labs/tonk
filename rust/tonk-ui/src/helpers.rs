@@ -7,7 +7,7 @@ use url::Url;
 pub struct TestEnvironment {
     /// URL of the Tonk web server (Caddy proxies /ucan/* to the access service).
     pub tonk_web: Url,
-    /// URL of the ChromeDriver server.
+    /// URL of the WebDriver server selected by the integration harness.
     pub chromedriver: Url,
     /// Base URL of the live native access service, reached directly
     /// (unproxied) for test inspection such as captured activation emails.
@@ -17,7 +17,10 @@ pub struct TestEnvironment {
     /// mints its own CA, so a single `SSL_CERT_FILE` would leave
     /// concurrent runs trusting whichever one started last.
     pub ca_certificate: Option<std::path::PathBuf>,
-    /// Writable per-harness copy of the otherwise immutable service-worker script.
+    /// Writable per-harness A/B deployment fixture. `current` is the atomic
+    /// symlink Caddy serves; generation directories contain complete artifacts.
+    pub deployment_root: std::path::PathBuf,
+    /// Writable service worker in the initial complete generation.
     pub service_worker_script: std::path::PathBuf,
     /// Parent directory for every Chrome profile created by this harness.
     pub browser_profile_root: std::path::PathBuf,
@@ -97,6 +100,36 @@ mod native {
         }
     }
 
+    fn copy_artifact_tree(source: &std::path::Path, destination: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                copy_artifact_tree(&source_path, &destination_path)?;
+            } else if file_type.is_file() {
+                std::fs::copy(&source_path, &destination_path)?;
+                let mut permissions = std::fs::metadata(&destination_path)?.permissions();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    permissions.set_mode(permissions.mode() | 0o200);
+                }
+                #[cfg(not(unix))]
+                permissions.set_readonly(false);
+                std::fs::set_permissions(&destination_path, permissions)?;
+            } else {
+                return Err(anyhow!(
+                    "unsupported test artifact member {}",
+                    source_path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     impl TestEnvironment {
         fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
             let profile = tempfile::Builder::new()
@@ -143,9 +176,15 @@ mod native {
 
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
-            let caps = self.chrome_capabilities()?;
-
-            let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
+            let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
+            let driver = if safari {
+                let mut caps = DesiredCapabilities::safari();
+                caps.accept_insecure_certs(true)?;
+                WebDriver::new(&self.chromedriver.to_string(), caps).await?
+            } else {
+                let caps = self.chrome_capabilities()?;
+                WebDriver::new(&self.chromedriver.to_string(), caps).await?
+            };
             // Bound each navigation well under the suite's patience. The
             // default page-load allowance is five minutes, so one wedged
             // renderer would eat the whole run before `goto` below ever
@@ -153,6 +192,47 @@ mod native {
             driver
                 .set_page_load_timeout(std::time::Duration::from_secs(60))
                 .await?;
+            #[cfg(test)]
+            if !safari {
+                // Install before the first navigation so failures from the
+                // eager service-worker registration are still available when
+                // an integration wait times out. The user-facing boot surface
+                // deliberately hides technical diagnostics.
+                let devtools = ChromeDevTools::new(driver.handle.clone());
+                devtools
+                    .execute_cdp_with_params(
+                        "Page.addScriptToEvaluateOnNewDocument",
+                        serde_json::json!({
+                            "source": r#"
+                                globalThis.__tonkTestErrors = [];
+                                globalThis.__tonkTestInstallProgress = [];
+                                try {
+                                    const progress = new BroadcastChannel("tonk-sw-install-progress-v1");
+                                    progress.addEventListener("message", event => {
+                                        globalThis.__tonkTestInstallProgress.push(event.data);
+                                    });
+                                } catch {}
+                                const describe = value => {
+                                    if (value instanceof Error) return `${value.name}: ${value.message}`;
+                                    if (typeof value === "string") return value;
+                                    try { return JSON.stringify(value); } catch { return String(value); }
+                                };
+                                const priorError = console.error.bind(console);
+                                console.error = (...values) => {
+                                    globalThis.__tonkTestErrors.push(values.map(describe).join(" "));
+                                    priorError(...values);
+                                };
+                                addEventListener("error", event => {
+                                    globalThis.__tonkTestErrors.push(`error: ${describe(event.error || event.message)}`);
+                                });
+                                addEventListener("unhandledrejection", event => {
+                                    globalThis.__tonkTestErrors.push(`unhandledrejection: ${describe(event.reason)}`);
+                                });
+                            "#,
+                        }),
+                    )
+                    .await?;
+            }
             goto(&driver, &self.tonk_web.to_string()).await?;
             Ok(driver)
         }
@@ -232,15 +312,22 @@ mod native {
             .to_string();
         // Polled from the test side: a single waiting script is bounded
         // by chromedriver's script timeout, which a cold machine still
-        // compiling the app's wasm can outlast. A boot that WEDGES
-        // rather than runs slow is the page's own problem now — its
-        // watchdog (index.html) reloads a boot with no signs of life
-        // and escalates to clearing caches and workers — so this wait
-        // only has to outlast the ladder, not run it.
+        // compiling the app's wasm can outlast. Account tests navigate
+        // immediately after this helper returns, so identity alone is
+        // insufficient: the app can expose it while the first worker is
+        // still verifying its immutable asset graph. Wait for control as
+        // well so the next navigation cannot race the initial install.
+        // A boot that WEDGES rather than runs slow is the page's own
+        // problem now — its watchdog (index.html) reloads a boot with no
+        // signs of life and escalates to terminal recovery — so this wait
+        // only has to outlast that ladder, not run it.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
         loop {
             let ready = driver
-                .execute("return !!window.tonkIdentity;", vec![])
+                .execute(
+                    "return !!window.tonkIdentity && !!navigator.serviceWorker?.controller;",
+                    vec![],
+                )
                 .await
                 .ok()
                 .and_then(|ret| ret.json().as_bool());
@@ -266,7 +353,7 @@ mod native {
                     .map(|ret| ret.json().clone())
                     .unwrap_or(serde_json::Value::Null);
                 return Err(anyhow!(
-                    "the page never exposed tonkIdentity; page state: {state}"
+                    "the page never exposed tonkIdentity under service-worker control; page state: {state}"
                 ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -277,7 +364,7 @@ mod native {
     /// Manages test server processes for integration testing.
     pub struct TestServers {
         web_server: ManagedChild,
-        chromedriver: ManagedChild,
+        chromedriver: Option<ManagedChild>,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
         workspace: Option<TestWorkspace>,
@@ -289,13 +376,15 @@ mod native {
         /// Startup order:
         /// 1. Start the access service with deployment discovery configured
         /// 2. Start Caddy web server with access service port
-        /// 3. Start ChromeDriver
+        /// 3. Start the selected WebDriver server
         pub async fn start() -> Result<(Self, TestEnvironment)> {
             let workspace = TestWorkspace::new()?;
             let caddy_data = workspace.directory("caddy-data")?;
             let caddy_config = workspace.directory("caddy-config")?;
-            let service_worker_root = workspace.directory("service-worker")?;
+            let deployment_root = workspace.directory("deployments")?;
             let browser_profile_root = workspace.directory("browser-profiles")?;
+            let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
+            let web_host = if safari { "localhost" } else { "tonk.network" };
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
             // access service's own port.
@@ -304,7 +393,7 @@ mod native {
             let settings = AccessServiceSettings {
                 // The identity is filled in by the server itself.
                 deployment: Some(DeploymentConfig::default()),
-                public_origin: Some(format!("https://tonk.network:{web_port}")),
+                public_origin: Some(format!("https://{web_host}:{web_port}")),
                 ..Default::default()
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
@@ -325,25 +414,33 @@ mod native {
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
-            // Use the Git worktree view so ignored build products (`target`,
-            // linked worktrees, benchmark runs) are not copied into the Nix
-            // store every time an integration test starts its web server.
-            // Newly added test source must be staged, just as it must be for
-            // the committed CI revision that ultimately runs this harness.
-            let test_server = format!("git+file:{}#tonk-ui-test-server", repository_root.display());
-            let service_worker_script = service_worker_root.join("service_worker.js");
+            let service_worker_script = deployment_root
+                .join("generation-a")
+                .join("service_worker.js");
+            let mut test_server = if let Some(test_server) = std::env::var_os("TONK_UI_TEST_SERVER")
+            {
+                std::process::Command::new(test_server)
+            } else {
+                // Use the Git worktree view so ignored build products (`target`,
+                // linked worktrees, benchmark runs) are not copied into the Nix
+                // store every time an integration test starts its web server.
+                // Newly added test source must be staged, just as it must be for
+                // the committed CI revision that ultimately runs this harness.
+                let test_server =
+                    format!("git+file:{}#tonk-ui-test-server", repository_root.display());
+                let mut command = std::process::Command::new("nix");
+                command.args(["run", &test_server, "--"]);
+                command
+            };
+            test_server.args([
+                &format!("{web_port}"),
+                &format!("{access_service_port}"),
+                deployment_root
+                    .to_str()
+                    .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
+            ]);
             let mut web_server = ManagedChild::new(
-                std::process::Command::new("nix")
-                    .args([
-                        "run",
-                        &test_server,
-                        "--",
-                        &format!("{web_port}"),
-                        &format!("{access_service_port}"),
-                        service_worker_root
-                            .to_str()
-                            .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
-                    ])
+                test_server
                     // Pin Caddy's data dir so its per-run internal CA
                     // root lands at a knowable path: it rides on
                     // `TestEnvironment::ca_certificate`, and each native
@@ -371,6 +468,12 @@ mod native {
                 if line.contains("Test server live at") {
                     break;
                 }
+            }
+            if let Some(artifact) = std::env::var_os("TONK_UI_TEST_ARTIFACT") {
+                let artifact = std::path::PathBuf::from(artifact);
+                let generation_a = deployment_root.join("generation-a");
+                std::fs::remove_dir_all(&generation_a)?;
+                copy_artifact_tree(&artifact, &generation_a)?;
             }
             let mut listening = false;
             for _ in 0..100 {
@@ -424,36 +527,83 @@ mod native {
             // the wrong root and fail to connect.
             let ca_certificate = Some(caddy_root);
 
-            // Start ChromeDriver
-            let chromedriver_port =
-                free_local_port().expect("Could not get a free local port for chromedriver");
-            let chromedriver_binary =
-                std::env::var("CHROMEDRIVER").unwrap_or_else(|_| "chromedriver".to_string());
-            let chromedriver_log = workspace.path().join("chromedriver.log");
-            let mut chromedriver = ManagedChild::new(
-                std::process::Command::new(chromedriver_binary)
-                    .args([
-                        &format!("--port={chromedriver_port}"),
-                        &format!("--log-path={}", chromedriver_log.display()),
-                    ])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit())
-                    .spawn()?,
-            );
-
-            let stdout = chromedriver
-                .child_mut()
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow!("Failed to capture chromedriver stdout"))?;
-
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let line = line?;
-                if line.contains("ChromeDriver was started successfully") {
-                    break;
-                }
-            }
+            // Safari has no host-resolver rule equivalent, so its release gate
+            // uses the loopback hostname that the same Caddy fixture also
+            // serves. Chrome retains the production-shaped tonk.network host.
+            let (chromedriver, chromedriver_url) =
+                if let Some(webdriver_url) = std::env::var_os("TONK_WEBDRIVER_URL") {
+                    (
+                        None,
+                        Url::parse(
+                            webdriver_url
+                                .to_str()
+                                .ok_or_else(|| anyhow!("TONK_WEBDRIVER_URL is not valid UTF-8"))?,
+                        )?,
+                    )
+                } else {
+                    let chromedriver_port = free_local_port()
+                        .expect("Could not get a free local port for chromedriver");
+                    let chromedriver_log = workspace.path().join("chromedriver.log");
+                    let mut chromedriver = if safari {
+                        let safaridriver = std::env::var("SAFARIDRIVER")
+                            .unwrap_or_else(|_| "safaridriver".to_string());
+                        ManagedChild::new(
+                            std::process::Command::new(safaridriver)
+                                .args(["--port", &chromedriver_port.to_string()])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::inherit())
+                                .spawn()?,
+                        )
+                    } else {
+                        let chromedriver_binary = std::env::var("CHROMEDRIVER")
+                            .unwrap_or_else(|_| "chromedriver".to_string());
+                        ManagedChild::new(
+                            std::process::Command::new(chromedriver_binary)
+                                .args([
+                                    &format!("--port={chromedriver_port}"),
+                                    &format!("--log-path={}", chromedriver_log.display()),
+                                ])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::inherit())
+                                .spawn()?,
+                        )
+                    };
+                    let mut webdriver_listening = false;
+                    for _ in 0..100 {
+                        if tokio::net::TcpStream::connect(("127.0.0.1", chromedriver_port))
+                            .await
+                            .is_ok()
+                        {
+                            webdriver_listening = true;
+                            break;
+                        }
+                        if let Some(status) = chromedriver.child_mut().try_wait()? {
+                            return Err(anyhow!(
+                                "{} exited before binding: {status}",
+                                if safari {
+                                    "SafariDriver"
+                                } else {
+                                    "ChromeDriver"
+                                }
+                            ));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    if !webdriver_listening {
+                        return Err(anyhow!(
+                            "{} did not bind port {chromedriver_port}",
+                            if safari {
+                                "SafariDriver"
+                            } else {
+                                "ChromeDriver"
+                            }
+                        ));
+                    }
+                    (
+                        Some(chromedriver),
+                        Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    )
+                };
 
             Ok((
                 Self {
@@ -463,10 +613,11 @@ mod native {
                     workspace: Some(workspace),
                 },
                 TestEnvironment {
-                    tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
-                    chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
+                    tonk_web: Url::parse(&format!("https://{web_host}:{web_port}"))?,
+                    chromedriver: chromedriver_url,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
+                    deployment_root,
                     service_worker_script,
                     browser_profile_root,
                 },
@@ -476,7 +627,11 @@ mod native {
         /// Stops all test server processes.
         pub async fn stop(mut self) -> Result<()> {
             let web_result = self.web_server.terminate();
-            let chromedriver_result = self.chromedriver.terminate();
+            let chromedriver_result = if let Some(chromedriver) = self.chromedriver.as_mut() {
+                chromedriver.terminate()
+            } else {
+                Ok(())
+            };
             let access_result = if let Some(access_service) = self.access_service.take() {
                 access_service.stop().await
             } else {
@@ -511,7 +666,9 @@ mod native {
     impl Drop for TestServers {
         fn drop(&mut self) {
             let _ = self.web_server.terminate();
-            let _ = self.chromedriver.terminate();
+            if let Some(chromedriver) = self.chromedriver.as_mut() {
+                let _ = chromedriver.terminate();
+            }
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
@@ -568,6 +725,7 @@ mod native {
                 chromedriver: Url::parse("http://127.0.0.1:9515")?,
                 access_service: Url::parse("http://127.0.0.1:8090")?,
                 ca_certificate: None,
+                deployment_root: workspace.directory("deployments")?,
                 service_worker_script: workspace.path().join("service_worker.js"),
                 browser_profile_root: browser_profile_root.clone(),
             };
