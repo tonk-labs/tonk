@@ -1,5 +1,15 @@
 # View anchors and render parity
 
+Status: **superseded, not shipped.** Do not follow this plan.
+
+It assumes a view is its own entity with a `model` back pointer, and proposes
+pinning that entity through `--anchor`. The dictionary redesign (#808) removed
+the view entity instead: a view's `this` IS the model, and its templates are
+`show` entries keyed by facet, cardinality one per (model, facet). So there is
+nothing left to anchor, `--anchor` and `--name` are both rejected at parse
+time, and the duplicate-view ordering problem the render-parity half solves
+cannot arise. See `rust/tonk-core/docs/templates.md` and `tonk help views`.
+
 **Goal:** Make view identity explicit at authoring time and make `tonk render`
 show every view entry that the browser would mount, so an accidental duplicate
 is visible from the CLI instead of being hidden by first-row selection.
