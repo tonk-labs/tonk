@@ -79,18 +79,94 @@ mod tests {
         Ok(serde_json::from_value(value.json().clone())?)
     }
 
+    fn retryable_find_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
+        matches!(
+            error,
+            thirtyfour::error::WebDriverErrorInner::NoSuchElement(_)
+                | thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
+        )
+    }
+
+    fn retryable_element_read_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
+        matches!(
+            error,
+            thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
+        )
+    }
+
+    #[test]
+    fn it_only_retries_expected_dom_races() {
+        use thirtyfour::error::{WebDriverErrorInfo, WebDriverErrorInner, WebDriverErrorValue};
+
+        let info = |error: &str| WebDriverErrorInfo {
+            status: 400,
+            error: error.to_string(),
+            value: WebDriverErrorValue::new(error.to_string()),
+        };
+
+        assert!(retryable_find_error(&WebDriverErrorInner::NoSuchElement(
+            info("no such element")
+        )));
+        assert!(retryable_find_error(
+            &WebDriverErrorInner::StaleElementReference(info("stale element reference"))
+        ));
+        assert!(!retryable_find_error(
+            &WebDriverErrorInner::InvalidSelector(info("invalid selector"))
+        ));
+        assert!(retryable_element_read_error(
+            &WebDriverErrorInner::StaleElementReference(info("stale element reference"))
+        ));
+        assert!(!retryable_element_read_error(
+            &WebDriverErrorInner::ElementClickIntercepted(info("element click intercepted"))
+        ));
+    }
+
+    async fn page_diagnostic_state(driver: &WebDriver) -> serde_json::Value {
+        driver
+            .execute(
+                r##"
+                const account = document.querySelector("tonk-account");
+                const error = document.querySelector("#account-error");
+                const firstSegment = location.pathname.split("/").filter(Boolean)[0] || "";
+                const path = ["", "account", "activate", "settings"].includes(firstSegment)
+                    ? `/${firstSegment}`
+                    : "/<redacted>";
+                return {
+                    path,
+                    addingAccount: new URLSearchParams(location.search).has("add"),
+                    ready: document.readyState,
+                    controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+                    accountMode: account?.getAttribute("data-mode") || null,
+                    accountBusy: account?.getAttribute("aria-busy") || null,
+                    accountError: (error?.textContent || "").slice(0, 500) || null,
+                };
+                "##,
+                vec![],
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or_else(|_| serde_json::json!({ "webdriverError": "diagnostic query failed" }))
+    }
+
     async fn element(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             match driver.find(By::Css(selector.to_string())).await {
                 Ok(element) => return Ok(element),
-                Err(error) if tokio::time::Instant::now() < deadline => {
-                    let _ = error;
+                Err(error)
+                    if retryable_find_error(error.as_inner())
+                        && tokio::time::Instant::now() < deadline =>
+                {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("timed out waiting for `{selector}`"));
+                    if retryable_find_error(error.as_inner()) {
+                        let state = page_diagnostic_state(driver).await;
+                        return Err(error).with_context(|| {
+                            format!("timed out waiting for `{selector}`; page={state}")
+                        });
+                    }
+                    return Err(error).with_context(|| format!("failed to find `{selector}`"));
                 }
             }
         }
@@ -111,12 +187,19 @@ mod tests {
             let found = element(driver, selector).await?;
             match found.click().await {
                 Ok(()) => return Ok(()),
-                Err(error) if tokio::time::Instant::now() < deadline => {
-                    let _ = error;
+                Err(error)
+                    if retryable_element_read_error(error.as_inner())
+                        && tokio::time::Instant::now() < deadline =>
+                {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 Err(error) => {
-                    return Err(error).with_context(|| format!("timed out clicking `{selector}`"));
+                    let action = if retryable_element_read_error(error.as_inner()) {
+                        "timed out clicking"
+                    } else {
+                        "failed to click"
+                    };
+                    return Err(error).with_context(|| format!("{action} `{selector}`"));
                 }
             }
         }
@@ -124,15 +207,26 @@ mod tests {
 
     async fn wait_for_text(driver: &WebDriver, selector: &str, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
         loop {
-            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && found.text().await.ok().as_deref() == Some(expected)
-            {
-                return Ok(());
+            match driver.find(By::Css(selector.to_string())).await {
+                Ok(found) => match found.text().await {
+                    Ok(text) if text == expected => return Ok(()),
+                    Ok(text) => last = format!("text was {text:?}"),
+                    Err(error) if retryable_element_read_error(error.as_inner()) => {
+                        last = error.to_string();
+                    }
+                    Err(error) => return Err(error).context("failed to read element text"),
+                },
+                Err(error) if retryable_find_error(error.as_inner()) => {
+                    last = error.to_string();
+                }
+                Err(error) => return Err(error).context("failed to find element for text wait"),
             }
             if tokio::time::Instant::now() >= deadline {
+                let state = page_diagnostic_state(driver).await;
                 return Err(anyhow!(
-                    "timed out waiting for `{selector}` to equal {expected:?}"
+                    "timed out waiting for `{selector}` to equal {expected:?}; last={last}; page={state}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -141,15 +235,26 @@ mod tests {
 
     async fn wait_for_value(driver: &WebDriver, selector: &str, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
         loop {
-            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && found.prop("value").await?.as_deref() == Some(expected)
-            {
-                return Ok(());
+            match driver.find(By::Css(selector.to_string())).await {
+                Ok(found) => match found.prop("value").await {
+                    Ok(value) if value.as_deref() == Some(expected) => return Ok(()),
+                    Ok(value) => last = format!("value was {value:?}"),
+                    Err(error) if retryable_element_read_error(error.as_inner()) => {
+                        last = error.to_string();
+                    }
+                    Err(error) => return Err(error).context("failed to read element value"),
+                },
+                Err(error) if retryable_find_error(error.as_inner()) => {
+                    last = error.to_string();
+                }
+                Err(error) => return Err(error).context("failed to find element for value wait"),
             }
             if tokio::time::Instant::now() >= deadline {
+                let state = page_diagnostic_state(driver).await;
                 return Err(anyhow!(
-                    "timed out waiting for `{selector}` value to equal {expected:?}"
+                    "timed out waiting for `{selector}` value to equal {expected:?}; last={last}; page={state}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -162,21 +267,31 @@ mod tests {
         expected: &str,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
         loop {
             // The text read is fallible for the same reason the find is:
             // a list that re-renders between the two invalidates the
             // handle ("stale element reference"). Treat that as "not yet"
             // and go round again — propagating it aborts the wait on a
             // race the wait exists to absorb.
-            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && let Ok(text) = found.text().await
-                && text.contains(expected)
-            {
-                return Ok(());
+            match driver.find(By::Css(selector.to_string())).await {
+                Ok(found) => match found.text().await {
+                    Ok(text) if text.contains(expected) => return Ok(()),
+                    Ok(text) => last = format!("text was {text:?}"),
+                    Err(error) if retryable_element_read_error(error.as_inner()) => {
+                        last = error.to_string();
+                    }
+                    Err(error) => return Err(error).context("failed to read element text"),
+                },
+                Err(error) if retryable_find_error(error.as_inner()) => {
+                    last = error.to_string();
+                }
+                Err(error) => return Err(error).context("failed to find element for text wait"),
             }
             if tokio::time::Instant::now() >= deadline {
+                let state = page_diagnostic_state(driver).await;
                 return Err(anyhow!(
-                    "timed out waiting for `{selector}` to contain {expected:?}"
+                    "timed out waiting for `{selector}` to contain {expected:?}; last={last}; page={state}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -187,16 +302,26 @@ mod tests {
     /// a retraction takes in the DOM.
     async fn wait_for_text_without(driver: &WebDriver, selector: &str, gone: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
         loop {
-            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && let Ok(text) = found.text().await
-                && !text.contains(gone)
-            {
-                return Ok(());
+            match driver.find(By::Css(selector.to_string())).await {
+                Ok(found) => match found.text().await {
+                    Ok(text) if !text.contains(gone) => return Ok(()),
+                    Ok(text) => last = format!("text was {text:?}"),
+                    Err(error) if retryable_element_read_error(error.as_inner()) => {
+                        last = error.to_string();
+                    }
+                    Err(error) => return Err(error).context("failed to read element text"),
+                },
+                Err(error) if retryable_find_error(error.as_inner()) => {
+                    last = error.to_string();
+                }
+                Err(error) => return Err(error).context("failed to find element for text wait"),
             }
             if tokio::time::Instant::now() >= deadline {
+                let state = page_diagnostic_state(driver).await;
                 return Err(anyhow!(
-                    "timed out waiting for `{selector}` to stop containing {gone:?}"
+                    "timed out waiting for `{selector}` to stop containing {gone:?}; last={last}; page={state}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -235,15 +360,28 @@ mod tests {
 
     async fn wait_for_displayed(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
         loop {
-            if let Ok(found) = driver.find(By::Css(selector.to_string())).await
-                && found.is_displayed().await.unwrap_or(false)
-            {
-                return Ok(found);
+            match driver.find(By::Css(selector.to_string())).await {
+                Ok(found) => match found.is_displayed().await {
+                    Ok(true) => return Ok(found),
+                    Ok(false) => last = "element was hidden".to_string(),
+                    Err(error) if retryable_element_read_error(error.as_inner()) => {
+                        last = error.to_string();
+                    }
+                    Err(error) => return Err(error).context("failed to read element visibility"),
+                },
+                Err(error) if retryable_find_error(error.as_inner()) => {
+                    last = error.to_string();
+                }
+                Err(error) => {
+                    return Err(error).context("failed to find element for visibility wait");
+                }
             }
             if tokio::time::Instant::now() >= deadline {
+                let state = page_diagnostic_state(driver).await;
                 return Err(anyhow!(
-                    "timed out waiting for `{selector}` to be displayed"
+                    "timed out waiting for `{selector}` to be displayed; last={last}; page={state}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -256,15 +394,16 @@ mod tests {
             match driver.find_all(By::Css(selector.to_string())).await {
                 Ok(found) if found.is_empty() => return Ok(()),
                 Ok(_) => {}
-                Err(error) if tokio::time::Instant::now() >= deadline => {
-                    return Err(error).with_context(|| {
-                        format!("timed out waiting for `{selector}` to disappear")
-                    });
+                Err(error) if retryable_find_error(error.as_inner()) => {}
+                Err(error) => {
+                    return Err(error).context("failed to find elements for absence wait");
                 }
-                Err(_) => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("timed out waiting for `{selector}` to disappear"));
+                let state = page_diagnostic_state(driver).await;
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` to disappear; page={state}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
