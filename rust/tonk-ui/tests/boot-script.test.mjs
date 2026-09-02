@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INDEX = join(HERE, "..", "index.html");
@@ -162,15 +163,45 @@ describe("boot script contract with the worker", () => {
   });
 
   test("publishes the build id the version handshake sends", () => {
-    // The host reads `window.tonk.build` and sends it on every /api/*
-    // request; the worker compares it against its own. If the boot
-    // script stops publishing it, the handshake silently stops working
-    // rather than failing loudly.
-    const updateDiscovery = moduleBlockContaining("globalThis.tonkBuild");
-    assert.match(
+    // The host sends `globalThis.tonkBuild` on every /api/* request. It
+    // must describe this cached document, not whatever /version.json happens
+    // to serve later, and it must exist before the Rust app can mount.
+    const html = readFileSync(INDEX, "utf8");
+    const rustLoader = html.indexOf('data-trunk\n            rel="rust"');
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+      .filter((match) => match[1].includes('meta[name="tonk-worker-build"]'));
+    assert.equal(scripts.length, 1, "one early script must own document build publication");
+    assert.ok(
+      scripts[0].index < rustLoader,
+      "the immutable document build must be published before the app's Rust loader",
+    );
+
+    for (const [build, expected] of [
+      ["0123456789abcdef", "0123456789abcdef"],
+      ["dev", undefined],
+      ["AAAAAAAAAAAAAAAA", undefined],
+    ]) {
+      const context = {
+        document: { querySelector: () => ({ content: build }) },
+      };
+      runInNewContext(scripts[0][1], context);
+      assert.equal(
+        context.tonkBuild,
+        expected,
+        "only an immutable production build id may become request provenance",
+      );
+    }
+
+    const updateDiscovery = moduleBlockContaining("const checkStale");
+    assert.doesNotMatch(
       updateDiscovery,
       /globalThis\.tonkBuild\s*=/,
-      "the build id is published under its own name, not on window.tonk",
+      "the mutable live version probe must never replace document provenance",
+    );
+    assert.match(
+      updateDiscovery,
+      /const\s+ourBuild\s*=\s*globalThis\.tonkBuild\s*\?\?\s*null/,
+      "update discovery must compare the live deployment with immutable document provenance",
     );
   });
 
@@ -183,7 +214,7 @@ describe("boot script contract with the worker", () => {
     assert.match(updateDiscovery, /registration\.update\(\)/);
   });
 
-  test("defers the successor claim together with an account-safe update reload", () => {
+  test("defers successor activation and claim before the one alignment reload", () => {
     const updatePrompt = moduleBlockContaining("const announceUpdate");
     const clickHandler = updatePrompt.slice(
       updatePrompt.indexOf('reload.addEventListener("click"'),
@@ -191,8 +222,23 @@ describe("boot script contract with the worker", () => {
     );
     assert.match(
       clickHandler,
-      /tonkReloadWhenAccountSetupDurable\s*\(\s*\(\)\s*=>[\s\S]*registration\.waiting\?\.postMessage/,
-      "the successor must not claim an Armed/pre-Stage account page before the deferred reload is safe",
+      /tonkWhenAccountSetupDurable\s*\(\s*\(\)\s*=>/,
+      "the update action must enter account safety before adopting B",
+    );
+    assert.match(
+      clickHandler,
+      /successor\.postMessage\(\{\s*type:\s*["']activate["']\s*\}\)/,
+      "the installed successor must be activated without reloading A",
+    );
+    assert.match(
+      clickHandler,
+      /tonkClaimWhenAccountSetupDurable\s*\(\s*successor\s*,\s*controllerBeforeClaim/,
+      "the activated successor must claim under account safety before controllerchange owns the reload",
+    );
+    assert.doesNotMatch(
+      clickHandler,
+      /tonkReloadWhenAccountSetupDurable|location\.reload/,
+      "the update action must not reload an A document before B claims it",
     );
   });
 
@@ -240,39 +286,50 @@ describe("boot script contract with the worker", () => {
     );
   });
 
-  test("reads the version and kill-switch probes uncached", () => {
+  test("reads the version and withdrawal probes uncached", () => {
     // Both exist to answer correctly when the worker's own update
     // machinery is wedged; a cached answer defeats that entirely.
-    const registering = moduleBlocks().find((b) =>
-      b.includes("serviceWorker.register"),
-    );
+    const bootModules = moduleBlocks().join("\n");
     for (const probe of ["/version.json", "/kill-switch.json"]) {
       const call = new RegExp(
         `fetch\\(\\s*"${probe.replace("/", "\\/")}"[^)]*cache:\\s*"no-store"`,
       );
       assert.match(
-        registering,
+        bootModules,
         call,
         `${probe} must be fetched with cache: "no-store"`,
       );
     }
   });
 
-  test("a withdrawn build terminalizes and unregisters only this page's worker", () => {
+  test("revocation compares the flag with this immutable page generation", () => {
+    const registering = moduleBlockContaining("const isRevoked");
+    const isRevoked = registering.slice(
+      registering.indexOf("const isRevoked"),
+      registering.indexOf("const UPGRADE_RELOAD"),
+    );
+    assert.match(
+      isRevoked,
+      /globalThis\.tonkBuild/,
+      "withdrawal must classify the bytes this document loaded",
+    );
+    assert.doesNotMatch(
+      isRevoked,
+      /versionResponse|\/version\.json/,
+      "mutable live discovery cannot identify the current page generation",
+    );
+  });
+
+  test("a withdrawn build terminalizes without deleting or unregistering", () => {
     const registering = moduleBlockContaining("await isRevoked()");
     const code = registering
       .replace(/\/\*[\s\S]*?\*\//g, " ")
       .replace(/\/\/[^\n]*/g, " ");
 
-    assert.match(
-      code,
-      /navigator\.serviceWorker\.getRegistration\(\)/,
-      "the page kill switch should target only its own registration",
-    );
     assert.doesNotMatch(
       code,
-      /navigator\.serviceWorker\.getRegistrations\(\)/,
-      "withdrawal must not unregister unrelated service-worker scopes",
+      /unregister\(|caches\.delete|navigator\.serviceWorker\.getRegistrations?\(/,
+      "withdrawal must retain registrations and every offline artifact generation",
     );
     assert.match(
       code,

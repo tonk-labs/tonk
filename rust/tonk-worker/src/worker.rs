@@ -2074,11 +2074,11 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Called from the JS shim's `self.onactivate`. Drops every shell cache
-    /// from older SW versions before this worker serves a controlled fetch.
-    /// Client adoption is page-directed: compatible pages explicitly ask the
-    /// activated worker to claim them, while older pages retain their current
-    /// controller until navigation.
+    /// Called from the JS shim's `self.onactivate` to resume this generation's
+    /// sync scheduler. Client adoption is page-directed: compatible pages ask
+    /// the activated worker to claim them, while older pages retain their
+    /// current controller and may still need that controller's shell and Wasm
+    /// caches. Activation therefore never purges another generation.
     #[wasm_bindgen(js_name = "onactivate")]
     pub fn on_activate(&self) -> Promise {
         // A worker that is activating is the one now serving the page, so it is
@@ -2088,15 +2088,7 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         self.sync_scheduler.resume();
 
-        future_to_promise(async move {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            {
-                if let Err(err) = crate::cache::purge_old_caches().await {
-                    log!("purge_old_caches failed: {:?}", err);
-                }
-            }
-            Ok(JsValue::UNDEFINED)
-        })
+        future_to_promise(async { Ok(JsValue::UNDEFINED) })
     }
 
     /// Handles incoming fetch events from the browser.
