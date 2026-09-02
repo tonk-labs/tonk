@@ -2256,6 +2256,8 @@ ui-account-settings .sname-seat:focus-within .cur { display: none; }
 ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
 ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
     color: var(--soft); font-size: 12.5px; white-space: nowrap; }
+/* the current device rides its name as a soft suffix (the mock's d.self) */
+ui-account-settings .dev-self { font-weight: 400; color: var(--soft); }
 /* the device verb surfaces on approach — same law as the spaces rows */
 ui-account-settings [data-settings-devices] .cta { opacity: 0;
     transition: opacity 0.15s var(--ease); }

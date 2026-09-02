@@ -271,6 +271,14 @@ fn load_devices(this: &HtmlElement) {
                 Ok(body) => serde_json::from_str(&body).unwrap_or_default(),
                 Err(_) => Vec::new(),
             };
+        // The list is the same on every device; "this device" is a
+        // presentation mark (the wireframe's soft suffix on the name).
+        let own = match tonk_host::get_json("/api/identify").await {
+            Ok(body) => serde_json::from_str::<tonk_worker_api::IdentifyResponse>(&body)
+                .map(|identity| identity.did)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
         let Some(list) = host
             .query_selector("[data-settings-devices]")
             .ok()
@@ -301,6 +309,13 @@ fn load_devices(this: &HtmlElement) {
             };
             name.set_class_name("lft");
             name.set_text_content(Some(&device.name));
+            if !own.is_empty() && device.did == own {
+                if let Ok(marker) = document.create_element("span") {
+                    marker.set_class_name("dev-self");
+                    marker.set_text_content(Some(" \u{b7} this device"));
+                    let _ = name.append_child(&marker);
+                }
+            }
             let _ = row.append_child(&name);
             let Ok(meta) = document.create_element("span") else {
                 continue;
