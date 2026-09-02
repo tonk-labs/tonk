@@ -11,6 +11,8 @@
 //! worker, so the in-place swap is what a switch IS; the pointer write
 //! only covers a genuine SW restart.
 
+use std::sync::Arc;
+
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_storage::provider::storage::Storage;
@@ -211,8 +213,20 @@ pub async fn add(State(state): State<AppState>) -> Result<Json<ProfilesResponse>
 /// kick off the same detached catch-up the boot path runs.
 async fn finish_swap(
     state: &AppState,
-    new_state: TonkState,
+    mut new_state: TonkState,
 ) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
+    // The service-worker wrapper owns the same one-way retirement flag. A
+    // profile swap changes account state, not worker generation, so preserve
+    // that identity across the replacement instead of installing a fresh
+    // false latch. A swap that finishes after retirement began also closes
+    // its never-exposed reactor before publishing it.
+    new_state.retiring = {
+        let current = state.read().await;
+        Arc::clone(&current.retiring)
+    };
+    if new_state.is_retiring() {
+        new_state.reactor.shutdown();
+    }
     let name = new_state.profile_name.clone();
     let registry = new_state.registry.clone();
     let mut roster = registry

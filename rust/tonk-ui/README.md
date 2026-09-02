@@ -91,8 +91,13 @@ local data is safe.” Terminalization cancels automatic watchdog recovery,
 clears its per-tab retry counter, and never reloads, deletes CacheStorage, or
 unregisters a worker. The first terminal message wins so a more specific cause
 can retain its own recovery guidance; after correcting the cause, the person
-chooses when to reload. The watchdog ladder remains available for boots that
-stop making progress without producing an explicit error.
+chooses when to reload. For a boot that stops making progress without producing
+an explicit error, the watchdog performs at most one plain reload. A second
+silent stall terminalizes with the same safe-state guidance and leaves every
+cache and service-worker registration intact. The deployment withdrawal kill
+switch is the sole exception: it shows its specific withdrawal guidance and
+unregisters only the current page's registration, never every scope on the
+origin.
 
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. There is one rollout boundary: a shell cached before this

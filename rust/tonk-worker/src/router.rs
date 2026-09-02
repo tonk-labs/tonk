@@ -13,6 +13,40 @@ use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
+/// Whether a newer service worker is installed and WAITING to take over —
+/// i.e. whether this worker is retiring.
+///
+/// Read live from the registration rather than latched at `updatefound`,
+/// so it is self-healing: an update that never activates (a failed
+/// install, a canceled upgrade) clears the `waiting` slot and this
+/// worker goes back to serving streams normally. A latch would leave it
+/// permanently refusing.
+///
+/// Every route that opens a LONG-LIVED response must consult this. An
+/// SSE body is a fetch event that never settles, and the spec keeps a
+/// worker alive while any of its fetch events are in flight — so a
+/// single stream opened after the successor started installing re-pins
+/// this worker and parks the new one in `waiting` indefinitely. That is
+/// the "reloading doesn't help, it's still the old version" symptom:
+/// reloads land on the old ACTIVE worker, which is exactly what's
+/// keeping the new one out.
+///
+/// `false` off-wasm and whenever the registration is unreadable — a
+/// wrongly refused stream would starve consumers, a wrongly opened one
+/// only delays an update.
+pub(crate) fn update_pending() -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
+        return js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .map(|scope| scope.registration().waiting().is_some())
+            .unwrap_or(false);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    false
+}
+
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
@@ -555,6 +589,7 @@ pub mod tests {
             session_expires_at: session.expires_at,
             profile_name,
             reactor,
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
@@ -4412,7 +4447,7 @@ employee:
         );
     }
 
-    /// `Reactor::shutdown` must drop every active subscriber's
+    /// Worker retirement must drop every active subscriber's
     /// `mpsc::Sender` so the SSE response body finishes and the SW
     /// can release in-flight fetches.
     ///
@@ -4440,7 +4475,7 @@ employee:
         // Trigger the shutdown the SW upgrade path runs.
         {
             let guard = app_state.read().await;
-            guard.reactor.shutdown();
+            guard.retire();
         }
 
         // The body must end — `frame()` returns `None`. Race
@@ -4454,6 +4489,44 @@ employee:
                 "expected stream end, got frame: {frame:?}",
             ),
             _ = timeout => panic!("subscription body did not end after shutdown"),
+        }
+
+        // Retirement is terminal for this worker generation. Reopening after
+        // the successor has activated (and `registration.waiting` has become
+        // empty) receives one intentional-drop control frame and immediate
+        // EOF, never a fresh subscription that pins the retiring worker.
+        for attempt in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{repo}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "text/event-stream")
+                        .body(Body::from(named_concept_wire_query().to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/event-stream")
+            );
+            let mut body = response.into_body();
+            assert_eq!(
+                read_sse_frame(&mut body).await,
+                serde_json::json!({ "control": "update-pending" }),
+                "retired query reconnect {attempt} must receive the handoff frame",
+            );
+            assert!(
+                body.frame().await.is_none(),
+                "retired query reconnect {attempt} must close after the handoff frame",
+            );
         }
     }
 
