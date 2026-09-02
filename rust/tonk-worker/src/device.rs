@@ -287,12 +287,27 @@ impl Registry {
 
         let mut roster: Vec<RosterEntry> = profiles
             .into_iter()
-            .map(|profile| RosterEntry {
-                profile_name: profile.name.0,
-                root_did: None,
-                provider: None,
-                email: None,
-                display_name: String::new(),
+            .map(|profile| {
+                // The row is keyed on the profile's DID, and the default
+                // display name is the deterministic petname of that DID —
+                // so an inactive profile keeps its name in the switcher
+                // without being opened. A user-chosen rename or the
+                // account email still only shows while the profile is
+                // active, when the live splice reads them from where
+                // they live.
+                let display_name = profile
+                    .this()
+                    .as_str()
+                    .parse()
+                    .map(|did| tonk_schema::petname(&did))
+                    .unwrap_or_default();
+                RosterEntry {
+                    profile_name: profile.name.0,
+                    root_did: None,
+                    provider: None,
+                    email: None,
+                    display_name,
+                }
             })
             .collect();
         roster.sort_by(|a, b| a.profile_name.cmp(&b.profile_name));

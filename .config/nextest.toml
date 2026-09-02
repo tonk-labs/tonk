@@ -16,14 +16,6 @@ test-threads = 1
 # Report every failure: a fail-fast pass over an hour-long suite hides
 # everything after the first broken test.
 fail-fast = false
-# QUARANTINE — these account flows fail deterministically on every
-# branch since the 2026-09-01 staging merges; the extra failure waits
-# pushed the e2e job past its 60-minute timeout, so runs were killed
-# before reporting at all. Tracked in
-# https://github.com/tonk-labs/tonk/issues/852 — fix and remove; new
-# entries need a linked issue.
-default-filter = """
-not (
-    test(=account_flow::tests::it_adds_a_second_account_and_switches_between_disjoint_space_lists)
-)
-"""
+# The #852 quarantine is drained: every account flow it named is
+# repaired and back in the suite. To quarantine a newly broken test,
+# add a `default-filter` here excluding it, with a linked issue.
