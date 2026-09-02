@@ -453,7 +453,7 @@ const ACTIVE_SPACE: &str = "did:key:z6MkActiveSpace";
 const OTHER_SPACE: &str = "did:key:z6MkOtherSpace";
 const THIRD_SPACE: &str = "did:key:z6MkThirdSpace";
 
-/// Mount a `<ui-space-switcher exclude=ACTIVE_SPACE>` in the `<tonk-menu>` it
+/// Mount a `<ui-space-switcher current=ACTIVE_SPACE>` in the `<tonk-menu>` it
 /// renders rows into, followed by the authored `more` action, and return the
 /// switcher element.
 fn mount_switcher() -> web_sys::HtmlElement {
@@ -464,8 +464,8 @@ fn mount_switcher() -> web_sys::HtmlElement {
         .expect("create")
         .dyn_into::<web_sys::HtmlElement>()
         .expect("html element");
-    el.set_attribute("exclude", ACTIVE_SPACE)
-        .expect("set exclude");
+    el.set_attribute("current", ACTIVE_SPACE)
+        .expect("set current");
     let more = document()
         .create_element("tonk-mi")
         .expect("create more action");
@@ -593,7 +593,7 @@ async fn it_renders_every_other_account_directory_space() {
         &el,
         "reset",
         &switcher_reset_payload(&[
-            // The active space (this element's `exclude`): must be filtered.
+            // The active space (this element's `current`): shown, marked.
             (ACTIVE_SPACE, ACTIVE_SPACE, Some("Current"), "tonk:active"),
             // Every genuine other directory entry must render, including an
             // older entry whose optional name mirror has not landed yet.
@@ -605,9 +605,24 @@ async fn it_renders_every_other_account_directory_space() {
     let subjects = rendered_row_subjects(&el);
     assert_eq!(
         subjects,
-        vec![OTHER_SPACE.to_string(), THIRD_SPACE.to_string()],
-        "every non-active account directory entry renders as a row: {subjects:?}"
+        vec![
+            ACTIVE_SPACE.to_string(),
+            OTHER_SPACE.to_string(),
+            THIRD_SPACE.to_string()
+        ],
+        "every account directory entry renders as a row: {subjects:?}"
     );
+    {
+        let menu = el.parent_element().expect("switcher menu");
+        let active_row = menu
+            .query_selector(&format!("tonk-mi[data-space=\"{ACTIVE_SPACE}\"]"))
+            .expect("query")
+            .expect("the current space renders as a row");
+        assert!(
+            active_row.has_attribute("current"),
+            "the space you are on is marked, not hidden"
+        );
+    }
 
     // The surviving row must use the account-directory name mirror, which is
     // available even when this device has not replicated the target space.
@@ -648,15 +663,15 @@ async fn it_renders_every_other_account_directory_space() {
     let subjects = rendered_row_subjects(&el);
     assert_eq!(
         subjects,
-        vec![THIRD_SPACE.to_string()],
+        vec![ACTIVE_SPACE.to_string(), THIRD_SPACE.to_string()],
         "an update delta must retract, assert, and re-render, not be ignored: {subjects:?}"
     );
 }
 
 #[dialog_common::test]
-async fn it_refilters_when_the_active_space_lands_after_the_directory_frame() {
+async fn it_remarks_when_the_active_space_lands_after_the_directory_frame() {
     let el = mount_switcher();
-    el.set_attribute("exclude", "")
+    el.set_attribute("current", "")
         .expect("clear the initially stamped active space");
 
     deliver_switcher(
@@ -667,18 +682,27 @@ async fn it_refilters_when_the_active_space_lands_after_the_directory_frame() {
             (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
         ]),
     );
-    assert_eq!(
-        rendered_row_subjects(&el),
-        vec![ACTIVE_SPACE.to_string(), OTHER_SPACE.to_string()],
-        "before routing settles, the directory frame is necessarily unfiltered"
+    let unmarked = el
+        .parent_element()
+        .expect("switcher menu")
+        .query_selector("tonk-mi[current]")
+        .expect("query");
+    assert!(
+        unmarked.is_none(),
+        "before routing settles, no row can claim to be the current space"
     );
 
-    el.set_attribute("exclude", ACTIVE_SPACE)
+    el.set_attribute("current", ACTIVE_SPACE)
         .expect("stamp the routed active space");
-    assert_eq!(
-        rendered_row_subjects(&el),
-        vec![OTHER_SPACE.to_string()],
-        "a late active-space stamp must re-filter rows already delivered by the profile"
+    let marked = el
+        .parent_element()
+        .expect("switcher menu")
+        .query_selector(&format!("tonk-mi[data-space=\"{ACTIVE_SPACE}\"]"))
+        .expect("query")
+        .expect("the current space renders");
+    assert!(
+        marked.has_attribute("current"),
+        "a late active-space stamp must mark the row already delivered by the profile"
     );
 }
 

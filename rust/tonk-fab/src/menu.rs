@@ -34,29 +34,36 @@ const CSS: &str = r#"
 :host{ display:block; width:var(--fabb-menu-w, 216px); max-width:100%; }
 :host([compact]){ --_mi-min-height:44px; }
 :host([hidden]){ display:none !important; }
+.shell{ position:relative; display:block; }
+/* The glass lives BESIDE the scrollport, never inside it: an `overflow`
+   ancestor becomes the backdrop root, which cuts the filter off from the
+   page and leaves naked alpha — the "overflow kills the glass" failure.
+   As the port's sibling the underlay's backdrop reaches the real page
+   (Chrome composites backdrop-filter through transparent frames, verified
+   against a checkerboard), and the mask bands track the rows wherever the
+   port scrolls them (recut on scroll). */
+.glass{ position:absolute; inset:0; z-index:0;
+  background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
+  -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
 /* A long stack scrolls rather than running off the screen, but only when no
    row of it flies a sub-stack out: an `overflow` clips the flyout, and once
    the flyout has flipped LEFT it lands before the scrollport's start edge
-   where scrolling cannot reach it at all. `mark_scrollable` sets `scrolls`.
-   The scrollport is its own element so `.w` stays a plain block. */
-.port{ display:block; }
+   where scrolling cannot reach it at all. `mark_scrollable` sets `scrolls`. */
+.port{ position:relative; z-index:1; display:block; }
+/* The clip region of an overflow box is its PADDING box, and every row's
+   ring is a 1px box-shadow drawn just outside the row — flush rows put
+   those shadows exactly on the clip edge, and the stack loses its side
+   (and endmost) borders the moment it can scroll. One pixel of padding
+   keeps the rings inside the clip; the negative margin hands the space
+   back so the stack's geometry does not move. */
 :host([scrolls]) .port{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
-  overflow-y:auto; overscroll-behavior:contain; }
+  overflow-y:auto; overscroll-behavior:contain; padding:1px; margin:-1px; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
   width:100%; max-width:100%; }
-/* The underlay sits at z-index 0 and the rows are lifted above it, rather
-   than the underlay being pushed below at `z-index:-1`. A negative-z child
-   paints behind its stacking context, and any `overflow` on an ancestor
-   creates one -- so the underlay would vanish behind the scroller and every
-   row would lose the ring it paints over the glass. Staying at 0 keeps the
-   pair in the same context, so the stack looks the same scrolled or not. */
-.w::before{ content:""; position:absolute; inset:0; z-index:0;
-  background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
-  -webkit-mask-image:var(--_maskimg, none); mask-image:var(--_maskimg, none); }
-::slotted(*){ position:relative; z-index:1; }
+::slotted(*){ position:relative; }
 "#;
 
-const HTML: &str = r#"<div class="port"><div class="w"><slot></slot></div></div>"#;
+const HTML: &str = r#"<div class="shell"><div class="glass"></div><div class="port"><div class="w"><slot></slot></div></div></div>"#;
 
 /// Per-element state.
 #[derive(Default)]
@@ -74,7 +81,7 @@ impl CustomElement for TonkMenu {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode", "compact"]
+        &["compact"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -106,6 +113,15 @@ impl CustomElement for TonkMenu {
             self.observer_callback = Some(callback);
         }
 
+        // The glass sits beside the scrollport, so scrolled rows move
+        // relative to it: every scroll re-cuts the bands to where the rows
+        // are now.
+        if let Ok(Some(port)) = root.query_selector(".port") {
+            let host = this.clone();
+            self.listeners
+                .push(shadow::bind(&port, "scroll", move |_| recut_mask(&host)));
+        }
+
         if let Ok(Some(slot)) = root.query_selector("slot") {
             let host = this.clone();
             self.listeners
@@ -115,10 +131,7 @@ impl CustomElement for TonkMenu {
         }
 
         self.listeners.push(shadow::install_visibility_pause(this));
-        if let Some(listener) = shadow::install_system_mode(this) {
-            self.listeners.push(listener);
-        }
-        propagate(this);
+        recut_mask(this);
         recut_mask(this);
     }
 
@@ -141,10 +154,7 @@ impl CustomElement for TonkMenu {
         if old == new {
             return;
         }
-        if name == "mode" {
-            shadow::apply_mode(this);
-            propagate(this);
-        } else if name == "compact" {
+        if name == "compact" {
             recut_mask(this);
         }
     }
@@ -166,16 +176,6 @@ fn mark_scrollable(this: &HtmlElement) {
     } else {
         let _ = this.set_attribute("scrolls", "");
     }
-}
-
-/// Pass the resolved mode to every row, then re-cut — a mode change can
-/// change a row's height (nothing does today, but the mask is cheap and a
-/// stale mask is a visible seam).
-fn propagate(this: &HtmlElement) {
-    for row in rows(this) {
-        shadow::pass_mode(this, &row);
-    }
-    recut_mask(this);
 }
 
 /// The rows the mask cuts bands for: direct `tonk-mi` children that are not
@@ -205,7 +205,11 @@ pub(crate) fn recut_mask(this: &HtmlElement) {
     let Some(root) = this.shadow_root() else {
         return;
     };
-    let Ok(Some(wrapper)) = root.query_selector(".w") else {
+    let Ok(Some(glass)) = root.query_selector(".glass") else {
+        return;
+    };
+    let glass: HtmlElement = glass.unchecked_into();
+    let Ok(Some(wrapper)) = root.query_selector(".shell") else {
         return;
     };
     let wrapper: HtmlElement = wrapper.unchecked_into();
@@ -217,7 +221,7 @@ pub(crate) fn recut_mask(this: &HtmlElement) {
         .into_iter()
         .filter(|row| !row.has_attribute("cap"))
         .collect();
-    let style = wrapper.style();
+    let style = glass.style();
     if banded.is_empty() {
         let _ = style.remove_property("--_maskimg");
         return;

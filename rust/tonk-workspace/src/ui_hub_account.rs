@@ -1,19 +1,29 @@
 //! `<ui-hub-account>` — the Hub account switcher and settings route.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use js_sys::{JSON, Reflect};
+use tonk_host::consumer::{self, Subscription};
 use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
-use wasm_bindgen::JsCast as _;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, KeyboardEvent, Node, window};
+use web_sys::{Element, Event, HtmlElement, KeyboardEvent, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
+type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
-const ADD_ACCOUNT_PATH: &str = "/settings?add=1";
+/// The PROFILE branch's routing context — fixed, like `<ui-profile-name>`'s.
+const PROFILE_WITH: &str = "main@profile:tonk";
+
+/// The account-name subscription tag.
+const NAME_TAG: &str = "ui-hub-account:name";
+
+/// The registration subscription tag — the "an account is linked" signal.
+const REGISTERED_TAG: &str = "ui-hub-account:registered";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -77,36 +87,45 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             "data-active-name",
             active.display_name.as_deref().unwrap_or_default(),
         );
+        set_trigger_mode(this, active.provider.is_none());
+        // On the /settings route an unlinked profile has no settings to
+        // show — account setup comes first. The moment the roster answer
+        // says provider-free, the page becomes the linking ceremony.
+        if active.provider.is_none()
+            && this.get_attribute("view").as_deref() == Some("settings")
+            && !this.has_attribute("data-linking")
+        {
+            show_settings(this, false);
+            start_linking(this);
+        }
     }
 
+    // The current account is the TAB itself, so the page holds only ways
+    // onward: one row per other account, wearing its switch verb.
     for profile in &response.profiles {
-        let is_active = profile.active || profile.profile_name == response.active;
-        let Ok(row) = document.create_element(if is_active { "div" } else { "button" }) else {
+        if profile.active || profile.profile_name == response.active {
+            continue;
+        }
+        let Ok(row) = document.create_element("button") else {
             continue;
         };
         row.set_class_name("account-menu__row account-menu__profile");
         let _ = row.set_attribute("data-profile", &profile.profile_name);
         let _ = row.set_attribute("role", "menuitem");
-        if is_active {
-            let _ = row.set_attribute("aria-current", "true");
-            let _ = row.set_attribute("aria-disabled", "true");
-            let _ = row.set_attribute("tabindex", "-1");
-        } else {
-            let _ = row.set_attribute("type", "button");
-        }
+        let _ = row.set_attribute("type", "button");
 
-        let Ok(label) = document.create_element("span") else {
+        let Ok(name) = document.create_element("span") else {
             continue;
         };
-        label.set_text_content(Some(profile_label(profile)));
-        let _ = row.append_child(&label);
-        if is_active {
-            let Ok(current) = document.create_element("span") else {
-                continue;
-            };
-            current.set_class_name("account-menu__current");
-            current.set_text_content(Some("current"));
-            let _ = row.append_child(&current);
+        name.set_class_name("an");
+        name.set_text_content(Some(profile_label(profile)));
+        let _ = row.append_child(&name);
+        let _ = row.append_with_str_1("switch account");
+        if let Ok(glyph) = document.create_element("span") {
+            glyph.set_class_name("g");
+            let _ = glyph.set_attribute("aria-hidden", "true");
+            glyph.set_text_content(Some("\u{25b8}"));
+            let _ = row.append_child(&glyph);
         }
         let _ = list.append_child(&row);
     }
@@ -116,9 +135,11 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
 struct UiHubAccount {
     click: Option<EventClosure>,
     keydown: Option<KeyClosure>,
-    outside_pointer: Option<EventClosure>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
+    subscriptions: Rc<RefCell<Vec<Subscription>>>,
+    name_reset: Rc<RefCell<Option<FrameClosure>>>,
+    name_update: Rc<RefCell<Option<FrameClosure>>>,
 }
 
 impl CustomElement for UiHubAccount {
@@ -127,7 +148,7 @@ impl CustomElement for UiHubAccount {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &["view"]
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
@@ -149,6 +170,77 @@ impl CustomElement for UiHubAccount {
         let token = self.generation.get().wrapping_add(1);
         self.generation.set(token);
         load_profiles(this.clone(), self.generation.clone(), token);
+
+        // Live account subscriptions: the trigger label must flip from
+        // "link an account" to the member's name the moment a registration
+        // ceremony lands, and follow later renames — without a reload. Two
+        // facts on the profile branch carry those signals, and neither
+        // covers the other:
+        //
+        // - `xyz.tonk.account/registered-at` is asserted the moment an
+        //   account links (activation only comes later, with the emailed
+        //   confirmation — the display-name seed waits on it, so it CANNOT
+        //   be the login signal; the first e2e run proved that the hard
+        //   way).
+        // - `xyz.tonk.account/display-name` follows renames once the
+        //   account state is ready.
+        //
+        // A delta on either re-reads the roster, which is where the label,
+        // the provider flag and the switch rows all come from.
+        let host = this.clone();
+        let name_reset: FrameClosure =
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if frame_tag(&opts).as_deref() == Some(NAME_TAG)
+                    && let Some(name) = read_name_from_frame(&payload)
+                {
+                    apply_account_name(&host, &name);
+                }
+            }));
+        let _ = Reflect::set(this, &"__tonkReset".into(), name_reset.as_ref());
+        *self.name_reset.borrow_mut() = Some(name_reset);
+
+        let host = this.clone();
+        let generation = self.generation.clone();
+        let name_update: FrameClosure =
+            Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+                if frame_tag(&opts).as_deref() == Some(NAME_TAG)
+                    && let Some(name) = read_name_from_delta(&payload)
+                {
+                    apply_account_name(&host, &name);
+                }
+                // Something about the account changed (it linked, or it was
+                // renamed): re-read the roster so the trigger and the rows
+                // agree with it.
+                load_profiles(host.clone(), generation.clone(), generation.get());
+            }));
+        let _ = Reflect::set(this, &"__tonkUpdate".into(), name_update.as_ref());
+        *self.name_update.borrow_mut() = Some(name_update);
+
+        subscribe_account_signals(this, self.subscriptions.clone());
+
+        // The /settings route mounts this element with `view="settings"`:
+        // the same chrome, arriving with the settings page open. On that
+        // route the spaces cell and Escape NAVIGATE home — there is no
+        // spaces stack behind the section to swap back in place.
+        if this.get_attribute("view").as_deref() == Some("settings") {
+            open_settings_view(this);
+        }
+
+        // A ceremony that existed when the route re-rendered STILL exists —
+        // the cluster lives in the top page and survives this element. The
+        // body carries the flag and the tab that was active; step back into
+        // the same tab instead of resetting to rest.
+        if !this.has_attribute("data-linking")
+            && ceremony_exists()
+            && window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.body())
+                .and_then(|body| body.get_attribute("data-tonk-hub-tab"))
+                .as_deref()
+                == Some("account")
+        {
+            enter_linking(this);
+        }
 
         let host = this.clone();
         let generation = self.generation.clone();
@@ -174,14 +266,12 @@ impl CustomElement for UiHubAccount {
                     // `window` and a user gesture, which an opaque
                     // realm does not have. The top page raises the
                     // cluster, asked through the same bridge the share
-                    // row asks through.
-                    tonk_host::request_registration(
-                        &serde_json::json!({
-                            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
-                            "space": "",
-                        })
-                        .to_string(),
-                    );
+                    // row asks through — but seated IN the column, one
+                    // gap under the bar, because linking is this tab's
+                    // page, not a dialog over it. The request opens a
+                    // fresh cluster or re-shows a suspended one, so a
+                    // switch back to this tab resumes where it left off.
+                    start_linking(&host);
                     return;
                 }
                 let expanded = account_trigger(&host)
@@ -190,6 +280,23 @@ impl CustomElement for UiHubAccount {
                     == Some("true");
                 if !expanded {
                     open_menu(&host);
+                    if ceremony_exists() {
+                        // A confirmation still pending is account-tab
+                        // content: re-show its cluster with the tab.
+                        tonk_host::request_registration(
+                            &serde_json::json!({ "reason": "show" }).to_string(),
+                        );
+                        if let Some(body) = window()
+                            .and_then(|window| window.document())
+                            .and_then(|document| document.body())
+                        {
+                            let _ = body.set_attribute("data-tonk-hub-tab", "account");
+                        }
+                    }
+                } else if settings_open(&host) {
+                    // From settings the account tab leads back to the
+                    // account view — the one press that is otherwise dead.
+                    show_settings(&host, false);
                 }
                 return;
             }
@@ -199,9 +306,13 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
+                // The settings row is an anchor to the /settings route. In
+                // the guest, the link relay has already taken the click at
+                // capture and sent the navigation; preventing the default
+                // here matters only where NO relay exists (the test
+                // harness), where the anchor's own navigation would tear
+                // the page down mid-suite.
                 event.prevent_default();
-                close_menu(&host, false);
-                tonk_host::navigate_to("/settings");
                 return;
             }
             if target
@@ -210,7 +321,36 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
+                if host.get_attribute("view").as_deref() == Some("settings") {
+                    // On the /settings route the spaces cell is a tab to
+                    // the spaces page — a navigation, since no stack sits
+                    // behind this section. Hide a ceremony that was up, or
+                    // its top-page cluster would linger over the next page.
+                    suspend_linking(&host);
+                    tonk_host::navigate_to("/");
+                    return;
+                }
+                if host.has_attribute("data-linking") {
+                    // Mid-ceremony the two cells are tabs: spaces puts the
+                    // page back and HIDES the cluster — its state survives
+                    // for the switch back.
+                    suspend_linking(&host);
+                    return;
+                }
                 close_menu(&host, false);
+                if ceremony_exists() {
+                    // A linked profile mid-confirmation: the cluster is
+                    // still the account tab's content, so it hides with it.
+                    tonk_host::request_registration(
+                        &serde_json::json!({ "reason": "suspend" }).to_string(),
+                    );
+                    if let Some(body) = window()
+                        .and_then(|window| window.document())
+                        .and_then(|document| document.body())
+                    {
+                        let _ = body.set_attribute("data-tonk-hub-tab", "spaces");
+                    }
+                }
                 return;
             }
             if let Some(profile) = target.closest("button[data-profile]").ok().flatten()
@@ -231,8 +371,27 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                close_menu(&host, false);
-                tonk_host::navigate_to(ADD_ACCOUNT_PATH);
+                // Adding an account IS the regular signup, run for a fresh
+                // profile: rotate the worker onto one, then raise the same
+                // anchored ceremony the unlinked trigger raises. The roster
+                // subscription repaints the bar for the new profile.
+                if action_pending.get() {
+                    return;
+                }
+                action_pending.set(true);
+                set_action_pending(&host, true);
+                let host = host.clone();
+                let action_pending = action_pending.clone();
+                spawn_local(async move {
+                    let added = tonk_host::post_json("/api/profiles/add", "{}").await;
+                    action_pending.set(false);
+                    set_action_pending(&host, false);
+                    if added.is_err() {
+                        return;
+                    }
+                    close_menu(&host, false);
+                    start_linking(&host);
+                });
                 return;
             }
         }));
@@ -240,6 +399,22 @@ impl CustomElement for UiHubAccount {
 
         let host = this.clone();
         let keydown: KeyClosure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
+            if event.key() == "Escape" {
+                if host.get_attribute("view").as_deref() == Some("settings") {
+                    event.prevent_default();
+                    suspend_linking(&host);
+                    tonk_host::navigate_to("/");
+                    return;
+                }
+                // An open settings section takes the key first: closing
+                // the page you are LOOKING at beats hiding a ceremony
+                // that may only be a stale flag behind it.
+                if host.has_attribute("data-linking") && !settings_open(&host) {
+                    event.prevent_default();
+                    suspend_linking(&host);
+                    return;
+                }
+            }
             let open = account_trigger(&host)
                 .and_then(|trigger| trigger.get_attribute("aria-expanded"))
                 .as_deref()
@@ -274,32 +449,18 @@ impl CustomElement for UiHubAccount {
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
 
-        let host = this.clone();
-        let outside_pointer: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            let inside = event
-                .target()
-                .and_then(|target| target.dyn_into::<Node>().ok())
-                .is_some_and(|target| host.contains(Some(&target)));
-            if !inside {
-                close_menu(&host, true);
-            }
-        }));
-        if let Some(document) = window().and_then(|window| window.document()) {
-            let _ = document.add_event_listener_with_callback(
-                "pointerdown",
-                outside_pointer.as_ref().unchecked_ref(),
-            );
-        }
-
         self.click = Some(click);
         self.keydown = Some(keydown);
-        self.outside_pointer = Some(outside_pointer);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         self.generation.set(self.generation.get().wrapping_add(1));
         self.action_pending.set(false);
         set_action_pending(this, false);
+        // Dropping the subscriptions cancels the upstream host subscriptions.
+        self.subscriptions.borrow_mut().clear();
+        self.name_reset.borrow_mut().take();
+        self.name_update.borrow_mut().take();
         if let Some(click) = self.click.take() {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
@@ -307,14 +468,6 @@ impl CustomElement for UiHubAccount {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        }
-        if let Some(pointer) = self.outside_pointer.take()
-            && let Some(document) = window().and_then(|window| window.document())
-        {
-            let _ = document.remove_event_listener_with_callback(
-                "pointerdown",
-                pointer.as_ref().unchecked_ref(),
-            );
         }
         close_menu(this, false);
     }
@@ -413,6 +566,291 @@ fn activate_profile(
     });
 }
 
+/// Shape the trigger for its two roles. Neither draws a dropdown caret —
+/// the cell reads as a tab of the hub bar either way.
+///
+/// Unlinked, it is a plain action button — pressing it raises the
+/// registration cluster, no menu ever opens — so the menu-button ARIA
+/// contract (`aria-haspopup`/`aria-expanded`/`aria-controls`) would
+/// promise a dropdown that does not exist. Linked, it is the
+/// account-menu button and gets it back.
+fn set_trigger_mode(this: &HtmlElement, asks_to_link: bool) {
+    let Some(trigger) = account_trigger(this) else {
+        return;
+    };
+    if asks_to_link {
+        let _ = trigger.remove_attribute("aria-haspopup");
+        let _ = trigger.remove_attribute("aria-expanded");
+        let _ = trigger.remove_attribute("aria-controls");
+    } else {
+        let _ = trigger.set_attribute("aria-haspopup", "menu");
+        let _ = trigger.set_attribute("aria-controls", "hub-account-menu");
+        if trigger.get_attribute("aria-expanded").is_none() {
+            let _ = trigger.set_attribute("aria-expanded", "false");
+        }
+    }
+}
+
+/// Open the account subscriptions for `this`, on a microtask — the same
+/// detached-reaction guard `<ui-sync-status>` uses.
+fn subscribe_account_signals(this: &HtmlElement, subscriptions: Rc<RefCell<Vec<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || !subscriptions.borrow().is_empty() {
+            return;
+        }
+        // The routing context is the element's own `with`: the account
+        // facts live on the PROFILE branch, never on a space.
+        let _ = host.set_attribute("with", PROFILE_WITH);
+        let consumer: Element = host.clone().into();
+        for (tag, body) in [
+            (NAME_TAG, account_name_query_body()),
+            (REGISTERED_TAG, account_registered_query_body()),
+        ] {
+            match body {
+                Ok(body) => {
+                    let tag = JsValue::from_str(tag);
+                    match consumer::subscribe(&consumer, &body, Some(&tag)) {
+                        Ok(sub) => subscriptions.borrow_mut().push(sub),
+                        Err(err) => {
+                            // Dispatch failure: the one-shot roster read
+                            // still painted the label; only liveness is
+                            // lost.
+                            tonk_common::log!("ui-hub-account: subscribe failed: {err:?}");
+                        }
+                    }
+                }
+                Err(err) => tonk_common::log!("ui-hub-account: query build failed: {err}"),
+            }
+        }
+    });
+}
+
+/// The `tag` a subscription frame was addressed with.
+fn frame_tag(opts: &JsValue) -> Option<String> {
+    Reflect::get(opts, &"tag".into())
+        .ok()
+        .and_then(|tag| tag.as_string())
+}
+
+/// The subscribe body for the account registration stamp, in directory mode.
+///
+/// Presence is the answer: the row is asserted the moment an account links
+/// (`record_customer_status` at enroll), long before activation, so its
+/// delta is the earliest "signed in" signal the profile branch carries.
+fn account_registered_query_body() -> Result<JsValue, String> {
+    let body = r#"{
+      "predicate": { "with": { "registered_at": {
+        "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger", "cardinality": "one"
+      } } },
+      "terms": { "this": { "?": { "name": "this" } }, "registered_at": { "?": { "name": "registered_at" } } }
+    }"#;
+    JSON::parse(body).map_err(|e| format!("query JSON parse: {e:?}"))
+}
+
+/// The subscribe body for the account display name, in directory mode
+/// (`this` unbound — the profile branch carries at most one such row, and it
+/// is keyed by the account subject, which this element does not know).
+///
+/// An inline predicate over the raw `xyz.tonk.account/display-name`
+/// attribute, mirroring the FAB's `profile_name_query_body` — but over the
+/// ACCOUNT name, because that row exists only once an account is linked:
+/// its very presence is the "signed in" signal, and `converge_account_state`
+/// keeps its value the shown name.
+fn account_name_query_body() -> Result<JsValue, String> {
+    let body = r#"{
+      "predicate": { "with": { "name": {
+        "the": "xyz.tonk.account/display-name", "as": "Text", "cardinality": "one"
+      } } },
+      "terms": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "name" } } }
+    }"#;
+    JSON::parse(body).map_err(|e| format!("query JSON parse: {e:?}"))
+}
+
+/// A subscription snapshot frame: the first conclusion's `name`. `None`
+/// (no account linked yet) leaves the label at what the roster read
+/// painted — an empty frame must not knock a linked label back.
+fn read_name_from_frame(payload: &JsValue) -> Option<String> {
+    let conclusions = js_sys::Array::from(payload);
+    read_name_field(&conclusions.get(0))
+}
+
+/// An incremental `update` frame: `{ asserted, retracted }`. `name` is
+/// cardinality-one, so the newest asserted row carries the current value; a
+/// bare retract leaves the label where it is.
+fn read_name_from_delta(payload: &JsValue) -> Option<String> {
+    let asserted = Reflect::get(payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    read_name_field(&rows.get(rows.length().saturating_sub(1)))
+}
+
+/// Read `conclusion.fields.name` off a raw subscription row.
+fn read_name_field(row: &JsValue) -> Option<String> {
+    if row.is_undefined() || row.is_null() {
+        return None;
+    }
+    Reflect::get(row, &"fields".into())
+        .ok()
+        .and_then(|fields| Reflect::get(&fields, &"name".into()).ok())
+        .and_then(|v| v.as_string())
+        .filter(|name| !name.trim().is_empty())
+}
+
+/// A live account name arrived: the profile is linked. Paint the name and
+/// give the trigger its menu affordance back.
+fn apply_account_name(this: &HtmlElement, name: &str) {
+    set_text(this, "[data-account-label]", name);
+    let _ = this.set_attribute("data-active-provider", "true");
+    set_trigger_mode(this, false);
+}
+
+/// Begin (or re-show) the linking ceremony: activate the account tab and
+/// ask the top page to seat the cluster in this bar's column. The top page
+/// opens a fresh cluster, or unhides a suspended one — either way the
+/// state the user typed survives tab switches.
+fn start_linking(this: &HtmlElement) {
+    enter_linking(this);
+    let anchor = this
+        .query_selector(".hubbar")
+        .ok()
+        .flatten()
+        .map(|bar| bar.get_bounding_client_rect());
+    let payload = match anchor {
+        Some(rect) => serde_json::json!({
+            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "space": "",
+            "anchor": {
+                "left": rect.left(),
+                "bottom": rect.bottom(),
+                "width": rect.width(),
+            },
+        }),
+        None => serde_json::json!({
+            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "space": "",
+        }),
+    };
+    tonk_host::request_registration(&payload.to_string());
+}
+
+fn enter_linking(this: &HtmlElement) {
+    let _ = this.set_attribute("data-linking", "");
+    // The route view re-renders whenever profile facts land (the passkey
+    // itself lands one), replacing this element mid-ceremony. The body
+    // survives those re-renders, so it carries the ceremony flag and the
+    // active tab the fresh element re-enters from (`connected_callback`).
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|d| d.body())
+    {
+        let _ = body.set_attribute("data-tonk-linking", "");
+        let _ = body.set_attribute("data-tonk-hub-tab", "account");
+    }
+    if let Some(trigger) = account_trigger(this) {
+        let _ = trigger.set_attribute("aria-current", "page");
+    }
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.remove_attribute("aria-current");
+    }
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.set_attribute("data-hub-view", "accounts");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(true);
+        }
+    }
+}
+
+/// Switch to the spaces tab while a ceremony is up: the tab bar behaves
+/// like any tab bar — the account tab's content (the top-page cluster)
+/// HIDES, its state intact, and switching back shows it again. Nothing is
+/// dismissed.
+///
+/// Not [`close_menu`]: that restores only from an OPEN menu (it keys on
+/// `aria-expanded`, which the link-mode trigger does not carry).
+fn suspend_linking(this: &HtmlElement) {
+    if !this.has_attribute("data-linking") {
+        return;
+    }
+    let _ = this.remove_attribute("data-linking");
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|d| d.body())
+    {
+        // The ceremony flag stays — the cluster is only hidden.
+        let _ = body.set_attribute("data-tonk-hub-tab", "spaces");
+    }
+    tonk_host::request_registration(&serde_json::json!({ "reason": "suspend" }).to_string());
+    if let Some(trigger) = account_trigger(this) {
+        let _ = trigger.remove_attribute("aria-current");
+    }
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.set_attribute("aria-current", "page");
+    }
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.remove_attribute("data-hub-view");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(false);
+        }
+    }
+}
+
+/// Whether a linking ceremony exists (visible or suspended) — the body
+/// flag outlives route re-renders and tab switches.
+fn ceremony_exists() -> bool {
+    window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+        .is_some_and(|body| body.has_attribute("data-tonk-linking"))
+}
+
+/// Whether the settings section is the visible page under the bar.
+fn settings_open(this: &HtmlElement) -> bool {
+    this.query_selector("[data-settings-view]")
+        .ok()
+        .flatten()
+        .and_then(|view| view.dyn_into::<HtmlElement>().ok())
+        .is_some_and(|view| !view.hidden())
+}
+
+/// Swap between the account rows and the settings section — both are pages
+/// of the account TAB, so the bar (and the trigger's current mark) stays.
+fn show_settings(this: &HtmlElement, settings: bool) {
+    if let Ok(Some(menu)) = this.query_selector("[data-account-menu]")
+        && let Ok(menu) = menu.dyn_into::<HtmlElement>()
+    {
+        menu.set_hidden(settings);
+    }
+    if let Ok(Some(view)) = this.query_selector("[data-settings-view]")
+        && let Ok(view) = view.dyn_into::<HtmlElement>()
+    {
+        view.set_hidden(!settings);
+    }
+}
+
+/// Open the in-column settings section — a page of the account tab.
+fn open_settings_view(this: &HtmlElement) {
+    // Settings is a page of the account tab: make sure that tab's frame
+    // (spaces stack aside, trigger current) is up before swapping to it.
+    let expanded = account_trigger(this)
+        .and_then(|trigger| trigger.get_attribute("aria-expanded"))
+        .as_deref()
+        == Some("true");
+    if !expanded {
+        open_menu(this);
+    }
+    show_settings(this, true);
+    // The shared panel fills its own rows (see `ui_account_settings`).
+    if let Ok(Some(panel)) = this.query_selector("ui-account-settings")
+        && let Ok(panel) = panel.dyn_into::<HtmlElement>()
+    {
+        crate::ui_account_settings::refresh(&panel);
+    }
+}
+
 fn account_trigger(this: &HtmlElement) -> Option<HtmlElement> {
     this.query_selector("[data-account-trigger]")
         .ok()
@@ -440,6 +878,11 @@ fn open_menu(this: &HtmlElement) {
         && let Ok(menu) = menu.dyn_into::<HtmlElement>()
     {
         menu.set_hidden(false);
+    }
+    if let Ok(Some(view)) = this.query_selector("[data-settings-view]")
+        && let Ok(view) = view.dyn_into::<HtmlElement>()
+    {
+        view.set_hidden(true);
     }
     if let Some(first) = menu_items(this).first() {
         let _ = first.focus();
@@ -485,12 +928,23 @@ fn move_menu_focus(this: &HtmlElement, direction: i32, endpoint: bool) {
 }
 
 fn close_menu(this: &HtmlElement, restore_focus: bool) {
+    // While the linking page is up the account cell IS the current tab;
+    // only its own exits (spaces, Escape) may move the coat. An open
+    // settings section outranks a lingering linking flag.
+    if this.has_attribute("data-linking") && !settings_open(this) {
+        return;
+    }
     let was_open = account_trigger(this)
         .and_then(|trigger| trigger.get_attribute("aria-expanded"))
         .as_deref()
         == Some("true");
     if let Some(trigger) = account_trigger(this) {
-        let _ = trigger.set_attribute("aria-expanded", "false");
+        // Only a trigger that IS a menu button carries `aria-expanded`; in
+        // the link-an-account mode `set_trigger_mode` stripped it, and this
+        // must not stamp it back.
+        if trigger.has_attribute("aria-haspopup") {
+            let _ = trigger.set_attribute("aria-expanded", "false");
+        }
         let _ = trigger.remove_attribute("aria-current");
         if restore_focus {
             let _ = trigger.focus();
@@ -500,6 +954,11 @@ fn close_menu(this: &HtmlElement, restore_focus: bool) {
         && let Ok(menu) = menu.dyn_into::<HtmlElement>()
     {
         menu.set_hidden(true);
+    }
+    if let Ok(Some(view)) = this.query_selector("[data-settings-view]")
+        && let Ok(view) = view.dyn_into::<HtmlElement>()
+    {
+        view.set_hidden(true);
     }
     if !was_open {
         return;
@@ -518,14 +977,44 @@ fn close_menu(this: &HtmlElement, restore_focus: bool) {
     }
 }
 
-/// Register `<ui-hub-account>`. Idempotent.
+/// Register `<ui-hub-account>`. Idempotent. Installs the prototype
+/// `reset`/`update` method shims (forwarding to the per-instance
+/// `__tonkReset`/`__tonkUpdate` delegates) so host subscription frames
+/// reach the element — the same pattern `<ui-sync-status>` uses.
 pub(crate) fn register() {
     let Some(win) = window() else {
         return;
     };
     if win.custom_elements().get("ui-hub-account").is_undefined() {
         UiHubAccount::define("ui-hub-account");
+        install_frame_shims();
     }
+}
+
+/// Install `reset`/`update` on the element prototype, forwarding to the
+/// per-instance delegates. On the prototype (not each instance) so
+/// `this`-binding is correct.
+fn install_frame_shims() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("ui-hub-account");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = js_sys::Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let update_fn = js_sys::Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
 }
 
 #[cfg(test)]
@@ -556,17 +1045,23 @@ mod tests {
 
     fn account_element() -> HtmlElement {
         super::register();
+        // The settings section embeds `<ui-account-settings>`; without its
+        // registration the panel never injects its rail, which only shows
+        // when a test runs ISOLATED (CI's nextest) — the pooled local run
+        // hides it behind another test's registration.
+        crate::ui_account_settings::register();
         let document = window().expect("window").document().expect("document");
+        let body = document.body().expect("body");
+        // The linking flag outlives an element on purpose (it marks a live
+        // top-page ceremony); between tests it is just leakage.
+        let _ = body.remove_attribute("data-tonk-linking");
+        let _ = body.remove_attribute("data-tonk-hub-tab");
         let host: HtmlElement = document
             .create_element("ui-hub-account")
             .expect("create account element")
             .dyn_into()
             .expect("HtmlElement");
-        document
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("append account element");
+        body.append_child(&host).expect("append account element");
         host
     }
 
@@ -581,7 +1076,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_mounts_the_complete_header_without_an_inline_settings_view() {
+    fn it_mounts_the_complete_header_with_settings_folded_away() {
         let host = account_element();
 
         assert!(
@@ -590,12 +1085,18 @@ mod tests {
                 .is_some(),
             "the registered element must mount its account menu"
         );
-        assert!(
-            host.query_selector("[data-settings-view]")
-                .expect("valid selector")
-                .is_none()
+        let settings: HtmlElement = host
+            .query_selector("[data-settings-view]")
+            .expect("valid selector")
+            .expect("settings is a page of the account tab now")
+            .dyn_into()
+            .unwrap();
+        assert!(settings.hidden(), "and it stays folded until asked for");
+        assert_eq!(
+            host.query_selector_all(".hubbar > *").unwrap().length(),
+            2,
+            "two cells: account and spaces — settings lives in the account view"
         );
-        assert_eq!(host.query_selector_all(".hubbar > *").unwrap().length(), 4);
         for rejected in [
             "[data-settings-dialog]",
             "[data-settings-overlay]",
@@ -605,10 +1106,10 @@ mod tests {
             assert!(host.query_selector(rejected).unwrap().is_none());
         }
         let settings = host
-            .query_selector("a[data-open-settings]")
+            .query_selector("[data-open-settings]")
             .expect("valid selector")
             .expect("settings route");
-        assert_eq!(settings.get_attribute("href").as_deref(), Some("/settings"));
+        assert!(settings.is_connected());
         host.remove();
     }
 
@@ -645,28 +1146,19 @@ mod tests {
             .text_content()
             .unwrap_or_default();
         assert_eq!(label, "Ada Lovelace");
-        let current = host
-            .query_selector("[data-profile=\"primary\"]")
-            .unwrap()
-            .expect("current profile row");
-        assert_eq!(
-            current.get_attribute("aria-current").as_deref(),
-            Some("true")
-        );
-        assert_eq!(
-            current.tag_name(),
-            "DIV",
-            "the current account is not actionable"
+        assert!(
+            host.query_selector("[data-profile=\"primary\"]")
+                .unwrap()
+                .is_none(),
+            "the current account is the tab itself, not a row"
         );
         let switches = host.query_selector_all("button[data-profile]").unwrap();
         assert_eq!(switches.length(), 2);
+        let second = switches.item(0).unwrap().text_content().unwrap();
+        assert!(second.contains("grace@example.com"));
         assert!(
-            switches
-                .item(0)
-                .unwrap()
-                .text_content()
-                .unwrap()
-                .contains("grace@example.com")
+            second.contains("switch account"),
+            "a roster row carries its switch verb"
         );
         assert!(
             switches
@@ -677,6 +1169,12 @@ mod tests {
                 .contains("Local workspace")
         );
         assert!(host.query_selector("[data-add-profile]").unwrap().is_some());
+        assert!(
+            host.query_selector("[data-account-menu] [data-open-settings]")
+                .unwrap()
+                .is_some(),
+            "settings is the account view's first way onward"
+        );
         host.remove();
     }
 
@@ -704,6 +1202,8 @@ mod tests {
         );
         assert!(!menu.hidden());
 
+        // A tab is a place, not a popover: a pointer landing outside the
+        // bar must not close it or move the coat.
         let pointer_init = EventInit::new();
         pointer_init.set_bubbles(true);
         document
@@ -713,16 +1213,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             trigger.get_attribute("aria-expanded").as_deref(),
-            Some("false")
+            Some("true")
         );
-        assert!(menu.hidden());
-        assert!(
-            document
-                .active_element()
-                .is_some_and(|active| active.is_same_node(Some(&trigger)))
-        );
+        assert!(!menu.hidden());
 
-        trigger.click();
         let init = KeyboardEventInit::new();
         init.set_key("Escape");
         init.set_bubbles(true);
@@ -772,7 +1266,13 @@ mod tests {
                 .active_element()
                 .and_then(|element| element.get_attribute("data-profile"))
         };
-        assert_eq!(active_profile().as_deref(), Some("second"));
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .has_attribute("data-open-settings"),
+            "the settings row leads the account view"
+        );
 
         let key = |value: &str| {
             let init = KeyboardEventInit::new();
@@ -795,6 +1295,13 @@ mod tests {
             "ArrowUp wraps to the last enabled item"
         );
         key("ArrowDown");
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .has_attribute("data-open-settings")
+        );
+        key("ArrowDown");
         assert_eq!(active_profile().as_deref(), Some("second"));
         key("End");
         assert!(
@@ -804,7 +1311,12 @@ mod tests {
                 .has_attribute("data-add-profile")
         );
         key("Home");
-        assert_eq!(active_profile().as_deref(), Some("second"));
+        assert!(
+            document
+                .active_element()
+                .unwrap()
+                .has_attribute("data-open-settings")
+        );
         key("Escape");
         assert!(
             document
@@ -992,6 +1504,16 @@ mod tests {
             Some("link an account"),
             "an unattached first-run profile must not present its storage name as an account"
         );
+        assert!(
+            account.get_attribute("aria-haspopup").is_none(),
+            "the link-an-account trigger is a plain action, not a menu button"
+        );
+        assert!(account.get_attribute("aria-expanded").is_none());
+        assert!(account.get_attribute("aria-controls").is_none());
+        assert!(
+            account.query_selector(".g").unwrap().is_none(),
+            "the account cell never draws a dropdown caret"
+        );
         let original_url = window().unwrap().location().href().unwrap();
         account.click();
         let menu: HtmlElement = host
@@ -1001,6 +1523,10 @@ mod tests {
             .dyn_into()
             .unwrap();
         assert!(menu.hidden(), "linking must not open the profile roster");
+        assert!(
+            account.get_attribute("aria-expanded").is_none(),
+            "the close-menu pass must not stamp menu ARIA back onto a plain action trigger"
+        );
         // In place, not away. It used to navigate to /settings, which
         // put a panel and a second button between the label and the
         // ceremony; the trigger asks the top page for the ceremony
@@ -1017,23 +1543,43 @@ mod tests {
             .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
             .unwrap();
 
+        // The settings row is an anchor to the /settings route; in the
+        // harness (no link relay) the element's own preventDefault keeps
+        // the click from tearing the page down. The swap-in below is the
+        // route view's arrival, entered directly.
         let settings: HtmlElement = host
             .query_selector("[data-open-settings]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
+        assert_eq!(settings.get_attribute("href").as_deref(), Some("/settings"));
         settings.click();
         assert_eq!(
-            window().unwrap().location().pathname().unwrap(),
-            "/settings"
+            window().unwrap().location().href().unwrap(),
+            original_url,
+            "without a relay the settings anchor must not navigate the harness"
         );
-        window()
+        super::open_settings_view(&host);
+        let settings_view: HtmlElement = host
+            .query_selector("[data-settings-view]")
             .unwrap()
-            .history()
             .unwrap()
-            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
+            .dyn_into()
             .unwrap();
+        assert!(!settings_view.hidden(), "the settings section swaps in");
+        assert!(stack.hidden(), "the spaces stack steps aside for it");
+        let escape = KeyboardEventInit::new();
+        escape.set_key("Escape");
+        escape.set_bubbles(true);
+        host.query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap()
+            .dispatch_event(
+                &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &escape).unwrap(),
+            )
+            .unwrap();
+        assert!(settings_view.hidden(), "Escape goes home");
         assert!(!stack.hidden());
         assert!(stack.query_selector(".srow[href]").unwrap().is_some());
         assert!(
@@ -1047,8 +1593,73 @@ mod tests {
         hubcol.remove();
     }
 
+    /// A live `xyz.tonk.account/display-name` frame is the login signal:
+    /// it must flip the unlinked trigger to the member's name — and give
+    /// it its menu affordance back — without any reload.
     #[wasm_bindgen_test]
-    fn it_routes_settings_to_the_top_level_page() {
+    fn it_adopts_a_live_account_name_frame_without_a_reload() {
+        let host = account_element();
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "Local workspace".into(),
+                profiles: vec![profile("Local workspace", None, None, None, true)],
+            },
+        );
+        let trigger: HtmlElement = host
+            .query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(trigger.get_attribute("aria-haspopup").is_none());
+
+        // The shape a subscription `reset` frame delivers: conclusions with
+        // a `fields.name`.
+        let frame = js_sys::JSON::parse(r#"[{ "fields": { "name": "Ada Lovelace" } }]"#).unwrap();
+        if let Some(name) = super::read_name_from_frame(&frame) {
+            super::apply_account_name(&host, &name);
+        }
+
+        let label = host
+            .query_selector("[data-account-label]")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .unwrap_or_default();
+        assert_eq!(label, "Ada Lovelace");
+        assert_eq!(
+            host.get_attribute("data-active-provider").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-haspopup").as_deref(),
+            Some("menu")
+        );
+        assert!(
+            trigger.query_selector(".g").unwrap().is_none(),
+            "linking brings the menu back, not a dropdown caret"
+        );
+
+        // A rename arrives as an `update` delta; the newest asserted row wins.
+        let delta = js_sys::JSON::parse(
+            r#"{ "asserted": [{ "fields": { "name": "Countess Lovelace" } }], "retracted": [] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_name_from_delta(&delta).as_deref(),
+            Some("Countess Lovelace")
+        );
+        // A bare retract or an empty snapshot must leave the label alone.
+        let bare_retract = js_sys::JSON::parse(r#"{ "asserted": [], "retracted": [{}] }"#).unwrap();
+        assert!(super::read_name_from_delta(&bare_retract).is_none());
+        let empty = js_sys::JSON::parse("[]").unwrap();
+        assert!(super::read_name_from_frame(&empty).is_none());
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_opens_settings_inside_the_hub() {
         let document = window().unwrap().document().unwrap();
         let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
         hubcol.set_class_name("hubcol");
@@ -1064,34 +1675,49 @@ mod tests {
         hubcol.append_child(&stack).unwrap();
         document.body().unwrap().append_child(&hubcol).unwrap();
 
-        let settings_button: HtmlElement = host
-            .query_selector("[data-open-settings]")
+        super::open_settings_view(&host);
+        let settings_view: HtmlElement = host
+            .query_selector("[data-settings-view]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
-        assert_eq!(settings_button.tag_name(), "A");
-        assert_eq!(
-            settings_button.get_attribute("href").as_deref(),
-            Some("/settings")
-        );
-        let original_url = window().unwrap().location().href().unwrap();
-        settings_button.click();
-        assert_eq!(
-            window().unwrap().location().pathname().unwrap(),
-            "/settings"
-        );
+        assert!(!settings_view.hidden(), "the settings section swaps in");
+        assert!(stack.hidden(), "the spaces stack steps aside for it");
+        // The rail: devices is a pane switch, and the account tab leads
+        // back to the account rows.
+        host.query_selector(".s-rail [data-pane=\"devices\"]")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
         assert!(
-            !stack.hidden(),
-            "routing must not swap in the old inline view"
+            !host
+                .query_selector(".s-body [data-pane=\"devices\"]")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<HtmlElement>()
+                .unwrap()
+                .hidden()
         );
-        assert!(hubcol.get_attribute("data-hub-view").is_none());
-        window()
+        let menu: HtmlElement = host
+            .query_selector("[data-account-menu]")
             .unwrap()
-            .history()
             .unwrap()
-            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
+            .dyn_into()
             .unwrap();
+        assert!(menu.hidden(), "the account rows stepped aside for settings");
+        host.query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        assert!(
+            settings_view.hidden() && !menu.hidden(),
+            "the account tab leads from settings back to the account rows"
+        );
         hubcol.remove();
     }
 }

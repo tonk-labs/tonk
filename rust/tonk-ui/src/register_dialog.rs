@@ -111,13 +111,18 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 /// binds to: the browser offers a discoverable passkey inside this
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
+///
+/// `type="text"` rather than `type="email"`, deliberately: the selection
+/// API answers `null` on an email input, and [`follow_caret`] needs
+/// `selectionStart` to seat the block cursor mid-text. `inputmode`
+/// keeps the email keyboard, and [`is_plausible`] gates the lookups.
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
     <div class="m-head mblk" id="tonk-register-head">link an account</div>
     <div class="orow mblk" id="tonk-register-email-row">
       <span class="k">email</span>
-      <span class="v"><input class="ed" id="tonk-register-email" type="email"
+      <span class="v"><input class="ed" id="tonk-register-email" type="text"
             inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
             aria-label="email" placeholder="you@example.com"><i class="cur"
             aria-hidden="true"></i></span>
@@ -183,6 +188,9 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, DISMISS, return_to_space);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     on_click(&host, DISMISS, close);
     let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         event.prevent_default();
@@ -198,6 +206,8 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     commit_on_enter(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     focus_on_row_click(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    follow_caret(&host, EMAIL_INPUT);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -219,7 +229,14 @@ fn open_when_upgraded(host: &Element) {
         if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
             && !dialog.open()
         {
-            let _ = dialog.show_modal();
+            // Anchored under the hub bar, the ceremony is a PAGE the
+            // account tab shows — the bar's cells stay live tabs, so no
+            // modal: a modal would inert the iframe they live in.
+            if dialog.has_attribute("data-anchored") {
+                let _ = dialog.show();
+            } else {
+                let _ = dialog.show_modal();
+            }
         }
         focus_address(&host);
     });
@@ -237,6 +254,99 @@ fn focus_address(host: &Element) {
     if let Some(element) = field.dyn_ref::<HtmlElement>() {
         let _ = element.focus();
     }
+}
+
+/// Keep the block cursor on the caret.
+///
+/// The field's native caret is transparent and the `.cur` block beside
+/// it is the visible one (`styles.css`, the ceremony's `.ed`), so the
+/// block has to follow the real insertion point instead of squatting on
+/// the tail. Engines that support `caret-shape: block` draw the block
+/// natively and never show `.cur`, so they skip this wiring entirely.
+///
+/// The field is right-aligned, so the seat is measured from the right
+/// edge: the width of the text after the caret, read off a hidden
+/// mirror span wearing the row's own type. Selection offsets count
+/// UTF-16 code units, so the tail is cut in that encoding rather than
+/// by byte.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn follow_caret(host: &Element, selector: &str) {
+    if web_sys::css::supports_with_value("caret-shape", "block").unwrap_or(false) {
+        return;
+    }
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(field) = host.query_selector(selector).ok().flatten() else {
+        return;
+    };
+    let Ok(field) = field.dyn_into::<web_sys::HtmlInputElement>() else {
+        return;
+    };
+    let Some(seat) = field.parent_element() else {
+        return;
+    };
+    let Some(cursor) = seat.query_selector(".cur").ok().flatten() else {
+        return;
+    };
+    let Ok(mirror) = document.create_element("span") else {
+        return;
+    };
+    mirror.set_class_name("measure");
+    let _ = mirror.set_attribute("aria-hidden", "true");
+    if seat.append_child(&mirror).is_err() {
+        return;
+    }
+
+    let target = field.clone();
+    let place = move || {
+        let value = field.value();
+        let units: Vec<u16> = value.encode_utf16().collect();
+        let backward = field
+            .selection_direction()
+            .ok()
+            .flatten()
+            .is_some_and(|direction| direction == "backward");
+        let edge = if backward {
+            field.selection_start()
+        } else {
+            field.selection_end()
+        };
+        let caret = edge
+            .ok()
+            .flatten()
+            .map(|index| index as usize)
+            .unwrap_or(units.len())
+            .min(units.len());
+        let tail = String::from_utf16_lossy(&units[caret..]);
+        mirror.set_text_content(Some(&tail));
+        let offset = mirror.get_bounding_client_rect().width();
+        // The trailing padding the stylesheet reserves is the block's
+        // rightmost seat; clamp so an overflowing value cannot push it
+        // out of the row.
+        let room = (seat.get_bounding_client_rect().width() - 8.0).max(1.0);
+        let right = (offset + 1.0).min(room);
+        // Restart the blink so the block is solid right after a
+        // keystroke, the way a terminal's cursor behaves.
+        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px;animation:none"));
+        if let Some(element) = cursor.dyn_ref::<HtmlElement>() {
+            let _ = element.offset_width();
+        }
+        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px"));
+    };
+
+    let listener = Closure::<dyn FnMut()>::new(place);
+    for event in [
+        "input",
+        "keyup",
+        "click",
+        "focus",
+        "scroll",
+        "selectionchange",
+    ] {
+        let _ = target.add_event_listener_with_callback(event, listener.as_ref().unchecked_ref());
+    }
+    listener.forget();
 }
 
 /// Unfold a row into the stack: appended folded, then released a frame
@@ -587,9 +697,8 @@ fn registration_focusables(host: &Element) -> Vec<HtmlElement> {
 ///
 /// Debounced here rather than in the worker: a question with no network
 /// answer belongs in the component, and the command should not run per
-/// keystroke. `wa-input`'s own `required` / `type="email"` handle the
-/// format, so this only asks about addresses the browser already
-/// considers well-formed.
+/// keystroke. [`is_plausible`] handles the format, so this only asks
+/// about addresses that already read as well-formed.
 fn watch_address(host: &Element) {
     let Some(input) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
         return;
@@ -1140,8 +1249,8 @@ pub(crate) fn status_for(state: &str) -> &'static str {
 
 /// Whether an address is worth asking the service about.
 ///
-/// The browser's own `type="email"` validity is the real gate; this is
-/// the cheap structural check that keeps a half-typed address from
+/// The address field is `type="text"` (see [`DIALOG_HTML`]), so this
+/// structural check is the gate that keeps a half-typed address from
 /// becoming a lookup.
 pub(crate) fn is_plausible(email: &str) -> bool {
     let trimmed = email.trim();
@@ -1222,7 +1331,7 @@ fn submit() {
         .unwrap_or_default();
     match label.trim() {
         COPY_LINK => copy_the_share_link(),
-        RETURN_TO_SPACE => close(),
+        RETURN_TO_SPACE => return_to_space(),
         "" => finish_action(),
         _ => run_signup_ceremony(),
     }
@@ -1942,6 +2051,7 @@ fn ask_for_name(host: &Element) {
     }
     unfold(&row);
     commit_name_on_enter(host);
+    follow_caret(host, "#tonk-register-name");
     if let Some(field) = host
         .query_selector("#tonk-register-name")
         .ok()
@@ -2141,7 +2251,7 @@ fn set_status(text: &str) {
 
 /// What the guest asked for: why it could not share, and what it was
 /// trying to share.
-#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
 pub struct Request {
     /// The refusal class that raised the dialog.
     #[serde(default)]
@@ -2150,6 +2260,25 @@ pub struct Request {
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
+    /// Where to seat the cluster, in page coordinates. The Hub's
+    /// "link an account" tab sends its bar's rect so the ceremony rows
+    /// render IN the column right under it — the tab activates and the
+    /// email and instruction rows are simply what its page shows. Absent
+    /// (a share-blocked request over a space), the cluster floats
+    /// centered over the dimmed page as before.
+    #[serde(default)]
+    pub anchor: Option<Anchor>,
+}
+
+/// A seat for the anchored cluster: the opener bar's box, page coordinates.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct Anchor {
+    /// The bar's left edge — the column's own left.
+    pub left: f64,
+    /// The bar's bottom edge; the rows hang one gap below it.
+    pub bottom: f64,
+    /// The bar's width — the column width the rows fill.
+    pub width: f64,
 }
 
 /// Parse the payload a guest forwards, tolerating a bare reason string
@@ -2158,6 +2287,7 @@ pub fn parse_request(payload: &str) -> Request {
     serde_json::from_str(payload).unwrap_or_else(|_| Request {
         reason: payload.to_owned(),
         space: String::new(),
+        anchor: None,
     })
 }
 
@@ -2188,6 +2318,117 @@ pub(crate) fn pending_share() -> Option<String> {
 /// runs.
 const PENDING_SHARE: &str = "data-pending-share";
 
+/// Whether a register dialog is currently standing (open, suspended or
+/// not) in this document.
+pub fn is_open() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.dyn_into::<HtmlDialogElement>().ok())
+        .is_some_and(|dialog| dialog.open())
+}
+
+/// Hide the standing cluster without closing it: the account tab it is a
+/// page of went to the background, and everything typed must survive the
+/// switch back. The counterpart of [`resume`].
+pub fn suspend() {
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.set_attribute("data-suspended", "");
+    }
+}
+
+/// Re-show a suspended cluster, seating the cursor back in the address
+/// field. A no-op without one.
+pub fn resume() {
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.remove_attribute("data-suspended");
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        focus_address(&host);
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let _ = host;
+    }
+}
+
+/// The sessionStorage key carrying a blocked share's space across the
+/// navigation to the linking screen.
+const SHARE_STASH: &str = "tonk-pending-share";
+
+/// Park a blocked share's space so it survives the navigation to
+/// `/settings`, where the linking ceremony picks it up.
+pub fn stash_share(space: &str) {
+    if space.is_empty() {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if let Some(storage) = window.session_storage().ok().flatten() {
+        let _ = storage.set_item(SHARE_STASH, space);
+        // Where the share left from — "return to space" is a navigation
+        // now, not a close, because the linking screen replaced the page.
+        if let Ok(path) = window.location().pathname() {
+            let _ = storage.set_item(SHARE_RETURN, &path);
+        }
+    }
+}
+
+/// Adopt (and consume) a share parked by [`stash_share`] into the standing
+/// dialog, so the finished ceremony offers the interrupted share's link.
+pub fn adopt_stashed_share() {
+    let Some(storage) =
+        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+    else {
+        return;
+    };
+    let Ok(Some(space)) = storage.get_item(SHARE_STASH) else {
+        return;
+    };
+    let _ = storage.remove_item(SHARE_STASH);
+    remember_space(&space);
+    if let (Ok(Some(path)), Some(host)) = (
+        storage.get_item(SHARE_RETURN),
+        web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DIALOG_ID)),
+    ) {
+        let _ = storage.remove_item(SHARE_RETURN);
+        let _ = host.set_attribute(RETURN_PATH, &path);
+    }
+}
+
+/// The sessionStorage key carrying the space PAGE the blocked share left,
+/// so "return to space" can actually return there.
+const SHARE_RETURN: &str = "tonk-share-return";
+
+/// Where the finished ceremony returns to — stamped on the dialog host by
+/// [`adopt_stashed_share`] when the linking screen replaced the space page.
+const RETURN_PATH: &str = "data-return-path";
+
+/// Go back to the space the blocked share left, when the ceremony stands
+/// on the linking screen instead of over the space; just close otherwise.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn return_to_space() {
+    let path = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.get_attribute(RETURN_PATH))
+        .filter(|path| !path.is_empty());
+    match path {
+        Some(path) => {
+            if let Some(location) = web_sys::window().map(|window| window.location()) {
+                let _ = location.assign(&path);
+            }
+        }
+        None => close(),
+    }
+}
+
 /// Re-word the dialog for the refusal that raised it, and remember what
 /// the interrupted click was trying to share.
 ///
@@ -2200,6 +2441,36 @@ pub fn describe(payload: &str) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
+    if let Some(anchor) = &request.anchor
+        && let Some(host) = document
+            .get_element_by_id(DIALOG_ID)
+            .and_then(|host| host.dyn_into::<HtmlElement>().ok())
+    {
+        // Seat the cluster in the opener's column: no veil, the head row
+        // stays hidden (the tab that raised it IS the head), and the rows
+        // hang one gap under the bar at the bar's own width.
+        let _ = host.set_attribute("data-anchored", "");
+        // The way out of the anchored page is the SPACES TAB in the bar
+        // above it — no ghost row of its own. And a non-modal dialog
+        // fires no `cancel` on Escape, so Escape is wired by hand.
+        if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
+            let _ = dismiss.set_attribute("hidden", "");
+        }
+        let escape = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                if event.key() == "Escape" {
+                    event.prevent_default();
+                    close();
+                }
+            },
+        );
+        let _ = host.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
+        escape.forget();
+        let style = host.style();
+        let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
+        let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
+        let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
+    }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }

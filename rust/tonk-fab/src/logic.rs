@@ -298,6 +298,18 @@ pub fn dock_from_conclusions(rows: &Value) -> Option<Dock> {
     Dock::from_symbol(symbol)
 }
 
+/// Resolve the persisted collapse from a `/query` result — the same row
+/// shapes [`dock_from_conclusions`] reads. `None` when the result is
+/// empty or malformed, which the caller treats as expanded.
+pub fn collapsed_from_conclusions(rows: &Value) -> Option<bool> {
+    let first = rows.as_array()?.first()?;
+    first
+        .get("fields")
+        .and_then(|fields| fields.get("collapsed"))
+        .or_else(|| first.get("collapsed"))
+        .and_then(Value::as_bool)
+}
+
 /// Pick the fallback corner nearest a drop. The vertical half of the viewport (height
 /// `vh`) picks top vs bottom and the horizontal half (width `vw`) picks left vs
 /// right, keyed off the drag's anchor point `(center_x, center_y)` — the grab
@@ -319,7 +331,7 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
-pub const FULL_BAR_WIDTH_PX: f64 = 414.0;
+pub const FULL_BAR_WIDTH_PX: f64 = 396.0;
 pub const COMPACT_CELL_PX: f64 = 44.0;
 pub const COMPACT_SPACE_MIN_PX: f64 = 120.0;
 pub const SPACE_CELL_PX: f64 = 216.0;
@@ -332,15 +344,17 @@ pub struct BarLayout {
     pub compact: bool,
     pub space_width_px: f64,
     pub show_share: bool,
-    pub show_mode: bool,
     pub show_overflow: bool,
 }
 
 /// Partition the canonical action run according to what fully fits.
 ///
-/// Exact fits stay in the wider layout. In compact mode the sync and overflow
-/// bookends never disappear; the space cell consumes the remaining room and
-/// may shrink to zero when even those bookends do not fit.
+/// Exact fits stay in the wider layout. The overflow bookend appears only
+/// when it holds something: with the mode row gone the overflow's one
+/// resident is the share route, so a compact bar that still shows share
+/// would open an EMPTY stack from it — and a dead cell is worse chrome than
+/// an honest one. The space cell consumes the remaining room and may shrink
+/// to zero when even the bookends do not fit.
 pub fn bar_layout(usable_width_px: f64) -> BarLayout {
     let usable = usable_width_px.max(0.0);
     if usable >= FULL_BAR_WIDTH_PX {
@@ -348,19 +362,22 @@ pub fn bar_layout(usable_width_px: f64) -> BarLayout {
             compact: false,
             space_width_px: SPACE_CELL_PX,
             show_share: true,
-            show_mode: true,
             show_overflow: false,
         };
     }
 
-    let show_share = usable >= COMPACT_CELL_PX * 2.0 + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
-    let reserved = COMPACT_CELL_PX * 2.0 + if show_share { SHARE_CELL_PX } else { 0.0 };
+    let show_share = usable >= COMPACT_CELL_PX + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
+    let reserved = COMPACT_CELL_PX
+        + if show_share {
+            SHARE_CELL_PX
+        } else {
+            COMPACT_CELL_PX
+        };
     BarLayout {
         compact: true,
         space_width_px: (usable - reserved).clamp(0.0, SPACE_CELL_PX),
         show_share,
-        show_mode: false,
-        show_overflow: true,
+        show_overflow: !show_share,
     }
 }
 
@@ -424,6 +441,39 @@ pub fn dock_claim_json(dock: Dock) -> Value {
                 "parameters": {
                     "this": "state:fab",
                     "dock": dock.symbol()
+                }
+            }
+        }]
+    })
+}
+
+/// Build a `TransactRequest` JSON body persisting whether the bar is
+/// collapsed, on the same `state:fab` entity the dock claim rides.
+///
+/// A concept of its own rather than a second field on the dock concept:
+/// both are cardinality-one, and a two-field descriptor stops matching
+/// whichever claim was written alone, stranding the older state.
+pub fn collapsed_claim_json(collapsed: bool) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "durable",
+                    "concept": {
+                        "description": "Persisted FAB collapse (profile claim).",
+                        "with": {
+                            "collapsed": {
+                                "the": "xyz.tonk.fab/collapsed",
+                                "cardinality": "one",
+                                "as": "Boolean"
+                            }
+                        }
+                    }
+                },
+                "parameters": {
+                    "this": "state:fab",
+                    "collapsed": collapsed
                 }
             }
         }]
@@ -557,42 +607,38 @@ mod compact {
     fn the_fit_policy_partitions_every_boundary_width() {
         for (width, expected) in [
             (
-                414.0,
+                396.0,
                 BarLayout {
                     compact: false,
                     space_width_px: 216.0,
                     show_share: true,
-                    show_mode: true,
                     show_overflow: false,
                 },
             ),
             (
-                413.9,
+                395.9,
                 BarLayout {
                     compact: true,
-                    space_width_px: 181.9,
+                    space_width_px: 207.9,
                     show_share: true,
-                    show_mode: false,
-                    show_overflow: true,
+                    show_overflow: false,
                 },
             ),
             (
-                352.0,
+                308.0,
                 BarLayout {
                     compact: true,
                     space_width_px: 120.0,
                     show_share: true,
-                    show_mode: false,
-                    show_overflow: true,
+                    show_overflow: false,
                 },
             ),
             (
-                351.9,
+                307.9,
                 BarLayout {
                     compact: true,
                     space_width_px: 216.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -602,7 +648,6 @@ mod compact {
                     compact: true,
                     space_width_px: 128.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -612,7 +657,6 @@ mod compact {
                     compact: true,
                     space_width_px: 0.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -623,7 +667,6 @@ mod compact {
                 actual.show_share, expected.show_share,
                 "usable width {width}"
             );
-            assert_eq!(actual.show_mode, expected.show_mode, "usable width {width}");
             assert_eq!(
                 actual.show_overflow, expected.show_overflow,
                 "usable width {width}"
@@ -974,6 +1017,31 @@ mod persist {
             "xyz.tonk.fab/dock"
         );
         assert_eq!(app["parameters"]["this"], "state:fab");
+    }
+
+    #[test]
+    fn collapsed_claim_json_rides_the_fab_entity() {
+        let v = collapsed_claim_json(true);
+        assert_eq!(v["claims"][0]["op"], "assert");
+        let app = &v["claims"][0]["application"];
+        // Like the dock, a durable profile choice — not a transient.
+        assert_eq!(app["predicate"]["kind"], "durable");
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["collapsed"]["the"],
+            "xyz.tonk.fab/collapsed"
+        );
+        assert_eq!(app["parameters"]["this"], "state:fab");
+        assert_eq!(app["parameters"]["collapsed"], true);
+    }
+
+    #[test]
+    fn collapsed_resolves_from_conclusions() {
+        let rows = serde_json::json!([{ "this": "state:fab", "fields": { "collapsed": true } }]);
+        assert_eq!(collapsed_from_conclusions(&rows), Some(true));
+        let flat = serde_json::json!([{ "this": "state:fab", "collapsed": false }]);
+        assert_eq!(collapsed_from_conclusions(&flat), Some(false));
+        assert_eq!(collapsed_from_conclusions(&serde_json::json!([])), None);
+        assert_eq!(collapsed_from_conclusions(&serde_json::json!({})), None);
     }
 
     #[test]

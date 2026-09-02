@@ -1,21 +1,8 @@
+/* No tokens of its own: the account surfaces read `--page`, `--ink`,
+   and the rest straight from `:root` (styles.css), where they alias the
+   Web Awesome theme. Restating them here is how this file and the
+   ceremony cluster once drifted to two palettes. */
 :is(tonk-account, tonk-activate) {
-    --page: #e8e6e4;
-    --ink: #38182a;
-    --on-ink: #f7f6f5;
-    --soft: #5b4953;
-    --ring: rgb(56 24 42 / 85%);
-    --sep: rgb(56 24 42 / 28%);
-    --frost-solid: #f7f6f5;
-    --panel: #d0ccc8;
-    --wash: rgb(56 24 42 / 6%);
-    --wash-2: rgb(56 24 42 / 12%);
-    --wash-p: rgb(56 24 42 / 16%);
-    --card: #fcfbfb;
-    --dim: rgb(56 24 42 / 32%);
-    --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
-    --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-    --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
     display: grid;
     min-height: 100dvh;
     padding: 48px 16px 80px;
@@ -26,22 +13,6 @@
     font-family: var(--cond);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-}
-
-:root.wa-dark :is(tonk-account, tonk-activate) {
-    --page: #161313;
-    --ink: #e2dfdd;
-    --on-ink: #221c1d;
-    --soft: #c8c3bf;
-    --ring: rgb(226 223 221 / 55%);
-    --sep: rgb(226 223 221 / 28%);
-    --frost-solid: #1b1718;
-    --panel: #3c3335;
-    --wash: rgb(226 223 221 / 9%);
-    --wash-2: rgb(226 223 221 / 15%);
-    --wash-p: rgb(34 28 29 / 14%);
-    --card: #261f20;
-    --dim: rgb(0 0 0 / 45%);
 }
 
 :is(tonk-account, tonk-activate) *,
@@ -205,6 +176,25 @@
     color: var(--ink);
     font: 600 13.5px/1.4 var(--cond);
     text-align: right;
+}
+
+/* The same matrix caret as every other Tonk field: an ink block where
+   the engine draws one (`tonk-block-caret` is page-level in styles.css,
+   always loaded beside this sheet), an ink line where it cannot. */
+:is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+    caret-color: var(--ink);
+}
+
+@supports (caret-shape: block) {
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+        caret-shape: block;
+        caret-animation: manual;
+        animation: tonk-block-caret 1.05s steps(1, end) infinite;
+    }
+
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]):not(:focus) {
+        animation: none;
+    }
 }
 
 .account__row--action {
@@ -910,7 +900,8 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 
     tonk-account[data-busy="true"] .account__run[data-initiating="true"],
     .account__error[data-flash="true"],
-    .account__inline-error[data-flash="true"] {
+    .account__inline-error[data-flash="true"],
+    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
         animation: none;
     }
 }

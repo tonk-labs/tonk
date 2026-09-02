@@ -70,7 +70,7 @@ impl CustomElement for TonkAccount {
         bind(this);
         load_status(this.clone());
         // The panel's state is a function of the URL — /settings,
-        // /settings?add=1, /settings/link — and of whether this browser
+        // /account?add=1, /account/link — and of whether this browser
         // has an account. Neither reaches it as a reload.
         //
         // Add account moves between those routes with a client-side
@@ -1913,7 +1913,7 @@ fn load_status(host: HtmlElement) {
 fn load_status_with(host: HtmlElement, after_ceremony: bool) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if handoff_route {
         match callback_request() {
             Some((audience, callback, name)) => {
@@ -2129,7 +2129,7 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 fn pending_callback_request() -> Option<(String, String, String)> {
     let on_link_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if on_link_route {
         callback_request()
     } else {
@@ -2190,8 +2190,8 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String, 
 fn link_outcome_redirect() -> String {
     window()
         .and_then(|window| window.location().origin().ok())
-        .map(|origin| format!("{origin}/settings"))
-        .unwrap_or_else(|| "/settings".to_string())
+        .map(|origin| format!("{origin}/account"))
+        .unwrap_or_else(|| "/account".to_string())
 }
 
 /// Base64-encode an authorization payload for form delivery.
@@ -2925,7 +2925,7 @@ fn bind(host: &HtmlElement) {
             // account page. `on_click` already suppressed the navigation, so
             // do it explicitly.
             if let Some(window) = window() {
-                let _ = window.location().set_href("/settings");
+                let _ = window.location().set_href("/account");
             }
             return;
         };
@@ -3048,14 +3048,14 @@ fn bind(host: &HtmlElement) {
     });
 
     on_click(host, "#account-confirm-result-back", |_| {
-        tonk_host::navigate_to("/settings");
+        tonk_host::navigate_to("/account");
     });
 
     // Opening Add account is reversible navigation. The final Create or Log
     // in submit prepares the fresh profile immediately before its ceremony.
     for selector in ["#account-add-profile", "#account-use-different-account"] {
         on_click(host, selector, |_| {
-            tonk_host::navigate_to("/settings?add=1");
+            tonk_host::navigate_to("/account?add=1");
         });
     }
 

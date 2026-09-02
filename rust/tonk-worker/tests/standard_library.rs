@@ -34,6 +34,12 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
 const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
+/// The shared stylesheet: the theme tokens and the hub chrome's CSS,
+/// which moved out of the directory view so the /settings route (its
+/// own view, same chrome) is styled by the same block.
+const HUB_STYLES: &str = include_str!("../../tonk-ui/styles.css");
+const SETTINGS_PANEL_MARKUP: &str =
+    include_str!("../../tonk-workspace/src/ui_account_settings.html");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
@@ -213,7 +219,7 @@ fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
 #[test]
 fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     assert!(
-        PROFILE_LIBRARY
+        HUB_STYLES
             .contains("box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);"),
         "Hub focus rings need both palette poles so selected and ordinary controls stay visible",
     );
@@ -272,38 +278,50 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 }
 
 #[test]
-fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
-    for token in [
-        "--panel:",
-        "--cur:var(--panel)",
-        "--card-hover:",
-        "--canvas:",
-        "--stub-ink:",
-        "--veil:",
-        "--track:",
+fn it_keeps_the_hub_on_the_shared_theme_tokens() {
+    // Colors live in ONE place — the theme block at the top of
+    // `tonk-ui/styles.css`, injected into every sealed guest. The hub must
+    // CONSUME the shared tokens without restating a palette of its own; a
+    // local literal here is the drift this contract exists to prevent.
+    for consumed in [
+        "background:var(--page)",
+        "color:var(--ink)",
+        "background:var(--cur)",
+        "var(--frost-solid)",
+        "var(--wash-p)",
     ] {
         assert!(
-            PROFILE_LIBRARY.contains(token),
-            "the Hub palette must define `{token}` in its shared contract",
+            HUB_STYLES.contains(consumed),
+            "the Hub must consume the shared theme token `{consumed}`",
+        );
+    }
+    for restated in [
+        "--page:#",
+        "--ink:#",
+        "--cur:#",
+        "--panel:#",
+        "--frost:rgba(",
+    ] {
+        assert!(
+            !PROFILE_LIBRARY.contains(restated),
+            "the Hub must not restate the palette locally (`{restated}`)",
         );
     }
 }
 
 #[test]
 fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
-    for contract in [
-        ".hubcol",
-        "width:min(576px, calc(100vw - 32px))",
-        ".hc-view",
-        ".hc-cfg",
-        "create a new space",
-    ] {
+    for contract in [".hubcol", "width:432px", ".hc-view"] {
         assert!(
-            PROFILE_LIBRARY.contains(contract),
+            HUB_STYLES.contains(contract),
             "the centered Hub launcher must contain `{contract}`",
         );
     }
-    let hubbar = PROFILE_LIBRARY
+    assert!(
+        PROFILE_LIBRARY.contains("create new space"),
+        "the centered Hub launcher must contain `create new space`",
+    );
+    let hubbar = HUB_STYLES
         .split(".hubbar {")
         .nth(1)
         .and_then(|css| css.split('}').next())
@@ -314,22 +332,10 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
             "the centered Hub bar must reject `{rejected}`",
         );
     }
-    for (selector, width) in [
-        (".hc-acct {", "width:224px"),
-        (".hc-view {", "width:192px"),
-        (".hc-cfg {", "width:112px"),
-        (".hub-page .mode-cap {", "width:48px"),
-    ] {
+    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:288px")] {
         assert!(
-            css_rule(PROFILE_LIBRARY, selector).contains(width),
+            css_rule(HUB_STYLES, selector).contains(width),
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
-        );
-    }
-    let mode_cap = css_rule(PROFILE_LIBRARY, ".hub-page .mode-cap {");
-    for declaration in ["align-items:center", "justify-content:center", "padding:0"] {
-        assert!(
-            mode_cap.contains(declaration),
-            "the theme switch cell must center its mark with `{declaration}`",
         );
     }
     let rejected = "class=\"shead";
@@ -362,19 +368,19 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
 
 #[test]
 fn it_separates_the_account_roster_into_independent_blocks() {
-    let menu = css_rule(PROFILE_LIBRARY, ".account-menu {");
+    let menu = css_rule(HUB_STYLES, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
         assert!(
             menu.contains(contract),
             "the account roster must contain `{contract}`",
         );
     }
-    let profiles = css_rule(PROFILE_LIBRARY, ".account-menu__profiles {");
+    let profiles = css_rule(HUB_STYLES, ".account-menu__profiles {");
     assert!(
         profiles.contains("gap:7px"),
         "profiles must keep the same 7px rhythm as Hub space rows",
     );
-    let row = css_rule(PROFILE_LIBRARY, ".account-menu__row {");
+    let row = css_rule(HUB_STYLES, ".account-menu__row {");
     assert!(
         row.contains("box-shadow:0 0 0 1px var(--ring)"),
         "each account row must carry its own ring",
@@ -386,10 +392,23 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 }
 
 #[test]
-fn it_keeps_the_retired_inline_settings_surface_out_of_the_hub() {
+fn it_serves_settings_as_a_routed_page_of_the_hub() {
+    // `/settings` is a real route: the hub chrome with the settings
+    // section already open (`view="settings"`), reached by href from the
+    // account menu and the FAB alike. The legacy account panel lives at
+    // /account, where the settings panel's ceremony links point.
+    assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
+    assert!(PROFILE_LIBRARY.contains("<ui-hub-account view=\"settings\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
-    assert!(!HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
+    assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
     assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
+    // The panes live in the shared panel — one element, two seats: the
+    // Hub's account tab and the FAB's settings dialog on the space route.
+    assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
 }
 
 #[test]
@@ -448,8 +467,15 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 #[test]
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
-        ".hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }",
+        ".hubbar, .hcell { height:44px; min-height:44px; }",
         ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
+    ] {
+        assert!(
+            HUB_STYLES.contains(contract),
+            "mobile Hub CSS must contain `{contract}`"
+        );
+    }
+    for contract in [
         ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
         ".edge-field, .ebtn, .ebtn.solid button { min-height:44px; }",
         ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
