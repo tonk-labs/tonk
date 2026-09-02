@@ -17,7 +17,11 @@ function sourceFiles(root) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== "generated") visit(path);
-      } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      } else if (
+        entry.isFile() &&
+        entry.name.endsWith(".ts") &&
+        !entry.name.endsWith(".generated.ts")
+      ) {
         files.push(path);
       }
     }

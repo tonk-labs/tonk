@@ -16,20 +16,17 @@ use crate::worker::TonkState;
 /// Whether a newer service worker is installed and WAITING to take over —
 /// i.e. whether this worker is retiring.
 ///
-/// Read live from the registration rather than latched at `updatefound`,
-/// so it is self-healing: an update that never activates (a failed
-/// install, a canceled upgrade) clears the `waiting` slot and this
-/// worker goes back to serving streams normally. A latch would leave it
-/// permanently refusing.
+/// This is the browser-side race check. The Rust worker also owns a one-way
+/// retirement latch set only after the successor installs successfully and
+/// stream release begins. Routes consult both: the live slot closes the gap
+/// before the latch is published, while the latch keeps new streams closed
+/// after automatic activation clears `registration.waiting`.
 ///
 /// Every route that opens a LONG-LIVED response must consult this. An
 /// SSE body is a fetch event that never settles, and the spec keeps a
-/// worker alive while any of its fetch events are in flight — so a
-/// single stream opened after the successor started installing re-pins
-/// this worker and parks the new one in `waiting` indefinitely. That is
-/// the "reloading doesn't help, it's still the old version" symptom:
-/// reloads land on the old ACTIVE worker, which is exactly what's
-/// keeping the new one out.
+/// worker alive while any of its fetch events are in flight. A stream opened
+/// during the handoff can therefore keep the retired incumbent serving stale
+/// clients after the verified successor has activated.
 ///
 /// `false` off-wasm and whenever the registration is unreadable — a
 /// wrongly refused stream would starve consumers, a wrongly opened one
@@ -4518,10 +4515,13 @@ employee:
                 Some("text/event-stream")
             );
             let mut body = response.into_body();
+            let snapshot = read_sse_frame(&mut body).await;
+            assert_eq!(snapshot["kind"], "snapshot");
+            assert!(snapshot["conclusions"].is_array());
             assert_eq!(
                 read_sse_frame(&mut body).await,
                 serde_json::json!({ "control": "update-pending" }),
-                "retired query reconnect {attempt} must receive the handoff frame",
+                "retired query reconnect {attempt} must receive the handoff frame after its snapshot",
             );
             assert!(
                 body.frame().await.is_none(),

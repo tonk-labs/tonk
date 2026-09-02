@@ -662,7 +662,7 @@ mod route_for_tests {
 
     /// A stopped worker refuses every drain — that is the point of the flag: a
     /// worker being replaced must start no new sync work, or it re-arms
-    /// `waitUntil` and pins itself in `waiting`.
+    /// `waitUntil` and keeps the outgoing instance serving stale clients.
     #[dialog_common::test]
     fn it_refuses_every_drain_once_stopped() {
         let s = SyncScheduler::default();
@@ -675,11 +675,10 @@ mod route_for_tests {
         assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64, CLEAN));
     }
 
-    /// ...but `stop()` must not be a ONE-WAY latch. `updatefound` fires on the
-    /// registration, so a newly-installing worker hears it about its own
-    /// arrival and can stop itself; it then activates and serves the page. It
-    /// must sync. `resume()` (called from `onactivate`) is what un-latches it —
-    /// without it that worker refuses every drain for the rest of its life.
+    /// ...but `stop()` must not be a ONE-WAY latch. Activation establishes the
+    /// worker as the serving generation, so `resume()` defensively clears any
+    /// earlier stop before it begins accepting work. Without that reset a
+    /// false-positive retirement would suppress every drain for its lifetime.
     #[dialog_common::test]
     fn it_resumes_when_it_turns_out_to_be_the_serving_worker() {
         let s = SyncScheduler::default();
@@ -1209,8 +1208,8 @@ struct SyncScheduler {
     /// Set once the worker is being replaced. A dying worker must not start
     /// new sync work: the SW spec keeps it alive until every `waitUntil`
     /// settles and every fetch completes, so a drain scheduled (or a loop
-    /// tick fired) after `updatefound` pins the outgoing worker in `waiting`
-    /// — which is why it "won't go away".
+    /// tick fired) after retirement keeps the outgoing worker alive after its
+    /// successor has taken over.
     stopped: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether any window client was visible at the last check. Hidden
     /// pages hold drains to a ramp starting at [`SYNC_HIDDEN_INTERVAL_MS`]
@@ -1793,7 +1792,7 @@ pub struct TonkServiceWorker {
     state: AppState,
     /// Lock-free twin of [`TonkState::retiring`]. The JavaScript-facing
     /// `onupdatefound` callback sets it synchronously, before constructing the
-    /// async drain promise, so a state writer cannot delay the terminal 503
+    /// async drain promise, so a state writer cannot delay the handoff
     /// decision for a queued query/LSP reconnect.
     retiring: Arc<AtomicBool>,
     /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
@@ -1921,13 +1920,12 @@ impl TonkServiceWorker {
     /// `installing` state, this active worker is on its way out.
     /// We use the moment to close every long-lived stream we're
     /// serving — `/api/lsp/events` SSE plus every `/query` SSE
-    /// subscription — so the in-flight fetch events settle and the
-    /// new worker can activate.
+    /// subscription — so the in-flight fetch events settle and the outgoing
+    /// worker can terminate after the successor takes over.
     ///
-    /// Without this the SW spec keeps the active worker alive
-    /// while any of its fetches are open, so a freshly-installed
-    /// worker would sit in `waiting` until every browsing context
-    /// hosting the page closed.
+    /// Without this the SW spec keeps the outgoing worker alive while any of
+    /// its fetches are open, allowing old-client reconnects to keep reaching
+    /// the retired generation after the successor activates.
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
@@ -1938,8 +1936,8 @@ impl TonkServiceWorker {
         // Stop all sync work FIRST. The spec keeps this worker alive until
         // every in-flight fetch and every `waitUntil` promise settles; a drain
         // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
-        // tick, would keep re-arming that condition and pin the outgoing worker
-        // in `waiting` indefinitely — the "SW won't go away" symptom.
+        // tick, would keep re-arming that condition and preserve the outgoing
+        // worker indefinitely — the "SW won't go away" symptom.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             self.sync_scheduler.stop();

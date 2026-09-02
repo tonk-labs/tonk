@@ -19,373 +19,6 @@
                 if (/^[0-9a-f]{16}$/.test(build || "")) {
                     globalThis.tonkBuild = build;
                 }
-
-                // Account setup crosses an external WebAuthn ceremony and a
-                // staged/durable recovery boundary. Reloading after Arm but
-                // before Stage/Inspect proves recovery durable can strand the
-                // account, so every automatic update/recovery reload queues
-                // behind the UI's stable top-document critical-section
-                // contract. The root attribute is the source of truth; the
-                // predicate is consulted when available and failures block.
-                const ACCOUNT_SETUP_CRITICAL =
-                    "data-tonk-account-setup-critical";
-                const ACCOUNT_SETUP_CRITICAL_CHANGE =
-                    "tonk:account-setup-critical-change";
-                const UPDATE_SAFETY_NAME = "tonk-update-safety-v1";
-                const UPDATE_SAFETY_STORE = "holds";
-                const ACCOUNT_SETUP_HOLD_KEY = "account-setup";
-                const ACCOUNT_SETUP_HOLD_CHANGE =
-                    "tonk:account-setup-hold-change";
-                const MAX_U64 = 18446744073709551615n;
-                let automaticReloadPending = false;
-                const accountSetupMayReload = () => {
-                    const root = document.documentElement;
-                    if (!root || root.hasAttribute(ACCOUNT_SETUP_CRITICAL)) {
-                        return false;
-                    }
-                    const predicate = window.tonkAccountSetupMayReload;
-                    if (typeof predicate !== "function") return true;
-                    try {
-                        return predicate() === true;
-                    } catch (error) {
-                        console.warn(
-                            "account-setup reload predicate failed; deferring reload",
-                            error,
-                        );
-                        return false;
-                    }
-                };
-
-                const validAccountSetupHold = (value) => {
-                    if (
-                        value == null ||
-                        typeof value !== "object" ||
-                        Array.isArray(value)
-                    ) {
-                        return false;
-                    }
-                    const keys = Object.keys(value).sort();
-                    if (
-                        keys.join("|") !==
-                        "kind|leasedRevision|operationId|version"
-                    ) {
-                        return false;
-                    }
-                    if (
-                        value.version !== 1 ||
-                        value.kind !== ACCOUNT_SETUP_HOLD_KEY ||
-                        typeof value.operationId !== "string" ||
-                        !/^[0-9a-f]{64}$/.test(value.operationId) ||
-                        typeof value.leasedRevision !== "string" ||
-                        !/^(0|[1-9][0-9]*)$/.test(value.leasedRevision)
-                    ) {
-                        return false;
-                    }
-                    try {
-                        return BigInt(value.leasedRevision) <= MAX_U64;
-                    } catch {
-                        return false;
-                    }
-                };
-                const openUpdateSafetyDatabase = () =>
-                    new Promise((resolve, reject) => {
-                        let request;
-                        let settled = false;
-                        const fail = (error) => {
-                            if (settled) return;
-                            settled = true;
-                            reject(error);
-                        };
-                        try {
-                            request = indexedDB.open(UPDATE_SAFETY_NAME, 1);
-                        } catch (error) {
-                            fail(error);
-                            return;
-                        }
-                        request.onupgradeneeded = () => {
-                            try {
-                                const database = request.result;
-                                if (
-                                    !database.objectStoreNames.contains(
-                                        UPDATE_SAFETY_STORE,
-                                    )
-                                ) {
-                                    database.createObjectStore(
-                                        UPDATE_SAFETY_STORE,
-                                    );
-                                }
-                            } catch (error) {
-                                try {
-                                    request.transaction?.abort();
-                                } catch {}
-                                fail(error);
-                            }
-                        };
-                        request.onerror = () =>
-                            fail(
-                                request.error ||
-                                    new Error(
-                                        "update safety database open failed",
-                                    ),
-                            );
-                        request.onblocked = () =>
-                            fail(
-                                new Error(
-                                    "update safety database open blocked",
-                                ),
-                            );
-                        request.onsuccess = () => {
-                            if (settled) {
-                                request.result?.close();
-                                return;
-                            }
-                            settled = true;
-                            resolve(request.result);
-                        };
-                    });
-                const readAccountSetupHold = async () => {
-                    const database = await openUpdateSafetyDatabase();
-                    try {
-                        return await new Promise((resolve, reject) => {
-                            let transaction;
-                            let request;
-                            let result;
-                            let requestComplete = false;
-                            try {
-                                transaction = database.transaction(
-                                    UPDATE_SAFETY_STORE,
-                                    "readonly",
-                                );
-                                request = transaction
-                                    .objectStore(UPDATE_SAFETY_STORE)
-                                    .get(ACCOUNT_SETUP_HOLD_KEY);
-                            } catch (error) {
-                                reject(error);
-                                return;
-                            }
-                            request.onsuccess = () => {
-                                requestComplete = true;
-                                result = request.result;
-                            };
-                            request.onerror = () =>
-                                reject(
-                                    request.error ||
-                                        new Error(
-                                            "account setup hold read failed",
-                                        ),
-                                );
-                            transaction.onabort = () =>
-                                reject(
-                                    transaction.error ||
-                                        new Error(
-                                            "account setup hold read aborted",
-                                        ),
-                                );
-                            transaction.onerror = () =>
-                                reject(
-                                    transaction.error ||
-                                        new Error(
-                                            "account setup hold transaction failed",
-                                        ),
-                                );
-                            transaction.oncomplete = () => {
-                                if (!requestComplete) {
-                                    reject(
-                                        new Error(
-                                            "account setup hold transaction completed without a result",
-                                        ),
-                                    );
-                                    return;
-                                }
-                                resolve(result);
-                            };
-                        });
-                    } finally {
-                        database.close();
-                    }
-                };
-                const accountSetupHoldAbsent = async () => {
-                    try {
-                        const hold = await readAccountSetupHold();
-                        if (hold === undefined) return true;
-                        if (!validAccountSetupHold(hold)) {
-                            console.warn(
-                                "malformed durable account-setup hold; deferring update",
-                            );
-                        }
-                        return false;
-                    } catch (error) {
-                        console.warn(
-                            "durable account-setup hold read failed; deferring update",
-                            error,
-                        );
-                        return false;
-                    }
-                };
-                const runWithAccountSetupUpdateSafety = async (callback) => {
-                    const locks = navigator.locks;
-                    if (!locks || typeof locks.request !== "function") {
-                        console.warn(
-                            "Web Locks unavailable; deferring automatic update",
-                        );
-                        return false;
-                    }
-                    try {
-                        return await locks.request(
-                            UPDATE_SAFETY_NAME,
-                            { mode: "exclusive" },
-                            async () => {
-                                if (
-                                    !accountSetupMayReload() ||
-                                    !(await accountSetupHoldAbsent()) ||
-                                    !accountSetupMayReload()
-                                ) {
-                                    return false;
-                                }
-                                // Invoke the irreversible handoff while the
-                                // same lock used by write-before-Arm is still
-                                // held. A peer cannot publish a new hold in a
-                                // read-to-callback gap.
-                                return callback();
-                            },
-                        );
-                    } catch (error) {
-                        console.warn(
-                            "account update-safety lock failed; deferring update",
-                            error,
-                        );
-                        return false;
-                    }
-                };
-
-                try {
-                    const channel = new BroadcastChannel(
-                        UPDATE_SAFETY_NAME,
-                    );
-                    channel.addEventListener("message", (event) => {
-                        const message = event.data;
-                        if (
-                            message?.type !==
-                                "account-setup-hold-changed" ||
-                            message?.version !== 1
-                        ) {
-                            return;
-                        }
-                        window.dispatchEvent(
-                            new Event(ACCOUNT_SETUP_HOLD_CHANGE),
-                        );
-                    });
-                } catch (error) {
-                    console.warn(
-                        "account update-safety broadcast unavailable",
-                        error,
-                    );
-                }
-                globalThis.tonkWhenAccountSetupDurable = (callback) => {
-                    let finished = false;
-                    let check = 0;
-                    let retry = null;
-                    const scheduleRetry = () => {
-                        if (finished || retry !== null) return;
-                        retry = setTimeout(() => {
-                            retry = null;
-                            resume();
-                        }, 250);
-                    };
-                    const resume = async () => {
-                        if (retry !== null) {
-                            clearTimeout(retry);
-                            retry = null;
-                        }
-                        const current = ++check;
-                        if (finished) return;
-                        if (!accountSetupMayReload()) {
-                            scheduleRetry();
-                            return;
-                        }
-                        await runWithAccountSetupUpdateSafety(() => {
-                                if (
-                                    finished ||
-                                    current !== check ||
-                                    !accountSetupMayReload()
-                                ) {
-                                    return false;
-                                }
-                                // A claim callback returns false deliberately: if
-                                // the worker's authoritative re-read sees a hold
-                                // queued ahead of it, the later clear broadcast
-                                // must retry. Reload callbacks finish immediately.
-                                const complete = callback() !== false;
-                                if (complete) {
-                                    finished = true;
-                                    window.removeEventListener(
-                                        ACCOUNT_SETUP_CRITICAL_CHANGE,
-                                        resume,
-                                    );
-                                    window.removeEventListener(
-                                        ACCOUNT_SETUP_HOLD_CHANGE,
-                                        resume,
-                                    );
-                                    if (retry !== null) {
-                                        clearTimeout(retry);
-                                        retry = null;
-                                    }
-                                }
-                                return true;
-                            });
-                        // Broadcasts and DOM events are wakeups, not
-                        // authority. A callback may also deliberately remain
-                        // open after a safe attempt: worker claim has no reply,
-                        // so controllerchange is the only proof it landed.
-                        // Retry the same locked durable read until the callback
-                        // observes its terminal state.
-                        if (!finished) scheduleRetry();
-                    };
-                    window.addEventListener(
-                        ACCOUNT_SETUP_CRITICAL_CHANGE,
-                        resume,
-                    );
-                    window.addEventListener(
-                        ACCOUNT_SETUP_HOLD_CHANGE,
-                        resume,
-                    );
-                    // Register before the first predicate read so a durable
-                    // transition cannot be lost between checking and waiting.
-                    resume();
-                };
-                globalThis.tonkClaimWhenAccountSetupDurable = (
-                    worker,
-                    priorController,
-                ) => {
-                    globalThis.tonkWhenAccountSetupDurable(() => {
-                        const controller = navigator.serviceWorker.controller;
-                        if (
-                            worker.state === "redundant" ||
-                            (controller && controller !== priorController)
-                        ) {
-                            return true;
-                        }
-                        worker.postMessage({ type: "claim" });
-                        return false;
-                    });
-                };
-                globalThis.tonkReloadWhenAccountSetupDurable = (
-                    beforeReload,
-                ) => {
-                    if (automaticReloadPending) return;
-                    automaticReloadPending = true;
-                    globalThis.tonkWhenAccountSetupDurable(() => {
-                        try {
-                            beforeReload?.();
-                        } catch (error) {
-                            console.warn(
-                                "pre-reload update handoff failed; reloading safely",
-                                error,
-                            );
-                        }
-                        location.reload();
-                    });
-                };
             })();
         </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
@@ -648,8 +281,6 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
-            const WITHDRAWN_BOOT_FAILURE =
-                "This Tonk version was withdrawn. Reload to try the current version.";
             const OLD_BROWSER_BOOT_FAILURE =
                 "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.";
             const GENERIC_BOOT_FAILURE =
@@ -663,25 +294,6 @@
                 if (status) {
                     status.setAttribute("data-failed", "");
                     status.textContent = message;
-                }
-            };
-
-            // Whether THIS immutable document generation has been withdrawn.
-            // `version.json` is mutable deployment discovery and must never be
-            // used to identify bytes that are already running. Ambiguous
-            // answers fail open, and withdrawal never deletes local artifacts.
-            const isRevoked = async () => {
-                try {
-                    const build = globalThis.tonkBuild;
-                    if (!build) return false;
-                    const flagResponse = await fetch("/kill-switch.json", {
-                        cache: "no-store",
-                    });
-                    if (!flagResponse.ok) return false;
-                    const { revoked } = JSON.parse(await flagResponse.text());
-                    return Array.isArray(revoked) && revoked.includes(build);
-                } catch {
-                    return false;
                 }
             };
 
@@ -726,12 +338,8 @@
                     );
                 }
 
-                if (await isRevoked()) {
-                    presentBootFailure(WITHDRAWN_BOOT_FAILURE);
-                    throw new Error("This Tonk build has been revoked");
-                }
-
                 const priorController = navigator.serviceWorker.controller;
+                let reloadRequested = false;
                 const onControllerReplacement = () => {
                     if (
                         !priorController ||
@@ -740,14 +348,14 @@
                     ) {
                         return;
                     }
-                    // `clients.claim()` changes every controlled tab, not only
-                    // the page that requested adoption. Keep this listener for
-                    // the document lifetime so sibling A documents also cross
-                    // the account-safety gate and align to B exactly once.
+                    if (reloadRequested) return;
+                    reloadRequested = true;
+                    // `clients.claim()` changes every controlled tab. Each old
+                    // document records and consumes one alignment reload.
                     try {
                         sessionStorage.setItem(UPGRADE_RELOAD, "1");
                     } catch {}
-                    globalThis.tonkReloadWhenAccountSetupDurable();
+                    location.reload();
                 };
                 navigator.serviceWorker.addEventListener(
                     "controllerchange",
@@ -799,10 +407,7 @@
                                 "Service worker became ready without an active worker",
                             );
                         }
-                        globalThis.tonkClaimWhenAccountSetupDurable(
-                            firstWorker,
-                            priorController,
-                        );
+                        firstWorker.postMessage({ type: "claim" });
                         await controlled;
                     }
                     navigator.serviceWorker.removeEventListener(
@@ -838,7 +443,6 @@
                 }
 
                 let incoming = null;
-                let activationRequested = null;
                 let claimRequested = null;
                 let settled = false;
                 let resolveOutcome;
@@ -854,36 +458,16 @@
                 const onWorkerState = () => {
                     noteLife();
                     if (incoming?.state === "redundant") finish("failed");
-                    // A complete successor waits until this update-aware page
-                    // crosses the origin-global account-safety gate. Only then
-                    // ask that exact worker to activate.
-                    if (
-                        incoming?.state === "installed" &&
-                        activationRequested !== incoming
-                    ) {
-                        const successor = incoming;
-                        activationRequested = successor;
-                        globalThis.tonkWhenAccountSetupDurable(() => {
-                            successor.postMessage({ type: "activate" });
-                        });
-                    }
-                    // Activation alone deliberately leaves older, unaware
-                    // pages on their existing controller. This document owns
-                    // the update protocol, so once its observed successor is
-                    // ready it explicitly asks that worker to take control;
-                    // the resulting controllerchange drives the guarded
-                    // alignment reload below.
+                    // The verified worker activates automatically for the
+                    // rollout bridge. Once active, ask it to claim; the
+                    // resulting controllerchange drives the guarded reload.
                     if (
                         incoming?.state === "activated" &&
                         navigator.serviceWorker.controller === priorController &&
                         claimRequested !== incoming
                     ) {
-                        const successor = incoming;
-                        claimRequested = successor;
-                        globalThis.tonkClaimWhenAccountSetupDurable(
-                            successor,
-                            priorController,
-                        );
+                        claimRequested = incoming;
+                        incoming.postMessage({ type: "claim" });
                     }
                     if (
                         navigator.serviceWorker.controller &&
@@ -970,10 +554,13 @@
 
                 cleanup();
                 if (result === "replaced") {
-                    try {
-                        sessionStorage.setItem(UPGRADE_RELOAD, "1");
-                    } catch {}
-                    globalThis.tonkReloadWhenAccountSetupDurable();
+                    if (!reloadRequested) {
+                        reloadRequested = true;
+                        try {
+                            sessionStorage.setItem(UPGRADE_RELOAD, "1");
+                        } catch {}
+                        location.reload();
+                    }
                     await new Promise(() => {});
                     return;
                 }
@@ -995,7 +582,6 @@
             serviceWorkerActivation.catch((error) => {
                 console.error("service-worker activation failed", error);
                 const detail = String(error?.message || error);
-                if (/revoked/i.test(detail)) return;
                 presentBootFailure(
                     /module|type/i.test(detail)
                         ? OLD_BROWSER_BOOT_FAILURE
@@ -1129,7 +715,7 @@
                     const status =
                         document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "recovering…";
-                    globalThis.tonkReloadWhenAccountSetupDurable();
+                    location.reload();
                 };
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (message) => {
@@ -1202,9 +788,7 @@
         />
         <!-- Cache policy for Cloudflare Workers Assets. `immutable` on the
        content-hashed bundles, `no-store` on the service-worker chain and
-       the version/kill-switch probes. Milestone 1 of
-       `plan/offline-support.md` called for this; it had never been wired,
-       so everything was served `max-age=0, must-revalidate`. -->
+       live build metadata. -->
         <link data-trunk rel="copy-file" href="./assets/_headers" />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
@@ -1346,254 +930,12 @@
         </div>
 
         <script type="module">
-            let registration;
             try {
-                // Reuse the exact eager registration/update promise consumed
-                // by the strict Rust pre-mount gate. A second register/update
-                // path here would race #800's load-time alignment protocol.
                 await self.serviceWorkerActivates();
-                registration =
-                    await navigator.serviceWorker.getRegistration();
-                if (!registration) {
-                    throw new Error("Service worker registration disappeared");
-                }
-            } catch (err) {
-                // The eager activation owner has already terminalized the
-                // boot shell with a safe, actionable message. Keep this later
-                // consumer from overwriting that message with raw error text.
-                console.error("Service worker activation failed:", err);
-                throw err;
+            } catch (error) {
+                console.error("Service worker activation failed:", error);
+                throw error;
             }
-
-            // ---- "Update ready" affordance ---------------------------
-                //
-                // Until now there was no user-visible update signal at all —
-                // no toast, no version anywhere — so a user stuck on a stale
-                // build had no path forward but folklore (clear website
-                // data). This is deliberately built here, in the boot script,
-                // rather than in the app: the app's own wasm is one of the
-                // things that can be stale, and the affordance has to work
-                // exactly when the app doesn't.
-                let announced = false;
-                const announceUpdate = () => {
-                    if (announced) return;
-                    announced = true;
-
-                    const bar = document.createElement("div");
-                    bar.setAttribute("role", "status");
-                    bar.style.cssText = [
-                        "position:fixed", "inset-inline:0", "bottom:0",
-                        "z-index:2147483647", "display:flex", "gap:0.75rem",
-                        "align-items:center", "justify-content:center",
-                        "padding:0.75rem 1rem",
-                        "font:14px/1.4 system-ui, sans-serif",
-                        "background:Canvas", "color:CanvasText",
-                        "border-top:1px solid color-mix(in srgb, CanvasText 20%, transparent)",
-                    ].join(";");
-
-                    const label = document.createElement("span");
-                    label.textContent = "A new version of Tonk is ready.";
-
-                    const reload = document.createElement("button");
-                    reload.textContent = "Reload";
-                    reload.style.cssText = [
-                        "font:inherit", "padding:0.35rem 1rem",
-                        "border-radius:6px", "cursor:pointer",
-                        "border:1px solid color-mix(in srgb, CanvasText 30%, transparent)",
-                        "background:color-mix(in srgb, CanvasText 8%, Canvas)",
-                        "color:inherit",
-                    ].join(";");
-                    reload.addEventListener("click", () => {
-                        const controllerBeforeClaim =
-                            navigator.serviceWorker.controller;
-                        // Activate without navigating, then ask that exact
-                        // successor to claim. `controllerchange` owns the one
-                        // alignment reload: reloading immediately after
-                        // `activate` can produce another A document behind an
-                        // already-active B, with no waiting worker left for it
-                        // to observe.
-                        globalThis.tonkWhenAccountSetupDurable(() => {
-                            const successor =
-                                registration.waiting ||
-                                registration.installing ||
-                                (registration.active !==
-                                navigator.serviceWorker.controller
-                                    ? registration.active
-                                    : null);
-                            if (!successor) {
-                                // Discovery can beat installation. Keep this
-                                // waiter open and nudge it when update() has a
-                                // candidate to expose.
-                                const wake = () =>
-                                    window.dispatchEvent(
-                                            new Event(
-                                                "tonk:account-setup-hold-change",
-                                            ),
-                                    );
-                                registration.update().then(wake, wake);
-                                return false;
-                            }
-
-                            let claimQueued = false;
-                            const claimWhenActive = () => {
-                                if (
-                                    claimQueued ||
-                                    successor.state !== "activated"
-                                ) {
-                                    return;
-                                }
-                                claimQueued = true;
-                                successor.removeEventListener(
-                                    "statechange",
-                                    claimWhenActive,
-                                );
-                                globalThis.tonkClaimWhenAccountSetupDurable(
-                                    successor,
-                                    controllerBeforeClaim,
-                                );
-                            };
-
-                            if (successor.state === "installed") {
-                                successor.addEventListener(
-                                    "statechange",
-                                    claimWhenActive,
-                                );
-                                successor.postMessage({ type: "activate" });
-                            } else if (successor.state === "installing") {
-                                const wakeWhenInstalled = () => {
-                                    if (
-                                        successor.state !== "installed" &&
-                                        successor.state !== "activated" &&
-                                        successor.state !== "redundant"
-                                    ) {
-                                        return;
-                                    }
-                                    successor.removeEventListener(
-                                        "statechange",
-                                        wakeWhenInstalled,
-                                    );
-                                    window.dispatchEvent(
-                                        new Event(
-                                            "tonk:account-setup-hold-change",
-                                        ),
-                                    );
-                                };
-                                successor.addEventListener(
-                                    "statechange",
-                                    wakeWhenInstalled,
-                                );
-                                return false;
-                            }
-                            claimWhenActive();
-                            return true;
-                        });
-                    });
-
-                    const dismiss = document.createElement("button");
-                    dismiss.textContent = "Not now";
-                    dismiss.setAttribute("aria-label", "Dismiss update notice");
-                    dismiss.style.cssText = [
-                        "font:inherit", "padding:0.35rem 0.75rem",
-                        "border:0", "background:none", "cursor:pointer",
-                        "color:inherit", "opacity:0.7",
-                    ].join(";");
-                    dismiss.addEventListener("click", () => bar.remove());
-
-                    bar.append(label, reload, dismiss);
-                    document.body.appendChild(bar);
-                };
-
-                // The app raises this when the worker answers a `409`
-                // from the version handshake — it is talking to a
-                // worker from a different build, which only a reload
-                // can resolve.
-                window.addEventListener("tonk-update-available", () => {
-                    announceUpdate();
-                });
-
-                // ---- Update discovery ------------------------------------
-                //
-                // The browser only checks for a new worker on navigation (and
-                // at register time). This is a single-page app: it navigates
-                // with pushState, its tabs live for days, and a bfcache
-                // restore doesn't re-run this script — so the check can
-                // simply never happen. Safari is both the laziest checker and
-                // the engine where a stuck worker is hardest to clear, which
-                // is how a user ends up stranded on an old build with no
-                // recourse but clearing website data.
-                //
-                // So ask explicitly, at the moments an update is both likely
-                // and cheap to apply: coming back to the tab, regaining
-                // connectivity, and hourly for a tab left open.
-                const checkForUpdate = () => {
-                    registration.update().catch(() => {
-                        // Offline or throttled — the next trigger retries.
-                    });
-                };
-                document.addEventListener("visibilitychange", () => {
-                    if (document.visibilityState === "visible") checkForUpdate();
-                });
-                window.addEventListener("online", checkForUpdate);
-                setInterval(checkForUpdate, 60 * 60 * 1000);
-
-                // Deliberately NOT listening to `updatefound` to decide
-                // this. `registration` is shared across every tab on the
-                // origin, so that event fires in all of them — including
-                // tabs already running the new build, and including the
-                // install a *sibling tab's* reload just triggered. Two tabs
-                // then ping-pong: reload A, B prompts; reload B, A prompts;
-                // forever, with neither ever actually wrong.
-                //
-                // Gating it on `registration.waiting` does not fix that
-                // either: this worker calls `skipWaiting()`, so a successor
-                // goes `installing -> activating` and barely touches the
-                // `waiting` slot. The gate reads an almost-always-empty
-                // field and fires or not by luck.
-                //
-                // The honest question is a STATE, not an event: is the
-                // build this page loaded different from the build being
-                // served now? Each tab answers that for itself, no sibling
-                // can trigger it, and a reload makes it false — so the
-                // prompt appears exactly when reloading would change
-                // something, and stops once it would not.
-                const checkStale = async () => {
-                    try {
-                        const response = await fetch("/version.json", {
-                            cache: "no-store",
-                        });
-                        if (!response.ok) return;
-                        const { build } = await response.json();
-                        if (!build || !ourBuild) return;
-                        if (build !== ourBuild) announceUpdate();
-                    } catch {
-                        // Offline — nothing to report.
-                    }
-                };
-
-                // ---- Version probe ---------------------------------------
-                //
-                // `version.json` is written by the build (see
-                // `scripts/stamp-service-worker.sh`) and served `no-store`. Polling it
-                // detects a new deploy WITHOUT depending on service-worker
-                // update machinery — which matters precisely because that
-                // machinery being wedged is the failure being solved. When it
-                // reports a build other than the one this worker is running,
-                // announce it; `<tonk-site>` renders the reload affordance.
-                const BUILD_PROBE_MS = 15 * 60 * 1000;
-                // The post-build step stamped this immutable value into the
-                // document and the early head script published it before the
-                // app loader. `/version.json` is discovery only: using its
-                // mutable answer as provenance lets a cached old document
-                // impersonate the currently deployed generation.
-                const ourBuild = globalThis.tonkBuild ?? null;
-                void checkStale();
-                setInterval(checkStale, BUILD_PROBE_MS);
-                // Also on focus: a tab returned to after a deploy is the
-                // likeliest moment for the prompt to matter.
-                document.addEventListener("visibilitychange", () => {
-                    if (document.visibilityState === "visible") checkStale();
-                });
-
         </script>
     </body>
 </html>

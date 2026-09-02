@@ -121,8 +121,7 @@ function healthResponse() {
 const SHELL_CACHE = `TONK_SHELL_${BUILD_ID}`;
 
 // Where this worker's own wasm lives. Separate from the shell graph because it
-// has a different eviction-recovery rule: matching live bytes may boot one
-// worker instance ephemerally, while missing UI assets fail closed.
+// is instantiated as bytes rather than returned as an ordinary response.
 const WORKER_CACHE = `TONK_WORKER_${BUILD_ID}`;
 const GENERATION_CACHE = `TONK_GENERATION_${BUILD_ID}`;
 const GENERATION_MARKER_URL = new URL(
@@ -148,9 +147,6 @@ let tonkServiceWorkerResolves;
 // recorded for `/api/health`, and the next fetch after the hold-off
 // retries from scratch.
 const INIT_RETRY_HOLDOFF_MS = 5000;
-const WITHDRAWN_WORKER_FAILURE =
-    "This Tonk version was withdrawn. Reload to try the current version.";
-let withdrawn = false;
 
 // ---- Worker wasm: one atomic artifact set ----------------------------
 //
@@ -262,6 +258,23 @@ async function fetchVerifiedAssetManifest() {
         throw new Error("asset manifest is not valid JSON");
     }
     return validateAssetManifest(manifest);
+}
+
+/// Recover one evicted member without mutating the retained generation. The
+/// live manifest must still be byte-for-byte the manifest stamped into this
+/// worker, and the resource must match its manifest digest. A newer deploy,
+/// an offline network, or a corrupt response therefore fails closed.
+async function fetchVerifiedRetainedAsset(path) {
+    const entries = await fetchVerifiedAssetManifest();
+    const expectedHash = new Map(entries).get(path);
+    if (!expectedHash) {
+        throw new Error(`asset manifest has no retained path: ${path}`);
+    }
+    return (await fetchVerified(
+        new URL(path, self.location.origin).href,
+        expectedHash,
+        `asset ${path}`,
+    )).response;
 }
 
 let installProgressReportedAt = 0;
@@ -567,9 +580,6 @@ async function workerWasmModule() {
 }
 
 async function activateWorker() {
-    if (withdrawn) {
-        throw new Error(WITHDRAWN_WORKER_FAILURE);
-    }
     if (tonkServiceWorkerResolves == null) {
         const now = Date.now();
         if (
@@ -618,85 +628,18 @@ async function activateWorker() {
     return tonkServiceWorkerResolves;
 }
 
-// ---- Remote withdrawal flag ------------------------------------------
-//
-// A worker that is broken in a way no page can recover from is the case
-// nothing else here covers: the escape hatch on the failure page needs
-// the user to reach that page and press a button, and a worker broken
-// in a subtler way (serving, but wrong) never shows it at all.
-//
-// So: a tiny `no-store` flag file the worker checks at activate and
-// periodically while serving. When it names this exact immutable build, the
-// worker stops serving the data plane and presents a visible reload/update
-// recovery. It never deletes caches or registrations: older controllers may
-// still need their sole offline artifact copies, and remote configuration must
-// not become a destructive browser-storage command.
-//
-// Absent, unreachable, or malformed, it does nothing at all: the check
-// is best-effort by construction, and a network blip must never
-// withdraw a healthy worker.
-const KILL_SWITCH_URL = "/kill-switch.json";
-
-async function killSwitchEngaged() {
-    try {
-        const response = await fetch(KILL_SWITCH_URL, { cache: "no-store" });
-        if (!response.ok) return false;
-        // An SPA host answers an unknown path with the shell HTML and a
-        // 200, so "absent" arrives looking like success. Parse
-        // defensively and treat anything that isn't the expected shape
-        // as "no flag" — never as a reason to disable a healthy worker.
-        const text = await response.text();
-        let revoked;
-        try {
-            ({ revoked } = JSON.parse(text));
-        } catch {
-            return false;
-        }
-        if (!Array.isArray(revoked)) return false;
-        return revoked.includes(BUILD_ID);
-    } catch {
-        return false;
-    }
-}
-
-/// Stop this generation without mutating browser storage. `activateWorker`
-/// checks the latch even when its Wasm promise was already resolved, so later
-/// fetches cannot resume a withdrawn data plane. A user-directed reload/update
-/// is the only recovery action.
-function withdrawBuild() {
-    if (withdrawn) return Promise.resolve();
-    // Capture the already-running generation before latching refusal:
-    // `activateWorker()` intentionally rejects after the latch is set. If the
-    // Rust worker is live, its update hook stops background sync and closes
-    // long-lived responses without deleting the cached bytes retained for
-    // offline recovery.
-    const activeWorker = tonkServiceWorkerResolves;
-    withdrawn = true;
-    workerHealth.state = "failed";
-    workerHealth.error = WITHDRAWN_WORKER_FAILURE;
-    workerHealth.lastAttemptAt = Date.now();
-    log(`Withdrawal flag engaged for build ${BUILD_ID}; artifacts retained`);
-    if (!activeWorker) return Promise.resolve();
-    return activeWorker
-        .then(worker => worker.onupdatefound?.())
-        .catch(err => log("Failed to stop withdrawn worker activity:", err));
-}
-
 self.oninstall = event => {
     event.waitUntil((async () => {
         // Uncaught by design: a worker becomes installable only after its
         // provenance-bound UI, lazy, guest, and worker-Wasm graph is complete.
         // A failed incoming build leaves every retained generation untouched.
         await installGeneration();
-        if (!self.registration.active) {
-            // First install has no incumbent document generation to protect.
-            // Activate so the registering page can explicitly request claim.
-            await self.skipWaiting();
-        }
-        // A complete replacement has an active incumbent and deliberately
-        // parks in `waiting`. An update-aware page requests activation only
-        // after the origin-global account-safety gate permits every controlled
-        // document to align.
+        // One-release rollout bridge: pages deployed before this lifecycle
+        // protocol never send an `activate` message. A verified successor must
+        // therefore activate automatically even when an incumbent exists.
+        // Keep this until every supported deployed page generation is known to
+        // understand the successor protocol.
+        await self.skipWaiting();
     })());
     log("Installed");
 };
@@ -715,13 +658,6 @@ self.onactivate = event => {
     // in-flight fetches hang, the lock never frees, and this worker pins in
     // `activating` while every page waits on it.
     (async () => {
-        // Before doing any work as the new controller: has this build
-        // been withdrawn? Checked here rather than only at install so a
-        // build already installed everywhere can still be pulled.
-        if (await killSwitchEngaged()) {
-            await withdrawBuild();
-            return;
-        }
         try {
             const worker = await activateWorker();
             await worker.onactivate?.();
@@ -732,43 +668,29 @@ self.onactivate = event => {
     log("Activated");
 };
 
-// When a *newer* version of this worker enters the `installing`
-// state, this script (the currently active worker) is on the way
-// out. Forward the lifecycle event to the Rust side so it can
-// release every long-lived response we're serving — chiefly the
-// `/api/lsp/events` SSE stream. With those streams hung up the
-// in-flight fetch events settle, the spec releases this worker,
-// and the new one activates.
+// When a *newer* version completes installation, this script (the currently
+// active worker) is on the way out. Forward the lifecycle event to the Rust
+// side so it can release every long-lived response we're serving — chiefly
+// the query and language-server SSE streams. With those streams hung up, the
+// outgoing instance can terminate after the successor takes over.
 //
-// `worker.onupdatefound()` is exported by `tonk_worker::worker`
-// and drops the LSP push channel's sender. Receivers see EOF,
-// browser side resumes via the existing reconnect loop against
-// the new worker.
-/// Whether this worker has already released its streams for a waiting
+// `worker.onupdatefound()` is exported by `tonk_worker::worker`; it publishes
+// the shared retirement latch and drops the query and LSP senders. Receivers
+// see EOF, then the browser resumes against the new worker.
+/// Whether this worker has already released its streams for an installed
 /// successor. Per worker instance, which is what we want: a restarted
 /// worker re-checks. Declared here, above every use — a `let` read
 /// before its declaration is a runtime TDZ error, not a hoist.
 let retired = false;
 let retirement = null;
 
-/// Release this worker's long-lived streams because a successor is
-/// waiting. Idempotent: safe to run after an installing candidate reaches
-/// `installed` and again when a durable waiting successor is found at startup.
+/// Release this worker's long-lived streams because a successor installed.
+/// Idempotent: safe after the observed candidate reaches `installed` and again
+/// when a waiting successor is found during an incumbent restart.
 async function retire(reason) {
-    if (retired) return;
+    if (retired) return true;
     if (retirement) return retirement;
     retirement = (async () => {
-        // An installed successor must not retire the incumbent reactor while
-        // that incumbent owns a non-repeatable account ceremony. The durable
-        // hold is also the claim authority: keeping A fully live until it
-        // clears lets A observe its provider-attachment write before B can
-        // replace it. Read failures defer retirement and retry on the next
-        // fetch through `retireIfSuperseded`.
-        if (await accountSetupHoldPresent()) {
-            log(`Retirement deferred by account setup — ${reason}`);
-            return;
-        }
-        retired = true;
         log(`Retiring — ${reason}`);
         try {
             const worker = await activateWorker();
@@ -780,12 +702,17 @@ async function retire(reason) {
             // couple the successor's startup to this worker's death: worker
             // lifecycles belong to the browser.
             await worker.onupdatefound?.();
+            // Publish the one-way latch only after release succeeds. A failed
+            // worker boot or hook must remain retryable on the next fetch.
+            retired = true;
+            return true;
         } catch (err) {
             log("Failed to release streams:", err);
+            return false;
         }
     })();
     try {
-        await retirement;
+        return await retirement;
     } finally {
         retirement = null;
     }
@@ -799,7 +726,7 @@ function isActiveIncumbent() {
 }
 
 function retireActiveIncumbent(reason) {
-    if (!isActiveIncumbent()) return;
+    if (!isActiveIncumbent()) return Promise.resolve(true);
     return retire(reason);
 }
 
@@ -809,16 +736,13 @@ function retireActiveIncumbent(reason) {
 // restarted constantly — so the event fires into a dead worker whenever
 // the successor installs while this one is asleep. The listener below
 // is then re-registered on restart having already missed its only
-// notice, and this worker goes on holding streams open forever: the
-// successor sits in `waiting`, reloads keep landing on the old active
-// worker, and nothing ever breaks the deadlock. That is precisely the
-// "waiting to activate" state that never clears.
+// notice, and this worker can go on holding streams after the successor's
+// automatic activation. The replacement then owns the registration while
+// stale clients remain pinned to the unreleased incumbent.
 //
 // The registration itself is durable where the event is not, so ask it
 // directly on every startup instead of trusting that we were awake.
 if (self.registration.waiting) {
-    // Defer until this module has initialized the account-safety constants
-    // used by `retire`; top-level execution otherwise enters their TDZ.
     Promise.resolve().then(() =>
         retireActiveIncumbent("a successor was already waiting at startup"),
     );
@@ -829,11 +753,10 @@ function watchSuccessor(candidate) {
     // The event fires on the REGISTRATION, so every worker running this script
     // hears it — including the newly-installing worker, about its own arrival.
     // Only the OUTGOING worker may act on it, and only after the candidate
-    // reaches `installed`: `onupdatefound` stops all sync work, and that flag
-    // is never cleared (a retiring worker must not re-arm
-    // `waitUntil`, or it pins itself in `waiting`). A new worker that ran it
-    // would latch itself off and then go on to serve the page while refusing
-    // every sync drain for the rest of its life.
+    // reaches `installed`: `onupdatefound` stops all sync work, and a retiring
+    // worker must not re-arm `waitUntil` or keep itself serving stale clients.
+    // A new worker that ran it would latch itself off and then go on to serve
+    // the page while refusing every sync drain for the rest of its life.
     //
     // `registration.installing` is the incoming worker. If that is us, this is
     // our own birth announcement, not our eviction notice.
@@ -893,15 +816,12 @@ self.addEventListener("online", onConnectivityChange);
 // `/index.html` is a 307 redirect to `/`, so it can't be cached
 // or served as the shell.
 //
-// A generation cache is SEALED by install. An old controller can keep
-// serving after a deployment, so any runtime fetch could return the current
-// deployment's bytes under the old BUILD_ID. Cached navigations are therefore
-// cache-only, including while a successor is waiting. The outgoing document's
-// update-aware claim-and-reload handoff is what crosses to the successor; the
-// old controller never serves the successor's stable-name shell. Install is
-// the only shell-cache writer. Because install proves a complete graph, a
-// later miss means storage eviction and must fail closed rather than accepting
-// a stable-name document from a newer deploy.
+// A generation cache is SEALED by install. An old controller can keep serving
+// after a deployment, so a runtime recovery accepts bytes only when the live
+// manifest still matches this worker's stamped manifest and the resource
+// matches that manifest. The outgoing document's update-aware
+// claim-and-reload handoff crosses to the successor; recovery never writes
+// current-deployment bytes into an old cache.
 function missingGenerationAssetResponse(path) {
     return new Response(
         `A resource required by this retained Tonk version is unavailable (${path}). ` +
@@ -926,7 +846,12 @@ async function serveNavigation() {
         // deployment and do not prune assets an old page may still reference.
         return cached;
     }
-    return missingGenerationAssetResponse("/");
+    try {
+        return await fetchVerifiedRetainedAsset("/");
+    } catch (error) {
+        log("Retained root recovery failed:", error);
+        return missingGenerationAssetResponse("/");
+    }
 }
 
 // Whether a request can be served from the shell cache by the JS shim
@@ -961,19 +886,25 @@ function isShellCacheable(request, path) {
 }
 
 // Serve a static asset from the sealed generation when present (no network,
-// no worker boot). Install proved the graph complete, so a miss means eviction:
-// fail closed rather than asking the Rust worker for the current deployment's
-// stable-name bytes under an older controller.
+// no worker boot). On eviction, accept an ephemeral network response only
+// after proving that both the live manifest and member still belong to this
+// exact generation. Never backfill an old cache from the live deployment.
 async function serveAsset(event) {
     // Match ONLY the top-level resource graph installed under the request URL.
     // A guest-iframe subresource is rewritten to a branch-scoped `/api/...`
     // path by the worker, so it can never match here — no cross-serving a
     // guest asset from the top-level cache.
-    const cached = await caches.match(event.request, { cacheName: SHELL_CACHE });
+    const path = new URL(event.request.url).pathname;
+    const cached = await caches.match(assetCacheKey(path), { cacheName: SHELL_CACHE });
     if (cached) {
         return cached;
     }
-    return missingGenerationAssetResponse(new URL(event.request.url).pathname);
+    try {
+        return await fetchVerifiedRetainedAsset(path);
+    } catch (error) {
+        log(`Retained asset recovery failed for ${path}:`, error);
+        return missingGenerationAssetResponse(path);
+    }
 }
 
 async function rustFetch(event) {
@@ -1030,15 +961,8 @@ async function routeFetch(event, path) {
 
 /// A real error page for a worker that cannot start: the actual error,
 /// a retry, and a pointer at /api/health — never an endless spinner.
-/// After this many consecutive failed initializations, also offer an explicit
-/// update check. Both recovery paths preserve caches, registrations, IndexedDB,
-/// profiles, and passkeys.
-const STUCK_AFTER_ATTEMPTS = 3;
 
 function failurePage() {
-    // Withdrawal is not a transient initialization race: offer the
-    // non-destructive update path immediately, without requiring three reloads.
-    const stuck = withdrawn || workerHealth.attempts >= STUCK_AFTER_ATTEMPTS;
     const detail = String(workerHealth.error || "unknown error");
     const escaped = detail
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1064,108 +988,12 @@ function failurePage() {
 <p>The storage worker could not initialize. Attempt ${workerHealth.attempts}.</p>
 <pre>${escaped}</pre>
 <button onclick="location.reload()">Try again</button>
-${stuck ? `<button id="update">Check for update</button>` : ""}
 <p class="hint">Diagnostics: <code>/api/health</code> has the full log ring.</p>
-${stuck ? `<p class="hint">Checking for an update keeps your local data and offline files intact.</p>` : ""}
 </main>
-<script>
-  const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const waitForState = (worker, accepted, description) => {
-    if (accepted.includes(worker.state)) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let timer;
-      const settle = error => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        worker.removeEventListener("statechange", onStateChange);
-        if (error) reject(error);
-        else resolve();
-      };
-      const onStateChange = () => {
-        if (accepted.includes(worker.state)) settle();
-        else if (worker.state === "redundant") settle(new Error(description));
-      };
-      worker.addEventListener("statechange", onStateChange);
-      timer = setTimeout(() => settle(new Error(description)), 30000);
-      onStateChange();
-    });
-  };
-  const adoptSuccessor = async registration => {
-    const incumbent = navigator.serviceWorker.controller;
-    let successor = registration.waiting || registration.installing;
-    if (!successor && registration.active !== incumbent) successor = registration.active;
-    if (!successor) throw new Error("No healthy replacement is available yet.");
-    if (successor.state === "installing") {
-      await waitForState(
-        successor,
-        ["installed", "activated", "redundant"],
-        "The replacement did not finish installing.",
-      );
-    }
-    if (successor.state === "redundant") {
-      throw new Error("The replacement could not be installed.");
-    }
-    if (successor.state === "installed") {
-      successor.postMessage({ type: "activate" });
-      await waitForState(
-        successor,
-        ["activated", "redundant"],
-        "The replacement did not activate.",
-      );
-    }
-    if (successor.state !== "activated") {
-      throw new Error("The replacement could not be activated.");
-    }
-
-    // Claim is authorized by the successor's durable account-safety read.
-    // It has no reply, so retry until controllerchange proves that the exact
-    // replacement landed. A live account hold keeps every attempt inert.
-    const deadline = Date.now() + 30000;
-    while (navigator.serviceWorker.controller === incumbent && Date.now() < deadline) {
-      successor.postMessage({ type: "claim" });
-      await sleep(250);
-    }
-    if (navigator.serviceWorker.controller === incumbent) {
-      throw new Error("The update is waiting for account setup to finish.");
-    }
-  };
-  document.getElementById("update")?.addEventListener("click", async event => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    button.textContent = "Checking…";
-    try {
-      const registration = await navigator.serviceWorker.getRegistration();
-      if (!registration) throw new Error("The service worker registration is missing.");
-      await registration.update();
-      button.textContent = "Updating…";
-      await adoptSuccessor(registration);
-      location.reload();
-    } catch (err) {
-      console.error("update check failed", err);
-      button.disabled = false;
-      button.textContent = "Try update again";
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent = String(err?.message || err);
-      button.after(hint);
-    }
-  });
-</script>
 </body></html>`,
         { status: 503, headers: { "content-type": "text/html; charset=utf-8" } },
     );
 }
-
-/// How often a running worker re-checks the withdrawal flag. The check at
-/// activate only covers a worker that newly activates — but the worker
-/// that most needs withdrawing is one already installed and activated
-/// everywhere, which may not activate again for days. So re-check
-/// periodically off the fetch path (which is free: it piggybacks on
-/// traffic the worker is already serving).
-const KILL_SWITCH_INTERVAL_MS = 30 * 60 * 1000;
-let killSwitchCheckedAt = 0;
 
 /// Release streams if a successor is waiting and we have not already.
 ///
@@ -1176,19 +1004,10 @@ let killSwitchCheckedAt = 0;
 /// remaining contact with the outside world is the fetches it serves,
 /// so the check has to live here too.
 function retireIfSuperseded(event) {
-    if (retired || !self.registration.waiting || !isActiveIncumbent()) return;
-    event.waitUntil?.(retireActiveIncumbent("a successor is waiting"));
-}
-
-function maybeCheckKillSwitch(event, force = false) {
-    const now = Date.now();
-    if (!force && now - killSwitchCheckedAt < KILL_SWITCH_INTERVAL_MS) return;
-    killSwitchCheckedAt = now;
-    event.waitUntil?.(
-        (async () => {
-            if (await killSwitchEngaged()) await withdrawBuild();
-        })(),
-    );
+    if (retired || !self.registration.waiting || !isActiveIncumbent()) return null;
+    const attempt = retireActiveIncumbent("a successor is waiting");
+    event.waitUntil?.(attempt);
+    return attempt;
 }
 
 self.onfetch = event => {
@@ -1196,7 +1015,7 @@ self.onfetch = event => {
     // A waiting successor means this worker is retiring. Checked on the
     // fetch path because a worker pinned by its own open streams never
     // restarts to run the startup check.
-    retireIfSuperseded(event);
+    const retirementAttempt = retireIfSuperseded(event);
     // Answered from this glue, never the wasm worker: health must be
     // readable precisely when the worker cannot answer for itself.
     if (
@@ -1242,33 +1061,39 @@ self.onfetch = event => {
     if (path === "/@" || path.startsWith("/@/")) {
         return;
     }
-    // Control files: the update probe and the withdrawal flag. NOT
-    // intercepted at all, deliberately.
-    //
-    // Both exist to be readable when the worker is the thing that is
-    // wrong, so routing them through the worker defeats their purpose.
-    // Worse, an SPA host answers an unknown path with the shell, so a
-    // missing `kill-switch.json` came back as HTML — which parsed as
-    // neither JSON nor a valid absence. Letting the browser fetch them
-    // directly keeps a real 404 a real 404.
-    if (path === "/version.json" || path === KILL_SWITCH_URL) {
-        return;
-    }
-    // Piggyback the periodic withdrawal check on a navigation, when a user
-    // can immediately follow the failure page's update-and-reload recovery.
-    // Placed AFTER the control-file early-out so the probe cannot trigger
-    // itself.
-    if (event.request.mode === "navigate") {
-        // A person explicitly navigating/reloading is an immediate recovery
-        // boundary; do not let the periodic throttle hide a newly published
-        // withdrawal flag from that action.
-        maybeCheckKillSwitch(event, true);
-    }
+    // Build metadata is mutable deployment information, not part of a
+    // retained generation's application routing.
+    if (path === "/version.json") return;
     // `/api/*` navigations remain real data-plane requests. All other
     // navigations use an exact stamped static document when one exists, or the
     // root SPA shell. Non-navigation assets use the immutable cache only on an
     // exact manifest match. Nested clients always reach Rust first so their
     // registered repository/branch binding can rewrite the request.
+    if (retirementAttempt && path.startsWith("/api/")) {
+        // Do not let the fetch that retries a failed release race ahead and
+        // reopen a long-lived Rust stream. Once release succeeds, the shared
+        // Rust latch makes the route return its finite handoff response.
+        event.respondWith((async () => {
+            const released = await retirementAttempt;
+            if (!released) {
+                return new Response(
+                    JSON.stringify({
+                        control: "update-pending",
+                        reason: "the outgoing worker could not release its streams",
+                    }),
+                    {
+                        status: 503,
+                        headers: {
+                            "content-type": "application/json",
+                            "retry-after": "5",
+                        },
+                    },
+                );
+            }
+            return routeFetch(event, path);
+        })());
+        return;
+    }
     event.respondWith(routeFetch(event, path));
 };
 
@@ -1286,173 +1111,9 @@ self.onfetch = event => {
 // fetch would land on the static-asset server as a 405). The
 // claim raises `controllerchange` on the page side, which the
 // shell's `serviceWorkerActivates()` Promise awaits.
-const UPDATE_SAFETY_NAME = "tonk-update-safety-v1";
-const UPDATE_SAFETY_STORE = "holds";
-const ACCOUNT_SETUP_HOLD_KEY = "account-setup";
-const MAX_U64 = 18446744073709551615n;
-
-function validAccountSetupHold(value) {
-    if (value == null || typeof value !== "object" || Array.isArray(value)) {
-        return false;
-    }
-    const keys = Object.keys(value).sort();
-    if (
-        keys.join("|") !==
-        "kind|leasedRevision|operationId|version"
-    ) {
-        return false;
-    }
-    if (
-        value.version !== 1 ||
-        value.kind !== ACCOUNT_SETUP_HOLD_KEY ||
-        typeof value.operationId !== "string" ||
-        !/^[0-9a-f]{64}$/.test(value.operationId) ||
-        typeof value.leasedRevision !== "string" ||
-        !/^(0|[1-9][0-9]*)$/.test(value.leasedRevision)
-    ) {
-        return false;
-    }
-    try {
-        return BigInt(value.leasedRevision) <= MAX_U64;
-    } catch {
-        return false;
-    }
-}
-
-function openUpdateSafetyDatabase() {
-    return new Promise((resolve, reject) => {
-        let request;
-        let settled = false;
-        const fail = error => {
-            if (settled) return;
-            settled = true;
-            reject(error);
-        };
-        try {
-            request = indexedDB.open(UPDATE_SAFETY_NAME, 1);
-        } catch (error) {
-            fail(error);
-            return;
-        }
-        request.onupgradeneeded = () => {
-            try {
-                const database = request.result;
-                if (!database.objectStoreNames.contains(UPDATE_SAFETY_STORE)) {
-                    database.createObjectStore(UPDATE_SAFETY_STORE);
-                }
-            } catch (error) {
-                try { request.transaction?.abort(); } catch {}
-                fail(error);
-            }
-        };
-        request.onerror = () => fail(request.error || new Error("update safety database open failed"));
-        request.onblocked = () => fail(new Error("update safety database open blocked"));
-        request.onsuccess = () => {
-            if (settled) {
-                request.result?.close();
-                return;
-            }
-            settled = true;
-            resolve(request.result);
-        };
-    });
-}
-
-async function readAccountSetupHold() {
-    const database = await openUpdateSafetyDatabase();
-    try {
-        return await new Promise((resolve, reject) => {
-            let transaction;
-            let request;
-            let result;
-            let requestComplete = false;
-            try {
-                transaction = database.transaction(UPDATE_SAFETY_STORE, "readonly");
-                request = transaction.objectStore(UPDATE_SAFETY_STORE).get(ACCOUNT_SETUP_HOLD_KEY);
-            } catch (error) {
-                reject(error);
-                return;
-            }
-            request.onsuccess = () => {
-                requestComplete = true;
-                result = request.result;
-            };
-            request.onerror = () => reject(request.error || new Error("account setup hold read failed"));
-            transaction.onabort = () => reject(transaction.error || new Error("account setup hold read aborted"));
-            transaction.onerror = () => reject(transaction.error || new Error("account setup hold transaction failed"));
-            transaction.oncomplete = () => {
-                if (!requestComplete) {
-                    reject(new Error("account setup hold transaction completed without a result"));
-                    return;
-                }
-                resolve(result);
-            };
-        });
-    } finally {
-        database.close();
-    }
-}
-
-async function accountSetupHoldPresent() {
-    try {
-        const hold = await readAccountSetupHold();
-        if (hold === undefined) return false;
-        if (!validAccountSetupHold(hold)) {
-            log("Malformed durable account-setup hold; deferring global claim");
-        }
-        return true;
-    } catch (error) {
-        log("Durable account-setup hold read failed; deferring global claim:", error);
-        return true;
-    }
-}
-
-async function claimClientsWhenAccountSetupSafe() {
-    const locks = self.navigator?.locks;
-    if (!locks || typeof locks.request !== "function") {
-        log("Web Locks unavailable; refusing automatic global claim");
-        return false;
-    }
-    try {
-        return await locks.request(
-            UPDATE_SAFETY_NAME,
-            { mode: "exclusive" },
-            async () => {
-                // The UI holds the same exclusive lock while publishing its
-                // write-before-Arm record. Re-read IDB inside the lock: an
-                // advisory page-side check can never authorize global claim.
-                if (await accountSetupHoldPresent()) return false;
-                await self.clients.claim();
-                return true;
-            },
-        );
-    } catch (error) {
-        log("Account-safe global claim failed closed:", error);
-        return false;
-    }
-}
-
 self.onmessage = event => {
-    if (
-        event.data &&
-        event.data.type === "account-setup-hold-changed" &&
-        event.data.version === 1
-    ) {
-        if (self.registration.waiting && isActiveIncumbent()) {
-            event.waitUntil?.(
-                retireActiveIncumbent("the account-setup hold changed"),
-            );
-        }
-        return;
-    }
-    // A complete worker waits until an update-aware page crosses the shared
-    // account-safety gate. Only that page may ask it to activate.
-    if (event.data && event.data.type === "activate") {
-        event.waitUntil?.(self.skipWaiting());
-        return;
-    }
     if (event.data && event.data.type === "claim") {
-        event.waitUntil?.(claimClientsWhenAccountSetupSafe());
+        event.waitUntil?.(self.clients.claim());
         return;
     }
     // Connectivity nudge from the active page on an `online`/`offline`

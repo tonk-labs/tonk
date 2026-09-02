@@ -94,16 +94,15 @@ can retain its own recovery guidance; after correcting the cause, the person
 chooses when to reload. For a boot that stops making progress without producing
 an explicit error, the watchdog performs at most one plain reload. A second
 silent stall terminalizes with the same safe-state guidance and leaves every
-cache and service-worker registration intact. The deployment withdrawal kill
-switch is the sole exception: it shows its specific withdrawal guidance and
-unregisters only the current page's registration, never every scope on the
-origin.
+cache and service-worker registration intact.
 
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
-clears the guard. There is one rollout boundary: a shell cached before this
-bootstrap ships cannot run code it does not contain. Its existing worker can
-refresh `/` in the background, and the next ordinary navigation runs the new
-load-time update path. Later deployments are detected on the first warm load.
+clears the guard. During the rollout bridge every verified successor calls
+`skipWaiting()`, including when the incumbent page predates this bootstrap.
+Older pages remain on their current controller until navigation because only
+an update-aware page sends the explicit claim. Later deployments are detected
+by the single update check on the first warm load; there is no periodic probe
+or update prompt.
 
 The service worker is the local backend: the UI talks to it over HTTP and
 listens for change notifications on a `BroadcastChannel`.

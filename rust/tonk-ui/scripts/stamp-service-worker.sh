@@ -96,6 +96,9 @@ ASSET_LIST="$LOCK/assets"
 ASSET_GRAPH="$LOCK/graph"
 ASSET_FILES_UNSORTED="$LOCK/files.unsorted"
 ASSET_FILES="$LOCK/files"
+NORMALIZED_INDEX="$LOCK/index.normalized"
+NORMALIZED_SW="$LOCK/service-worker.normalized"
+BUILD_INPUT="$LOCK/build-input"
 BACKED_UP=0
 COMMITTED=0
 VERSION_EXISTED=0
@@ -126,6 +129,7 @@ cleanup() {
     rm -f "$SW_TMP" "$INDEX_TMP" "$VERSION_TMP" "$MANIFEST_TMP"
     rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
+    rm -f "$NORMALIZED_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
         rm -f "$SW_BACKUP" "$INDEX_BACKUP" "$VERSION_BACKUP" "$MANIFEST_BACKUP"
         rmdir "$LOCK" 2>/dev/null
@@ -173,7 +177,7 @@ LC_ALL=C sort "$ASSET_FILES_UNSORTED" > "$ASSET_FILES"
 while IFS= read -r FILE; do
     REL=${FILE#"$DIST"/}
     case "$REL" in
-        service_worker.js | worker.js | worker_bg.wasm | version.json | kill-switch.json | asset-manifest.json | _headers | \
+        service_worker.js | worker.js | worker_bg.wasm | version.json | asset-manifest.json | _headers | \
             .tonk-stamp.lock | .tonk-stamp.lock/* | *.tmp.* | *.stamp-backup.*)
             continue
             ;;
@@ -207,10 +211,9 @@ grep -q '^/|index.html$' "$ASSET_LIST" || {
 
 while IFS='|' read -r ROUTE REL; do
     if [ "$REL" = "index.html" ]; then
-        ASSET_HASH=$(
-            sed '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
-                "$DIST/$REL" | hash_stream_full
-        )
+        sed '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
+            "$DIST/$REL" > "$NORMALIZED_INDEX"
+        ASSET_HASH=$(hash_file_full "$NORMALIZED_INDEX")
     else
         ASSET_HASH=$(hash_file_full "$DIST/$REL")
     fi
@@ -235,14 +238,14 @@ ASSET_PATHS_SED=$(printf '%s' "$ASSET_PATHS_DECL" | sed 's/[&]/\\&/g')
 # Include the outer service-worker policy without hashing generated identities
 # back into itself. Any policy, worker, or published resource change therefore
 # produces a new immutable generation while restamping stays deterministic.
-SW_HASH=$(
-    sed -e 's|^const BUILD_ID = .*|const BUILD_ID = "dev";|' \
-        -e 's|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = "dev";|' \
-        -e 's|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = "dev";|' \
-        -e 's|^const ASSET_PATHS = .*|const ASSET_PATHS = ["dev"];|' \
-        "$SW" | hash_stream
-)
-BUILD_ID=$(printf '%s\n' "$SW_HASH" "$WASM_HASH" "$GLUE_HASH" "$ASSET_GRAPH_HASH" | hash_stream)
+sed -e 's|^const BUILD_ID = .*|const BUILD_ID = "dev";|' \
+    -e 's|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = "dev";|' \
+    -e 's|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = "dev";|' \
+    -e 's|^const ASSET_PATHS = .*|const ASSET_PATHS = ["dev"];|' \
+    "$SW" > "$NORMALIZED_SW"
+SW_HASH=$(hash_file "$NORMALIZED_SW")
+printf '%s\n' "$SW_HASH" "$WASM_HASH" "$GLUE_HASH" "$ASSET_GRAPH_HASH" > "$BUILD_INPUT"
+BUILD_ID=$(hash_file "$BUILD_INPUT")
 if [ "${#BUILD_ID}" -ne 16 ]; then
     echo "stamp-service-worker: malformed build id '$BUILD_ID'" >&2
     exit 1

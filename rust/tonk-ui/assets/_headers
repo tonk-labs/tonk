@@ -26,12 +26,8 @@
 /asset-manifest.json
   Cache-Control: no-store
 
-# The update probe and the kill switch are only useful if they are never
-# answered from a cache.
+# Live build metadata must never be answered from a cache.
 /version.json
-  Cache-Control: no-store
-
-/kill-switch.json
   Cache-Control: no-store
 
 # ---- Entry points: always revalidated -------------------------------

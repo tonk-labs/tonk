@@ -11,7 +11,7 @@ mod main {
 
     /// Activates and initializes the Tonk service worker.
     ///
-    /// `build_id` is the identity `scripts/hash-guest.sh` stamps into
+    /// `build_id` is the identity `scripts/stamp-service-worker.sh` stamps into
     /// `service_worker.js`. It names the per-build caches, and the JS
     /// shim passes it in rather than the two sides hardcoding the same
     /// literal — a name kept in step by hand across two languages is

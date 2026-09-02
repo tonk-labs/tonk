@@ -34,7 +34,6 @@ function fixtureDist() {
   );
   writeFileSync(join(dist, "worker.js"), "export const worker = 1;\n");
   writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm-fixture\n");
-  writeFileSync(join(dist, "kill-switch.json"), '{"revoked":[]}\n');
   writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 1;\n");
   mkdirSync(join(dist, "guest"));
   writeFileSync(
@@ -103,11 +102,6 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
       undefined,
       "live deployment discovery must remain outside retained generations",
     );
-    assert.equal(
-      manifest.assets["/kill-switch.json"],
-      undefined,
-      "live withdrawal control must remain outside retained generations",
-    );
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
@@ -142,6 +136,15 @@ test("tonk-code source identity changes when its TypeScript configuration change
     writeFileSync(join(root, "src-js", "index.ts"), "export {};\n");
     writeFileSync(join(root, "tsconfig.json"), '{"compilerOptions":{}}\n');
     const before = sourceFingerprint(root);
+    writeFileSync(
+      join(root, "src-js", "chunks.generated.ts"),
+      "export const chunks = {};\n",
+    );
+    assert.equal(
+      sourceFingerprint(root),
+      before,
+      "ignored generated output cannot make clean-checkout freshness depend on a prior build",
+    );
     writeFileSync(
       join(root, "tsconfig.json"),
       '{"compilerOptions":{"strict":true}}\n',

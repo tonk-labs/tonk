@@ -1,4 +1,4 @@
-//! Real-browser service-worker load-time upgrade tests for Storybook `UI-03`.
+//! Real-browser service-worker load-time upgrade tests.
 
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -524,110 +524,6 @@ mod tests {
         Ok(())
     }
 
-    async fn request_registration_update(driver: &WebDriver) -> Result<()> {
-        let result = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.getRegistration()
-                    .then(async registration => {
-                        if (!registration) throw new Error("missing registration");
-                        await registration.update();
-                        done({ ok: true });
-                    })
-                    .catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        ensure!(
-            result.json()["ok"] == true,
-            "service-worker update failed: {}",
-            result.json()
-        );
-        Ok(())
-    }
-
-    async fn set_update_hold(driver: &WebDriver, held: bool) -> Result<()> {
-        let result = driver
-            .execute_async(
-                r#"
-                const held = arguments[0];
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    if (!navigator.locks?.request) throw new Error("Web Locks unavailable");
-                    await navigator.locks.request("tonk-update-safety-v1", { mode: "exclusive" }, async () => {
-                        const database = await new Promise((resolve, reject) => {
-                            const request = indexedDB.open("tonk-update-safety-v1", 1);
-                            request.onupgradeneeded = () => {
-                                if (!request.result.objectStoreNames.contains("holds")) {
-                                    request.result.createObjectStore("holds");
-                                }
-                            };
-                            request.onsuccess = () => resolve(request.result);
-                            request.onerror = () => reject(request.error);
-                        });
-                        await new Promise((resolve, reject) => {
-                            const transaction = database.transaction("holds", "readwrite");
-                            const store = transaction.objectStore("holds");
-                            if (held) {
-                                store.put({
-                                    version: 1,
-                                    kind: "account-setup",
-                                    operationId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                                    leasedRevision: "1",
-                                }, "account-setup");
-                            } else {
-                                store.delete("account-setup");
-                            }
-                            transaction.oncomplete = resolve;
-                            transaction.onerror = () => reject(transaction.error);
-                            transaction.onabort = () => reject(transaction.error);
-                        });
-                        database.close();
-                    });
-                    if (!held) {
-                        const channel = new BroadcastChannel("tonk-update-safety-v1");
-                        channel.postMessage({ type: "account-setup-hold-changed", version: 1 });
-                        channel.close();
-                    }
-                    done({ ok: true });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![held.into()],
-            )
-            .await?;
-        ensure!(
-            result.json()["ok"] == true,
-            "failed to change update hold: {}",
-            result.json()
-        );
-        Ok(())
-    }
-
-    async fn tab_build_state(driver: &WebDriver) -> Result<Value> {
-        let result = driver
-            .execute_async(
-                r##"
-                const done = arguments[arguments.length - 1];
-                Promise.all([
-                    navigator.serviceWorker.getRegistration(),
-                    fetch("/api/health").then(response => response.json()),
-                ]).then(([registration, health]) => done({
-                    health,
-                    documentBuild: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
-                    active: registration?.active?.state || null,
-                    installing: registration?.installing?.state || null,
-                    waiting: registration?.waiting?.state || null,
-                    mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
-                })).catch(error => done({ error: String(error) }));
-                "##,
-                vec![],
-            )
-            .await?;
-        Ok(result.json().clone())
-    }
-
     async fn wait_for_mounted_build(driver: &WebDriver, build: &str) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last = Value::Null;
@@ -706,55 +602,6 @@ mod tests {
         }
     }
 
-    async fn wait_for_successor_while_controller_is_held(
-        driver: &WebDriver,
-        incumbent: &str,
-        successor: &str,
-    ) -> Result<Value> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-        let mut last = Value::Null;
-        loop {
-            if let Ok(state) = driver
-                .execute_async(
-                    r#"
-                    const done = arguments[arguments.length - 1];
-                    Promise.all([
-                        navigator.serviceWorker.getRegistration(),
-                        fetch("/api/health").then(response => response.json()),
-                        fetch("/version.json", { cache: "no-store" }).then(response => response.json()),
-                    ]).then(([registration, health, discovery]) => done({
-                        health,
-                        discovery,
-                        controlled: !!navigator.serviceWorker.controller,
-                        active: registration?.active?.state || null,
-                        installing: registration?.installing?.state || null,
-                        waiting: registration?.waiting?.state || null,
-                        documentBuild: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
-                    })).catch(error => done({ error: String(error) }));
-                    "#,
-                    vec![],
-                )
-                .await
-            {
-                last = state.json().clone();
-                if last["health"]["build"] == incumbent
-                    && last["documentBuild"] == incumbent
-                    && last["discovery"]["build"] == successor
-                    && last["active"] == "activated"
-                    && last["waiting"] == "installed"
-                    && last["controlled"] == true
-                {
-                    return Ok(last);
-                }
-            }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for successor {successor} while controller {incumbent} was held: {last}"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
     async fn fetched_asset_digests(
         driver: &WebDriver,
         expected: &BTreeMap<String, String>,
@@ -814,17 +661,10 @@ mod tests {
                             // worker client in Chrome. Mirror the production
                             // portal boundary: the trusted parent performs the
                             // authorized fetch and stamps immutable provenance.
-                            const options = await fetch("/api/health", {
-                                method: "OPTIONS",
-                            });
-                            const response = await fetch("/api/health", {
-                                headers: { "x-tonk-build": build },
-                            });
+                            const response = await fetch("/api/health");
                             iframe.contentWindow.postMessage({
                                 token,
                                 type: "result",
-                                optionsStatus: options.status,
-                                allowed: options.headers.get("access-control-allow-headers"),
                                 status: response.status,
                                 body: await response.json(),
                             }, "*");
@@ -857,13 +697,9 @@ mod tests {
             .await?;
         ensure!(
             result.json()["opaqueOrigin"] == true
-                && result.json()["optionsStatus"] == 204
-                && result.json()["allowed"]
-                    .as_str()
-                    .is_some_and(|allowed| allowed.split(", ").any(|name| name == "x-tonk-build"))
                 && result.json()["status"] == 200
                 && result.json()["body"]["build"] == build,
-            "opaque relay did not preserve trusted build provenance or the worker OPTIONS contract: {}",
+            "opaque relay did not preserve trusted build provenance: {}",
             result.json()
         );
         Ok(result.json().clone())
@@ -890,28 +726,10 @@ mod tests {
         );
         fetched_asset_digests(&driver, &generation_a.probes).await?;
         create_state_sentinels(&driver).await?;
-        // Hold the old page/controller across publication so requests issued
-        // while B is live must still resolve as one coherent A graph.
-        set_update_hold(&driver, true).await?;
         promote_second_generation(&env)?;
-        request_registration_update(&driver).await?;
-        let held = wait_for_successor_while_controller_is_held(&driver, build_a, build_b).await?;
-        assert_eq!(
-            held["health"]["build"].as_str(),
-            Some(build_a.as_str()),
-            "{held}"
-        );
-        assert_eq!(
-            held["health"]["workerWasm"].as_str(),
-            Some(generation_a.worker_wasm.as_str()),
-            "{held}"
-        );
-        fetched_asset_digests(&driver, &generation_a.probes).await?;
-
-        set_update_hold(&driver, false).await?;
-        // This is the user's explicit adoption reload. The still-coherent A
-        // document observes the already-installed B worker during boot, nudges
-        // activation, and performs at most one guarded alignment reload.
+        // An ordinary warm load discovers B, which activates automatically.
+        // The update-aware A document claims it and performs one guarded
+        // alignment reload before mounting.
         driver.refresh().await?;
         let state = wait_for_mounted_build(&driver, build_b).await?;
         assert_eq!(state["controlled"], true, "{state}");
@@ -952,9 +770,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_answers_options_and_relays_opaque_build_provenance(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_relays_build_provenance_to_an_opaque_child(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
         let build = worker_build_id(&env.service_worker_script)?;
         wait_for_mounted_build(&driver, &build).await?;
@@ -964,7 +780,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_releases_a_waiting_successor_after_old_streams_try_to_reconnect(
+    async fn it_releases_incumbent_streams_for_an_automatic_successor(
         env: TestEnvironment,
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
@@ -972,7 +788,6 @@ mod tests {
         let build_a = generation_a.build;
         let build_b = generation_b.build;
         wait_for_mounted_build(&driver, &build_a).await?;
-        set_update_hold(&driver, true).await?;
 
         let query = tonk_worker::helpers::named_concept_wire_query();
         let opened = driver
@@ -991,7 +806,7 @@ mod tests {
                     });
                     const queryReader = queryResponse.body.getReader();
                     const first = await queryReader.read();
-                    const lspResponse = await fetch("/api/profile/tonk/branch/main/language-server", {
+                    const lspResponse = await fetch("/api/language-server", {
                         headers: { "accept": "text/event-stream" },
                     });
                     const lspReader = lspResponse.body.getReader();
@@ -1015,56 +830,8 @@ mod tests {
         );
 
         promote_second_generation(&env)?;
-        request_registration_update(&driver).await?;
-        wait_for_successor_while_controller_is_held(&driver, &build_a, &build_b).await?;
-
-        let refused = driver
-            .execute_async(
-                r#"
-                const query = arguments[0];
-                const done = arguments[arguments.length - 1];
-                const probe = async (url, init) => {
-                    const response = await fetch(url, init);
-                    const type = response.headers.get("content-type");
-                    const body = type?.includes("text/event-stream")
-                        ? (await response.body.cancel(), null)
-                        : await response.json();
-                    return { status: response.status, type, body };
-                };
-                Promise.all([
-                    probe("/api/profile/branch/main/query", {
-                        method: "POST",
-                        headers: {
-                            "content-type": "application/json",
-                            "accept": "text/event-stream",
-                        },
-                        body: JSON.stringify(query),
-                    }),
-                    probe("/api/profile/tonk/branch/main/language-server", {
-                        headers: { "accept": "text/event-stream" },
-                    }),
-                ]).then(([query, lsp]) => done({ query, lsp }))
-                  .catch(error => done({ error: String(error) }));
-                "#,
-                vec![query.clone()],
-            )
-            .await?;
-        for stream in ["query", "lsp"] {
-            assert_eq!(refused.json()[stream]["status"], 503, "{refused:?}");
-            assert_eq!(
-                refused.json()[stream]["body"]["control"],
-                "update-pending",
-                "{refused:?}"
-            );
-            assert!(
-                !refused.json()[stream]["type"]
-                    .as_str()
-                    .is_some_and(|content_type| content_type.contains("text/event-stream")),
-                "{refused:?}"
-            );
-        }
-
-        set_update_hold(&driver, false).await?;
+        // The warm load drives automatic activation. Reaching mounted B proves
+        // the incumbent streams did not pin A during the handoff.
         driver.refresh().await?;
         wait_for_mounted_build(&driver, &build_b).await?;
         let successor = driver
@@ -1088,7 +855,7 @@ mod tests {
                         },
                         body: JSON.stringify(query),
                     }),
-                    open("/api/profile/tonk/branch/main/language-server", {
+                    open("/api/language-server", {
                         headers: { "accept": "text/event-stream" },
                     }),
                 ]).then(([query, lsp]) => done({ query, lsp }))
@@ -1099,140 +866,6 @@ mod tests {
             .await?;
         assert_eq!(successor.json()["query"]["status"], 200, "{successor:?}");
         assert_eq!(successor.json()["lsp"]["status"], 200, "{successor:?}");
-
-        driver.quit().await?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_sibling_tabs_on_their_controller_until_claim_is_safe(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        let (generation_a, generation_b) = prepare_second_generation(&env)?;
-        let driver = env.driver().await?;
-        let primary = driver.window().await?;
-        let build_a = generation_a.build;
-        let build_b = generation_b.build;
-        let initial = wait_for_mounted_build(&driver, &build_a).await?;
-        assert_eq!(initial["health"]["build"], build_a, "{initial}");
-        create_state_sentinels(&driver).await?;
-        set_update_hold(&driver, true).await?;
-
-        let sibling = driver.new_tab().await?;
-        driver.switch_to_window(sibling.clone()).await?;
-        driver.goto(env.tonk_web.as_str()).await?;
-        let sibling_a = wait_for_mounted_build(&driver, &build_a).await?;
-        assert_eq!(sibling_a["documentBuild"], build_a, "{sibling_a}");
-
-        driver.switch_to_window(primary.clone()).await?;
-        promote_second_generation(&env)?;
-        request_registration_update(&driver).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let primary_held = tab_build_state(&driver).await?;
-        assert_eq!(primary_held["health"]["build"], build_a, "{primary_held}");
-        assert_eq!(primary_held["documentBuild"], build_a, "{primary_held}");
-        driver.switch_to_window(sibling.clone()).await?;
-        let sibling_held = tab_build_state(&driver).await?;
-        assert_eq!(sibling_held["health"]["build"], build_a, "{sibling_held}");
-        assert_eq!(sibling_held["documentBuild"], build_a, "{sibling_held}");
-
-        driver.switch_to_window(primary.clone()).await?;
-        set_update_hold(&driver, false).await?;
-        driver.refresh().await?;
-        let primary_b = wait_for_mounted_build(&driver, &build_b).await?;
-        assert_eq!(primary_b["health"]["build"], build_b, "{primary_b}");
-        driver.switch_to_window(sibling).await?;
-        let sibling_b = wait_for_mounted_build(&driver, &build_b).await?;
-        assert_eq!(sibling_b["health"]["build"], build_b, "{sibling_b}");
-
-        let sentinels = state_sentinels(&driver).await?;
-        assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
-        assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
-        driver.quit().await?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_withdraws_a_generation_without_deleting_local_state(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        let driver = env.driver().await?;
-        let build = worker_build_id(&env.service_worker_script)?;
-        let initial = wait_for_mounted_build(&driver, &build).await?;
-        assert_eq!(initial["health"]["build"], build, "{initial}");
-        create_state_sentinels(&driver).await?;
-        let caches_before = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                caches.keys().then(done).catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-
-        std::fs::write(
-            env.deployment_root
-                .join("generation-a")
-                .join("kill-switch.json"),
-            format!("{{\"revoked\":[\"{build}\"]}}\n"),
-        )?;
-        driver.refresh().await?;
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let withdrawn = loop {
-            let health = worker_health(&driver).await?;
-            if health["body"]["worker"] == "failed"
-                && health["body"]["error"]
-                    .as_str()
-                    .is_some_and(|error| error.contains("withdrawn"))
-            {
-                break health;
-            }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for withdrawal: {health}"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
-        assert_eq!(withdrawn["body"]["build"], build, "{withdrawn}");
-
-        let after = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                Promise.all([
-                    navigator.serviceWorker.getRegistration(),
-                    caches.keys(),
-                    fetch("/api/profile", { method: "POST" }).then(async response => ({
-                        status: response.status,
-                        body: await response.json(),
-                    })),
-                ]).then(([registration, cacheNames, refused]) => done({
-                    registration: !!registration,
-                    cacheNames,
-                    refused,
-                })).catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        assert_eq!(after.json()["registration"], true, "{after:?}");
-        assert_eq!(
-            &after.json()["cacheNames"],
-            caches_before.json(),
-            "{after:?}"
-        );
-        assert_eq!(after.json()["refused"]["status"], 503, "{after:?}");
-        assert_eq!(
-            after.json()["refused"]["body"]["error"]["kind"],
-            "worker-failed",
-            "{after:?}"
-        );
-        let sentinels = state_sentinels(&driver).await?;
-        assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
-        assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
 
         driver.quit().await?;
         Ok(())

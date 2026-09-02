@@ -94,7 +94,7 @@ async function loadServiceWorker({ fetchImpl, registration } = {}) {
   // Expose the internals under test without altering the shipped file.
   const instrumented =
     body +
-    "\nexport { killSwitchEngaged, isShellCacheable, SHELL_CACHE, WORKER_CACHE, BUILD_ID, fetchVerifiedWorkerWasm, digestOf };\n";
+    "\nexport { isShellCacheable, SHELL_CACHE, WORKER_CACHE, BUILD_ID, fetchVerifiedWorkerWasm, digestOf };\n";
 
   const module = await import(
     "data:text/javascript;base64," + Buffer.from(instrumented).toString("base64")
@@ -206,79 +206,6 @@ async function putGenerationMarker(
 async function markGenerationAdopted(caches, options) {
   return (await putGenerationMarker(caches, options)).metadata;
 }
-
-describe("kill switch", () => {
-  // The flag is a remote withdrawal instruction, so every ambiguous answer
-  // must resolve to NOT firing. Blocking a healthy build across every browser
-  // is far worse than missing a real withdrawal.
-
-  test("does not fire when the host answers a missing flag with SPA HTML", async () => {
-    // The real trap, hit during live verification: an SPA host answers
-    // an unknown path with `200` + the shell HTML. Parsed naively that
-    // throws; parsed carelessly it could look like anything at all.
-    withGlobals({
-      fetchImpl: async () =>
-        new Response("<!doctype html><html><head>", { status: 200 }),
-    });
-    const { module } = await loadServiceWorker();
-    assert.equal(await module.killSwitchEngaged(), false);
-  });
-
-  test("does not fire when the flag is absent", async () => {
-    withGlobals({ fetchImpl: async () => new Response("", { status: 404 }) });
-    const { module } = await loadServiceWorker();
-    assert.equal(await module.killSwitchEngaged(), false);
-  });
-
-  test("does not fire when the network is down", async () => {
-    withGlobals({
-      fetchImpl: async () => {
-        throw new TypeError("offline");
-      },
-    });
-    const { module } = await loadServiceWorker();
-    assert.equal(
-      await module.killSwitchEngaged(),
-      false,
-      "a blip must never withdraw a healthy worker",
-    );
-  });
-
-  test("does not fire when the flag names a different build", async () => {
-    withGlobals({
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ revoked: ["some-other-build"] }), {
-          status: 200,
-        }),
-    });
-    const { module } = await loadServiceWorker();
-    assert.equal(await module.killSwitchEngaged(), false);
-  });
-
-  test("does not fire on a malformed `revoked` field", async () => {
-    withGlobals({
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ revoked: "not-an-array" }), { status: 200 }),
-    });
-    const { module } = await loadServiceWorker();
-    assert.equal(await module.killSwitchEngaged(), false);
-  });
-
-  test("fires when the flag names this build", async () => {
-    let buildId;
-    withGlobals({
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ revoked: [buildId] }), { status: 200 }),
-    });
-    const probe = await loadServiceWorker();
-    buildId = probe.module.BUILD_ID;
-    assert.equal(
-      await probe.module.killSwitchEngaged(),
-      true,
-      "a flag naming this exact build is the one case that fires",
-    );
-  });
-});
 
 describe("shell cache eligibility", () => {
   const req = (url, extra = {}) => ({
@@ -551,7 +478,9 @@ describe("immutable generation install", () => {
     const manifestText = JSON.stringify({ version: 1, build: buildId, assets });
     const manifestHash = await sha256Hex(utf8(manifestText));
     const fetches = [];
+    const registration = { active: {}, waiting: null, installing: null, addEventListener() {} };
     const { self, caches } = withGlobals({
+      registration,
       fetchImpl: async (input, init) => {
         const raw = typeof input === "string" ? input : input.url;
         const url = new URL(raw, "https://tonk.test");
@@ -574,6 +503,10 @@ describe("immutable generation install", () => {
           : new Response(body, { status: 200 });
       },
     });
+    let activationRequests = 0;
+    self.skipWaiting = async () => {
+      activationRequests += 1;
+    };
     const progress = [];
     self.clients.matchAll = async (options) => {
       assert.deepEqual(options, { type: "window", includeUncontrolled: true });
@@ -595,6 +528,11 @@ describe("immutable generation install", () => {
     let install;
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
+    assert.equal(
+      activationRequests,
+      1,
+      "a verified successor must bridge deployed pages that cannot request activation",
+    );
 
     assert.ok(
       progress.some(({ type, build, phase }) =>
@@ -1025,63 +963,6 @@ describe("worker wasm verification", () => {
   });
 });
 
-describe("withdrawn builds", () => {
-  test("never delete caches, unregister workers, or navigate clients", async () => {
-    const swSource = readFileSync(SW_PATH, "utf8");
-    const body = swSource.slice(
-      swSource.indexOf("function withdrawBuild"),
-      swSource.indexOf("self.oninstall"),
-    );
-    assert.ok(body.startsWith("function withdrawBuild"));
-    assert.doesNotMatch(
-      body,
-      /caches\.delete|registration\.unregister|client\.navigate/,
-      "a remote flag may terminalize a build, but must preserve offline artifacts and registrations",
-    );
-  });
-
-  test("offer the non-destructive update path immediately", async () => {
-    withGlobals();
-    const mod = await loadWith({
-      exports: ["withdrawBuild", "failurePage", "workerHealth"],
-    });
-
-    await mod.withdrawBuild();
-    const html = await mod.failurePage().text();
-
-    assert.match(html, /This Tonk version was withdrawn/);
-    assert.match(html, /Check for update/);
-    assert.doesNotMatch(
-      html,
-      /Reset and reload|unregister|caches\.delete|getRegistrations/,
-    );
-  });
-
-  test("releases live streams and background sync before refusing new work", async () => {
-    withGlobals({
-      fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
-    });
-    globalThis.__tonkWithdrawRetired = 0;
-    const mod = await loadWith({
-      wasmHash: "dev",
-      activateSource:
-        "async () => ({ onupdatefound: async () => { globalThis.__tonkWithdrawRetired += 1; } })",
-      exports: ["activateWorker", "withdrawBuild"],
-    });
-    await mod.activateWorker();
-
-    await mod.withdrawBuild();
-
-    assert.equal(
-      globalThis.__tonkWithdrawRetired,
-      1,
-      "withdrawal must stop already-running streams and sync without deleting their artifacts",
-    );
-    await assert.rejects(() => mod.activateWorker(), /withdrawn/i);
-    delete globalThis.__tonkWithdrawRetired;
-  });
-});
-
 describe("booting from the precached wasm", () => {
   test("verifies an eviction recovery fetch without backfilling the retained cache", async () => {
     // Storage pressure can evict the entry. The old worker may use live bytes
@@ -1313,39 +1194,74 @@ describe("immutable generation caches", () => {
     );
   });
 
-  test("a missing retained asset fails coherently without accepting live bytes", async () => {
-    for (const online of [true, false]) {
-      let fetches = 0;
+  test("a missing retained asset accepts only verified same-generation bytes", async () => {
+    const buildId = "retained-build";
+    const path = "/missing-old.js";
+    const bytes = utf8("retained asset");
+    const hash = await sha256Hex(bytes);
+    const manifest = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": "0".repeat(64), [path]: hash },
+    });
+    const fetches = [];
+    const { caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const url = new URL(typeof input === "string" ? input : input.url);
+        fetches.push(url.pathname);
+        if (url.pathname === "/asset-manifest.json") {
+          return new Response(manifest, { status: 200 });
+        }
+        if (url.pathname === path) return new Response(bytes, { status: 200 });
+        return new Response("", { status: 404 });
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      assetPaths: ["/", path],
+      exports: ["serveAsset", "SHELL_CACHE", "WORKER_CACHE"],
+    });
+
+    const response = await mod.serveAsset({
+      request: { url: `https://tonk.test${path}?v=2` },
+    });
+    assert.equal(await response.text(), "retained asset");
+    assert.deepEqual(fetches, ["/asset-manifest.json", path]);
+    assert.equal(caches.caches.has(mod.SHELL_CACHE), false);
+    assert.equal(caches.caches.has(mod.WORKER_CACHE), false);
+  });
+
+  test("a missing retained asset fails closed offline or on a hash mismatch", async () => {
+    for (const failure of ["offline", "mismatch"]) {
+      const buildId = `retained-${failure}`;
+      const path = "/missing-old.js";
+      const manifest = JSON.stringify({
+        version: 1,
+        build: buildId,
+        assets: { "/": "0".repeat(64), [path]: "1".repeat(64) },
+      });
       const { caches } = withGlobals({
-        fetchImpl: async () => {
-          fetches += 1;
-          if (!online) throw new TypeError("offline");
-          return new Response(new Uint8Array([0]), { status: 200 });
+        fetchImpl: async (input) => {
+          if (failure === "offline") throw new TypeError("offline");
+          const url = new URL(typeof input === "string" ? input : input.url);
+          return url.pathname === "/asset-manifest.json"
+            ? new Response(manifest, { status: 200 })
+            : new Response("wrong bytes", { status: 200 });
         },
       });
       const mod = await loadWith({
-        buildId: online ? "old-online" : "old-offline",
-        wasmHash: "dev",
-        activateSource:
-          'async () => ({ onfetch: async () => new Response("live deployment asset") })',
+        buildId,
+        assetPaths: ["/", path],
         exports: ["serveAsset", "SHELL_CACHE", "WORKER_CACHE"],
       });
-      const event = { request: { url: "https://tonk.test/missing-old.js" } };
 
-      const response = await mod.serveAsset(event);
+      const response = await mod.serveAsset({
+        request: { url: `https://tonk.test${path}` },
+      });
       assert.equal(response.status, 503);
       assert.match(await response.text(), /retained Tonk version.*reload/i);
-      assert.equal(fetches, 0, "an old generation must not accept the live stable-name response");
-      assert.equal(
-        caches.caches.has(mod.SHELL_CACHE),
-        false,
-        "a runtime miss must not recreate or backfill the evicted shell cache",
-      );
-      assert.equal(
-        caches.caches.has(mod.WORKER_CACHE),
-        false,
-        "a static eviction miss must not boot the Rust worker or recreate its cache",
-      );
+      assert.equal(caches.caches.has(mod.SHELL_CACHE), false);
+      assert.equal(caches.caches.has(mod.WORKER_CACHE), false);
     }
   });
 
@@ -1435,26 +1351,6 @@ describe("the failure page", () => {
     assert.doesNotMatch(html, /Reset and reload|unregister|caches\.delete|getRegistrations/);
   });
 
-  test("adopts a healthy successor before reloading a withdrawn page", async () => {
-    withGlobals();
-    const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
-    mod.workerHealth.state = "failed";
-    mod.workerHealth.error = "This Tonk version was withdrawn";
-    mod.workerHealth.attempts = 1;
-
-    const html = await mod.failurePage().text();
-    assert.match(html, /registration\.update\(\)/);
-    assert.match(html, /successor\.postMessage\(\{ type: "activate" \}\)/);
-    assert.match(html, /successor\.postMessage\(\{ type: "claim" \}\)/);
-    assert.match(html, /navigator\.serviceWorker\.controller === incumbent/);
-    assert.match(html, /await adoptSuccessor\(registration\);\s*location\.reload\(\)/);
-    assert.doesNotMatch(
-      html,
-      /registration\?\.update\(\)[\s\S]{0,200}location\.reload\(\)/,
-      "an update probe must not reload back into the withdrawn incumbent",
-    );
-  });
-
   test("escapes the error text", async () => {
     withGlobals();
     const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
@@ -1470,151 +1366,6 @@ describe("the failure page", () => {
     assert.match(html, /&lt;img/);
   });
 
-  test("a frozen successor install reaches the recovery deadline", async () => {
-    withGlobals();
-    const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
-    mod.workerHealth.state = "failed";
-    mod.workerHealth.error = "boom";
-    mod.workerHealth.attempts = 3;
-
-    const html = await mod.failurePage().text();
-    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)?.[1];
-    assert.ok(script, "expected the update-recovery script");
-
-    const listeners = new Map();
-    const successor = {
-      state: "installing",
-      postMessage() {},
-      addEventListener(type, listener) {
-        listeners.set(type, listener);
-      },
-      removeEventListener(type, listener) {
-        if (listeners.get(type) === listener) listeners.delete(type);
-      },
-    };
-    const incumbent = {};
-    const registration = {
-      active: incumbent,
-      waiting: null,
-      installing: successor,
-      async update() {},
-    };
-    let click;
-    const inserted = [];
-    const button = {
-      disabled: false,
-      textContent: "Check for update",
-      addEventListener(type, listener) {
-        assert.equal(type, "click");
-        click = listener;
-      },
-      after(node) {
-        inserted.push(node);
-      },
-    };
-    let now = 0;
-    let nextTimer = 0;
-    const timers = new Map();
-    const setTimer = (callback, delay) => {
-      const id = ++nextTimer;
-      timers.set(id, { at: now + delay, callback });
-      return id;
-    };
-    const clearTimer = (id) => timers.delete(id);
-    const advance = async (milliseconds) => {
-      now += milliseconds;
-      const due = [...timers.entries()].filter(([, timer]) => timer.at <= now);
-      for (const [id, timer] of due) {
-        timers.delete(id);
-        timer.callback();
-      }
-      await new Promise(setImmediate);
-    };
-    const context = {
-      navigator: {
-        serviceWorker: {
-          controller: incumbent,
-          async getRegistration() {
-            return registration;
-          },
-        },
-      },
-      document: {
-        getElementById(id) {
-          return id === "update" ? button : null;
-        },
-        createElement() {
-          return { className: "", textContent: "" };
-        },
-      },
-      location: { reload() { assert.fail("a failed adoption must not reload"); } },
-      console: { error() {} },
-      Date: { now: () => now },
-      setTimeout: setTimer,
-      clearTimeout: clearTimer,
-      Promise,
-      Error,
-      String,
-    };
-    new Function("context", `with (context) { ${script} }`)(context);
-    assert.ok(click, "expected the recovery click handler");
-
-    const adoption = click({ currentTarget: button });
-    await new Promise(setImmediate);
-    assert.equal(button.disabled, true);
-
-    await advance(30_001);
-    await adoption;
-
-    assert.equal(button.disabled, false);
-    assert.equal(button.textContent, "Try update again");
-    assert.equal(inserted.length, 1);
-    assert.match(inserted[0].textContent, /did not finish installing/);
-    assert.equal(listeners.size, 0, "the state listener is removed on timeout");
-  });
-});
-
-describe("periodic revocation check", () => {
-  test("checks once, then not again within the interval", async () => {
-    // The check rides on traffic the worker already serves; it must not
-    // become a probe on every navigation.
-    let probes = 0;
-    withGlobals({
-      fetchImpl: async () => {
-        probes += 1;
-        return new Response(JSON.stringify({ revoked: [] }), { status: 200 });
-      },
-    });
-    const mod = await loadWith({ exports: ["maybeCheckKillSwitch"] });
-    const pending = [];
-    const event = { waitUntil: (p) => pending.push(p) };
-
-    mod.maybeCheckKillSwitch(event);
-    mod.maybeCheckKillSwitch(event);
-    mod.maybeCheckKillSwitch(event);
-    await Promise.all(pending);
-
-    assert.equal(probes, 1, "the interval gate collapses a burst to one probe");
-  });
-
-  test("a navigation forces a fresh check inside the periodic interval", async () => {
-    let probes = 0;
-    withGlobals({
-      fetchImpl: async () => {
-        probes += 1;
-        return new Response(JSON.stringify({ revoked: [] }), { status: 200 });
-      },
-    });
-    const mod = await loadWith({ exports: ["maybeCheckKillSwitch"] });
-    const pending = [];
-    const event = { waitUntil: (promise) => pending.push(promise) };
-
-    mod.maybeCheckKillSwitch(event);
-    mod.maybeCheckKillSwitch(event, true);
-    await Promise.all(pending);
-
-    assert.equal(probes, 2, "an explicit navigation bypasses the interval gate");
-  });
 });
 
 describe("retiring on a waiting successor", () => {

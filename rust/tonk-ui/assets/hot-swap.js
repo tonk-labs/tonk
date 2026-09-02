@@ -670,7 +670,7 @@
   // pending library reseed.
   view.onenable = () => {
     if (pendingReload) {
-      window.tonkReloadWhenAccountSetupDurable()
+      window.location.reload()
     } else if (pending) {
       apply(pending)
     }
@@ -742,7 +742,7 @@
   // the off flow (unfold → hold → fold + pulse) until re-enabled.
   const reloadOrHold = () => {
     if (view.enabled) {
-      window.tonkReloadWhenAccountSetupDurable()
+      window.location.reload()
     } else {
       pendingReload = true
       clearFoldTimer()

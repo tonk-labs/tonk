@@ -142,9 +142,9 @@ impl LspHub {
     /// `shutdown` installed a FRESH sender instead of emptying the
     /// slot. That made the hub's teardown reversible by any client
     /// that redialed, and the LSP client redials on a flat timer: the
-    /// old worker dropped its streams on `updatefound`, then ~5 s
-    /// later handed out a brand new one and re-pinned itself, parking
-    /// its replacement in `waiting` for good.
+    /// old worker dropped its streams during retirement, then ~5 s
+    /// later handed out a brand new one and kept itself serving stale
+    /// clients after replacement.
     async fn subscribe(&self) -> Option<broadcast::Receiver<Bytes>> {
         Some(self.outbound.lock().await.as_ref()?.subscribe())
     }
@@ -163,12 +163,10 @@ impl LspHub {
     /// client's reconnect timer did exactly that — re-pinning the
     /// worker this teardown existed to release.
     ///
-    /// A worker that turns out not to be replaced after all (a failed
-    /// install, a canceled upgrade) is covered by `handle_events`
-    /// reading [`update_pending`] live: with no successor waiting it
-    /// answers `503` + `Retry-After` instead of a dead 200, and the
-    /// client's next dial after the successor activates lands on the
-    /// new worker's hub, which has a sender of its own.
+    /// Once retirement begins, `handle_events` also reads the shared one-way
+    /// latch. It answers `503` + `Retry-After` instead of a dead 200, and the
+    /// client's next dial after `controllerchange` lands on the successor's
+    /// hub, which has a sender of its own.
     pub async fn shutdown(&self) {
         self.outbound.lock().await.take();
         // The sender drops here — receivers tied to it surface
@@ -240,16 +238,16 @@ async fn handle_events(
 }
 
 async fn handle_events_for(hub: Arc<LspHub>, retiring: bool) -> Response {
-    // Refuse to open a long-lived stream while a successor is waiting.
+    // Refuse to open a long-lived stream while a successor is taking over.
     // An SSE body is a fetch event that never settles, and the spec
     // keeps a worker alive while any fetch event is in flight — so one
-    // stream opened here re-pins this retiring worker and parks its
-    // replacement in `waiting`. The query-subscription route has
+    // stream opened here keeps this retiring worker serving stale clients
+    // after replacement. The query-subscription route has
     // refused for the same reason; this one didn't, and the LSP
     // client's reconnect timer made it the reliable way to wedge an
     // update.
     if retiring || update_pending() {
-        return retry_later("a newer service worker is waiting to activate");
+        return retry_later("a newer service worker is taking over");
     }
     // `None` means `shutdown` already ran on this hub. Same answer:
     // the client should come back, and by then the successor will be
@@ -312,10 +310,10 @@ mod tests {
     /// `shutdown` must be TERMINAL. It used to install a fresh sender,
     /// so a client that redialed moments later got a working stream on
     /// a worker that was trying to retire — and an SSE body is a fetch
-    /// event that never settles, so that stream re-pinned the outgoing
-    /// worker and parked its replacement in `waiting` indefinitely.
-    /// That is the "Safari keeps the old version through every reload"
-    /// symptom: the reloads land on the old ACTIVE worker.
+    /// event that never settles, so that stream kept the outgoing worker
+    /// alive after replacement. That is the "Safari keeps the old version
+    /// through every reload" symptom: stale clients continue redialing the
+    /// old worker.
     #[dialog_common::test]
     async fn it_refuses_to_subscribe_after_shutdown() {
         let hub = LspHub::new();

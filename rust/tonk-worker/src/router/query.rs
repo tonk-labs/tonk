@@ -148,15 +148,19 @@ async fn query_on_branch<'a>(
 
     if want_stream {
         // Once this worker starts retiring, refuse to open a long-lived
-        // stream: an SSE response is a fetch event that never settles, and
-        // `skipWaiting` waits for in-flight events — one reopened stream
-        // would wedge the update forever (the `updatefound` release runs
-        // once, and every tab's reconnect would re-pin this worker). Serve
-        // A live `waiting` check closes the race before the Rust retirement
+        // stream: an SSE response is a fetch event that never settles, so one
+        // reopened stream would keep the outgoing instance serving stale
+        // clients after replacement. A live `waiting` check closes the race
+        // before the Rust retirement
         // hook runs; the worker-owned latch keeps the refusal terminal after
         // the successor activates and `registration.waiting` becomes empty.
         if update_pending() || tonk.is_retiring() {
-            return Ok(retry_later());
+            let snapshot = match branch.query(query.clone()).perform(&tonk.operator).await {
+                Ok(rows) => rows,
+                Err(error) if is_absence(&error) => Vec::new(),
+                Err(error) => return Err(reactor_to_error(error)),
+            };
+            return Ok(retry_later(snapshot));
         }
 
         let mut subscribe = branch.subscribe(query.clone());
@@ -165,7 +169,14 @@ async fn query_on_branch<'a>(
         }
         let subscriber = match subscribe.perform(&tonk.operator).await {
             Ok(subscriber) => subscriber,
-            Err(ReactorError::Shutdown) => return Ok(retry_later()),
+            Err(ReactorError::Shutdown) => {
+                let snapshot = match branch.query(query).perform(&tonk.operator).await {
+                    Ok(rows) => rows,
+                    Err(error) if is_absence(&error) => Vec::new(),
+                    Err(error) => return Err(reactor_to_error(error)),
+                };
+                return Ok(retry_later(snapshot));
+            }
             // The branch is not here YET. Absence is a result, not a
             // failure, so answer with an open stream carrying the empty
             // set and keep watching: when the repo mounts (a join in
@@ -198,7 +209,7 @@ async fn query_on_branch<'a>(
                     )
                     .is_err()
                 {
-                    return Ok(retry_later());
+                    return Ok(retry_later(Vec::new()));
                 }
                 return Ok(sse_response(receiver));
             }
@@ -221,12 +232,16 @@ async fn query_on_branch<'a>(
 
 /// Tell a query consumer to hold its reconnect for `controllerchange`, then
 /// close immediately so this response cannot pin the retiring worker.
-fn retry_later() -> Response {
+fn retry_later(conclusions: Vec<Conclusion>) -> Response {
+    let snapshot = serde_json::to_string(&tonk_worker_api::Frame::Snapshot { conclusions })
+        .expect("snapshot frame serialization failed");
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from("data: {\"control\":\"update-pending\"}\n\n"))
+        .body(Body::from(format!(
+            "data: {snapshot}\n\ndata: {{\"control\":\"update-pending\"}}\n\n"
+        )))
         .expect("response builder failed")
 }
 

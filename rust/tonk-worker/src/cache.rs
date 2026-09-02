@@ -1,4 +1,4 @@
-//! App-shell cache (milestone 1 of `plan/offline-support.md`).
+//! App-shell cache for immutable service-worker generations.
 //!
 //! Strategy: immutable generation-cache reads for the complete installed
 //! resource graph; a later eviction miss fails closed.
@@ -22,8 +22,8 @@ const SHELL_PREFIX: &str = "TONK_SHELL_";
 const WORKER_PREFIX: &str = "TONK_WORKER_";
 
 /// The build id, handed in by the JS shim at activate time (see
-/// `set_build_id`). The shim gets it from the stamp
-/// `scripts/hash-guest.sh` writes, so both sides derive their cache
+/// `set_build_id`). The shim gets it from the identity that
+/// `scripts/stamp-service-worker.sh` writes, so both sides derive their cache
 /// names from one injected value instead of hand-syncing a literal
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();
@@ -197,6 +197,11 @@ fn caches() -> Result<web_sys::CacheStorage, JsValue> {
 async fn cache_match(request: &Request) -> Result<Option<Response>, JsValue> {
     let options = CacheQueryOptions::new();
     options.set_cache_name(&shell_cache());
+    // Eligibility is decided from the exact same-origin pathname above. The
+    // sealed graph stores one canonical response per path, so a cache-busting
+    // query must resolve to that path instead of becoming an unrecoverable
+    // retained-generation miss.
+    options.set_ignore_search(true);
     let value = JsFuture::from(caches()?.match_with_request_and_options(request, &options)).await?;
     if value.is_undefined() || value.is_null() {
         return Ok(None);
