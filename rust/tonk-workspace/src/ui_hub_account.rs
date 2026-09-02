@@ -1045,6 +1045,11 @@ mod tests {
 
     fn account_element() -> HtmlElement {
         super::register();
+        // The settings section embeds `<ui-account-settings>`; without its
+        // registration the panel never injects its rail, which only shows
+        // when a test runs ISOLATED (CI's nextest) — the pooled local run
+        // hides it behind another test's registration.
+        crate::ui_account_settings::register();
         let document = window().expect("window").document().expect("document");
         let body = document.body().expect("body");
         // The linking flag outlives an element on purpose (it marks a live

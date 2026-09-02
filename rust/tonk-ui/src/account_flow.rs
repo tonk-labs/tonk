@@ -5475,26 +5475,25 @@ mod tests {
             "the second account's Hub must omit the first account's space"
         );
 
-        // The sealed Hub routes settings into the top-level account page,
-        // which reads real account and device facts and keeps unsupported
-        // Usage/Syncing surfaces absent.
+        // The sealed Hub's settings row is a link to the /settings route:
+        // the same chrome with the settings section open, reading real
+        // account and device facts and keeping unsupported Usage/Syncing
+        // surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
         driver.enter_default_frame().await?;
-        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        wait_for_text(&driver, "#account-email-value", "second@example.com").await?;
-        assert_eq!(
-            element(&driver, "#account-passkey-device-value")
-                .await?
-                .prop("textContent")
-                .await?
-                .as_deref(),
-            Some(passkey_created_on.as_str()),
-            "settings must render the account summary's passkey creation device"
-        );
-        click(&driver, "#account-tab-devices").await?;
-        wait_for_text_containing(&driver, "#account-device-list", "this device").await?;
-        let settings_text = element(&driver, "tonk-account")
+        enter_hub(&driver).await?;
+        element(&driver, "ui-account-settings").await?;
+        wait_for_text(&driver, "[data-settings-email]", "second@example.com").await?;
+        wait_for_text(
+            &driver,
+            "[data-settings-passkey-device]",
+            passkey_created_on.as_str(),
+        )
+        .await?;
+        click(&driver, ".s-rail [data-pane=\"devices\"]").await?;
+        wait_for_text_containing(&driver, "[data-settings-devices]", "this device").await?;
+        let settings_text = element(&driver, "ui-account-settings")
             .await?
             .text()
             .await?
@@ -5506,10 +5505,10 @@ mod tests {
             );
         }
 
-        // The authoritative display-name write repaints the Hub trigger and
-        // remains in the field after the settings page is reloaded.
-        click(&driver, "#account-tab-account").await?;
-        let display_name = element(&driver, "#account-display-name").await?;
+        // The authoritative display-name write repaints the bar's account
+        // cell and remains in the field after the page is reloaded.
+        click(&driver, ".s-rail [data-pane=\"account\"]").await?;
+        let display_name = element(&driver, "[data-settings-name]").await?;
         let select_all = if cfg!(target_os = "macos") {
             Key::Command + "a"
         } else {
@@ -5518,30 +5517,13 @@ mod tests {
         display_name.send_keys(select_all).await?;
         display_name.send_keys("Second Hub").await?;
         display_name.send_keys(Key::Enter).await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let input = element(&driver, "#account-display-name").await?;
-            if input.prop("value").await?.as_deref() == Some("Second Hub")
-                && input.attr("data-confirmed-name").await?.as_deref() == Some("Second Hub")
-                && input.attr("aria-busy").await?.is_none()
-            {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let error = element(&driver, "#account-display-name-error")
-                    .await?
-                    .prop("textContent")
-                    .await?
-                    .unwrap_or_default();
-                return Err(anyhow!(
-                    "timed out waiting for the second account display name to save: {error}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        wait_for_text(&driver, "[data-account-label]", "Second Hub").await?;
+        driver.enter_default_frame().await?;
         let settings = driver.current_url().await?;
         goto(&driver, settings.as_str()).await?;
-        wait_for_value(&driver, "#account-display-name", "Second Hub").await?;
+        enter_hub(&driver).await?;
+        wait_for_value(&driver, "[data-settings-name]", "Second Hub").await?;
+        driver.enter_default_frame().await?;
 
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
