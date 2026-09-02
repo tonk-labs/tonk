@@ -54,13 +54,44 @@ impl CustomElement for UiAccountSettings {
 
         let host = this.clone();
         let click: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            if let Some(pane) = event
+            let Some(target) = event
                 .target()
                 .and_then(|target| target.dyn_into::<Element>().ok())
-                .and_then(|target| target.closest(".s-rail [data-pane]").ok().flatten())
+            else {
+                return;
+            };
+            if let Some(pane) = target
+                .closest(".s-rail [data-pane]")
+                .ok()
+                .flatten()
                 .and_then(|button| button.get_attribute("data-pane"))
             {
                 set_pane(&host, &pane);
+                return;
+            }
+            // The destructive ceremonies (typed confirm, hosted-space
+            // inventory) live on the full account page; the rows here are
+            // the wireframe's shape leading to them.
+            if target
+                .closest("[data-settings-full]")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                event.prevent_default();
+                tonk_host::navigate_to("/settings");
+                return;
+            }
+            // Removing a device's access asks in place — the word answers:
+            // the first press arms the verb, the second revokes.
+            if let Some(verb) = target
+                .closest("[data-revoke-device]")
+                .ok()
+                .flatten()
+                .and_then(|verb| verb.dyn_into::<HtmlElement>().ok())
+            {
+                event.prevent_default();
+                revoke_device(&host, &verb);
             }
         }));
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
@@ -278,14 +309,57 @@ fn load_devices(this: &HtmlElement) {
             name.set_class_name("lft");
             name.set_text_content(Some(&device.name));
             let _ = row.append_child(&name);
-            let Ok(when) = document.create_element("b") else {
+            let Ok(meta) = document.create_element("span") else {
                 continue;
             };
+            meta.set_class_name("dev-r");
+            let Ok(when) = document.create_element("span") else {
+                continue;
+            };
+            when.set_class_name("dev-when");
             let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
                 .to_locale_date_string("default", &JsValue::UNDEFINED);
             when.set_text_content(Some(&format!("linked {}", String::from(date))));
-            let _ = row.append_child(&when);
+            let _ = meta.append_child(&when);
+            let Ok(verb) = document.create_element("button") else {
+                continue;
+            };
+            verb.set_class_name("cta");
+            let _ = verb.set_attribute("type", "button");
+            let _ = verb.set_attribute("data-revoke-device", &device.did);
+            verb.set_text_content(Some("remove access"));
+            let _ = meta.append_child(&verb);
+            let _ = row.append_child(&meta);
             let _ = list.append_child(&row);
+        }
+    });
+}
+
+/// Revoke one device's access, asking in place: the first press arms the
+/// verb ("sure? remove"), the second sends the revocation and re-reads the
+/// list.
+fn revoke_device(this: &HtmlElement, verb: &HtmlElement) {
+    let Some(did) = verb.get_attribute("data-revoke-device") else {
+        return;
+    };
+    if !verb.has_attribute("data-armed") {
+        let _ = verb.set_attribute("data-armed", "");
+        verb.set_text_content(Some("sure? remove"));
+        return;
+    }
+    verb.set_text_content(Some("removing\u{2026}"));
+    let _ = verb.set_attribute("disabled", "");
+    let host = this.clone();
+    let verb = verb.clone();
+    spawn_local(async move {
+        let body = serde_json::json!({ "did": did }).to_string();
+        match tonk_host::post_json("/api/account/devices/revoke", &body).await {
+            Ok(_) => load_devices(&host),
+            Err(_) => {
+                let _ = verb.remove_attribute("disabled");
+                let _ = verb.remove_attribute("data-armed");
+                verb.set_text_content(Some("couldn\u{2019}t remove"));
+            }
         }
     });
 }

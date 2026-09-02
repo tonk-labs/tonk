@@ -2178,6 +2178,24 @@ wa-page::part(drawer) {
    documents receive it. The rail is a run of boxy tabs above the body; the
    current rail item is a folder tab, same surface as the body, seam
    erased by an explicit 1px cover. */
+/* The FAB's settings seat: a page-level surface, not floating chrome — this
+   one dialog maps the FABB API onto the app's own roles so the frame and
+   the panel body follow the page's scheme TOGETHER (a light chrome frame
+   around a dark panel read as two products). No new values: the same theme
+   roles everything else wears. */
+tonk-dialog[data-fab-settings] {
+    --fabb-ink: var(--ink);
+    --fabb-ink-soft: var(--soft);
+    --fabb-on-ink: var(--on-ink);
+    --fabb-sep: var(--sep);
+    --fabb-hover: var(--wash);
+    --fabb-press: var(--wash-2);
+    --fabb-panel: var(--card);
+    --fabb-bg: var(--frost);
+    --fabb-ring: var(--ring);
+    --fabb-cur: var(--cur);
+}
+
 ui-account-settings { display: block; }
 ui-account-settings .s-rail { display: flex; gap: 7px; }
 ui-account-settings .s-rail .blk { flex: 1; height: 36px; display: flex;
@@ -2219,6 +2237,33 @@ ui-account-settings .cta { font: 600 13px/1 var(--cond);
 ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
 ui-account-settings .sname { font-family: var(--cond); font-weight: 600;
     font-size: 13.5px; color: var(--ink); text-align: right; min-width: 6ch; }
+/* the block cursor blinks at rest — the cursor is the affordance; while
+   editing, the field's own caret takes over. On the field's own tail, not
+   the row's: a row-level ::after is a third flex item and shoves the value
+   off its right-flush seat. */
+ui-account-settings .sname::after { content: "";
+    display: inline-block; width: 7px; height: 13px; background: var(--ink);
+    margin-left: 1px; vertical-align: -1px; pointer-events: none;
+    animation: tonk-hardblink 1.05s steps(1, end) infinite; }
+ui-account-settings .sname:focus-within::after,
+ui-account-settings .sname:focus::after { display: none; }
+@keyframes tonk-hardblink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    ui-account-settings .srowd:has(.sname)::after { animation: none; }
+}
+/* devices — last seen rides soft beside the remove-access verb */
+ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
+ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
+    color: var(--soft); font-size: 12.5px; white-space: nowrap; }
+/* the device verb surfaces on approach — same law as the spaces rows */
+ui-account-settings [data-settings-devices] .cta { opacity: 0;
+    transition: opacity 0.15s var(--ease); }
+ui-account-settings [data-settings-devices] .srowd:hover .cta,
+ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
+    opacity: 1; }
+@media (hover: none) {
+    ui-account-settings [data-settings-devices] .cta { opacity: 1; }
+}
 
 /* Map our Web Awesome theme into the `<tonk-code>` element's
    public CSS variables. The element ships GitHub-flavored defaults
