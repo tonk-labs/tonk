@@ -723,7 +723,7 @@ wa-tree-item:focus-visible, wa-tree-item:focus {
 wa-tree-item::before, wa-tree-item::after {
   content: ''; position: absolute; z-index: 3;
   inset-inline-start: calc(0.1875em + var(--indent) - 1em);
-  border-color: var(--wa-color-border-loud, #565861); }
+  border-color: var(--wa-color-border-loud, rgb(56 24 42 / 55%)); }
 /* Horizontal elbow forking off the spine. It stops at the dot's left edge
    (~5px short of the center) so the line never enters the circle.
    (width/style only — a `border-top` shorthand would reset the color set
@@ -754,8 +754,8 @@ wa-tree-item::part(label) { flex: 1 1 auto; min-width: 0; }
    enters the circle and no opaque fill is needed. */
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box;
   position: relative; z-index: 5; }
-.dot-local { background: var(--wa-color-border-loud, #565861); border: 1.5px solid var(--wa-color-border-loud, #565861); }
-.dot-remote { background: transparent; border: 1.5px solid var(--wa-color-border-loud, #565861); }
+.dot-local { background: var(--wa-color-border-loud, rgb(56 24 42 / 55%)); border: 1.5px solid var(--wa-color-border-loud, rgb(56 24 42 / 55%)); }
+.dot-remote { background: transparent; border: 1.5px solid var(--wa-color-border-loud, rgb(56 24 42 / 55%)); }
 /* A branch dot lives in the 2em-wide expand slot; keep it from inheriting
    the chevron's rotate-on-expand. */
 [slot="expand-icon"].dot, [slot="collapse-icon"].dot { rotate: none !important; }
@@ -772,7 +772,7 @@ dialog-tree-outline wa-tree-item[data-loading] .dot { border-color: transparent;
 dialog-tree-outline wa-tree-item[data-loading] .dot::after {
   content: ''; position: absolute; top: 50%; left: 50%;
   width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; box-sizing: border-box;
-  border: 1.5px solid var(--wa-color-text-quiet, #94959b);
+  border: 1.5px solid var(--wa-color-text-quiet, #5b4953);
   border-top-color: transparent;
   animation: tonk-dot-spin 0.7s linear infinite; }
 dialog-tree-outline wa-tree-item::part(spinner) { display: none; }
@@ -794,7 +794,7 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .key-seg { font-weight: var(--wa-font-weight-semibold, 600);
   display: inline-flex; align-items: center; }
 .keystr .key-seg + .key-seg::before {
-  content: "\2009\00B7\2009"; color: var(--wa-color-text-quiet, #94959b);
+  content: "\2009\00B7\2009"; color: var(--wa-color-text-quiet, #5b4953);
   font-weight: 400; }
 /* A NUL / control byte rendered as a glyph (␀ / ·) reads as structure, not
    text; dim it so the real content stands out. */
@@ -834,7 +834,7 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .sizebar { height: 7px; background: var(--tonk-closure, #7a7268); border-radius: var(--wa-border-radius-s, 2px); min-width: 2px; }
 .row.remote .sizebar { background: var(--wa-color-neutral-fill-loud, #666); }
 .sizenum { width: 48px; text-align: right; }
-.remote-icon { color: var(--wa-color-text-quiet, #94959b); flex: none; }
+.remote-icon { color: var(--wa-color-text-quiet, #5b4953); flex: none; }
 .status, .err { color: var(--wa-color-text-quiet); font-style: italic; padding: 4px 0; }
 .err { color: var(--tonk-alarm, #a8302a); }
 

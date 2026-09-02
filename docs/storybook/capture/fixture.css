@@ -29,7 +29,7 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  background: #ececec;
+  background: #e8e6e4;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -48,9 +48,7 @@ tonk-activate .account__logo {
   min-height: 100vh;
   padding: 70px;
   place-items: center;
-  background:
-    radial-gradient(circle at 16% 12%, rgb(104 70 232 / 15%), transparent 30%),
-    #e8e6dd;
+  background: #e8e6e4;
   box-sizing: border-box;
 }
 

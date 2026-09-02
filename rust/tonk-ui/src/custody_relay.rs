@@ -34,9 +34,11 @@ const CARD_ID: &str = "tonk-custody-consent";
 
 const CARD_HTML: &str = r#"
 <div style="position:fixed;right:1rem;bottom:1rem;z-index:2147483647;max-width:22rem;
-            background:#1c1c1e;color:#f2f2f4;border:1px solid #3a3a3d;border-radius:12px;
-            padding:1rem 1.25rem;font:14px/1.45 system-ui,sans-serif;
-            box-shadow:0 8px 30px rgba(0,0,0,.45)">
+            background:var(--wa-color-surface-raised,#fcfbfb);
+            color:var(--wa-color-text-normal,#38182a);
+            box-shadow:0 0 0 1px var(--ring,rgb(56 24 42 / 85%));
+            padding:1rem 1.25rem;
+            font:14px/1.45 var(--wa-font-family-body,system-ui,sans-serif)">
   <strong style="display:block;margin-bottom:.35rem">Passkey needed</strong>
   <p id="tonk-custody-text" style="margin:0 0 .8rem">
     Tonk is securing something to your account and needs your passkey to
@@ -44,10 +46,13 @@ const CARD_HTML: &str = r#"
   </p>
   <div id="tonk-custody-actions" style="display:flex;gap:.5rem;justify-content:flex-end">
     <button id="tonk-custody-dismiss"
-            style="background:none;border:none;color:#9a9aa0;cursor:pointer;font:inherit">
+            style="background:none;border:none;color:var(--wa-color-text-normal,#38182a);
+                   cursor:pointer;font:inherit;text-decoration:underline;
+                   text-underline-offset:3px">
       Not now</button>
     <button id="tonk-custody-continue"
-            style="background:#4a7dff;border:none;color:white;border-radius:8px;
+            style="background:var(--wa-color-neutral-fill-loud,#38182a);border:none;
+                   color:var(--wa-color-neutral-on-loud,#f7f6f5);
                    padding:.4rem .9rem;cursor:pointer;font:inherit">
       Use passkey</button>
   </div>

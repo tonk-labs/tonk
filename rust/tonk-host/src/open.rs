@@ -473,10 +473,10 @@ fn ensure_styles(document: &Document) {
     style.set_text_content(Some(
         r#"
 dialog.tonk-open {
-  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
-  border-radius: var(--wa-border-radius-l, 8px);
-  background: var(--wa-color-surface-raised, #fff);
-  color: var(--wa-color-text-normal, #18181b);
+  border: 1px solid var(--wa-color-neutral-border-normal, rgb(56 24 42 / 28%));
+  border-radius: 0;
+  background: var(--wa-color-surface-raised, #fcfbfb);
+  color: var(--wa-color-text-normal, #38182a);
   font-family: var(--wa-font-family-body, system-ui, sans-serif);
   padding: 1.25rem;
   max-width: min(28rem, calc(100vw - 2rem));
@@ -504,7 +504,7 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
    than widen the dialog or push the buttons off-screen. */
 .tonk-open__url {
   margin: 0 0 1.25rem;
-  color: var(--wa-color-text-quiet, #71717a);
+  color: var(--wa-color-text-quiet, #5b4953);
   font-size: var(--wa-font-size-s, 0.875rem);
   overflow-wrap: anywhere;
   max-height: 4.5rem;
@@ -524,9 +524,9 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
      rather than from vertical padding. */
   min-height: 2.5rem;
   padding: 0 1rem;
-  border-radius: var(--wa-border-radius-m, 6px);
-  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
-  background: var(--wa-color-neutral-fill-quiet, #f4f4f5);
+  border-radius: 0;
+  border: 1px solid var(--wa-color-neutral-border-normal, rgb(56 24 42 / 28%));
+  background: var(--wa-color-neutral-fill-quiet, #eeedec);
   color: inherit;
   font: inherit;
   line-height: 1;
@@ -540,7 +540,7 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 .tonk-open button:hover {
-  background: var(--wa-color-neutral-fill-normal, #e4e4e7);
+  background: var(--wa-color-neutral-fill-normal, #d0ccc8);
 }
 /* Tactile feedback on press. 0.96 is the floor that still reads as a press;
    below ~0.95 the button looks like it is shrinking away from the cursor. */
@@ -551,7 +551,7 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
    behind, but a keyboard user must always be able to see what Enter will hit.
    This dialog is modal and takes focus, so that matters more here than usual. */
 .tonk-open button:focus-visible {
-  outline: 2px solid var(--wa-color-brand-fill-loud, #3b4a0a);
+  outline: 2px solid var(--wa-color-text-normal, #38182a);
   outline-offset: 2px;
 }
 /* The element selector matters. `.tonk-open button` is (0,1,1) and a bare
@@ -559,16 +559,15 @@ dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
    action rendered IDENTICAL to Cancel — the one button the dialog exists to
    make the user think about looked like the one to ignore. */
 .tonk-open button.tonk-open__confirm {
-  background: var(--wa-color-brand-fill-loud, #3b4a0a);
-  border-color: var(--wa-color-brand-fill-loud, #3b4a0a);
-  color: var(--wa-color-brand-on-loud, #f4f7e4);
+  background: var(--wa-color-neutral-fill-loud, #38182a);
+  border-color: var(--wa-color-neutral-fill-loud, #38182a);
+  color: var(--wa-color-neutral-on-loud, #f7f6f5);
 }
-/* Web Awesome ships no `*-hover` token, and `brand-fill-normal` is LIGHTER
-   than `-loud`, so stepping tokens would make hover read as less prominent
-   rather than more. Darkening resolves correctly against whatever the theme
-   computes, in light mode or dark. */
+/* Hover on a solid-ink action washes with on-ink (DESIGN.md): an ink wash
+   over an ink surface would produce no visible state change. */
 .tonk-open button.tonk-open__confirm:hover {
-  filter: brightness(0.92);
+  background: linear-gradient(rgb(247 246 245 / 16%), rgb(247 246 245 / 16%)),
+    var(--wa-color-neutral-fill-loud, #38182a);
 }
 @media (prefers-reduced-motion: reduce) {
   .tonk-open button {

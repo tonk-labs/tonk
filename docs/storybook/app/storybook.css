@@ -1,26 +1,25 @@
 :root {
+  /* DESIGN.md core palette (light column): warm stone, aubergine ink,
+     one-ink status. The old lime/semantic scheme is gone — the current
+     location wears near-ink, and severity reads by value, not hue. */
   color-scheme: light;
-  --paper: #ececec;
-  --paper-raised: #fafafa;
-  --paper-bright: #fff;
-  --panel: #d2d2d2;
-  --ink: #131313;
-  --on-ink: #fbfaef;
-  --muted: #55544f;
-  --faint: #888;
-  --line: rgb(19 19 19 / 28%);
-  --line-strong: rgb(19 19 19 / 85%);
-  --wash: rgb(19 19 19 / 6%);
-  --wash-2: rgb(19 19 19 / 12%);
-  --wash-on-ink: rgb(251 250 239 / 16%);
-  --brand: #deff1a;
-  --brand-on: #2a3005;
-  --danger: #e02c2b;
-  --warning: #e8a100;
-  --success: #00a050;
+  --paper: #e8e6e4;
+  --paper-raised: #f7f6f5;
+  --paper-bright: #fcfbfb;
+  --panel: #d0ccc8;
+  --ink: #38182a;
+  --on-ink: #f7f6f5;
+  --muted: #5b4953;
+  --faint: #9f968e;
+  --line: rgb(56 24 42 / 28%);
+  --line-strong: rgb(56 24 42 / 85%);
+  --wash: rgb(56 24 42 / 6%);
+  --wash-2: rgb(56 24 42 / 12%);
+  --wash-on-ink: rgb(247 246 245 / 16%);
+  --current: #552e44;
   --sidebar: var(--ink);
   --sidebar-ink: var(--on-ink);
-  --sidebar-active: var(--brand);
+  --sidebar-active: var(--current);
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -47,7 +46,7 @@ h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3 { text-wrap: balance; }
 p, li, small { text-wrap: pretty; }
 code, .nav-count, [data-metric], .view-summary strong { font-variant-numeric: tabular-nums; }
-a:focus-visible, button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
 .sr-only {
   position: absolute;
@@ -113,12 +112,12 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--brand); outline
 }
 .primary-nav a:hover { background: rgb(251 250 239 / 9%); color: var(--sidebar-ink); }
 .primary-nav a:active { scale: 0.96; }
-.primary-nav a[aria-current="page"] { background: var(--sidebar-active); color: var(--brand-on); }
+.primary-nav a[aria-current="page"] { background: var(--sidebar-active); color: var(--on-ink); }
 .nav-count { font-family: var(--mono); font-size: 11px; opacity: 0.62; }
 
 .sidebar-footer { display: flex; margin-top: auto; padding: 20px 8px 0; align-items: center; gap: 8px; color: rgb(251 250 239 / 46%); font-size: 10px; }
 .sidebar-footer code { color: rgb(251 250 239 / 72%); font-family: var(--mono); }
-.freshness-dot { display: inline-block; width: 7px; height: 7px; background: var(--brand); }
+.freshness-dot { display: inline-block; width: 7px; height: 7px; background: var(--on-ink); }
 
 main { min-width: 0; }
 .topbar {
@@ -260,9 +259,9 @@ main { min-width: 0; }
 .panel-heading h2 { margin: 0; font-size: 16px; font-weight: 650; }
 .bug-item { display: grid; padding: 18px 20px; grid-template-columns: 72px minmax(0, 1fr); gap: 15px; border-bottom: 1px solid var(--line); }
 .bug-item:last-child { border-bottom: 0; }
-.severity { align-self: start; padding: 5px 8px; background: var(--warning); color: var(--ink); font: 9px var(--mono); text-align: center; text-transform: uppercase; }
-.severity.high { background: var(--danger); color: var(--on-ink); }
-.severity.low { background: var(--faint); color: var(--on-ink); }
+.severity { align-self: start; padding: 5px 8px; background: var(--panel); color: var(--ink); font: 9px var(--mono); text-align: center; text-transform: uppercase; }
+.severity.high { background: var(--ink); color: var(--on-ink); }
+.severity.low { background: var(--wash-2); color: var(--muted); }
 .bug-item strong { display: block; margin-bottom: 6px; font-size: 12px; line-height: 1.45; }
 .bug-item small { color: var(--muted); font-size: 10px; }
 .verification-chart { padding: 22px 20px; }
@@ -273,9 +272,9 @@ main { min-width: 0; }
 .verification-chart dd { margin: 0; font: 12px var(--mono); }
 .verification-bar { display: flex; height: 8px; margin-bottom: 20px; background: var(--panel); overflow: hidden; }
 .verification-bar span { display: block; min-width: 0; }
-.verification-bar .pass { background: var(--success); }
-.verification-bar .fail { background: var(--danger); }
-.verification-bar .blocked { background: var(--warning); }
+.verification-bar .pass { background: var(--ink); }
+.verification-bar .fail { background: var(--faint); }
+.verification-bar .blocked { background: var(--paper-bright); }
 
 .empty-state { padding: 80px 24px; border: 1px dashed var(--line-strong); color: var(--muted); text-align: center; }
 

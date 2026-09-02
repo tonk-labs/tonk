@@ -409,18 +409,16 @@ view!:
             flex-direction: column;
             gap: 7px;
             width: min(432px, 100%);
-            --edge-ink: #38182a;
-            --edge-soft: #5b4953;
-            --edge-panel: #f7f6f5;
-            --edge-ring: rgba(56,24,42,.28);
+            /* Aliases over the app theme (styles.css reaches this view):
+               the dark twin arrives through the tokens' own .wa-dark swap,
+               so there is no dark block here. Fallbacks are DESIGN.md's
+               light column; the ring here is the 28% separator value. */
+            --edge-ink: var(--ink, #38182a);
+            --edge-soft: var(--soft, #5b4953);
+            --edge-panel: var(--frost-solid, #f7f6f5);
+            --edge-ring: var(--sep, rgba(56,24,42,.28));
             color: var(--edge-soft);
             font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-          }
-          :root.wa-dark .local-invite-notice {
-            --edge-ink: #e2dfdd;
-            --edge-soft: #c8c3bf;
-            --edge-panel: #1b1718;
-            --edge-ring: rgba(226,223,221,.28);
           }
           .local-invite-notice__label {
             min-height: 36px;
@@ -1821,11 +1819,15 @@ view!:
                   root.innerHTML =
                     "<style>" +
                     "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
-                    "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
-                    "max-width: 28rem; font-family: system-ui, sans-serif; }" +
+                    "padding: 0.75rem 1rem; " +
+                    "border: 1px solid var(--wa-color-surface-border, rgb(56 24 42 / 28%)); " +
+                    "max-width: 28rem; " +
+                    "font-family: var(--wa-font-family-body, system-ui, sans-serif); }" +
                     "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
-                    "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
-                    "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
+                    "[part=badge] { font-size: 0.75rem; " +
+                    "color: var(--wa-color-text-quiet, #5b4953); " +
+                    "border: 1px solid var(--wa-color-neutral-border-quiet, rgb(56 24 42 / 18%)); " +
+                    "padding: 0.1rem 0.4rem; white-space: nowrap; }" +
                     "[part=action] { cursor: pointer; }" +
                     "</style>" +
                     "<div part=\"card\"><span part=\"name\"></span>" +

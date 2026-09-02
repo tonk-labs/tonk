@@ -99,6 +99,10 @@ html::-webkit-scrollbar { width: 0; height: 0; display: none; }
     --stub-ink: #736265;
     --cur: #cdc5c9;
     --frost: rgb(29 24 25 / 78%);
+    /* DESIGN.md pins the dark flat frost at #1b1718 — one step lighter
+       than on-ink — so it is a literal here like `--cur`, not a
+       derivation from the `--wa-*` swap (which would land on #221c1d). */
+    --frost-solid: #1b1718;
 }
 
 /* `hidden` has to keep hiding things. Web Awesome skins native form
@@ -227,30 +231,57 @@ wa-tree-item:not(:defined) {
     src: url("/fonts/ibm-plex-mono-400-normal.woff2") format("woff2");
 }
 
-/* Brand accent → yellow-green, matching the control-panel wireframe
-   (`#DEFF1A`). The shoelace palette ships a blue brand; remap the brand
-   semantic tokens (fills, borders, on-colors) to a chartreuse scale built
-   around `#DEFF1A` so accents read yellow-green in both light and dark. The
-   brand is a bright lime, so `on-loud` is DARK ink (not white) to stay
-   legible on the fill; quiet/normal are pale tints of the same hue. */
+/* Tonk is a ONE-INK system (DESIGN.md): no second brand color and no
+   semantic red/green/blue/yellow palette in product chrome. Web Awesome
+   ships a blue brand plus green/amber/red variants, so every variant's
+   semantic tokens are re-pointed at the neutral stone-ink set here.
+   Status is carried by words, geometry, and motion instead — a
+   `variant="danger"` control still reads as emphasis (solid ink), just
+   never as a hue. The aliases resolve through the neutral tokens, which
+   the theme blocks below swap per mode, so one block covers light and
+   dark and there is no restated palette. `text-link` and `focus` derive
+   from the brand scale upstream (blue), so they are pinned to ink too. */
 :root,
 .wa-light,
 .wa-dark {
-    --wa-color-brand-fill-quiet: #f9fddd;
-    --wa-color-brand-fill-normal: #eef99c;
-    --wa-color-brand-fill-loud: #deff1a;
-    --wa-color-brand-border-quiet: #eef99c;
-    --wa-color-brand-border-normal: #d3e84a;
-    --wa-color-brand-border-loud: #deff1a;
-    --wa-color-brand-on-quiet: #5c6608;
-    --wa-color-brand-on-normal: #41490a;
-    --wa-color-brand-on-loud: #2a3005;
-}
-.wa-dark {
-    --wa-color-brand-fill-quiet: #2e3406;
-    --wa-color-brand-fill-normal: #4a530d;
-    --wa-color-brand-fill-loud: #deff1a;
-    --wa-color-brand-on-quiet: #eef99c;
+    --wa-color-brand-fill-quiet: var(--wa-color-neutral-fill-quiet);
+    --wa-color-brand-fill-normal: var(--wa-color-neutral-fill-normal);
+    --wa-color-brand-fill-loud: var(--wa-color-neutral-fill-loud);
+    --wa-color-brand-border-quiet: var(--wa-color-neutral-border-quiet);
+    --wa-color-brand-border-normal: var(--wa-color-neutral-border-normal);
+    --wa-color-brand-border-loud: var(--wa-color-neutral-border-loud);
+    --wa-color-brand-on-quiet: var(--wa-color-neutral-on-quiet);
+    --wa-color-brand-on-normal: var(--wa-color-neutral-on-normal);
+    --wa-color-brand-on-loud: var(--wa-color-neutral-on-loud);
+    --wa-color-success-fill-quiet: var(--wa-color-neutral-fill-quiet);
+    --wa-color-success-fill-normal: var(--wa-color-neutral-fill-normal);
+    --wa-color-success-fill-loud: var(--wa-color-neutral-fill-loud);
+    --wa-color-success-border-quiet: var(--wa-color-neutral-border-quiet);
+    --wa-color-success-border-normal: var(--wa-color-neutral-border-normal);
+    --wa-color-success-border-loud: var(--wa-color-neutral-border-loud);
+    --wa-color-success-on-quiet: var(--wa-color-neutral-on-quiet);
+    --wa-color-success-on-normal: var(--wa-color-neutral-on-normal);
+    --wa-color-success-on-loud: var(--wa-color-neutral-on-loud);
+    --wa-color-warning-fill-quiet: var(--wa-color-neutral-fill-quiet);
+    --wa-color-warning-fill-normal: var(--wa-color-neutral-fill-normal);
+    --wa-color-warning-fill-loud: var(--wa-color-neutral-fill-loud);
+    --wa-color-warning-border-quiet: var(--wa-color-neutral-border-quiet);
+    --wa-color-warning-border-normal: var(--wa-color-neutral-border-normal);
+    --wa-color-warning-border-loud: var(--wa-color-neutral-border-loud);
+    --wa-color-warning-on-quiet: var(--wa-color-neutral-on-quiet);
+    --wa-color-warning-on-normal: var(--wa-color-neutral-on-normal);
+    --wa-color-warning-on-loud: var(--wa-color-neutral-on-loud);
+    --wa-color-danger-fill-quiet: var(--wa-color-neutral-fill-quiet);
+    --wa-color-danger-fill-normal: var(--wa-color-neutral-fill-normal);
+    --wa-color-danger-fill-loud: var(--wa-color-neutral-fill-loud);
+    --wa-color-danger-border-quiet: var(--wa-color-neutral-border-quiet);
+    --wa-color-danger-border-normal: var(--wa-color-neutral-border-normal);
+    --wa-color-danger-border-loud: var(--wa-color-neutral-border-loud);
+    --wa-color-danger-on-quiet: var(--wa-color-neutral-on-quiet);
+    --wa-color-danger-on-normal: var(--wa-color-neutral-on-normal);
+    --wa-color-danger-on-loud: var(--wa-color-neutral-on-loud);
+    --wa-color-text-link: var(--wa-color-text-normal);
+    --wa-color-focus: var(--wa-color-text-normal);
 }
 
 html,
@@ -294,34 +325,12 @@ body {
 
     --wa-border-radius-scale: 0;
 
-    /* tldraw's 11-color palette (minus black and white), solid
-       values from the editor's light-mode `DEFAULT_THEME`. Named
-       with `--tl-*` so they're easy to reference; swap any of them
-       into `--wa-color-text-normal` / `--wa-color-neutral-fill-quiet`
-       to re-tint the UI. */
-    --tl-blue: #4465e9;
-    --tl-green: #099268;
-    --tl-grey: #9fa8b2;
-    --tl-light-blue: #4ba1f1;
-    --tl-light-green: #4cb05e;
-    --tl-light-red: #f87777;
-    --tl-light-violet: #e085f4;
-    --tl-orange: #e16919;
-    --tl-red: #e03131;
-    --tl-violet: #ae3ec9;
-    --tl-yellow: #f1ac4b;
-
-    /* Sync-state palette (from the wireframes). Semantic tokens the sync
-       chip — and anything else reflecting sync state — references, so the
-       colours live in one place. `idle`=synced (green), `pending`=in flight
-       (amber, pulses), `paused`/`local`=muted (grey), `offline`=warn. */
-    --sync-idle: #00a050;
-    --sync-pending: #e8a100;
-    --sync-offline: #ff0000;
-    --sync-local: #888888;
-    /* Paused reads as muted/inactive — same quiet ink as the "all repos"
-       crumb, dimmer than the other status colours. */
-    --sync-paused: var(--wa-color-text-quiet);
+    /* No conventional elevation shadows (DESIGN.md): Tonk depth is page,
+       frost, ring, and value contrast. Zeroing the tokens keeps every wa
+       component flat without per-component overrides. */
+    --wa-shadow-s: none;
+    --wa-shadow-m: none;
+    --wa-shadow-l: none;
 }
 
 :where(.wa-theme-default.wa-dark) {
@@ -379,9 +388,9 @@ body {
    default top/bottom *and* left/right borders are kept so cards
    look like proper containers. `appearance="plain"` opts out
    entirely. Status callouts (`danger`, `warning`) are exempt — they
-   keep the loud filled appearance Web Awesome's theme ships per
-   variant so an alert reads as an alert, not just another bordered
-   card. */
+   keep the filled appearance so an alert reads as emphasis. Under the
+   one-ink remap that fill is solid ink: the wording carries the
+   severity, never a hue (DESIGN.md). */
 wa-card:not([appearance="plain"]),
 wa-callout:not([appearance="plain"]):not([variant="danger"]):not([variant="warning"]) {
     background: transparent;
@@ -512,35 +521,6 @@ tonk-display > .site-pending:not([hidden]) {
     min-height: 0;
 }
 
-/* Tonk Hub page (`/`). A centered column: a header row with the
-   "New repo" button and the "Repositories" title, then the space
-   cards (the `space` directory view). The hub here owns its own
-   page chrome, so the directory view inside it should size to its
-   content rather than claim the full viewport height. */
-.hub-route {
-    display: block;
-    box-sizing: border-box;
-    max-inline-size: 56rem;
-    margin-inline: auto;
-    padding: var(--wa-space-2xl) var(--wa-space-xl);
-}
-/* Title on the left, "New space" trigger button on the right — one row
-   above the cards. Lives inside the directory view now (rendered once
-   as chrome, before the repeated cards). */
-.hub-header {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--wa-space-l);
-    margin-block-end: var(--wa-space-xl);
-}
-/* The create form lives in the dialog, laid out as a simple stack. */
-.hub-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-s);
-}
 /* The default-service button (`<tonk-default-remote>` renders this) in
    the workspace topbar's enable-sync form — fills the URL field with
    this server. In the global stylesheet so it is theme-consistent
@@ -617,7 +597,7 @@ tonk-display > .site-pending:not([hidden]) {
 }
 .workspace__title-input:focus {
     outline: none;
-    border-color: var(--wa-color-brand-fill-loud);
+    border-color: var(--wa-color-text-normal);
     background: var(--wa-color-surface-default);
 }
 /* The live sync chip (`<tonk-sync-state>` renders this span with one
@@ -638,24 +618,27 @@ tonk-display > .site-pending:not([hidden]) {
     background: currentColor;
     flex: none;
 }
-.workspace__sync.is-synced {
-    color: var(--wa-color-success-on-quiet);
-    background: var(--wa-color-success-fill-quiet);
-}
-.workspace__sync.is-synced::before {
-    background: var(--wa-color-success-fill-loud);
-}
-.workspace__sync.is-syncing {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
-.workspace__sync.is-syncing::before {
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-paused,
-.workspace__sync.is-offline {
+/* One ink (DESIGN.md): the chip never takes a hue. State is carried by
+   the label text plus the dot's SHAPE — solid for synced, pulsing for
+   in-flight, hollow ring for offline/paused, rotated square for
+   conflict, dashed/dotted for unavailable/unknown — mirroring the
+   monochrome `.sync` disc below. */
+.workspace__sync {
     color: var(--wa-color-text-quiet);
     background: var(--wa-color-neutral-fill-quiet);
+}
+.workspace__sync.is-synced,
+.workspace__sync.is-syncing {
+    color: var(--wa-color-text-normal);
+}
+.workspace__sync.is-syncing::before {
+    animation: sync-disc-pulse 1.05s ease infinite;
+}
+.workspace__sync.is-paused::before,
+.workspace__sync.is-offline::before,
+.workspace__sync.is-revoked::before {
+    background: transparent;
+    border: 1px solid currentColor;
 }
 .workspace__sync.is-offline,
 .workspace__sync.is-revoked,
@@ -664,37 +647,22 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__sync.is-unknown {
     cursor: default;
 }
-.workspace__sync.is-revoked {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-revoked::before {
-    background: currentColor;
-}
-.workspace__sync.is-conflict {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
 .workspace__sync.is-conflict::before {
     border-radius: 0;
     transform: rotate(45deg);
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-unavailable {
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
 }
 .workspace__sync.is-unavailable::before {
     background: transparent;
     border: 1px dashed currentColor;
 }
-.workspace__sync.is-unknown {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
 .workspace__sync.is-unknown::before {
     background: transparent;
     border: 1px dotted currentColor;
+}
+@media (prefers-reduced-motion: reduce) {
+    .workspace__sync.is-syncing::before {
+        animation: none;
+    }
 }
 /* The topbar chips (identity, sync) render through a `<tonk-display>` →
    `<tonk-view>` pair whose line boxes would otherwise sit them above the
@@ -753,7 +721,7 @@ tonk-display > .site-pending:not([hidden]) {
 }
 .workspace__identity-name:focus {
     outline: none;
-    border-color: var(--wa-color-brand-fill-loud);
+    border-color: var(--wa-color-text-normal);
     background: var(--wa-color-surface-default);
 }
 /* The share (`<tonk-share>`) and pause/resume (`<tonk-sync-toggle>`)
@@ -793,14 +761,14 @@ tonk-display > .site-pending:not([hidden]) {
     padding: var(--wa-space-3xs) var(--wa-space-s);
     font: inherit;
     font-size: var(--wa-font-size-s);
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
+    color: var(--wa-color-neutral-on-quiet);
+    background: var(--wa-color-neutral-fill-quiet);
     border: none;
     border-radius: var(--wa-border-radius-s);
     cursor: pointer;
 }
 .workspace__enable-sync:hover {
-    background: var(--wa-color-brand-fill-normal);
+    background: var(--wa-color-neutral-fill-normal);
 }
 /* The enable-sync dialog's form: a vertical stack of the URL field and
    the default-service button. */
@@ -809,158 +777,8 @@ tonk-display > .site-pending:not([hidden]) {
     flex-direction: column;
     gap: var(--wa-space-s);
 }
-/* Opt out of the global heading highlight-cover (the dark filled box):
-   the Hub title is a plain heading like the mock. */
-.hub-title {
-    display: block;
-    margin: 0;
-    padding: 0;
-    background: none;
-    color: var(--wa-color-text-normal);
-    font-family: var(--wa-font-family-heading);
-    font-size: var(--wa-font-size-3xl);
-    font-weight: var(--wa-font-weight-bold);
-    letter-spacing: normal;
-}
-/* Inside the hub page the directory view is content-sized, not a
-   full-height display route. Undo the viewport-min the generic
-   `.display-route` rule imposes. */
-.hub-route .display-view-slot {
-    min-height: 0;
-}
-.hub-route .display-view-slot > tonk-display > tonk-view > * {
-    min-height: 0;
-}
-
-/* The space cards (the `space` directory view in profile.yaml). The
-   view template carries only markup; its styling lives here so it is
-   ready on first paint rather than flashing unstyled while the seed
-   loads and the view renders its own <style>. */
-.hub {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-m);
-    /* The Hub is now the route's own page (it renders inside the sealed
-       `<tonk-site>` guest, with no `.hub-route` shell wrapper). So it carries
-       its own page frame — a centered, max-width column with viewport padding —
-       the way the old Leptos shell's `.hub-route` did. */
-    box-sizing: border-box;
-    inline-size: 100%;
-    max-inline-size: 56rem;
-    margin-inline: auto;
-    padding: var(--wa-space-2xl) var(--wa-space-xl);
-}
-/* One repository row: a framed card linking to its space. The sigil is
-   a square swatch on the left; the name and URL stack to its right. */
-.hub-card {
-    display: flex;
-    align-items: stretch;
-    gap: var(--wa-space-l);
-    padding: 0;
-    text-decoration: none;
-    color: inherit;
-    border: var(--wa-border-width-s) solid var(--wa-color-neutral-fill-loud);
-    border-radius: var(--wa-border-radius-m);
-    background: transparent;
-    overflow: hidden;
-    /* Anchor for the absolutely-positioned sync badge (and the blank
-       card's progress overlay below). */
-    position: relative;
-}
-.hub-card:hover {
-    border-color: var(--wa-color-brand-fill-loud);
-}
-/* The profile's own self-replica rides in on the same query; hide its
-   card so the Hub lists only real spaces. */
-.hub-card[data-kind="tonk:profile"] {
-    display: none;
-}
-.hub-card__sigil {
-    flex: none;
-    inline-size: 8.5rem;
-    align-self: stretch;
-    display: grid;
-    place-items: center;
-    background: var(--wa-color-surface-lowered);
-}
-.hub-card__sigil tonk-sigil {
-    inline-size: 100%;
-    block-size: 100%;
-    display: block;
-}
-.hub-card__body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-2xs);
-    padding: var(--wa-space-m) var(--wa-space-l);
-    min-inline-size: 0;
-}
-.hub-card__name {
-    font-family: var(--wa-font-family-heading);
-    font-size: var(--wa-font-size-l);
-    font-weight: var(--wa-font-weight-semibold);
-    /* Reserve one line of height so the slot stays put whether the name
-       has resolved, is loading, or is empty — the card never reflows as
-       the async name arrives. */
-    display: block;
-    min-height: 1.4em;
-    line-height: 1.4;
-}
-/* The name comes from the space's own repo (a nested
-   `<tonk-display model=tonk:repository>`), which resolves
-   asynchronously and may not have synced yet. The display projects the
-   `slot="<state>"` child matching its current `data-state`, so the
-   "Untitled" placeholder spans authored on the display show while it is
-   loading / no-model / no-entity and hide once it is `ready`. Style the
-   placeholder spans muted. */
-.hub-card__name .hub-card__untitled {
-    color: var(--wa-color-text-quiet);
-    font-style: italic;
-}
-.hub-card__url {
-    font-family: var(--wa-font-family-code);
-    font-size: var(--wa-font-size-s);
-    color: var(--wa-color-text-quiet);
-}
-
-/* Install state. A freshly created space is `status: tonk:blank`
-   while its content branch seeds in the background; the worker flips
-   it to `tonk:initialized` when done, which arrives over the Hub's
-   subscription and settles the card. While blank: the card is not yet
-   clickable, the "/space/..." URL is replaced by an "Installing"
-   label, and a thin progress line sweeps across the bottom of the card
-   (after the loader in interactivate-dat) reading like the space is
-   downloading. */
-.hub-card__status {
-    display: none;
-    font-family: var(--wa-font-family-code);
-    font-size: var(--wa-font-size-s);
-    color: var(--wa-color-text-quiet);
-}
-
-/* Read-only sync status badge (`<tonk-sync-badge>`), pinned to the
-   card's top-right corner — clear of the space name and the long,
-   wrapping `/space/...` URL below it. Aligned with the name row's top
-   so it reads as a header-row status. Hidden by default and shown only
-   for real, initialized repositories: the profile self-card never lists
-   (its whole card is hidden above) and a `tonk:blank` space is still
-   seeding, so neither has a meaningful sync state to show. */
-.hub-card__sync {
-    display: none;
-    position: absolute;
-    inset-block-start: var(--wa-space-m);
-    inset-inline-end: var(--wa-space-l);
-}
-.hub-card[data-kind="tonk:repository"]:not([data-status="tonk:blank"]) .hub-card__sync {
-    display: flex;
-    align-items: center;
-    /* The disc is `1em`, so `font-size` sizes it: 24px on the Hub cards (the
-       wireframe's `.home-sync`), larger than the FAB's 14px ring. */
-    font-size: 24px;
-    color: var(--wa-color-text-quiet);
-}
 /* The sync status disc — the wireframe indicator (Tonk Control Panel MVP),
-   rendered by `<ui-sync-status>` and reused by the Hub cards AND the FAB ring.
+   rendered by `<ui-sync-status>` and reused by the Hub rows AND the FAB ring.
    These rules live in the app stylesheet (injected into every guest), so the
    disc is host chrome: identical everywhere the element mounts regardless of
    what a space asserts.
@@ -1034,56 +852,6 @@ tonk-display > .site-pending:not([hidden]) {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
 }
-.hub-card[data-status="tonk:blank"] {
-    pointer-events: none;
-    position: relative;
-}
-/* The progress line is an overlay pseudo-element pinned to the bottom
-   edge: the card's children carry opaque backgrounds that would paint
-   over a card background, and `overflow: hidden` keeps the line tucked
-   inside the rounded corners. It grows from the left, then slides off
-   to the right, looping — an indeterminate sweep while the seed runs
-   for an unknown length of time. */
-.hub-card[data-status="tonk:blank"]::after {
-    content: "";
-    position: absolute;
-    inset-block-end: 0;
-    inset-inline-start: 0;
-    inline-size: 35%;
-    block-size: 2px;
-    background: var(--wa-color-brand-fill-loud);
-    pointer-events: none;
-    animation: hub-progress 1.6s ease-in-out infinite;
-}
-.hub-card[data-status="tonk:blank"] .hub-card__url {
-    display: none;
-}
-.hub-card[data-status="tonk:blank"] .hub-card__status {
-    display: block;
-}
-.hub-card[data-status="tonk:blank"] .hub-card__status::before {
-    content: "Installing\2026";
-}
-/* While installing, the name has nothing to show yet — the
-   "Installing…" label + progress line already say what's happening, so
-   suppress the "Untitled" placeholder rather than reading like the space
-   failed to get a name. Once `tonk:initialized`, the name resolves (or
-   falls back to "Untitled" if it is still syncing). */
-.hub-card[data-status="tonk:blank"] .hub-card__name .hub-card__untitled {
-    display: none;
-}
-/* The line is 35% of the card wide; it travels from just off the left
-   edge to just off the right (its own width is 100% of `translateX`'s
-   reference, so -100% hides it left and ~286% clears the right). */
-@keyframes hub-progress {
-    0% {
-        transform: translateX(-100%);
-    }
-    100% {
-        transform: translateX(286%);
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* Ghost loading skins.
 
@@ -1273,71 +1041,6 @@ tonk-display > .site-pending:not([hidden]) {
         0 0,
         0 1.6rem,
         0 3.2rem;
-}
-
-/* Hub ghost (`/`): repaint the generic space-page ghost above as the
-   repo list — a header row (slot ::before) and three ghost cards
-   (host ::before / ::after plus slot ::after). Selectors spell out
-   the full `.hub-route .display-route …` chain to outweigh the
-   generic page-ghost rules, the same way the Hub's min-height
-   overrides do. */
-.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::before {
-    content: "";
-    flex: none;
-    height: 2.4rem;
-    margin-block-end: var(--wa-space-xl);
-    border: none;
-    background-color: transparent;
-    /* Page title bar on the left, "New space" button block on the
-       right — matching `.hub-header`. */
-    background-image:
-        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
-        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
-    background-repeat: no-repeat;
-    background-size:
-        9rem 2rem,
-        7.5rem 2.4rem;
-    background-position:
-        0 50%,
-        100% 50%;
-}
-.hub-route .display-view-slot > tonk-display[data-state="loading"] {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-m);
-}
-.hub-route .display-view-slot > tonk-display[data-state="loading"]::before,
-.hub-route .display-view-slot > tonk-display[data-state="loading"]::after,
-.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::after {
-    /* One ghost repo card: the sigil swatch on the left, name and
-       URL bars to its right — matching `.hub-card` geometry. */
-    content: "";
-    flex: none;
-    height: 5.75rem;
-    margin: 0;
-    box-sizing: border-box;
-    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-    border-radius: var(--wa-border-radius-m);
-    background-color: transparent;
-    background-image:
-        linear-gradient(var(--wa-color-surface-lowered), var(--wa-color-surface-lowered)),
-        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
-        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
-    background-repeat: no-repeat;
-    background-size:
-        8.5rem 100%,
-        11rem 1.1rem,
-        16rem 0.8rem;
-    background-position:
-        0 0,
-        calc(8.5rem + var(--wa-space-l)) 1.5rem,
-        calc(8.5rem + var(--wa-space-l)) 3.3rem;
-}
-/* The slot has no flex gap (the header spaces itself with a margin),
-   so the third card — the slot's ::after, laid out right after the
-   display's two — carries the card gap itself. */
-.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::after {
-    margin-block-start: var(--wa-space-m);
 }
 
 /* When a view or notation slide lives inside the carousel
@@ -1634,9 +1337,7 @@ h6 {
     display: inline-block;
     background: var(--wa-color-text-normal);
     color: var(--wa-color-neutral-fill-quiet);
-    font-family:
-        -apple-system, BlinkMacSystemFont, "avenir next", avenir, helvetica,
-        "helvetica neue", ubuntu, roboto, noto, "segoe ui", arial, sans-serif;
+    font-family: var(--wa-font-family-heading);
     font-weight: 600;
     line-height: 1.5;
     letter-spacing: -0.05em;
@@ -2314,7 +2015,7 @@ tonk-notation,
         var(--wa-color-text-normal) 4%,
         transparent
     );
-    --tonk-code-cursor: var(--wa-color-brand-fill-loud);
+    --tonk-code-cursor: var(--wa-color-text-normal);
     /* Selection / bracket match — color-mixed alpha tints rather
        than raw `--wa-color-brand-fill-quiet`, because wa-details
        overrides several `--wa-color-*-fill-*` tokens to
@@ -2324,15 +2025,15 @@ tonk-notation,
        ancestor wa-component scoping. */
     --tonk-code-selection: color-mix(
         in srgb,
-        var(--wa-color-brand-fill-loud) 25%,
+        var(--wa-color-text-normal) 25%,
         transparent
     );
     --tonk-code-bracket-match-bg: color-mix(
         in srgb,
-        var(--wa-color-brand-fill-loud) 18%,
+        var(--wa-color-text-normal) 18%,
         transparent
     );
-    --tonk-code-bracket-match-border: var(--wa-color-brand-border-loud);
+    --tonk-code-bracket-match-border: var(--wa-color-neutral-border-loud);
     /* Suppress the element's default focus halo. wa-input doesn't
        paint one either, and rendering it inside a wa-details body
        made the editor look like it was demanding attention even
@@ -2423,6 +2124,29 @@ tonk-notation,
     --tonk-code-font-size: var(--wa-font-size-s);
     --tonk-code-radius: 0; /* match the brutalist palette's square corners */
 }
+/* `<tonk-prose>` and `<tonk-table>` derive their selection and focus
+   colors from `--wa-color-brand-fill-quiet` / `-border-normal`, which the
+   one-ink remap resolves to the neutral quiet fill — a near-match for the
+   page that would make a selection invisible. Pin them to ink washes here
+   (document rules on the host outrank the shadow `:host` defaults), the
+   same treatment `--tonk-code-selection` gets above. */
+tonk-prose {
+    --tonk-prose-selection: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 25%,
+        transparent
+    );
+    --tonk-prose-focus-ring: var(--wa-color-neutral-border-loud);
+}
+tonk-table {
+    --tonk-table-selection: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 12%,
+        transparent
+    );
+    --tonk-table-focus-ring: var(--wa-color-neutral-border-loud);
+}
+
 /* The element's baseline repaints the host border on
    `:focus-within` (border-color → `--tonk-code-cursor`). Since
    we've zeroed the resting border, the focus-state repaint would
@@ -3018,7 +2742,7 @@ tonk-notebook-index {
 /* The matched characters, so the reason a row is here is visible. */
 .notebook-switcher__row mark {
   background: none;
-  color: var(--wa-color-brand-fill-loud, currentColor);
+  color: var(--wa-color-text-normal, currentColor);
   font-weight: 600;
 }
 /* The create row is an ordinary row: same shape, same weight. Only its
@@ -3355,11 +3079,8 @@ tonk-notebook-index {
    tokens rather than inside either view. ──────── */
 
 /* ── The Hub — the space directory at `/`.
-   Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
-   `.hub` block from an earlier launcher (a 56rem centred column),
-   which clipped this page to a band down the middle of the viewport.
-   That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
-   more — but it is not this change's to delete.
+   Named `.hub-page` (the earlier launcher's dead `.hub` / `.hub-card` /
+   `.hub-route` CSS is gone).
    Chrome, and it runs on the same material as the FAB: a neutral
    page, 36px frost blocks with ink rings, lowercase condensed words
    seated bottom-right, ink only.

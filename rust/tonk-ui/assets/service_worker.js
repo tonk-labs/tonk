@@ -407,18 +407,21 @@ function failurePage() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tonk failed to start</title>
 <style>
+  :root { color-scheme: light dark; }
   body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
          place-items: center; min-height: 100vh; min-height: 100dvh;
-         background: #111; color: #eee; }
+         background: light-dark(#e8e6e4, #161313);
+         color: light-dark(#38182a, #e2dfdd); }
   main { max-width: 42rem; padding: 2rem; }
   h1 { font-size: 1.3rem; }
-  pre { background: #1d1d1f; border: 1px solid #333; border-radius: 8px;
+  pre { background: light-dark(#fcfbfb, #261f20);
+        border: 1px solid light-dark(rgb(56 24 42 / 28%), rgb(226 223 221 / 28%));
         padding: 1rem; white-space: pre-wrap; word-break: break-word;
-        color: #f0b0b0; font-size: 0.85rem; }
-  button { font: inherit; padding: 0.5rem 1.25rem; border-radius: 8px;
-           border: 1px solid #555; background: #2a2a2e; color: #eee;
-           cursor: pointer; }
-  p.hint { color: #999; font-size: 0.85rem; }
+        font-size: 0.85rem; }
+  button { font: inherit; padding: 0.5rem 1.25rem;
+           border: 0; background: light-dark(#38182a, #e2dfdd);
+           color: light-dark(#f7f6f5, #221c1d); cursor: pointer; }
+  p.hint { color: light-dark(#5b4953, #c8c3bf); font-size: 0.85rem; }
 </style></head><body><main>
 <h1>Tonk failed to start</h1>
 <p>The storage worker could not initialize. Attempt ${workerHealth.attempts}.</p>

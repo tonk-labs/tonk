@@ -137,11 +137,11 @@ const OUTPUT_CSS: &str = r#"
 tonk-notation {
   --tonk-code-fg: var(--wa-color-text-normal);
   --tonk-code-key: var(--tonk-bauhaus-yellow, #c89a2b);
-  --tonk-code-effect: var(--tonk-bauhaus-alarm, #d05a4a);
+  --tonk-code-effect: var(--tonk-bauhaus-alarm, #a8302a);
   --tonk-code-name-sigil: var(--wa-color-text-quiet);
-  --tonk-code-name: var(--tonk-bauhaus-blue, #5a7fb8);
-  --tonk-code-entity: var(--tonk-bauhaus-blue, #5a7fb8);
-  --tonk-code-variable: var(--tonk-bauhaus-grey, #8a8a8a);
+  --tonk-code-name: var(--tonk-bauhaus-blue, #3d6da8);
+  --tonk-code-entity: var(--tonk-bauhaus-blue, #3d6da8);
+  --tonk-code-variable: var(--tonk-bauhaus-grey, #7a7268);
   --tonk-code-font: var(--wa-font-family-code, ui-monospace, monospace);
   --tonk-code-font-size: var(--wa-font-size-s, 0.875rem);
 }
@@ -227,7 +227,7 @@ tonk-notation .tonk-cm-variable {
 .nb-out {
   font-size: 0.8125rem;
   line-height: 1.45;
-  color: var(--wa-color-text-quiet, #9aa0a6);
+  color: var(--wa-color-text-quiet, #5b4953);
 }
 .nb-out__summary {
   display: flex; align-items: baseline; gap: 0.5rem;
@@ -235,7 +235,7 @@ tonk-notation .tonk-cm-variable {
 }
 .nb-out__label {
   font-family: var(--wa-font-family-code, ui-monospace, monospace);
-  color: var(--wa-color-text-normal, #e8eaed);
+  color: var(--wa-color-text-normal, #38182a);
 }
 .nb-out__count { font-variant-numeric: tabular-nums; }
 .nb-out__gallery {
@@ -245,14 +245,14 @@ tonk-notation .tonk-cm-variable {
   margin-top: 0.375rem;
 }
 .nb-card {
-  border: 1px solid var(--wa-color-neutral-border-quiet, #3c4043);
-  border-radius: var(--wa-border-radius-m, 0.375rem);
+  border: 1px solid var(--wa-color-neutral-border-quiet, rgb(56 24 42 / 18%));
+  border-radius: var(--wa-border-radius-m, 0);
   padding: 0.375rem 0.5rem;
   overflow: hidden;
 }
 .nb-card__title {
   font-family: var(--wa-font-family-code, ui-monospace, monospace);
-  color: var(--wa-color-text-normal, #e8eaed);
+  color: var(--wa-color-text-normal, #38182a);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   margin-bottom: 0.125rem;
 }
@@ -260,9 +260,9 @@ tonk-notation .tonk-cm-variable {
   display: flex; gap: 0.375rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.nb-card__key { color: var(--wa-color-text-quiet, #9aa0a6); }
+.nb-card__key { color: var(--wa-color-text-quiet, #5b4953); }
 .nb-card__value {
-  color: var(--wa-color-text-normal, #e8eaed);
+  color: var(--wa-color-text-normal, #38182a);
   overflow: hidden; text-overflow: ellipsis;
 }
 .nb-card__more, .nb-out__more {
@@ -271,7 +271,7 @@ tonk-notation .tonk-cm-variable {
 }
 .nb-out--error {
   display: flex; gap: 0.5rem; align-items: baseline;
-  color: var(--wa-color-danger-on-quiet, #f28b82);
+  color: var(--wa-color-text-normal, #38182a);
 }
 .nb-out__icon { font-weight: 700; }
 "#;

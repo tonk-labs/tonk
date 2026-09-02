@@ -607,18 +607,19 @@ view!:
         <main class="join-view">
           <style>
             .join-view {
-              --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
-              --edge-soft:#5b4953; --edge-card:#f7f6f5;
-              --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+              /* Aliases over the app theme (styles.css, injected into every
+                 sealed guest): the dark twin arrives through the tokens'
+                 own .wa-dark swap, so there is no dark block here. The
+                 fallbacks are DESIGN.md's light column. */
+              --edge-page:var(--page, #e8e6e4); --edge-ink:var(--ink, #38182a);
+              --edge-on:var(--on-ink, #f7f6f5); --edge-soft:var(--soft, #5b4953);
+              --edge-card:var(--frost-solid, #f7f6f5);
+              --edge-ring:var(--ring, rgba(56,24,42,.85));
+              --edge-wash:var(--wash-2, rgba(56,24,42,.12));
               min-height:100vh; min-height:100dvh; padding:1px; color:var(--edge-ink);
               background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
                 'Bahnschrift','Arial Narrow',system-ui,sans-serif;
               font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
-            }
-            :root.wa-dark .join-view {
-              --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
-              --edge-soft:#c8c3bf; --edge-card:#1b1718;
-              --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
             }
             .edge-mast { position:fixed; left:48px; top:48px; width:132px;
               color:var(--edge-ink); z-index:2; }
@@ -855,18 +856,18 @@ view!:
            the same edge wall, palette, typography, and compact geometry as the
            `/join` ceremony instead of inheriting Web Awesome's pill skin. */
         .space-unknown {
-          --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
-          --edge-soft:#5b4953; --edge-card:#f7f6f5;
-          --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+          /* Aliases over the app theme, like the /join ceremony above: the
+             dark twin arrives through the tokens' own .wa-dark swap. */
+          --edge-page:var(--page, #e8e6e4); --edge-ink:var(--ink, #38182a);
+          --edge-on:var(--on-ink, #f7f6f5); --edge-soft:var(--soft, #5b4953);
+          --edge-card:var(--frost-solid, #f7f6f5);
+          --edge-ring:var(--ring, rgba(56,24,42,.85));
+          --edge-wash:var(--wash-2, rgba(56,24,42,.12));
           position:fixed; inset:0; min-height:100vh; min-height:100dvh;
           overflow:auto; padding:1px; background:var(--edge-page);
           color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
             'Bahnschrift','Arial Narrow',system-ui,sans-serif;
           font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
-        :root.wa-dark .space-unknown {
-          --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
-          --edge-soft:#c8c3bf; --edge-card:#1b1718;
-          --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15); }
         .space-unknown *, .space-unknown *::before, .space-unknown *::after {
           box-sizing:border-box; }
         .space-unknown ::selection { background:var(--edge-ink); color:var(--edge-on); }

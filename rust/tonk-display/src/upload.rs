@@ -332,7 +332,7 @@ const STYLE: &str = r#"
 [part=base] {
   display: inline-flex; align-items: center; gap: var(--tonk-upload-gap, var(--wa-space-s, 8px));
   font-family: var(--wa-font-family-body, system-ui, sans-serif);
-  color: var(--wa-color-text-normal, #1a1a1a);
+  color: var(--wa-color-text-normal, #38182a);
 }
 /* A neutral bordered control matching the sheets/board/wiki templates:
    a surface fill with a subtle border that brightens on hover — no loud
@@ -342,36 +342,37 @@ const STYLE: &str = r#"
   display: inline-flex; align-items: center; gap: var(--wa-space-xs, 6px);
   padding: var(--wa-space-xs, 6px) var(--wa-space-m, 12px);
   font: inherit; font-size: var(--wa-font-size-s, 14px);
-  color: var(--wa-color-text-normal, #1a1a1a);
-  background: var(--wa-color-surface-raised, #fff);
+  color: var(--wa-color-text-normal, #38182a);
+  background: var(--wa-color-surface-raised, #fcfbfb);
   border: var(--wa-border-width-s, 1px) solid
-    var(--tonk-upload-accent, var(--wa-color-surface-border, #d4d4d4));
-  border-radius: var(--tonk-upload-radius, var(--wa-border-radius-s, 4px));
+    var(--tonk-upload-accent, var(--wa-color-surface-border, rgb(56 24 42 / 28%)));
+  border-radius: var(--tonk-upload-radius, var(--wa-border-radius-s, 0));
   cursor: pointer;
   transition-property: color, background-color, border-color;
   transition-duration: 120ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 [part=button]:hover {
-  border-color: var(--wa-color-text-normal, #1a1a1a);
+  border-color: var(--wa-color-text-normal, #38182a);
   background: var(--wa-color-neutral-fill-quiet, #f4f4f4);
 }
 [part=button][disabled] { opacity: 0.5; cursor: not-allowed; }
 [part=button][disabled]:hover {
-  border-color: var(--wa-color-surface-border, #d4d4d4);
-  background: var(--wa-color-surface-raised, #fff);
+  border-color: var(--wa-color-surface-border, rgb(56 24 42 / 28%));
+  background: var(--wa-color-surface-raised, #fcfbfb);
 }
 [part=preview] {
   max-width: 96px; max-height: 96px;
-  border-radius: var(--wa-border-radius-s, 4px);
-  border: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border, #d4d4d4);
+  border-radius: var(--wa-border-radius-s, 0);
+  border: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border, rgb(56 24 42 / 28%));
 }
 [part=preview][hidden] { display: none; }
 [part=status] {
   font-size: var(--wa-font-size-s, 13px);
-  color: var(--wa-color-text-quiet, #666);
+  color: var(--wa-color-text-quiet, #5b4953);
 }
-:host([data-state=error]) [part=status] { color: var(--wa-color-danger-on-quiet, #dc2626); }
+/* One ink (DESIGN.md): the error is worded, not colored. */
+:host([data-state=error]) [part=status] { color: var(--wa-color-text-normal, #38182a); }
 "#;
 
 /// Register the `<tonk-upload>` element. Idempotent.

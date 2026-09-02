@@ -233,10 +233,13 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         .and_then(|source| source.split("/* Keyed off the display's own state").next())
         .expect("profile library must contain the absent-space style block");
     for contract in [
-        "--edge-page:#e8e6e4",
-        "--edge-ink:#38182a",
-        "--edge-page:#161313",
-        "--edge-ink:#e2dfdd",
+        // The palette aliases the app theme (styles.css is injected into
+        // every sealed guest); the dark twin arrives through the tokens'
+        // own .wa-dark swap, and the fallbacks are DESIGN.md's light
+        // column — restated literals per view are the drift this guards
+        // against.
+        "--edge-page:var(--page, #e8e6e4)",
+        "--edge-ink:var(--ink, #38182a)",
         "font-family:'IBM Plex Sans Condensed'",
         "box-shadow:0 0 0 1px var(--edge-ring)",
         "min-height:44px",

@@ -86,15 +86,16 @@ pub fn unavailable_invite_html() -> String {
       src: url("/fonts/ibm-plex-sans-400-normal.woff2") format("woff2");
     }}
     :root {{
+      /* DESIGN.md core palette: warm stone page, aubergine ink, card
+         surface, and a one-pixel ink ring instead of elevation shadows. */
       color-scheme: light dark;
-      --invite-ink: light-dark(#1d1d20, #f2f2f3);
-      --invite-muted: light-dark(#62646b, #a4a5aa);
-      --invite-surface: light-dark(#ffffff, #191a1d);
-      --invite-page: light-dark(#ffffff, #101113);
-      --invite-shadow:
-        0 0 0 1px rgb(0 0 0 / 6%),
-        0 1px 2px -1px rgb(0 0 0 / 6%),
-        0 12px 32px rgb(0 0 0 / 7%);
+      --invite-ink: light-dark(#38182a, #e2dfdd);
+      --invite-muted: light-dark(#5b4953, #c8c3bf);
+      --invite-surface: light-dark(#fcfbfb, #261f20);
+      --invite-page: light-dark(#e8e6e4, #161313);
+      --invite-ring: light-dark(rgb(56 24 42 / 85%), rgb(226 223 221 / 55%));
+      --invite-on-ink: light-dark(#f7f6f5, #221c1d);
+      --invite-wash-on: light-dark(rgb(247 246 245 / 16%), rgb(34 28 29 / 14%));
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
     }}
@@ -113,7 +114,7 @@ pub fn unavailable_invite_html() -> String {
       width: min(100%, 760px);
       padding: 40px;
       background: var(--invite-surface);
-      box-shadow: var(--invite-shadow);
+      box-shadow: 0 0 0 1px var(--invite-ring);
     }}
     .masthead {{
       display: flex;
@@ -138,8 +139,8 @@ pub fn unavailable_invite_html() -> String {
     }}
     .badge {{
       padding: 2px 8px;
-      background: #deff1a;
-      color: #2a3005;
+      background: var(--invite-ink);
+      color: var(--invite-on-ink);
       font-size: 14px;
       font-weight: 600;
     }}
@@ -170,8 +171,8 @@ pub fn unavailable_invite_html() -> String {
       display: grid;
       place-items: center;
       background: var(--invite-ink);
-      box-shadow: 0 0 0 1px rgb(0 0 0 / 8%);
-      color: var(--invite-surface);
+      box-shadow: 0 0 0 1px var(--invite-ink);
+      color: var(--invite-on-ink);
       font-weight: 600;
       text-decoration: none;
       transition-property: scale, box-shadow;
@@ -179,20 +180,14 @@ pub fn unavailable_invite_html() -> String {
       transition-timing-function: ease-out;
     }}
     .button:hover {{
-      box-shadow:
-        0 0 0 1px rgb(0 0 0 / 10%),
-        0 4px 12px rgb(0 0 0 / 10%);
+      background: linear-gradient(var(--invite-wash-on), var(--invite-wash-on)),
+        var(--invite-ink);
     }}
     .button:active {{ scale: 0.96; }}
     .button:focus-visible,
     .brand:focus-visible {{
-      outline: 3px solid color-mix(in oklab, #deff1a 70%, var(--invite-ink));
+      outline: 2px solid var(--invite-ink);
       outline-offset: 3px;
-    }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        --invite-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
-      }}
     }}
     @media (max-width: 620px) {{
       body {{

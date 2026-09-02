@@ -67,19 +67,20 @@
            are defined on the document root and inherit through the
            shadow boundary; the fallbacks keep the pill legible if WA
            isn't loaded (e.g. a bare page). */
-        --hs-bg: var(--wa-color-surface-raised, #18181b);
-        --hs-fg: var(--wa-color-text-normal, #fafafa);
+        --hs-bg: var(--wa-color-surface-raised, #261f20);
+        --hs-fg: var(--wa-color-text-normal, #e2dfdd);
         /* Monochrome: ON inverts to a solid LIGHT pill, OFF is the muted
            dark pill — distinguished by inversion + opacity, no colour.
-           Red stays reserved for the error state. */
-        --hs-dot-idle: var(--wa-color-neutral-border-normal, rgba(160, 160, 160, 0.4));
-        --hs-danger: var(--wa-color-danger-fill-loud, #d92d20);
-        --hs-danger-fg: var(--wa-color-danger-on-loud, #ffffff);
+           The error state is solid ink (one-ink system): the pill's
+           wording and inversion carry the alarm, never a hue. */
+        --hs-dot-idle: var(--wa-color-neutral-border-normal, rgb(226 223 221 / 28%));
+        --hs-danger: var(--wa-color-danger-fill-loud, #38182a);
+        --hs-danger-fg: var(--wa-color-danger-on-loud, #f7f6f5);
         --hs-radius: var(--wa-border-radius-pill, 3em);
         --hs-font: var(--wa-font-family-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
         /* A soft glow shadow like the original pill — readable on any
            background. WA's shadow tokens compose into this if present. */
-        --hs-shadow: var(--wa-shadow-l, 0 0 18px rgba(0, 0, 0, 0.45));
+        --hs-shadow: 0 0 0 1px var(--wa-color-surface-border, rgb(226 223 221 / 28%));
       }
 
       .notification {
