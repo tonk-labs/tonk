@@ -2050,7 +2050,7 @@ fn set_status(text: &str) {
 
 /// What the guest asked for: why it could not share, and what it was
 /// trying to share.
-#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
 pub struct Request {
     /// The refusal class that raised the dialog.
     #[serde(default)]
@@ -2059,6 +2059,25 @@ pub struct Request {
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
+    /// Where to seat the cluster, in page coordinates. The Hub's
+    /// "link an account" tab sends its bar's rect so the ceremony rows
+    /// render IN the column right under it — the tab activates and the
+    /// email and instruction rows are simply what its page shows. Absent
+    /// (a share-blocked request over a space), the cluster floats
+    /// centered over the dimmed page as before.
+    #[serde(default)]
+    pub anchor: Option<Anchor>,
+}
+
+/// A seat for the anchored cluster: the opener bar's box, page coordinates.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct Anchor {
+    /// The bar's left edge — the column's own left.
+    pub left: f64,
+    /// The bar's bottom edge; the rows hang one gap below it.
+    pub bottom: f64,
+    /// The bar's width — the column width the rows fill.
+    pub width: f64,
 }
 
 /// Parse the payload a guest forwards, tolerating a bare reason string
@@ -2067,6 +2086,7 @@ pub fn parse_request(payload: &str) -> Request {
     serde_json::from_str(payload).unwrap_or_else(|_| Request {
         reason: payload.to_owned(),
         space: String::new(),
+        anchor: None,
     })
 }
 
@@ -2109,6 +2129,25 @@ pub fn describe(payload: &str) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
+    if let Some(anchor) = &request.anchor
+        && let Some(host) = document
+            .get_element_by_id(DIALOG_ID)
+            .and_then(|host| host.dyn_into::<HtmlElement>().ok())
+    {
+        // Seat the cluster in the opener's column: no veil, the head row
+        // stays hidden (the tab that raised it IS the head), and the rows
+        // hang one gap under the bar at the bar's own width.
+        let _ = host.set_attribute("data-anchored", "");
+        // The way out of the anchored page is back to the spaces list,
+        // not to a space — reword the ghost accordingly.
+        if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
+            dismiss.set_inner_html(r#"<span aria-hidden="true">&#9666;</span> back to spaces"#);
+        }
+        let style = host.style();
+        let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
+        let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
+        let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
+    }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }

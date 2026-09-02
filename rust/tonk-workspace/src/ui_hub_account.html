@@ -7,13 +7,16 @@
     aria-expanded="false"
     aria-controls="hub-account-menu"
   >
-    <span data-account-label>account</span><span class="g" aria-hidden="true">&#9662;</span>
+    <span data-account-label>account</span>
   </button>
   <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
     spaces
   </button>
-  <a class="hcell hc-cfg" href="/settings" data-open-settings aria-label="settings">
-    <span class="settings-word">settings</span>
+</nav>
+
+<div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
+  <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
+    settings
     <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
       <g stroke="currentColor" stroke-width="1.2">
         <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
@@ -23,13 +26,51 @@
       <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
     </svg>
   </a>
-  <ui-mode-switch></ui-mode-switch>
-</nav>
-
-<div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
-  <div class="account-menu__profiles" data-profile-list aria-label="accounts on this browser"></div>
-  <button type="button" class="account-menu__row" data-add-profile role="menuitem">
-    add account<span aria-hidden="true">+</span>
+  <div class="account-menu__profiles" data-profile-list aria-label="other accounts on this browser"></div>
+  <button type="button" class="account-menu__row account-menu__row--ink" data-add-profile role="menuitem">
+    add account<span class="g" aria-hidden="true">+</span>
   </button>
   <div class="account-menu__error" data-account-error role="status" hidden></div>
 </div>
+
+<section class="settings chrome" data-settings-view hidden>
+  <nav class="s-rail" aria-label="settings sections">
+    <button class="blk cur" type="button" data-pane="account">account</button>
+    <button class="blk" type="button" data-pane="devices">devices</button>
+  </nav>
+  <div class="s-body">
+    <div class="pane" data-pane="account">
+      <div class="srowd">
+        <span>display name</span>
+        <tonk-editable
+          class="sname"
+          data-rename="tonk:profile"
+          data-settings-name
+          onchange="profile/rename"
+        ></tonk-editable>
+      </div>
+      <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
+      <div class="sect">passkeys</div>
+      <div class="srowd">
+        <b class="lft" data-settings-passkey-device>loading&hellip;</b>
+        <b data-settings-passkey-created></b>
+      </div>
+      <p class="expl">
+        Your passkey replaces a password and may be saved to a device, browser
+        profile, or password manager.
+      </p>
+      <div class="sect">delete data</div>
+      <p class="expl">
+        Account deletion and device removal live on the
+        <a class="cta" href="/settings">full account page</a> for now.
+      </p>
+    </div>
+    <div class="pane" data-pane="devices" hidden>
+      <div data-settings-devices></div>
+      <p class="expl">
+        Devices holding this account. Removing access clears the account from
+        that device &mdash; spaces stay with their members.
+      </p>
+    </div>
+  </div>
+</section>

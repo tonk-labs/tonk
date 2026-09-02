@@ -272,32 +272,40 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 }
 
 #[test]
-fn it_keeps_the_hub_on_the_complete_stone_token_contract() {
-    for token in [
-        "--panel:",
-        "--cur:var(--panel)",
-        "--card-hover:",
-        "--canvas:",
-        "--stub-ink:",
-        "--veil:",
-        "--track:",
+fn it_keeps_the_hub_on_the_shared_theme_tokens() {
+    // Colors live in ONE place — the theme block at the top of
+    // `tonk-ui/styles.css`, injected into every sealed guest. The hub must
+    // CONSUME the shared tokens without restating a palette of its own; a
+    // local literal here is the drift this contract exists to prevent.
+    for consumed in [
+        "background:var(--page)",
+        "color:var(--ink)",
+        "background:var(--cur)",
+        "var(--frost-solid)",
+        "var(--wash-p)",
     ] {
         assert!(
-            PROFILE_LIBRARY.contains(token),
-            "the Hub palette must define `{token}` in its shared contract",
+            PROFILE_LIBRARY.contains(consumed),
+            "the Hub must consume the shared theme token `{consumed}`",
+        );
+    }
+    for restated in [
+        "--page:#",
+        "--ink:#",
+        "--cur:#",
+        "--panel:#",
+        "--frost:rgba(",
+    ] {
+        assert!(
+            !PROFILE_LIBRARY.contains(restated),
+            "the Hub must not restate the palette locally (`{restated}`)",
         );
     }
 }
 
 #[test]
 fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
-    for contract in [
-        ".hubcol",
-        "width:min(576px, calc(100vw - 32px))",
-        ".hc-view",
-        ".hc-cfg",
-        "create a new space",
-    ] {
+    for contract in [".hubcol", "width:432px", ".hc-view", "create new space"] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the centered Hub launcher must contain `{contract}`",
@@ -314,22 +322,10 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
             "the centered Hub bar must reject `{rejected}`",
         );
     }
-    for (selector, width) in [
-        (".hc-acct {", "width:224px"),
-        (".hc-view {", "width:192px"),
-        (".hc-cfg {", "width:112px"),
-        (".hub-page .mode-cap {", "width:48px"),
-    ] {
+    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:288px")] {
         assert!(
             css_rule(PROFILE_LIBRARY, selector).contains(width),
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
-        );
-    }
-    let mode_cap = css_rule(PROFILE_LIBRARY, ".hub-page .mode-cap {");
-    for declaration in ["align-items:center", "justify-content:center", "padding:0"] {
-        assert!(
-            mode_cap.contains(declaration),
-            "the theme switch cell must center its mark with `{declaration}`",
         );
     }
     let rejected = "class=\"shead";
@@ -448,7 +444,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 #[test]
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
-        ".hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }",
+        ".hubbar, .hcell { height:44px; min-height:44px; }",
         ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
         ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
         ".edge-field, .ebtn, .ebtn.solid button { min-height:44px; }",

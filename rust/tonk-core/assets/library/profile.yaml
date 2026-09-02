@@ -175,43 +175,18 @@ view/directory!:
            more — but it is not this change's to delete.
            Chrome, and it runs on the same material as the FAB: a neutral
            page, 36px frost blocks with ink rings, lowercase condensed words
-           seated bottom-right, ink only. The bar's tokens are restated here
-           rather than shared, because the bar seals its own inside a shadow
-           root — a boundary custom properties would have to be invited
-           across one at a time. The two sets must agree; if the bar's
-           `skin.rs` changes, this changes with it.
+           seated bottom-right, ink only.
 
-           The dark twin keys off `.wa-dark` on the root, which is the app's
-           existing theme signal (set by index.html from the OS, overridden
-           by <ui-mode-switch>) — not a second signal of the Hub's own, which
-           would be free to disagree with the rest of the page. ── */
+           COLORS LIVE IN ONE PLACE: the theme block at the top of
+           `tonk-ui/styles.css` (stone·ink over the Web Awesome tokens,
+           light + dark). That stylesheet is injected into every sealed
+           guest, so `--page`, `--ink`, `--cur`, the frosts and the washes
+           all resolve here without being restated — one file recolors the
+           hub, the chrome and the app together, and the dark twin arrives
+           through the same `.wa-dark` swap with no block here. ── */
         .hub-page {
-          --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
-          --ring:rgba(56,24,42,.85); --sep:rgba(56,24,42,.28);
-          /* frost pre-composited over the flat page — a flat page blurs to
-             itself, so the rows get the same look with no filter. Only the
-             genuinely overlaying surfaces (the bar and account roster) wear
-             real glass. */
-          --frost:rgba(253,252,252,.72); --frost-solid:#f7f6f5;
-          --panel:#d0ccc8; --cur:var(--panel); --card:#fcfbfb; --card-hover:#eeedec;
-          --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
-          --wash-p:rgba(56,24,42,.16); --canvas:#e4e2e0; --stub-ink:#9f968e;
-          --veil:rgba(232,230,228,.9); --dim:rgba(56,24,42,.32);
-          --track:rgba(56,24,42,.22);
-          --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
-          --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
-          --ease:cubic-bezier(.25,.46,.45,.94);
           position:relative; min-height:100dvh; background:var(--page);
           color:var(--ink); font-family:var(--cond);
-        }
-        :root.wa-dark .hub-page {
-          --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
-          --ring:rgba(226,223,221,.55); --sep:rgba(226,223,221,.28);
-          --frost:rgba(29,24,25,.78); --frost-solid:#1b1718;
-          --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
-          --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15);
-          --wash-p:rgba(34,28,29,.14); --canvas:#1c1718; --stub-ink:#736265;
-          --veil:#161313; --dim:rgba(0,0,0,.45); --track:rgba(226,223,221,.25);
         }
         .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
         /* selection is chrome too — ink, never the browser's blue */
@@ -245,15 +220,18 @@ view/directory!:
         .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
           line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
-        /* ── centered launcher — one proportional grid, logo above it ── */
-        .hub-logo { position:absolute; top:clamp(62px,11vh,106px); left:50%; z-index:10;
-          transform:translateX(-50%); color:var(--ink); user-select:none; }
-        .hub-logo svg { display:block; width:132px; height:auto; }
-        .hubcol { position:relative; width:min(576px, calc(100vw - 32px));
-          margin-inline:auto; padding-top:clamp(148px,23vh,220px); }
+        /* ── centered launcher — the mark leads the column, in flow (a fixed
+           corner mark was the left anchor's partner, and the anchor is gone) ── */
+        .hub-logo { display:flex; justify-content:center; margin:48px 0 0;
+          color:var(--ink); user-select:none; }
+        .hub-logo svg { display:block; height:36px; width:auto; }
+        /* two cells now: account 144 · spaces 288 = 432 — the settings cell
+           left the bar for the account view (settings is an account place,
+           and under the name is where hands look for it). 432 is the sheet's
+           own cluster width, and the hub speaks it too. */
+        .hubcol { width:432px; margin:56px auto 120px; }
         .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
-          width:100%; height:36px; overflow:hidden; background:var(--frost);
-          -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
+          width:100%; height:36px; background:var(--frost-solid);
           box-shadow:0 0 0 1px var(--ring); }
         /* every word sits bottom-right on the 9px seat */
         .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
@@ -261,50 +239,112 @@ view/directory!:
           text-decoration:none; color:inherit; flex:none; }
         .hcell:hover { background:var(--wash); }
         .hcell:active { background:var(--wash-2); }
-        .hc-acct { width:224px; min-width:0; }
-        .hc-view { width:192px; border-left:1px solid var(--sep); }
-        .hc-cfg { width:112px; border-left:1px solid var(--sep);
-          padding-right:8px; padding-left:10px; }
-        .hc-acct[aria-current="page"], .hc-view[aria-current="page"],
-        .hc-cfg[aria-current="page"] {
-          background:var(--cur); }
+        /* the account cell flushes its name LEFT against the bar's end */
+        .hc-acct { width:144px; min-width:0; justify-content:flex-start; }
+        .hc-view { width:288px; border-left:1px solid var(--sep); }
+        /* the view you are in wears CURRENT (near-ink) — solid ink stays the
+           CTA register, so a tab never outshouts an action */
+        .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
+          background:var(--cur); color:var(--on-ink); }
+        .hc-acct[aria-current="page"]:hover, .hc-view[aria-current="page"]:hover,
+        .hc-acct[aria-current="page"]:active, .hc-view[aria-current="page"]:active {
+          background:linear-gradient(var(--wash-p),var(--wash-p)), var(--cur); }
+        /* unlinked, the account cell is the one door — solid ink, the
+           coloring is the CTA. It is also the one LOUD cell: the spaces tab
+           sheds its current coat beside it, because the CTA and the current
+           role converge in dark mode and two lit cells read as two actives
+           (the stack below already says where you are). */
+        ui-hub-account[data-active-provider="false"] .hc-acct {
+          background:var(--ink); color:var(--on-ink); }
+        ui-hub-account[data-active-provider="false"] .hc-acct:hover,
+        ui-hub-account[data-active-provider="false"] .hc-acct:active {
+          background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+        ui-hub-account[data-active-provider="false"] .hc-view[aria-current="page"] {
+          background:none; color:inherit; }
+        ui-hub-account[data-active-provider="false"] .hc-view[aria-current="page"]:hover {
+          background:var(--wash); }
         .hcell .g { font-size:14px; font-weight:500; }
-        .settings-icon { width:9px; height:9px; flex:none; }
-        /* The mode stays in the grid but reads as a half-lit circle, centred
-           inside its own cell instead of as a second sidebar glyph. */
-        .hub-page ui-mode-switch { display:flex; flex:none; }
-        .hub-page .mode-cap { display:flex; align-items:center; justify-content:center;
-          width:48px; height:36px; padding:0; flex:none;
-          border-left:1px solid var(--sep); background:var(--frost); }
-        .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
-        .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }
-        .hub-page .mode-mark { display:block; width:10px; height:10px; border-radius:50%;
-          background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);
-          box-shadow:0 0 0 1px var(--ink); }
+        .settings-icon { width:9px; height:9px; flex:none; margin-bottom:1px; }
 
-        /* ── account roster — a third attached view below the header ── */
+        /* ── the account view — the second tab's page: it REPLACES the
+           spaces list under the bar. The current account is the tab itself,
+           so the rows are only ways onward: settings first, one row per
+           other account carrying its switch verb, then the add door — the
+           page's one CTA, solid ink. ── */
         .hub-page ui-hub-account { position:relative; display:block; width:100%; }
         .account-trigger { overflow:hidden; }
         .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
           white-space:nowrap; text-transform:none; }
         .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
-          color:var(--ink); text-transform:none; }
+          color:var(--ink); }
         .account-menu[hidden] { display:none; }
         .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
-        .account-menu__row { display:flex; align-items:center; justify-content:space-between;
-          gap:12px; width:100%; min-height:36px; padding:8px 12px; text-align:left;
-          background:var(--frost-solid); font:inherit; color:inherit;
-          box-shadow:0 0 0 1px var(--ring);
-          overflow-wrap:anywhere; transition-property:scale; transition-duration:150ms;
-          transition-timing-function:ease-out; }
-        button.account-menu__row:hover { background:var(--wash); }
-        button.account-menu__row:active { background:var(--wash-2); scale:.96; }
-        .account-menu__profile[aria-current="true"] { color:var(--soft); }
-        .account-menu__current { flex:none; font-size:13px; text-transform:lowercase; }
+        .account-menu__profiles:empty { display:none; }
+        .account-menu__row { display:flex; align-items:flex-end; justify-content:flex-end;
+          gap:8px; width:100%; min-height:36px; padding:0 10px 9px 16px; text-align:left;
+          background:var(--frost-solid); font:inherit; color:inherit; cursor:pointer;
+          box-shadow:0 0 0 1px var(--ring); }
+        .account-menu__row:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+        .account-menu__row:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
+        /* the name holds the left end; user words ride untouched */
+        .account-menu__row .an { margin-right:auto; text-transform:none;
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+          padding-bottom:4px; margin-bottom:-4px; }
+        .account-menu__row .g { font-size:14px; font-weight:500; }
+        /* the add door — the page's one CTA */
+        .account-menu__row--ink { background:var(--ink); color:var(--on-ink);
+          box-shadow:0 0 0 1px var(--ink); }
+        .account-menu__row--ink:hover, .account-menu__row--ink:active {
+          background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
         .account-menu__error { padding:10px 12px; background:var(--frost-solid);
           color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
           text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
         .account-menu__error[hidden] { display:none; }
+
+        /* ── settings — a page of the account tab (the wireframe's reading):
+           the stack steps aside and the section hangs from the same bar.
+           The rail is a run of boxy tabs ABOVE the body; the current rail
+           item is a folder tab — same surface as the body, seam erased. ── */
+        .settings { display:flex; flex-direction:column; align-items:stretch;
+          margin-top:7px; }
+        .settings[hidden] { display:none; }
+        .s-rail { display:flex; gap:7px; }
+        .s-rail .blk { flex:1; height:36px; display:flex; align-items:flex-end;
+          justify-content:flex-end; padding:0 12px 9px; cursor:pointer;
+          font-size:13px; background:var(--frost-solid);
+          box-shadow:0 0 0 1px var(--ring); }
+        .s-rail .blk:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+        /* the plug — the current tab erases the body's border where they
+           fuse: an explicit 1px cover, not negative-margin arithmetic */
+        .s-rail .blk.cur { background:var(--panel); box-shadow:none;
+          border:1px solid var(--ring); border-bottom:0; position:relative;
+          z-index:1; cursor:default; }
+        .s-rail .blk.cur::after { content:""; position:absolute; left:0; bottom:-1px;
+          width:100%; height:1px; background:var(--panel); }
+        .s-body { min-width:0; min-height:min(408px, 55vh); max-height:60vh;
+          overflow:auto; padding:8px 18px 18px; background:var(--panel);
+          border:1px solid var(--ring);
+          font-family:var(--sans); font-weight:400; font-size:13.5px;
+          line-height:1.4; text-transform:none; color:var(--soft); }
+        .pane[hidden] { display:none; }
+        .srowd { display:flex; justify-content:space-between; align-items:baseline;
+          gap:16px; padding:9px 0; }
+        .srowd b { font-family:var(--cond); font-weight:600; font-size:13.5px;
+          color:var(--ink); text-align:right; white-space:nowrap; }
+        .srowd b.lft { text-align:left; white-space:normal; }
+        .sect { margin-top:18px; padding-bottom:7px; font-family:var(--cond);
+          font-weight:600; font-size:13px; letter-spacing:.02em;
+          text-transform:lowercase; color:var(--ink);
+          border-bottom:1px solid var(--sep); }
+        .expl { margin:6px 0 0; font-size:13px; line-height:1.55; max-width:460px; }
+        /* the underline IS the link */
+        .cta { font-family:var(--cond); font-weight:600; font-size:13px;
+          color:var(--ink); text-transform:lowercase; white-space:nowrap;
+          display:inline-block; cursor:pointer; text-decoration:underline;
+          text-underline-offset:3px; }
+        .cta:hover { text-decoration-thickness:2px; }
+        .sname { font-family:var(--cond); font-weight:600; font-size:13.5px;
+          color:var(--ink); text-align:right; min-width:6ch; }
 
         /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
         .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
@@ -382,30 +422,14 @@ view/directory!:
           .srow .n { max-width:calc(100% - 150px); }
         }
         @media (max-width:640px) {
-          .hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }
+          .hub-logo { margin-top:20px; }
+          .hub-logo svg { height:28px; }
+          .hubcol { width:calc(100vw - 32px); margin:40px auto 120px; }
+          /* account holds its 144; the spaces cell follows the column */
+          .hc-view { width:auto; flex:1; min-width:0; }
+          .hubbar, .hcell { height:44px; min-height:44px; }
           .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
           .m-cancel, .m-go { min-height:44px; }
-        }
-        @media (max-width:607px) {
-          .hubcol { width:min(432px, calc(100vw - 32px)); }
-          .hc-acct { width:168px; }
-          .hc-view { width:144px; }
-          .hc-cfg { width:76px; }
-          .hub-page .mode-cap { width:44px; flex:0 0 44px; }
-        }
-        @media (max-width:519px) {
-          .hub-logo { top:62px; }
-          .hub-logo svg { width:98px; }
-          .hubcol { padding-top:132px; }
-        }
-        @media (max-width:463px) {
-          .hc-acct { width:50%; }
-          .hc-view { width:auto; flex:1; }
-          .hc-cfg, .hub-page .mode-cap { width:44px; flex:0 0 44px; }
-          .hc-cfg { justify-content:center; padding-inline:0; }
-          .settings-word { position:absolute; width:1px; height:1px; padding:0;
-            margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
-            border:0; }
         }
       </style>
 
@@ -452,7 +476,7 @@ view/directory!:
              registers stays local until it is shared. -->
         <form class="snew-form" onsubmit=space/create>
           <input type="hidden" name="name" value="Untitled">
-          <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
+          <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
         </form>
       </div>
 

@@ -2926,9 +2926,33 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
 
-        // The word on the control, before anything is linked.
+        // The word on the control, before anything is linked — a plain
+        // action, so it must not dress up as a dropdown: no caret ever
+        // (the cell is a tab of the hub bar), no menu-button ARIA.
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+        let affordance = driver
+            .execute(
+                r##"
+                const trigger = document.querySelector("[data-account-trigger]");
+                return {
+                    haspopup: trigger ? trigger.getAttribute("aria-haspopup") : "no trigger",
+                    caret: !!(trigger && trigger.querySelector(".g")),
+                };
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            affordance.json()["haspopup"],
+            serde_json::Value::Null,
+            "the link-an-account trigger is not a menu button",
+        );
+        assert_eq!(
+            affordance.json()["caret"],
+            false,
+            "the account cell draws no dropdown caret",
+        );
 
         // One press. The Hub is a sealed guest, so the cluster it asks
         // for is raised by the TOP page — which is also why pressing it
@@ -2943,6 +2967,50 @@ mod tests {
             before,
             "linking an account happens in place, with no page in between",
         );
+
+        // Finish the ceremony the cluster raised. The Hub is never
+        // reloaded from here on, so what the trigger shows next can only
+        // come from its live account-name subscription.
+        type_into_register_dialog(&driver, "hub-one-step@example.com").await?;
+        await_register_action(&driver, "create a passkey").await?;
+        click_register_action(&driver).await?;
+        await_settled_row(&driver, "passkey").await?;
+        await_narrator_containing(&driver, "confirmation link").await?;
+
+        // The label flips from the offer to the member's name without a
+        // reload, and the trigger becomes the account-menu button.
+        enter_hub(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let state = driver
+                .execute(
+                    r##"
+                    const trigger = document.querySelector("[data-account-trigger]");
+                    const label = trigger && trigger.querySelector("[data-account-label]");
+                    return {
+                        label: label ? label.textContent : "",
+                        haspopup: trigger ? trigger.getAttribute("aria-haspopup") : null,
+                    };
+                    "##,
+                    Vec::new(),
+                )
+                .await?;
+            let label = state.json()["label"].as_str().unwrap_or("").to_owned();
+            if !label.is_empty() && label != "link an account" {
+                assert_eq!(
+                    state.json()["haspopup"].as_str(),
+                    Some("menu"),
+                    "a linked trigger is the account-menu button again",
+                );
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the trigger still reads {label:?}: the account-name subscription \
+                 never delivered the linked name",
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
 
         driver.quit().await?;
         Ok(())
@@ -4892,7 +4960,7 @@ mod tests {
         wait_for_displayed(&driver, ".snew").await?;
         let create_action = element(&driver, ".snew").await?.text().await?;
         assert!(
-            create_action.contains("create a new space"),
+            create_action.contains("create new space"),
             "an empty Hub roster must show the creation action: {create_action:?}"
         );
         assert!(

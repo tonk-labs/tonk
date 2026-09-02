@@ -41,9 +41,6 @@ mod ui_copy_link;
 mod ui_dropdown;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_hub_account;
-/// `<ui-mode-switch>` — the light/dark cap.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_mode_switch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_space_remove;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -62,7 +59,6 @@ pub fn register() {
     sync::register();
     ui_sync_status::register();
     ui_dropdown::register();
-    ui_mode_switch::register();
     ui_copy_link::register();
     ui_hub_account::register();
     ui_space_remove::register();
