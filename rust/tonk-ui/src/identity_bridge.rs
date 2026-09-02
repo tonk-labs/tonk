@@ -1,28 +1,11 @@
 //! Typed boundary to the top-document passkey ceremony API.
 
 use js_sys::{Function, Promise, Reflect};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-
-/// Where the custody assertion that recovers the account root resolves
-/// its sealed secret: the page's own `/ucan/` endpoint.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SignAccountPurgeInput {
-    pub endpoint: String,
-}
-
-/// The root-signed `/void/customer/purge`, ready for the worker to
-/// present, and the root that signed it.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SignedAccountPurge {
-    pub invocation_hex: String,
-    pub root_did: String,
-}
 
 /// Stable failures produced at the JavaScript identity boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -116,7 +99,7 @@ pub(crate) struct PublishEncryptionKeyInput {
 }
 
 /// The account's X25519 recipient, derived through one assertion.
-#[derive(serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishedEncryptionKey {
     pub encryption_key: String,
@@ -126,46 +109,6 @@ pub(crate) async fn publish_encryption_key(
     input: PublishEncryptionKeyInput,
 ) -> Result<PublishedEncryptionKey, IdentityBridgeError> {
     call("publishEncryptionKey", input).await
-}
-
-/// Input for [`authorize_device`].
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AuthorizeDeviceInput {
-    /// The device the account should delegate to.
-    pub device_did: String,
-    /// The account repository's remote, so the descriptor names it.
-    pub remote: String,
-    /// The access service's `/ucan/` endpoint the custody cell
-    /// resolves through.
-    pub endpoint: String,
-}
-
-/// What the ceremony hands back for delivery to a waiting device.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AuthorizedDevice {
-    /// The account root that issued the grant.
-    pub root_did: String,
-    /// Hex-encoded `account → device` delegation chain.
-    pub delegation_hex: String,
-    /// Exact signed account repository descriptor.
-    pub descriptor_hex: String,
-}
-
-pub(crate) async fn authorize_device(
-    input: AuthorizeDeviceInput,
-) -> Result<AuthorizedDevice, IdentityBridgeError> {
-    call("authorizeDevice", input).await
-}
-
-/// Recover the account root through its passkey and sign the purge
-/// with it. The ceremony is the whole authority: the worker presents
-/// what comes back and signs nothing itself.
-pub(crate) async fn sign_account_purge(
-    input: SignAccountPurgeInput,
-) -> Result<SignedAccountPurge, IdentityBridgeError> {
-    call("signAccountPurge", input).await
 }
 
 #[cfg(test)]
@@ -184,25 +127,25 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
     }
 
-    fn purge_input() -> SignAccountPurgeInput {
-        SignAccountPurgeInput {
+    fn key_input() -> PublishEncryptionKeyInput {
+        PublishEncryptionKeyInput {
             endpoint: "https://tonk.example/ucan/".into(),
+            credential_id: None,
         }
     }
 
-    /// The ceremony hands back the signed purge and the root that
-    /// signed it, camel-cased the way every ceremony output is.
+    /// The ceremony hands back the account's recipient, camel-cased the
+    /// way every ceremony output is.
     #[dialog_common::test]
-    async fn it_decodes_the_signed_purge() {
+    async fn it_decodes_the_published_key() {
         install_method(
-            "signAccountPurge",
-            "return Promise.resolve({ invocationHex: 'abcd', rootDid: 'did:key:zRoot' });",
+            "publishEncryptionKey",
+            "return Promise.resolve({ encryptionKey: 'did:key:z6LSkey' });",
         );
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap(),
-            SignedAccountPurge {
-                invocation_hex: "abcd".into(),
-                root_did: "did:key:zRoot".into(),
+            publish_encryption_key(key_input()).await.unwrap(),
+            PublishedEncryptionKey {
+                encryption_key: "did:key:z6LSkey".into(),
             }
         );
     }
@@ -212,53 +155,53 @@ mod tests {
         let window = web_sys::window().unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Unavailable
         );
 
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
-            IdentityBridgeError::MissingMethod("signAccountPurge")
+            publish_encryption_key(key_input()).await.unwrap_err(),
+            IdentityBridgeError::MissingMethod("publishEncryptionKey")
         );
 
         let identity = js_sys::Object::new();
-        Reflect::set(&identity, &"signAccountPurge".into(), &42.into()).unwrap();
+        Reflect::set(&identity, &"publishEncryptionKey".into(), &42.into()).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
-            IdentityBridgeError::NotCallable("signAccountPurge")
+            publish_encryption_key(key_input()).await.unwrap_err(),
+            IdentityBridgeError::NotCallable("publishEncryptionKey")
         );
 
-        install_method("signAccountPurge", "return {};");
+        install_method("publishEncryptionKey", "return {};");
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::NotPromise
         );
 
         install_method(
-            "signAccountPurge",
+            "publishEncryptionKey",
             "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
         );
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected(
                 "NotSupportedError: phone authenticator returned no PRF".into()
             )
         );
 
         install_method(
-            "signAccountPurge",
+            "publishEncryptionKey",
             "return Promise.reject('provider unavailable'); ",
         );
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
-        install_method("signAccountPurge", "return Promise.resolve({});");
+        install_method("publishEncryptionKey", "return Promise.resolve({});");
         assert_eq!(
-            sign_account_purge(purge_input()).await.unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::MalformedOutput
         );
     }

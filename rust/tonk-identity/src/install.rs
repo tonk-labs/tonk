@@ -334,33 +334,6 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
-/// `signAccountPurge({ endpoint })` → `{ invocationHex, rootDid }`.
-///
-/// The passkey recovers the account root through a custody assertion,
-/// and the root signs `/void/customer/purge` over itself. Nothing is
-/// submitted here: the page hands the invocation to the worker, which
-/// presents it and then clears its own state on the receipt.
-async fn sign_account_purge(input: JsValue) -> Result<JsValue, JsValue> {
-    use dialog_varsig::Principal as _;
-
-    let endpoint = string_property(&input, "endpoint")?;
-    let root = crate::ceremony::unlock_root(&endpoint)
-        .await
-        .map_err(js_error)?;
-    let root_did = root.did().to_string();
-    let invocation = crate::request::build_purge_invocation(root)
-        .await
-        .map_err(js_error)?;
-    let result = Object::new();
-    Reflect::set(
-        &result,
-        &"invocationHex".into(),
-        &hex::encode(invocation).into(),
-    )?;
-    Reflect::set(&result, &"rootDid".into(), &root_did.into())?;
-    Ok(result.into())
-}
-
 /// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
 /// one assertion — pinned to `credentialId` (hex) when the root record
 /// carries one — and the account's X25519 recipient. The page saves it
@@ -456,16 +429,6 @@ pub fn install() {
     );
     sign_revocation.forget();
 
-    let sign_account_purge = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(sign_account_purge(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"signAccountPurge".into(),
-        sign_account_purge.as_ref().unchecked_ref(),
-    );
-    sign_account_purge.forget();
-
     let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(create_passkey(input))
     });
@@ -515,7 +478,6 @@ mod tests {
             "addPasskey",
             "authorizeDevice",
             "signRevocation",
-            "signAccountPurge",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

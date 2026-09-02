@@ -557,9 +557,7 @@ pub fn close() {
         // banner never appears. A plain cancel changed nothing, and
         // must not re-read: the re-render would replace the very
         // opener this close is about to restore focus to.
-        if ANNOUNCED.with(|announced| announced.replace(false)) {
-            crate::account::resettle();
-        }
+        ANNOUNCED.with(|announced| announced.set(false));
         finish_action();
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {
@@ -1270,9 +1268,8 @@ pub(crate) fn is_plausible(email: &str) -> bool {
 pub(crate) fn check_email_claim(email: &str) -> serde_json::Value {
     claim("Ask whether an address is registered.", email)
 }
-
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// The `account/register` claim.
+#[cfg(test)]
 pub(crate) fn register_claim(email: &str) -> serde_json::Value {
     let mut claim = claim("Register an account for this address.", email);
     // The marker is what makes this a REGISTRATION and not a lookup.
@@ -1560,12 +1557,12 @@ pub(crate) fn run_signup_ceremony() {
     // passkey providers require the WebAuthn request to consume the tap's
     // transient user activation synchronously; the worker handoff can finish
     // later. Account creation still follows its separate preparation path.
-    let login = existing.then(|| crate::account::begin_login_ceremony(set_status));
+    let login = existing.then(|| crate::ceremony::begin_login_ceremony(set_status));
     wasm_bindgen_futures::spawn_local(async move {
         let outcome = match login {
             Some(Ok(mediation)) => mediation.finish().await,
             Some(Err(error)) => Err(error),
-            None => crate::account::run_account_ceremony(&email, set_status).await,
+            None => crate::ceremony::run_account_ceremony(&email, set_status).await,
         };
         match outcome {
             // The account exists and registered, but nobody has opened
@@ -1586,7 +1583,6 @@ pub(crate) fn run_signup_ceremony() {
                     tonk_analytics::account::Stage::ActivationWait,
                     problem.outcome,
                 );
-                crate::account_observability::mark_settle_pending();
                 tonk_common::log!("register: the account awaits its email confirmation");
                 hide_action();
                 add_row(
@@ -1670,7 +1666,6 @@ pub(crate) fn run_signup_ceremony() {
                             tonk_analytics::account::FailureKind::AwaitingActivation,
                         ),
                     );
-                    crate::account_observability::mark_settle_pending();
                     // What happens next arrives as facts: the emailed
                     // link lands `AccountCustomer`, and the subscription
                     // renders it. Nothing here polls for it.

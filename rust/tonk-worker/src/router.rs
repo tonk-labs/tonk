@@ -18,6 +18,7 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 mod account;
 mod account_deletion;
+mod ceremony;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;
@@ -174,7 +175,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/delete", post(account_deletion::delete))
         .route(
             "/api/account/spaces/delete",
             post(account_deletion::delete_space),

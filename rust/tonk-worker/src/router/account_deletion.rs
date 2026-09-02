@@ -1,5 +1,8 @@
 //! Account deletion: a review read from the account db, one root-signed
-//! purge presented to the access service, then local cleanup.
+//! purge presented to the access service, then local cleanup. The purge
+//! is a command the hub asserts; the passkey that signs it is asked for
+//! through the custody relay, and the worker signs with the root it
+//! recovers.
 
 use std::collections::BTreeSet;
 
@@ -9,16 +12,16 @@ use axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-use dialog_ucan_core::InvocationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_identity::request::PURGE_COMMAND;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_common::log;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{
-    AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDeletionSpace,
-    AccountSpaceDeletionRequest, HostedSpaceDeletionResult,
+    AccountDeletionPlan, AccountDeletionSpace, AccountSpaceDeletionRequest,
+    HostedSpaceDeletionResult,
 };
 
 use super::AppState;
@@ -130,69 +133,203 @@ pub async fn delete_space(
     }))
 }
 
-/// POST `/api/account/delete` presents the page's root-signed purge.
+/// `tonk:delete-account`: check the retyped address, then ask the page
+/// for the passkey. The purge itself runs in [`purge`] once the
+/// handles arrive.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct DeleteAccountHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl DeleteAccountHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::DeleteAccount::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_deletion(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use crate::reactor::Decode as _;
+    facts
+        .first()
+        .map(|artifact| artifact.of.clone())
+        .and_then(|entity| tonk_schema::command::DeleteAccount::decode(entity, facts))
+        .map(|command| command.email.0)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for DeleteAccountHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        decode_deletion(facts).is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use tonk_schema::{ceremony, ceremony_state};
+
+        let email = decode_deletion(facts);
+        let env = env.clone();
+        Box::pin(async move {
+            let Some(email) = email else {
+                return;
+            };
+            {
+                let tonk = env.state().read().await;
+                let plan = match load_plan(&tonk).await {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        super::ceremony::report(
+                            &tonk,
+                            ceremony::DELETE_ACCOUNT,
+                            ceremony_state::REFUSED,
+                            &error.to_string(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                if email.trim() != plan.email {
+                    super::ceremony::report(
+                        &tonk,
+                        ceremony::DELETE_ACCOUNT,
+                        ceremony_state::REFUSED,
+                        "the confirmation email does not match this account",
+                    )
+                    .await;
+                    return;
+                }
+            }
+            super::ceremony::ask_for_passkey(
+                &env,
+                ceremony::DELETE_ACCOUNT,
+                tonk_worker_api::CustodyIntent::PurgeAccount(Default::default()),
+            )
+            .await;
+        })
+    }
+}
+
+/// Purge the account the passkey holds.
 ///
-/// One invocation: the access service denies every consumer the account
-/// provides in a single write and takes the data and the rows from
-/// there, so nothing here loops over spaces or orders service calls.
-/// Presenting it again after it succeeded is still a purge of a
-/// customer that is gone, which the service answers the same way.
-#[wasm_compat]
-pub async fn delete(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-    Json(request): Json<AccountDeletionRequest>,
-) -> Result<Json<AccountDeletionResult>, TonkWorkerError> {
+/// One invocation: the root the custody cell opens signs
+/// `/void/customer/purge`, the access service denies every consumer the
+/// account provides in a single write and takes the data and rows from
+/// there, and this device removes its replicas, retires the profile,
+/// and moves onto a fresh one. Presenting the purge again after it
+/// succeeded is still a purge of a customer that is gone, which the
+/// service answers the same way.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn purge(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<(), String> {
+    use tonk_schema::{ceremony, ceremony_state};
+
+    let outcome = purge_inner(state, custodian).await;
+    let tonk = state.read().await;
+    match &outcome {
+        Ok(()) => {
+            super::ceremony::report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::DONE, "/")
+                .await
+        }
+        Err(error) => {
+            super::ceremony::report(
+                &tonk,
+                ceremony::DELETE_ACCOUNT,
+                ceremony_state::FAILED,
+                error,
+            )
+            .await
+        }
+    }
+    outcome
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn purge_inner(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<(), String> {
+    use dialog_varsig::Principal as _;
+    use tonk_schema::{ceremony, ceremony_state};
+
     let current = {
-        let state = state.read().await;
-        load_plan(&state).await?
+        let tonk = state.read().await;
+        super::ceremony::report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::WORKING, "").await;
+        load_plan(&tonk).await.map_err(|error| error.to_string())?
     };
-    if request.confirmed_email != current.email {
-        return Err(TonkWorkerError::Forbidden(
-            "the confirmed email does not match the account's verified email".into(),
-        ));
+    let account = super::custody::held_account(custodian).await?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    if root.did().to_string() != current.root_did {
+        return Err("this passkey belongs to a different account".into());
     }
-    // The page signed it; the worker only checks it is the purge of
-    // THIS account before forwarding, so a stray invocation cannot be
-    // laundered through this route.
-    let invocation = hex::decode(&request.invocation_hex)
-        .map_err(|error| TonkWorkerError::Forbidden(format!("purge is not hex: {error}")))?;
-    let chain = InvocationChain::try_from(invocation.as_slice())
-        .map_err(|error| TonkWorkerError::Forbidden(format!("purge is malformed: {error}")))?;
-    if chain.subject().to_string() != current.root_did
-        || chain.command().0 != PURGE_COMMAND.map(str::to_string)
-    {
-        return Err(TonkWorkerError::Forbidden(
-            "the signed purge does not name this account".into(),
-        ));
-    }
-    let ucan = super::customer::ucan_endpoint(origin.url())?;
-    super::http::post_cbor(&ucan, &invocation).await?;
+    let invocation = tonk_identity::request::build_purge_invocation(root)
+        .await
+        .map_err(|error| format!("the purge did not sign: {error:#}"))?;
+    let ucan = super::customer::ucan_endpoint(
+        &super::customer::service_origin().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    super::http::post_cbor(&ucan, &invocation)
+        .await
+        .map_err(|error| format!("the service did not purge the account: {error}"))?;
 
     // The service has nothing of the account's any more; neither should
     // this device.
     for space in &current.spaces {
-        let subject: dialog_varsig::Did = space.subject.parse().map_err(|error| {
-            TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
-        })?;
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        super::repository::remove_space_inner(&state, &subject).await?;
-        let state = state.read().await;
-        super::customer::retract_space_provider(&state, &subject).await;
+        let subject: dialog_varsig::Did = space
+            .subject
+            .parse()
+            .map_err(|error| format!("reviewed space DID became invalid: {error:?}"))?;
+        super::repository::remove_space_inner(state, &subject)
+            .await
+            .map_err(|error| format!("the local replica of {subject} was not removed: {error}"))?;
+        let tonk = state.read().await;
+        super::customer::retract_space_provider(&tonk, &subject).await;
     }
-    {
-        let current_state = state.read().await;
-        super::customer::clear_customer(&current_state).await?;
-    }
-    let _ = super::account::unlink(State(state.clone())).await?;
+    let retired = {
+        let tonk = state.read().await;
+        super::customer::clear_customer(&tonk)
+            .await
+            .map_err(|error| error.to_string())?;
+        tonk.profile.did()
+    };
+    let _ = super::account::unlink(State(state.clone()))
+        .await
+        .map_err(|error| format!("the profile did not unlink: {error}"))?;
     // Permanent deletion retires this account's profile rather than
-    // rebinding its retained joined spaces and delegations to another root.
-    // Unlike ordinary sign-out, finish on a fresh profile so the released
-    // email can immediately create a genuinely new account.
-    let _ = super::profiles::add(State(state.clone())).await?;
-
-    Ok(Json(AccountDeletionResult {
-        deleted_spaces: current.spaces.len(),
-        retained_joined_spaces: current.joined_spaces,
-    }))
+    // rebinding its retained joined spaces and delegations to another
+    // root. A retired profile that holds nothing is forgotten outright;
+    // one that still holds joined spaces stays listed as a local
+    // workspace so they remain reachable.
+    if current.joined_spaces == 0 {
+        let tonk = state.read().await;
+        if let Err(error) = tonk
+            .registry
+            .remove_roster(&tonk.storage, &tonk.operator, &retired)
+            .await
+        {
+            log!("delete-account: the retired profile stays listed: {error}");
+        }
+    }
+    // Finish on a fresh profile so the released email can immediately
+    // create a genuinely new account.
+    let _ = super::profiles::add(State(state.clone()))
+        .await
+        .map_err(|error| format!("a fresh profile did not open: {error}"))?;
+    Ok(())
 }

@@ -1489,6 +1489,7 @@ pub(crate) async fn record_test_customer(
     record_customer_status(state, status, EMAIL, provider).await
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn clear_customer(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {

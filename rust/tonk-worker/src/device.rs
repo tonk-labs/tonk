@@ -27,6 +27,7 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
+use tonk_schema::prelude::DidExt as _;
 
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, DefaultSpace};
@@ -339,6 +340,42 @@ impl Registry {
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to save the profile roster: {error}"))
             })
+    }
+
+    /// Forget `profile`: drop its roster entry so the switcher stops
+    /// listing it. Its storage is left alone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) async fn remove_roster(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        operator: &DefaultOperator,
+        profile: &Did,
+    ) -> Result<(), TonkWorkerError> {
+        let branch = self.roster_branch(storage, operator).await?;
+        let entries: Vec<DeviceProfile> = branch
+            .query()
+            .select(Query::<DeviceProfile> {
+                this: Term::from(profile.this()),
+                name: Term::var("name"),
+            })
+            .perform(operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to read the profile roster: {error:?}"))
+            })?;
+        for entry in entries {
+            branch
+                .transaction()
+                .retract(entry)
+                .commit()
+                .perform(operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("failed to forget the profile: {error}"))
+                })?;
+        }
+        Ok(())
     }
 
     /// Generate a fresh profile and make it the active one.

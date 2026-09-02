@@ -61,28 +61,6 @@ pub struct AccountSpaceDeletionRequest {
     pub subject: String,
 }
 
-/// A signed account purge. The page's passkey ceremony recovers the
-/// account root and signs `/void/customer/purge` with it; the worker
-/// presents that invocation and clears its own state on the receipt.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountDeletionRequest {
-    /// Hex-encoded root-signed purge invocation container.
-    pub invocation_hex: String,
-    /// The account email the person retyped to confirm the deletion.
-    pub confirmed_email: String,
-}
-
-/// Completed service-account deletion result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountDeletionResult {
-    /// Number of owned hosted spaces whose purge was confirmed.
-    pub deleted_spaces: usize,
-    /// Joined spaces deliberately left intact locally and on their owners' services.
-    pub retained_joined_spaces: usize,
-}
-
 /// Receipt for deleting one owned hosted space without deleting its account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

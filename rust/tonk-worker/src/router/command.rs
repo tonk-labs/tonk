@@ -142,6 +142,11 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::customer::EnrollCustomerHandler::new()));
         registry.register(Box::new(super::customer::ResendActivationHandler::new()));
         registry.register(Box::new(super::session::LoadHandler::new()));
+        registry.register(Box::new(
+            super::account_deletion::DeleteAccountHandler::new(),
+        ));
+        registry.register(Box::new(super::ceremony::AuthorizeDeviceHandler::new()));
+        registry.register(Box::new(super::ceremony::AddPasskeyHandler::new()));
         registry
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
