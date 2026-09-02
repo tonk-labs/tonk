@@ -174,7 +174,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/delete", post(account_deletion::delete))
+        .route(
+            "/api/account/delete",
+            post(account_deletion::delete_unavailable),
+        )
         .route(
             "/api/account/spaces/delete",
             post(account_deletion::delete_space),
@@ -1189,6 +1192,65 @@ pub mod tests {
             "expected 2xx from POST /api/repository/{}/invite, got {}",
             repo,
             status,
+        );
+    }
+
+    /// Whole-account deletion is deliberately fail-closed until its passkey
+    /// assertion produces a root-signed, replay-safe authorization. The
+    /// public worker seam must refuse even a syntactically valid direct POST;
+    /// hiding the Settings button alone would leave the destructive route
+    /// callable by same-origin page code.
+    #[dialog_common::test]
+    async fn direct_account_deletion_is_unavailable_without_changing_local_state() {
+        let original = test_state_without_root().await;
+        let original_profile = original.profile_name.clone();
+        let (app, state, _lsp) = crate::api_router_with_state(original);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/account/delete")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .extension(
+                        crate::axum::RequestOrigin::parse("https://local.example/settings")
+                            .expect("valid origin"),
+                    )
+                    .body(Body::from(
+                        serde_json::json!({
+                            "spaces": [],
+                            "confirmedEmail": "victim@example.com",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["kind"], "account_state_unavailable");
+        assert_eq!(
+            body["error"]["message"],
+            "Secure account deletion is temporarily unavailable. No account, spaces, or local data were changed."
+        );
+
+        let state = state.read().await;
+        assert_eq!(state.profile_name, original_profile);
+        assert!(
+            crate::router::identity::load_record(&state)
+                .await
+                .unwrap()
+                .is_none(),
+            "the refused request must not create or replace a local root"
+        );
+        assert!(
+            crate::router::account::provider(&state).await.is_none(),
+            "the refused request must not attach or clear an account provider"
         );
     }
 

@@ -175,6 +175,23 @@ pub async fn delete_space(
 }
 
 /// POST `/api/account/delete` executes a previously reviewed passkey ceremony.
+///
+/// Whole-account deletion is fail-closed while its passkey ceremony is only a
+/// UI gesture and the worker can otherwise mint destructive device-signed
+/// requests on a direct POST. This handler deliberately has no state, origin,
+/// or body extractor: Axum returns the refusal before profile activation,
+/// inventory reads, or any local/remote effect. Keep [`delete`] intact for the
+/// root-signed, replay-safe follow-up.
+#[wasm_compat]
+pub async fn delete_unavailable() -> Result<Json<AccountDeletionResult>, TonkWorkerError> {
+    Err(TonkWorkerError::AccountStateUnavailable(
+        "Secure account deletion is temporarily unavailable. No account, spaces, or local data were changed."
+            .into(),
+    ))
+}
+
+/// Preserved deletion orchestration, not routed until the worker can verify
+/// and consume a root-signed authorization bound to its exact plan.
 #[wasm_compat]
 pub async fn delete(
     State(state): State<AppState>,

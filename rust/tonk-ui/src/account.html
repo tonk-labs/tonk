@@ -123,11 +123,11 @@
           </div>
 
           <div id="account-delete-title" class="account__section-label">delete account</div>
-          <p id="account-delete-description" class="account__explanation">Deleting this account permanently removes its hosted spaces, backups, and registrations.</p>
+          <p id="account-delete-description" class="account__explanation">Secure account deletion is temporarily unavailable while Tonk strengthens its authorization. Your account, spaces, and local data are unchanged.</p>
           <div id="delete-account" class="account__row account__row--action account__row--end">
-            <button id="account-delete-review" class="account__link" type="button" aria-describedby="account-delete-description account-delete-boundary">delete account permanently</button>
+            <button id="account-delete-review" class="account__link" type="button" aria-describedby="account-delete-description account-delete-boundary" data-account-deletion-unavailable disabled>account deletion temporarily unavailable</button>
           </div>
-          <p id="account-delete-boundary" class="account__explanation">Spaces created by other people will not be deleted. Tonk cannot erase copies already replicated to other devices.</p>
+          <p id="account-delete-boundary" class="account__explanation">No deletion request will be sent. You can still review deletion of an individual owned space from that space's settings. Spaces created by other people will not be deleted, and Tonk cannot erase copies already replicated to other devices.</p>
         </section>
 
         <section id="account-pane-devices" class="account__pane" data-account-pane="devices" role="tabpanel" aria-labelledby="account-tab-devices" hidden>

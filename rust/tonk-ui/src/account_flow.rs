@@ -109,6 +109,17 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let found = element(driver, selector).await?;
+            let interactable = found.is_displayed().await.unwrap_or(false)
+                && found.is_enabled().await.unwrap_or(false);
+            if !interactable {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(anyhow!(
+                        "timed out waiting for `{selector}` to be displayed and enabled"
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             match found.click().await {
                 Ok(()) => return Ok(()),
                 Err(error) if tokio::time::Instant::now() < deadline => {
@@ -2052,7 +2063,8 @@ mod tests {
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
-        element(&driver, "[role=alertdialog]").await?;
+        wait_for_displayed(&driver, "[role=alertdialog]").await?;
+        wait_for_text(&driver, "#account-confirm-title", "sign out on this device").await?;
         click(&driver, "#account-delete-submit").await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
@@ -5095,28 +5107,137 @@ mod tests {
         Ok(())
     }
 
-    /// The full deletion stack under the button: plan review, email
-    /// confirmation, device-signed deprovisioning of every owned
-    /// hosted space, and both account-level finalizations. Only the
-    /// passkey user-verification gesture is UI-side and out of scope;
-    /// everything destructive runs here exactly as in production.
+    /// Whole-account deletion is unavailable until the worker can consume a
+    /// root-signed, replay-safe authorization. Exercise the visible and direct
+    /// refusals against a real hosted space, then reuse that fixture to prove
+    /// the supported exact-space review remains operable on a short viewport.
     #[dialog_common::test]
-    async fn it_keeps_destructive_dialog_controls_inside_a_short_mobile_viewport(
+    async fn it_fails_closed_on_account_deletion_while_exact_space_review_stays_usable(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
-        let email = "short-mobile@example.com";
+        let email = "guarded-deletion@example.com";
         sign_up(&driver, &env, email).await?;
 
+        let key = create_space_awaiting_remote(&driver, "Doomed Garden", true).await?;
+        let pushed = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push synced space", &pushed);
+
+        let plan = get_json(&driver, "/api/account/deletion/plan").await?;
+        let plan = successful_body("review the deletion plan", &plan);
+        assert_eq!(plan["email"], email, "plan reveals the verified email");
+        let spaces = plan["spaces"]
+            .as_array()
+            .context("plan omitted the owned spaces")?;
+        assert_eq!(spaces.len(), 1, "one owned hosted space: {plan}");
+        let subject = spaces[0]["subject"]
+            .as_str()
+            .context("plan space omitted its subject")?
+            .to_string();
+
+        // Creating a space navigates into it. Back in Settings, the whole-
+        // account action must explain the safe boundary and be genuinely inert.
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
-        driver.set_window_rect(0, 0, 320, 568).await?;
-        click(&driver, "#account-delete-review").await?;
-        wait_for_displayed(&driver, "#account-delete-arming").await?;
+        let whole_action = element(&driver, "#account-delete-review").await?;
+        assert!(
+            whole_action.attr("disabled").await?.is_some(),
+            "whole-account deletion must not be clickable"
+        );
+        assert_eq!(
+            whole_action.text().await?,
+            "account deletion temporarily unavailable"
+        );
+        let explanation = element(&driver, "#account-delete-description")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            explanation.contains("Your account, spaces, and local data are unchanged"),
+            "the disabled action must name what remains safe: {explanation:?}"
+        );
 
-        // The number of owned spaces varies by account. Fill the real plan list
-        // to its maximum-height state so this remains a geometry regression,
-        // rather than depending on a costly remote-space fixture.
+        // Bypassing the disabled control must refuse before body extraction or
+        // any local/remote effect, even with the otherwise-correct reviewed set.
+        let refused = post_json(
+            &driver,
+            "/api/account/delete",
+            serde_json::json!({
+                "spaces": [{ "subject": subject }],
+                "confirmedEmail": email,
+            }),
+        )
+        .await?;
+        assert_eq!(
+            refused["status"], 503,
+            "direct whole-account deletion must fail closed: {refused}"
+        );
+        assert_eq!(
+            refused["body"]["error"]["kind"],
+            "account_state_unavailable"
+        );
+        assert_eq!(
+            refused["body"]["error"]["message"],
+            "Secure account deletion is temporarily unavailable. No account, spaces, or local data were changed."
+        );
+
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("reload the unchanged account", &summary)["email"],
+            email
+        );
+        assert!(
+            space_keys(&driver).await?.contains(&key),
+            "the refused request must retain the local space"
+        );
+        let repository = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("reload the unchanged hosted space", &repository)["label"],
+            "Doomed Garden"
+        );
+        let after = get_json(&driver, "/api/account/deletion/plan").await?;
+        let after = successful_body("reload the unchanged deletion plan", &after);
+        assert_eq!(after["email"], email);
+        assert_eq!(after["spaces"][0]["subject"], subject);
+
+        // Exact-space deletion remains available. Drive its real plan, then
+        // fill the list to its maximum-height state so the geometry assertion
+        // does not depend on how many spaces this account happens to own.
+        let mut exact_settings = env.tonk_web.join("settings")?;
+        exact_settings
+            .query_pairs_mut()
+            .append_pair("delete-space", &subject);
+        goto(&driver, exact_settings.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"success\"]").await?;
+        let exact_action = element(&driver, "#account-delete-review").await?;
+        assert!(
+            exact_action.attr("disabled").await?.is_none(),
+            "exact-space deletion review must stay available"
+        );
+        assert_eq!(exact_action.text().await?, "Review selected space deletion");
+        driver.set_window_rect(0, 0, 320, 568).await?;
+        exact_action.click().await?;
+        wait_for_displayed(&driver, "#account-delete-arming").await?;
+        wait_for_text(
+            &driver,
+            "#account-confirm-title",
+            "delete owned space permanently",
+        )
+        .await?;
+        let listed = element(&driver, "#account-delete-spaces")
+            .await?
+            .text()
+            .await?;
+        assert!(
+            listed.contains("Doomed Garden") || listed.contains(&subject),
+            "the exact reviewed space must be visible: {listed:?}"
+        );
+
         driver
             .execute(
                 r#"const list = document.querySelector('#account-delete-spaces');
@@ -5193,104 +5314,6 @@ mod tests {
                 );
             }
         }
-
-        driver.quit().await?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_deletes_the_account_and_releases_its_email_and_profile(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        let email = "goner@example.com";
-        sign_up(&driver, &env, email).await?;
-
-        let key = create_space_awaiting_remote(&driver, "Doomed Garden", true).await?;
-        let pushed = post_json(
-            &driver,
-            &format!("/api/repository/{key}/branch/main/sync/push"),
-            serde_json::json!({}),
-        )
-        .await?;
-        successful_body("push synced space", &pushed);
-
-        // Creating a space navigates the page into it — the handler
-        // sends the client there once the replica lands — so the
-        // deletion controls are no longer on screen. Go back to where
-        // they live.
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
-        element(&driver, "tonk-account").await?;
-
-        click(&driver, "#account-delete-review").await?;
-        element(&driver, "[role=alertdialog]").await?;
-        wait_for_text(
-            &driver,
-            "#account-confirm-title",
-            "delete account permanently",
-        )
-        .await?;
-        click(&driver, "#account-confirm-cancel").await?;
-
-        let plan = get_json(&driver, "/api/account/deletion/plan").await?;
-        let plan = successful_body("review the deletion plan", &plan);
-        assert_eq!(plan["email"], email, "plan reveals the verified email");
-        let spaces = plan["spaces"]
-            .as_array()
-            .context("plan omitted the owned spaces")?;
-        assert_eq!(spaces.len(), 1, "one owned hosted space: {plan}");
-        let subject = spaces[0]["subject"]
-            .as_str()
-            .context("plan space omitted its subject")?
-            .to_string();
-
-        // A mistyped confirmation email refuses before anything burns.
-        let refused = post_json(
-            &driver,
-            "/api/account/delete",
-            serde_json::json!({
-                "spaces": [{ "subject": subject }],
-                "confirmedEmail": "someone-else@example.com",
-            }),
-        )
-        .await?;
-        assert_eq!(
-            refused["status"], 403,
-            "wrong confirmation email must refuse: {refused}"
-        );
-
-        let deleted = post_json(
-            &driver,
-            "/api/account/delete",
-            serde_json::json!({
-                "spaces": [{ "subject": subject }],
-                "confirmedEmail": email,
-            }),
-        )
-        .await?;
-        let receipt = successful_body("delete the account", &deleted);
-        assert_eq!(receipt["deletedSpaces"], 1, "one hosted space purged");
-        assert_eq!(receipt["retainedJoinedSpaces"], 0);
-
-        // The profile is unlinked: the deletion plan is no longer
-        // reviewable because there is no account to review.
-        let after = get_json(&driver, "/api/account/deletion/plan").await?;
-        assert_eq!(
-            after["status"], 404,
-            "a deleted account leaves nothing to plan against: {after}"
-        );
-
-        // Permanent deletion retires this account's local profile rather
-        // than rebinding its retained authority to another root. The browser
-        // must already be on a fresh profile so the released email can create
-        // a genuinely new account without the user finding the hidden
-        // "different account" root conflict.
-        sign_up(&driver, &env, email).await?;
-        let recreated = get_json(&driver, "/api/account/summary").await?;
-        assert_eq!(
-            successful_body("load the recreated account", &recreated)["email"],
-            email
-        );
 
         driver.quit().await?;
         Ok(())

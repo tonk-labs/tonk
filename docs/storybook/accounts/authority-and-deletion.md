@@ -8,6 +8,14 @@ These are authority-changing or destructive actions, so the review target,
 authorization, durable result, unrelated-data boundary, and retry behavior must
 all be explicit.
 
+**Current safety hold:** whole-account deletion is temporarily unavailable.
+Settings disables that action and states that the account, spaces, and local
+data are unchanged; the worker independently refuses every direct whole-account
+deletion request before reading profile state or contacting a remote service.
+Deleting one exact owned hosted space remains a separate available action. The
+whole-account flow below is the contract required before the safety hold can be
+removed, not a claim that current builds execute it.
+
 A CLI can list or request device revocation and can open browser deletion
 review, but passkey ceremonies and full destructive confirmation live in the
 browser. Revocation stops future authority; logout merely disconnects local
@@ -26,11 +34,13 @@ To delete one owned hosted space, the person arrives through an exact
 joined spaces that will remain, types the verified email, checks the
 consequences box, and confirms. The account and all other spaces remain.
 
-To delete the account, the review lists every owned hosted space and states that
-joined spaces remain. The person types the exact verified email, checks the
-consequences box, confirms again, and approves the account passkey. The provider
-deletes the account-owned scope, releases the email, and the browser moves away
-from the deleted profile.
+Whole-account Settings currently shows a disabled “account deletion temporarily
+unavailable” action. It explains that no deletion request will be sent and that
+the account, spaces, and local data remain unchanged. Once the secure flow is
+restored, its review must list every owned hosted space, retain joined spaces,
+bind the exact plan to a root/passkey signature, and recover monotonically from
+reloads or lost responses before the provider releases the email and the
+browser moves away from the deleted profile.
 
 ## The interaction, event by event
 
@@ -62,6 +72,10 @@ all owned hosted spaces and a joined-space count. Exact-space review must match
 one owned subject. A stale, joined, missing, or already-deleted subject cannot
 expand or redirect the requested scope.
 
+During the current safety hold, only exact-space review can reach plan loading.
+The whole-account control is disabled, and bypassing the page receives a fixed
+unavailable response from the worker without loading a plan.
+
 The confirmation is armed only when the trimmed email exactly equals the
 verified account email and the consequences checkbox is checked. Account
 deletion also requires a root-matching passkey assertion. Selected-space
@@ -73,6 +87,10 @@ does not ask for an extra passkey in the current implementation.
 Loading failure, missing target, wrong email, unchecked acknowledgement, or
 Cancel commits nothing. Closing the confirmation returns to settings. A revoke
 deep link on an unlinked browser explains that the account must be linked first.
+
+The temporary whole-account refusal is also an early exit: no passkey prompt,
+profile activation, local write, inventory request, or destructive service call
+occurs. Its copy may therefore state that nothing changed.
 
 Revoking an already-removed device or deleting an already-removed scope should
 settle as a stable idempotent result or a specific stale-target message, never
@@ -91,6 +109,10 @@ repository subject. Whole-account deletion crosses the boundary after the
 passkey proves the current root and the final request carries the reviewed plan.
 Its result may contain multiple per-space outcomes; success cannot be inferred
 from the first deletion alone.
+
+No current whole-account request may cross that boundary. Restoring the route
+requires a root-signed authorization bound to one worker nonce, the exact plan,
+and the active profile generation, plus durable replay/recovery semantics.
 
 Adding a passkey crosses a WebAuthn and repository-fact boundary. A new
 credential is not useful until its root/custody relationship and shared fact are
@@ -218,6 +240,9 @@ subject or profile identity.
 - Run whole-browser exact-space deletion; existing coverage is much stronger
   for whole-account deletion than for its narrower sibling.
 - Define server idempotency keys and partial-result shape for destructive retry.
+- Replace the temporary whole-account safety hold with a root-signed,
+  plan/generation-bound authorization and a durable deletion operation whose
+  service receipts survive response loss.
 - Verify self-revocation landing and local-space behavior in a real browser.
 - Verify joined-space and unrelated-profile boundaries after account deletion
   from both the deleting browser and a second device.

@@ -35,6 +35,13 @@
       "id": "B-05",
       "severity": "medium",
       "title": "Activation accepts concurrent duplicate submissions"
+    },
+    {
+      "area": "Browser account deletion",
+      "decision": "full authorization/recovery protocol",
+      "id": "B-07",
+      "severity": "critical",
+      "title": "Whole-account deletion was not cryptographically bound to its passkey review"
     }
   ],
   "coverage": [
@@ -357,16 +364,16 @@
       "variants": "Owned/joined/unknown/already deleted; stale plan; customer unavailable."
     },
     {
-      "evidence": "Whole browser account deletion/reuse-email flow; presenter tests say that passkey cancellation deleted nothing and reserve uncertain wording for request/response failures.",
-      "gaps": "Whole-browser passkey denial, plan failure, response loss, partial space purge, restart, unrelated boundaries.",
+      "evidence": "Historical whole-browser deletion/reuse-email flow; current Settings and worker boundaries fail closed before a passkey or side effect.",
+      "gaps": "Root-signed exact-plan authorization, whole-browser passkey denial, response loss, partial space purge, restart, unrelated boundaries.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-05",
       "title": "Review and delete the whole account.",
       "variants": "Zero/many owned spaces; joined spaces; multiple profiles/devices."
     },
     {
-      "evidence": "Whole profile/email release path plus rotation unit behavior.",
-      "gaps": "Offline reload, second device stale state, explicit status/error on next remote action.",
+      "evidence": "Historical whole profile/email release path plus rotation unit behavior; current deletion is unavailable before dispatch.",
+      "gaps": "Durable operation recovery, offline reload, second-device stale state, explicit status/error on next remote action.",
       "group": "Account authority and destructive actions",
       "id": "AUTH-06",
       "title": "Recover after account deletion.",
@@ -1777,6 +1784,14 @@
       "result": "—"
     },
     {
+      "claim": "The temporary whole-account safety hold is authoritative while exact-space deletion remains distinct (Resolve).",
+      "device": "browser + direct request",
+      "file": "verification/accounts.md",
+      "id": "AUTH-13",
+      "priority": "P0",
+      "result": "—"
+    },
+    {
       "claim": "Every command/subcommand is reachable through help and mapped to a journey (Inventory).",
       "device": "TTY + pipe",
       "file": "verification/cli-spaces-ui.md",
@@ -2230,7 +2245,7 @@
     "fail": 0,
     "other": 0,
     "pass": 1,
-    "unrun": 114
+    "unrun": 115
   },
   "visualCommit": "49a873a23"
 }

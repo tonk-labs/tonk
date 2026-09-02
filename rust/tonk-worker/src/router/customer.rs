@@ -1489,6 +1489,11 @@ pub(crate) async fn record_test_customer(
     record_customer_status(state, status, EMAIL, provider).await
 }
 
+/// Clear the local projection after confirmed whole-account deletion.
+///
+/// The deletion orchestration is intentionally preserved but temporarily
+/// unrouted while its root-signed authorization protocol is built.
+#[allow(dead_code)]
 pub(crate) async fn clear_customer(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {

@@ -23,6 +23,39 @@ behavior remain in the verification backlog rather than this file.
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
+| `B-07` | Whole-account deletion was not cryptographically bound to its passkey review | critical | Browser account deletion | full authorization/recovery protocol | — |
+
+## Critical
+
+### B-07: Whole-account deletion was not cryptographically bound to its passkey review
+
+- **Where the user meets it:** The permanent account deletion action in
+  Settings and the worker route behind it.
+- **What happens / what was expected:** The page performed a passkey assertion,
+  then sent an ordinary JSON request. The worker independently signed every
+  destructive call with its device delegation, so the final request carried no
+  cryptographic evidence of the passkey gesture or the exact reviewed plan.
+  The worker must instead consume a root-signed authorization bound to one
+  worker nonce, plan hash, and profile generation.
+- **Reproduce:** On source before the safety hold, send a valid direct
+  whole-account deletion request without running the page's passkey method; the
+  worker accepts the same body the UI would send. On the mitigated source, the
+  worker returns the fixed unavailable result before reading profile state.
+- **Why (from the code):** The historical split is visible between the
+  verification-only ceremony in
+  [`account.rs`](../../rust/tonk-ui/src/account.rs) and device-signed orchestration
+  in [`account_deletion.rs`](../../rust/tonk-worker/src/router/account_deletion.rs).
+- **Severity:** `critical` / P0. Same-origin code could bypass the product's
+  strongest destructive confirmation and permanently remove hosted account
+  scope.
+- **Decision needed:** `full authorization/recovery protocol`. Keep the
+  fail-closed route until root authorization, exact-plan/generation binding,
+  one-time worker consumption, durable phases, and idempotent service receipts
+  are implemented and tested through reload/response loss.
+- **Raised by:** [account authority and deletion](accounts/authority-and-deletion.md),
+  verification item `AUTH-13`.
+- **Status:** Mitigated by disabling the whole-account UI action and returning
+  unavailable at the worker seam. The secure deletion saga remains open.
 
 ## High
 

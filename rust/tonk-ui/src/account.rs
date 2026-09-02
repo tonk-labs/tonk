@@ -290,7 +290,9 @@ fn set_busy(host: &HtmlElement, busy: bool, status: &str) {
                 .item(index)
                 .and_then(|node| node.dyn_into::<HtmlButtonElement>().ok())
             {
-                button.set_disabled(busy);
+                button.set_disabled(
+                    busy || button.has_attribute("data-account-deletion-unavailable"),
+                );
             }
         }
     }
@@ -1063,6 +1065,12 @@ fn focus_input_or_button(host: &HtmlElement, selector: &str) {
 fn configure_deletion_entry(host: &HtmlElement) {
     if requested_space_deletion().is_none() {
         return;
+    }
+    if let Ok(Some(action)) = host.query_selector("#account-delete-review")
+        && let Ok(action) = action.dyn_into::<HtmlButtonElement>()
+    {
+        let _ = action.remove_attribute("data-account-deletion-unavailable");
+        action.set_disabled(false);
     }
     set_text(
         host,
@@ -3750,6 +3758,48 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .has_attribute("hidden")
+        );
+    }
+
+    #[dialog_common::test]
+    fn whole_account_deletion_is_unavailable_without_disabling_exact_space_review() {
+        let _query = Query::set("");
+        let whole = host();
+        configure_deletion_entry(&whole);
+        let whole_action: HtmlButtonElement = whole
+            .query_selector("#account-delete-review")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        assert!(whole_action.disabled());
+        assert_eq!(
+            whole_action.text_content().as_deref(),
+            Some("account deletion temporarily unavailable")
+        );
+        assert_eq!(
+            whole
+                .query_selector("#account-delete-description")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some(
+                "Secure account deletion is temporarily unavailable while Tonk strengthens its authorization. Your account, spaces, and local data are unchanged."
+            )
+        );
+
+        let _exact_query = Query::set("?delete-space=did%3Akey%3AzOwned");
+        let exact = host();
+        configure_deletion_entry(&exact);
+        let exact_action: HtmlButtonElement = exact
+            .query_selector("#account-delete-review")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        assert!(!exact_action.disabled());
+        assert_eq!(
+            exact_action.text_content().as_deref(),
+            Some("Review selected space deletion")
         );
     }
 
