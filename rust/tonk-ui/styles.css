@@ -2238,20 +2238,11 @@ ui-account-settings .sname {
     font-family: var(--cond); font-weight: 600; font-size: 13.5px;
     color: var(--ink); text-align: right;
     flex: 1; min-width: 6ch; }
-/* the caret is the focus affordance here, like the ceremony's email
-   field — the hub's inset focus ring would box the bare input */
+/* The native caret is the focus affordance here; the hub's inset focus ring
+   would box the bare input. There is deliberately no resting block cursor:
+   an unfocused field must read as settled, not as though it is still taking
+   input. */
 ui-account-settings .sname:focus-visible { box-shadow: none; }
-/* the block cursor blinks on the tail at rest — the cursor is the
-   affordance; while editing, the input's own caret takes over */
-ui-account-settings .sname-seat .cur {
-    width: 7px; height: 13px; flex: none; margin-left: 1px;
-    background: var(--ink); pointer-events: none;
-    animation: tonk-settings-caret 1.05s steps(1, end) infinite; }
-ui-account-settings .sname-seat:focus-within .cur { display: none; }
-@keyframes tonk-settings-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-    ui-account-settings .sname-seat .cur { animation: none; }
-}
 /* devices — last seen rides soft beside the remove-access verb */
 ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
 ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
@@ -3584,4 +3575,3 @@ ui-space-remove { display:contents; }
   .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
   .m-cancel, .m-go { min-height:44px; }
 }
-
