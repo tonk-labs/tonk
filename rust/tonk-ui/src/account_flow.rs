@@ -6006,39 +6006,63 @@ mod tests {
         };
 
         // Whichever path ran, the new space's seed ends up sealed to the
-        // account's X25519 recipient. The custody fact follows the seal,
-        // so poll for it rather than assert on the first read.
+        // account's X25519 recipient — a `SecretPrincipal` row naming the
+        // space, whose `seed` points at the `SecretMessage` carrying the
+        // sealed bytes, whose `to` is the recipient. The facts follow the
+        // seal, so poll for them rather than assert on the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let recipient = loop {
-            let rows = post_json(
+            let principals = post_json(
                 &creator,
                 "/api/profile/branch/main/query",
                 serde_json::json!({
                     "terms": {
                         "this": { "?": { "name": "this" } },
-                        "subject": { "?": { "name": "subject" } },
-                        "recipient": { "?": { "name": "recipient" } }
+                        "seed": { "?": { "name": "seed" } }
                     },
                     "predicate": {
                         "with": {
-                            "subject": { "the": "xyz.tonk.custody/subject", "cardinality": "one", "as": "Entity" },
-                            "recipient": { "the": "xyz.tonk.custody/recipient", "cardinality": "one", "as": "Entity" }
+                            "seed": { "the": "xyz.tonk.secret/seed", "cardinality": "one", "as": "Entity" }
                         }
                     }
                 }),
             )
             .await?;
-            let rows = rows["body"].as_array().cloned().unwrap_or_default();
-            if let Some(sealed_to) = rows.iter().find_map(|row| {
-                let subject = row["fields"]["subject"].as_str().unwrap_or_default();
-                let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
-                (subject.ends_with(&key) && !sealed_to.is_empty()).then(|| sealed_to.to_string())
-            }) {
-                break sealed_to;
+            let principals = principals["body"].as_array().cloned().unwrap_or_default();
+            let seed = principals.iter().find_map(|row| {
+                let subject = row["fields"]["this"].as_str().unwrap_or_default();
+                let seed = row["fields"]["seed"].as_str().unwrap_or_default();
+                (subject.ends_with(&key) && !seed.is_empty()).then(|| seed.to_string())
+            });
+            if let Some(seed) = seed {
+                let messages = post_json(
+                    &creator,
+                    "/api/profile/branch/main/query",
+                    serde_json::json!({
+                        "terms": {
+                            "this": { "?": { "name": "this" } },
+                            "to": { "?": { "name": "to" } }
+                        },
+                        "predicate": {
+                            "with": {
+                                "to": { "the": "xyz.tonk.secret/to", "cardinality": "one", "as": "Entity" }
+                            }
+                        }
+                    }),
+                )
+                .await?;
+                let messages = messages["body"].as_array().cloned().unwrap_or_default();
+                if let Some(sealed_to) = messages.iter().find_map(|row| {
+                    let envelope = row["fields"]["this"].as_str().unwrap_or_default();
+                    let sealed_to = row["fields"]["to"].as_str().unwrap_or_default();
+                    (envelope == seed && !sealed_to.is_empty()).then(|| sealed_to.to_string())
+                }) {
+                    break sealed_to;
+                }
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the new space's seed was never custodied: {rows:?}"
+                "the new space's seed was never custodied: {principals:?}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
