@@ -365,6 +365,10 @@ mod tests {
             // The custody-cell publish sits in the deferred queue until
             // activation lets it through; the account is backed up once
             // that entry is gone and the profile reads as registered.
+            // The probe is also what notices activation on this device
+            // and replays the work it deferred, as the settings page's
+            // registration read once did on every load.
+            let _ = get_json(driver, "/api/customer").await?;
             let pending = get_json(driver, "/api/customer/pending").await?;
             let publishing = pending["body"]
                 .as_array()
@@ -2627,7 +2631,7 @@ mod tests {
             "the rendered remove button must submit its row's form: {}",
             association.json()
         );
-        click(&driver, ".m-go").await?;
+        click(&driver, "tonk-dialog[data-space-remove-dialog] .m-go").await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {

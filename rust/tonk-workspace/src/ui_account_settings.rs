@@ -635,7 +635,7 @@ fn sign_out(this: &HtmlElement) {
     show_status(this, "Signing out\u{2026}");
     let host = this.clone();
     spawn_local(async move {
-        match tonk_host::post_json("/api/account/unlink", "{}").await {
+        match tonk_host::delete_json("/api/account").await {
             // The worker's whole state changed hands; rebuilding the
             // page is what drops the subscriptions the old account owned.
             Ok(_) => tonk_host::reload_page(),
