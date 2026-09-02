@@ -26,9 +26,8 @@ esac
 LAB="$(mktemp -d)"
 trap 'kill ${SRV:-0} 2>/dev/null || true; rm -rf "$LAB"' EXIT
 
-# Self-update always resolves through /download/tonk-staging. Mirror
-# the real layout so the CLI's own URL building is exercised rather
-# than bypassed.
+# This lab records a staging install and mirrors the staging release
+# layout so the CLI's receipt-based URL selection is exercised.
 REL="$LAB/releases/download/tonk-staging"
 mkdir -p "$REL" "$LAB/bin" "$LAB/state" "$LAB/stage"
 
@@ -37,6 +36,7 @@ mkdir -p "$REL" "$LAB/bin" "$LAB/state" "$LAB/stage"
 # /nix/store nor node_modules, so the foreign-install guard lets it
 # through.
 cp "$TONK" "$LAB/bin/tonk"
+INSTALL_DIR="$(cd "$LAB/bin" && pwd -P)"
 
 # The "new release": a stand-in that reports a newer version. It only
 # has to pass the `--version` smoke test, and using an obviously
@@ -60,6 +60,19 @@ cat > "$REL/manifest.json" <<EOF
 }
 EOF
 
+# Model the receipt install.sh writes for this exact copy. The commit
+# intentionally differs from the fake release so the update downloads
+# and swaps the binary instead of reporting "already current".
+cat > "$LAB/state/install.json" <<EOF
+{
+  "channel": "staging",
+  "version": "0.0.0",
+  "commit": "before-lab",
+  "install_dir": "$INSTALL_DIR",
+  "installed_at": "2026-07-16T00:00:00Z"
+}
+EOF
+
 PORT=8973
 python3 -m http.server "$PORT" --bind 127.0.0.1 -d "$LAB" >/dev/null 2>&1 &
 SRV=$!
@@ -68,7 +81,7 @@ until curl -fsS "http://127.0.0.1:$PORT/releases/download/tonk-staging/manifest.
 export TONK_UPDATE_ENDPOINT="http://127.0.0.1:$PORT/releases"
 export TONK_UPDATE_STATE="$LAB/state"
 export TONK_TELEMETRY_STATE="$LAB/state"
-# Prove legacy channel selection cannot move self-update off staging.
+# Prove ambient installer input cannot override this copy's receipt.
 export TONK_CHANNEL=stable
 unset TONK_NO_UPDATE_CHECK CI 2>/dev/null || true
 
