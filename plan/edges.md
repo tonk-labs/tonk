@@ -100,7 +100,7 @@ state. Land that plan first.
 - [ ] Add wasm tests: typing commits on Enter; `autolen` commits at exactly
       six digits and strips letters; `reject()` re-arms with the value
       selected; changeable-noun event fires; run
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-fab field`
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-fab field`
       and record the failures.
 - [ ] Implement in the `shadow.rs` idiom: `shadow::Bound` for every listener,
       reduced-motion kills the flash and blink.
@@ -208,7 +208,7 @@ state. Land that plan first.
       library's existing scripting hooks; delete the orphaned Web Awesome
       wall styling.
 - [ ] Run the standard-library suite and
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace`;
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace`;
       expect green.
 
 ### Task 5: No sync server — the offline condition
@@ -249,7 +249,7 @@ state. Land that plan first.
       grammar and copy pointing at the banner's verb, dropping the
       `--wa-*` tokens.
 - [ ] Run `cargo test -p tonk-fab`,
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-fab`,
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-fab`,
       and `cargo test -p tonk-worker --test standard_library`; expect green,
       with `rust/tonk-worker/tests/fab_drift.rs` and the browser fixtures in
       `rust/tonk-ui` updated for the removed dialog.
@@ -323,8 +323,8 @@ state. Land that plan first.
 - [ ] Full-slice verify: `cargo fmt --all -- --check`,
       `cargo test -p tonk-fab`,
       `cargo test -p tonk-worker --test standard_library`,
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-fab -p tonk-workspace`,
-      `nix develop path:. -c build:web`.
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-fab -p tonk-workspace`,
+      `nix develop . -c build:web`.
 - [ ] Walk all six captured states in isolated Chrome (fresh provider-free
       profile for the local/empty Hub;
       a local-only space for the offline banner; a revoked invite for the
