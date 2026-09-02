@@ -303,48 +303,13 @@ view/directory!:
 
         /* ── settings — a page of the account tab (the wireframe's reading):
            the stack steps aside and the section hangs from the same bar.
-           The rail is a run of boxy tabs ABOVE the body; the current rail
-           item is a folder tab — same surface as the body, seam erased. ── */
+           The panel's own styling (rail, body, rows) ships with
+           `<ui-account-settings>` in `tonk-ui/styles.css`, because the FAB
+           raises the same panel in a dialog on the space route — only the
+           hub seat's geometry lives here. ── */
         .settings { display:flex; flex-direction:column; align-items:stretch;
           margin-top:7px; }
         .settings[hidden] { display:none; }
-        .s-rail { display:flex; gap:7px; }
-        .s-rail .blk { flex:1; height:36px; display:flex; align-items:flex-end;
-          justify-content:flex-end; padding:0 12px 9px; cursor:pointer;
-          font-size:13px; background:var(--frost-solid);
-          box-shadow:0 0 0 1px var(--ring); }
-        .s-rail .blk:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
-        /* the plug — the current tab erases the body's border where they
-           fuse: an explicit 1px cover, not negative-margin arithmetic */
-        .s-rail .blk.cur { background:var(--panel); box-shadow:none;
-          border:1px solid var(--ring); border-bottom:0; position:relative;
-          z-index:1; cursor:default; }
-        .s-rail .blk.cur::after { content:""; position:absolute; left:0; bottom:-1px;
-          width:100%; height:1px; background:var(--panel); }
-        .s-body { min-width:0; min-height:min(408px, 55vh); max-height:60vh;
-          overflow:auto; padding:8px 18px 18px; background:var(--panel);
-          border:1px solid var(--ring);
-          font-family:var(--sans); font-weight:400; font-size:13.5px;
-          line-height:1.4; text-transform:none; color:var(--soft); }
-        .pane[hidden] { display:none; }
-        .srowd { display:flex; justify-content:space-between; align-items:baseline;
-          gap:16px; padding:9px 0; }
-        .srowd b { font-family:var(--cond); font-weight:600; font-size:13.5px;
-          color:var(--ink); text-align:right; white-space:nowrap; }
-        .srowd b.lft { text-align:left; white-space:normal; }
-        .sect { margin-top:18px; padding-bottom:7px; font-family:var(--cond);
-          font-weight:600; font-size:13px; letter-spacing:.02em;
-          text-transform:lowercase; color:var(--ink);
-          border-bottom:1px solid var(--sep); }
-        .expl { margin:6px 0 0; font-size:13px; line-height:1.55; max-width:460px; }
-        /* the underline IS the link */
-        .cta { font-family:var(--cond); font-weight:600; font-size:13px;
-          color:var(--ink); text-transform:lowercase; white-space:nowrap;
-          display:inline-block; cursor:pointer; text-decoration:underline;
-          text-underline-offset:3px; }
-        .cta:hover { text-decoration-thickness:2px; }
-        .sname { font-family:var(--cond); font-weight:600; font-size:13.5px;
-          color:var(--ink); text-align:right; min-width:6ch; }
 
         /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
         .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
@@ -1162,6 +1127,13 @@ view!: &space-view
     </style>
     <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
     <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
+    <!-- The FAB's settings row raises this: the same account panel the
+         Hub's account tab embeds, seated as a dialog over the space. No
+         subject reference on purpose — the repeat-node choice must stay
+         with its siblings. -->
+    <tonk-dialog data-fab-settings heading="settings">
+      <ui-account-settings></ui-account-settings>
+    </tonk-dialog>
     <tonk-display with={id} entity={id} model=tonk:repository view=tonk:view/title>
       <!-- `no-model` is now the absent-space panel below, which sets its
            own title; a second `no-model` child would render alongside it

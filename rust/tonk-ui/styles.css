@@ -2171,6 +2171,55 @@ wa-page::part(drawer) {
     flex: 0 0 auto;
 }
 
+/* ── <ui-account-settings> — the account settings panel (DESIGN.md's
+   rail-over-panel reading). One element, two seats: the Hub's account tab
+   embeds it in-column, and the space route raises it in a <tonk-dialog>
+   from the FAB's settings row — so its styling lives here, where both
+   documents receive it. The rail is a run of boxy tabs above the body; the
+   current rail item is a folder tab, same surface as the body, seam
+   erased by an explicit 1px cover. */
+ui-account-settings { display: block; }
+ui-account-settings .s-rail { display: flex; gap: 7px; }
+ui-account-settings .s-rail .blk { flex: 1; height: 36px; display: flex;
+    align-items: flex-end; justify-content: flex-end; padding: 0 12px 9px;
+    cursor: pointer; font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+    text-transform: lowercase; color: var(--ink);
+    background: var(--frost-solid); border: 0;
+    box-shadow: 0 0 0 1px var(--ring); }
+ui-account-settings .s-rail .blk:hover {
+    background: linear-gradient(var(--wash), var(--wash)), var(--frost-solid); }
+ui-account-settings .s-rail .blk.cur { background: var(--panel);
+    box-shadow: none; border: 1px solid var(--ring); border-bottom: 0;
+    position: relative; z-index: 1; cursor: default; }
+ui-account-settings .s-rail .blk.cur::after { content: ""; position: absolute;
+    left: 0; bottom: -1px; width: 100%; height: 1px; background: var(--panel); }
+ui-account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
+    max-height: 60vh; overflow: auto; padding: 8px 18px 18px;
+    background: var(--panel); border: 1px solid var(--ring);
+    font-family: var(--sans); font-weight: 400; font-size: 13.5px;
+    line-height: 1.4; text-transform: none; color: var(--soft); }
+ui-account-settings .pane[hidden] { display: none; }
+ui-account-settings .srowd { display: flex; justify-content: space-between;
+    align-items: baseline; gap: 16px; padding: 9px 0; }
+ui-account-settings .srowd b { font-family: var(--cond); font-weight: 600;
+    font-size: 13.5px; color: var(--ink); text-align: right;
+    white-space: nowrap; }
+ui-account-settings .srowd b.lft { text-align: left; white-space: normal; }
+ui-account-settings .sect { margin-top: 18px; padding-bottom: 7px;
+    font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+    text-transform: lowercase; color: var(--ink);
+    border-bottom: 1px solid var(--sep); }
+ui-account-settings .expl { margin: 6px 0 0; font-size: 13px;
+    line-height: 1.55; max-width: 460px; }
+/* the underline IS the link */
+ui-account-settings .cta { font: 600 13px/1 var(--cond);
+    letter-spacing: 0.02em; color: var(--ink); text-transform: lowercase;
+    white-space: nowrap; display: inline-block; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 3px; }
+ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
+ui-account-settings .sname { font-family: var(--cond); font-weight: 600;
+    font-size: 13.5px; color: var(--ink); text-align: right; min-width: 6ch; }
+
 /* Map our Web Awesome theme into the `<tonk-code>` element's
    public CSS variables. The element ships GitHub-flavored defaults
    that work standalone in light/dark; this block plugs it into our

@@ -34,6 +34,8 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
 const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
+const SETTINGS_PANEL_MARKUP: &str =
+    include_str!("../../tonk-workspace/src/ui_account_settings.html");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
@@ -389,9 +391,12 @@ fn it_serves_settings_as_a_page_of_the_account_tab() {
     // no-handler fallback.
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
-    assert!(HUB_ACCOUNT_MARKUP.contains("data-pane=\"account\""));
-    assert!(HUB_ACCOUNT_MARKUP.contains("data-pane=\"devices\""));
-    assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
+    // The panes live in the shared panel — one element, two seats: the
+    // Hub's account tab and the FAB's settings dialog on the space route.
+    assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
 }
 
 #[test]

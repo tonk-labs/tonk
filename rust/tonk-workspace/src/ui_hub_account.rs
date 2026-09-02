@@ -320,15 +320,6 @@ impl CustomElement for UiHubAccount {
                 close_menu(&host, false);
                 return;
             }
-            if let Some(pane) = target
-                .closest("[data-pane]")
-                .ok()
-                .flatten()
-                .and_then(|button| button.get_attribute("data-pane"))
-            {
-                set_pane(&host, &pane);
-                return;
-            }
             if let Some(profile) = target.closest("button[data-profile]").ok().flatten()
                 && let Some(profile_name) = profile.get_attribute("data-profile")
             {
@@ -747,35 +738,7 @@ fn show_settings(this: &HtmlElement, settings: bool) {
     }
 }
 
-/// Show one settings pane and mark its rail tab current.
-fn set_pane(this: &HtmlElement, pane: &str) {
-    if let Ok(tabs) = this.query_selector_all(".s-rail [data-pane]") {
-        for index in 0..tabs.length() {
-            if let Some(tab) = tabs
-                .item(index)
-                .and_then(|node| node.dyn_into::<Element>().ok())
-            {
-                let current = tab.get_attribute("data-pane").as_deref() == Some(pane);
-                let _ = tab.class_list().toggle_with_force("cur", current);
-            }
-        }
-    }
-    if let Ok(panes) = this.query_selector_all(".s-body .pane") {
-        for index in 0..panes.length() {
-            if let Some(section) = panes
-                .item(index)
-                .and_then(|node| node.dyn_into::<HtmlElement>().ok())
-            {
-                section.set_hidden(section.get_attribute("data-pane").as_deref() != Some(pane));
-            }
-        }
-    }
-}
-
-/// Open the in-column settings section and fill it from live state.
-///
-/// The rows load AFTER the swap — a view that appears instantly and fills
-/// in beats one that waits on two fetches.
+/// Open the in-column settings section — a page of the account tab.
 fn open_settings_view(this: &HtmlElement) {
     // Settings is a page of the account tab: make sure that tab's frame
     // (spaces stack aside, trigger current) is up before swapping to it.
@@ -787,106 +750,12 @@ fn open_settings_view(this: &HtmlElement) {
         open_menu(this);
     }
     show_settings(this, true);
-    set_pane(this, "account");
-
-    // The display name commits through `onchange=profile/rename`; its
-    // resting value is what the roster already resolved for this profile.
-    if let Ok(Some(name)) = this.query_selector("[data-settings-name]")
-        && name.text_content().unwrap_or_default().trim().is_empty()
+    // The shared panel fills its own rows (see `ui_account_settings`).
+    if let Ok(Some(panel)) = this.query_selector("ui-account-settings")
+        && let Ok(panel) = panel.dyn_into::<HtmlElement>()
     {
-        name.set_text_content(this.get_attribute("data-active-name").as_deref());
+        crate::ui_account_settings::refresh(&panel);
     }
-
-    let host = this.clone();
-    spawn_local(async move {
-        match tonk_host::get_json("/api/account/summary").await {
-            Ok(body) => {
-                let summary: Option<tonk_worker_api::AccountSummary> =
-                    serde_json::from_str(&body).ok();
-                let summary = summary.unwrap_or(tonk_worker_api::AccountSummary {
-                    email: None,
-                    passkey: None,
-                    display_name: None,
-                });
-                let email = summary
-                    .email
-                    .filter(|email| !email.trim().is_empty())
-                    .unwrap_or_else(|| "Unavailable".to_string());
-                set_text(&host, "[data-settings-email]", &email);
-                match summary.passkey {
-                    Some(passkey) => {
-                        set_text(&host, "[data-settings-passkey-device]", &passkey.created_on);
-                        let date = js_sys::Date::new(&JsValue::from_f64(
-                            passkey.created_at as f64 * 1000.0,
-                        ))
-                        .to_locale_date_string("default", &JsValue::UNDEFINED);
-                        set_text(
-                            &host,
-                            "[data-settings-passkey-created]",
-                            &format!("created {}", String::from(date)),
-                        );
-                    }
-                    None => {
-                        set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-                        set_text(&host, "[data-settings-passkey-created]", "");
-                    }
-                }
-            }
-            Err(_) => {
-                set_text(&host, "[data-settings-email]", "Unavailable");
-                set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-            }
-        }
-    });
-
-    let host = this.clone();
-    spawn_local(async move {
-        let devices: Vec<tonk_worker_api::AccountDevice> =
-            match tonk_host::get_json("/api/account/devices").await {
-                Ok(body) => serde_json::from_str(&body).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-        let Some(list) = host
-            .query_selector("[data-settings-devices]")
-            .ok()
-            .flatten()
-        else {
-            return;
-        };
-        let Some(document) = window().and_then(|window| window.document()) else {
-            return;
-        };
-        list.set_inner_html("");
-        if devices.is_empty() {
-            let Ok(row) = document.create_element("div") else {
-                return;
-            };
-            row.set_class_name("srowd");
-            row.set_text_content(Some("No linked devices to list."));
-            let _ = list.append_child(&row);
-            return;
-        }
-        for device in devices {
-            let Ok(row) = document.create_element("div") else {
-                continue;
-            };
-            row.set_class_name("srowd");
-            let Ok(name) = document.create_element("b") else {
-                continue;
-            };
-            name.set_class_name("lft");
-            name.set_text_content(Some(&device.name));
-            let _ = row.append_child(&name);
-            let Ok(when) = document.create_element("b") else {
-                continue;
-            };
-            let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
-                .to_locale_date_string("default", &JsValue::UNDEFINED);
-            when.set_text_content(Some(&format!("linked {}", String::from(date))));
-            let _ = row.append_child(&when);
-            let _ = list.append_child(&row);
-        }
-    });
 }
 
 fn account_trigger(this: &HtmlElement) -> Option<HtmlElement> {

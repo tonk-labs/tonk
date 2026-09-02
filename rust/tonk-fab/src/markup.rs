@@ -130,9 +130,9 @@ pub const STACK_GAP_PX: i32 = 7;
 /// `new · open ▸ · rename`. `open`'s sub-stack is filled by
 /// `<ui-space-switcher>`; the share stack's roster by `<ui-member-roster>`.
 ///
-/// The spec's `settings` row is absent for the same reason as the `changes`
-/// rung: there are no space settings for it to open. It comes back with the
-/// surface it leads to.
+/// The `settings` row raises the shared `<ui-account-settings>` panel in a
+/// `<tonk-dialog>` the space route mounts beside this bar — the surface it
+/// was waiting for exists now.
 ///
 /// ## Glyphs
 ///
@@ -151,6 +151,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     </tonk-menu>
   </tonk-mi>
   <tonk-mi chrome data-mi-rename>rename<span class="g rename-mark" aria-hidden="true"></span></tonk-mi>
+  <tonk-mi chrome data-mi-cfg>settings<svg class="g" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><g stroke="currentColor" stroke-width="1.2"><line x1="0" y1="2.5" x2="9" y2="2.5"></line><line x1="0" y1="6.5" x2="9" y2="6.5"></line></g><rect x="5" y="1" width="3" height="3" fill="currentColor"></rect><rect x="1" y="5" width="3" height="3" fill="currentColor"></rect></svg></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-menu id="fabb-share-menu" slot="menu" data-for="share" role="group" aria-label="share actions" hidden>
@@ -371,19 +372,24 @@ mod tests {
 
     #[test]
     fn it_carries_the_bars_information_architecture() {
-        // The space stack IS the IA: new · open ▸ · rename, in that order.
+        // The space stack IS the IA: new · open ▸ · rename · settings.
         let html = stacks_html("did:key:z6Mk");
-        let order: Vec<usize> = ["data-mi-new", "data-mi-open", "data-mi-rename"]
-            .iter()
-            .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
-            .collect();
+        let order: Vec<usize> = [
+            "data-mi-new",
+            "data-mi-open",
+            "data-mi-rename",
+            "data-mi-cfg",
+        ]
+        .iter()
+        .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
+        .collect();
         assert!(
             order.windows(2).all(|pair| pair[0] < pair[1]),
-            "the space stack must read new · open · rename",
+            "the space stack must read new · open · rename · settings",
         );
         assert!(
-            !html.contains("data-mi-settings"),
-            "no settings row until there are settings to open",
+            html.contains("data-mi-cfg"),
+            "the settings row raises the account panel",
         );
     }
 
@@ -501,7 +507,12 @@ mod tests {
         assert!(html.contains("&#9656;"), "open is the ▸ triangle");
         assert!(html.contains("rename-mark"), "rename is the block cursor");
         assert!(!html.contains("<wa-icon"), "no icon library in the chrome");
-        assert!(!html.contains("<svg"), "and no illustration either");
+        // The settings sliders are the one bespoke SVG (the wireframes'
+        // own mark), drawn in currentColor so it follows the ink.
+        assert_eq!(html.matches("<svg").count(), 1, "one drawn mark only");
+        let mark = html.split("data-mi-cfg").nth(1).expect("settings row");
+        assert!(mark.contains("<svg"), "the mark rides the settings row");
+        assert!(mark.contains("currentColor"));
     }
 
     #[test]
