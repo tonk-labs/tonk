@@ -35,7 +35,7 @@ remains intentionally blocked by the canonical-terms decision gate, so
 
 The repository `test:web:debug` and `build:web` wrappers evaluate an inner
 `git+file:` flake, which omits the untracked `ui_space_remove.rs` source and
-fails with `E0583`; the direct `path:.` production build passes. The equivalent
+fails with `E0583`; the direct `.` production build passes. The equivalent
 direct full Wasm workspace suite compiled and executed in Chrome, but one
 pre-existing fallback-observer test failed in the full order and passed
 immediately in isolation. These are recorded as gate limitations rather than
@@ -99,7 +99,7 @@ loopback harness, so the full-suite checkbox remains open.
 - Generated Storybook files remain generated. Read `docs/storybook/README.md`
   and `docs/storybook/goal.md` before changing triage, then run the commands
   required by `docs/storybook/AGENTS.md`.
-- Use `path:.` for Nix checks so the build sees uncommitted plan implementation
+- Use `.` for Nix checks so the build sees uncommitted plan implementation
   files.
 
 ## Finding coverage
@@ -198,7 +198,7 @@ loopback harness, so the full-suite checkbox remains open.
   expose its longest arming state, scroll `.account__dialog` to its maximum,
   and assert `dialog.top >= 0`, `dialog.bottom <= innerHeight`, and both Cancel
   and the destructive submit button are visible and focusable. Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_keeps_destructive_dialog_controls_inside_a_short_mobile_viewport -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_keeps_destructive_dialog_controls_inside_a_short_mobile_viewport -- --test-threads=1 --nocapture`;
   expect the current bottom near `604px` to exceed the `568px` viewport.
 - [ ] Restrict the current `top: max(12vh, safe-area + 48px)` phone placement
   to viewports taller than `700px`. For `max-height:700px`, place the dialog at
@@ -261,7 +261,7 @@ loopback harness, so the full-suite checkbox remains open.
   subscription/delegates as today, and focus the captured opener only if it is
   still connected and enabled.
 - [ ] Rerun the focused test plus
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_explains_email_verification_before_account_sync -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_explains_email_verification_before_account_sync -- --test-threads=1 --nocapture`;
   expect both to pass without changing the passkey flow.
 
 ### Task 3: Make registration and activation submissions monotonic
@@ -367,8 +367,8 @@ loopback harness, so the full-suite checkbox remains open.
   successful.
 - [ ] Give `<tonk-dialog>` header close and slotted actions `44px` minimum
   targets at `max-width:519px`, without changing its desktop `36px` block law.
-- [ ] Run `nix develop path:. -c test:web:debug -E 'package(tonk-workspace)'`
-  and `nix develop path:. -c test:web:debug -E 'package(tonk-fab)'`; expect the
+- [ ] Run `nix develop . -c test:web:debug -E 'package(tonk-workspace)'`
+  and `nix develop . -c test:web:debug -E 'package(tonk-fab)'`; expect the
   modal, Escape, and focus tests to pass.
 
 ### Task 5: Enforce a real 44-by-44 mobile action target floor
@@ -515,8 +515,8 @@ loopback harness, so the full-suite checkbox remains open.
   closes without preventing the browser's normal focus move. Do not add roving
   semantics to FABB disclosures.
 - [ ] Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-fab)'` and
-  `nix develop path:. -c test:web:debug -E 'package(tonk-workspace)'`; expect
+  `nix develop . -c test:web:debug -E 'package(tonk-fab)'` and
+  `nix develop . -c test:web:debug -E 'package(tonk-workspace)'`; expect
   all keyboard and accessibility assertions to pass.
 
 ### Task 9: Make blank-space share progress and refusal mutually exclusive
@@ -560,7 +560,7 @@ loopback harness, so the full-suite checkbox remains open.
 - [ ] Update `it_routes_refused_agent_links_to_the_local_only_notice` to require
   mutual exclusion and reject the stale copy. Run
   `cargo test -p tonk-worker it_routes_refused_agent_links_to_the_local_only_notice`
-  and `nix develop path:. -c test:web:debug -E 'package(tonk-display)'`; expect
+  and `nix develop . -c test:web:debug -E 'package(tonk-display)'`; expect
   success before rerunning the whole browser journey.
 
 ## Decision gate: canonical terms content
@@ -623,8 +623,8 @@ to a generic home page, or remove recorded acceptance as a UI cleanup.
 - [ ] Replace the two `nix run .#...` examples; retain the explanation that
   `build:web` runs `nix build .#tonk-ui` and `dev:web` serves Trunk with the
   access-service proxies.
-- [ ] Run `nix develop path:. -c build:web`; expect a successful production
-  artifact. Start `nix develop path:. -c dev:web`, wait for its printed local
+- [ ] Run `nix develop . -c build:web`; expect a successful production
+  artifact. Start `nix develop . -c dev:web`, wait for its printed local
   URL, request the root and `/.well-known/tonk`, then stop it cleanly; expect
   both endpoints to answer.
 
@@ -647,13 +647,13 @@ to a generic home page, or remove recorded acceptance as a UI cleanup.
 - [ ] Run `cargo test -p tonk-worker --test standard_library`,
   `cargo test -p tonk-workspace`, `cargo test -p tonk-fab`, and any changed
   access-service package tests; expect success.
-- [ ] Run `nix develop path:. -c test:web:debug`; expect the changed UI,
+- [ ] Run `nix develop . -c test:web:debug`; expect the changed UI,
   workspace, FABB, and display Wasm tests to pass.
-- [ ] Run `nix develop path:. -c cargo test -p tonk-ui --features integration-tests -- --test-threads=1 --nocapture`;
+- [ ] Run `nix develop . -c cargo test -p tonk-ui --features integration-tests -- --test-threads=1 --nocapture`;
   expect the whole browser account suite to pass. If ChromeDriver does not
   match Chrome, report that as an infrastructure block rather than product
   evidence.
-- [ ] Run `nix develop path:. -c build:web`; serve the production artifact in
+- [ ] Run `nix develop . -c build:web`; serve the production artifact in
   disposable profiles at `320x568x2` and `390x844x2`, mobile/touch. Exercise
   Hub, create space, join, registration, activation, Settings, account delete,
   and space remove in light/dark and reduced-motion modes.

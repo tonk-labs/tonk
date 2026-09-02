@@ -78,6 +78,7 @@ web-sys = { workspace = true, features = [
     "Blob",
     "BroadcastChannel",
     "Cache",
+    "CacheQueryOptions",
     "CacheStorage",
     "Client",
     "ClientQueryOptions",

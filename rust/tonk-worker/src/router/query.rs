@@ -25,6 +25,7 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
+use crate::router::update_pending;
 use crate::{TonkWorkerError, router::AppState};
 
 /// Path parameters for `/query`.
@@ -146,35 +147,20 @@ async fn query_on_branch<'a>(
     };
 
     if want_stream {
-        // While a NEWER worker is waiting, refuse to open a long-lived
-        // stream: an SSE response is a fetch event that never settles, and
-        // `skipWaiting` waits for in-flight events — one reopened stream
-        // would wedge the update forever (the `updatefound` release runs
-        // once, and every tab's reconnect would re-pin this worker). Serve
-        // the current snapshot as a single frame and END the stream; the
-        // consumer's clean-close reconnect lands on the NEW worker after
-        // `controllerchange`.
-        if update_pending() {
-            let wire: Vec<Conclusion> = branch
-                .query(query)
-                .perform(&tonk.operator)
-                .await
-                .map_err(reactor_to_error)?;
-            let payload = serde_json::to_vec(&wire).unwrap_or_default();
-            let mut framed = Vec::with_capacity(payload.len() + 48);
-            framed.extend_from_slice(b"data: ");
-            framed.extend_from_slice(&payload);
-            framed.extend_from_slice(b"\n\n");
-            // Signal that this drop is INTENTIONAL: the consumer should
-            // hold its reconnect for the controller change (long fallback
-            // only) instead of dialing the outgoing worker on a timer.
-            framed.extend_from_slice(b"data: {\"control\":\"update-pending\"}\n\n");
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/event-stream")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .body(Body::from(framed))
-                .expect("response builder failed"));
+        // Once this worker starts retiring, refuse to open a long-lived
+        // stream: an SSE response is a fetch event that never settles, so one
+        // reopened stream would keep the outgoing instance serving stale
+        // clients after replacement. A live `waiting` check closes the race
+        // before the Rust retirement
+        // hook runs; the worker-owned latch keeps the refusal terminal after
+        // the successor activates and `registration.waiting` becomes empty.
+        if update_pending() || tonk.is_retiring() {
+            let snapshot = match branch.query(query.clone()).perform(&tonk.operator).await {
+                Ok(rows) => rows,
+                Err(error) if is_absence(&error) => Vec::new(),
+                Err(error) => return Err(reactor_to_error(error)),
+            };
+            return Ok(retry_later(snapshot));
         }
 
         let mut subscribe = branch.subscribe(query.clone());
@@ -183,6 +169,14 @@ async fn query_on_branch<'a>(
         }
         let subscriber = match subscribe.perform(&tonk.operator).await {
             Ok(subscriber) => subscriber,
+            Err(ReactorError::Shutdown) => {
+                let snapshot = match branch.query(query).perform(&tonk.operator).await {
+                    Ok(rows) => rows,
+                    Err(error) if is_absence(&error) => Vec::new(),
+                    Err(error) => return Err(reactor_to_error(error)),
+                };
+                return Ok(retry_later(snapshot));
+            }
             // The branch is not here YET. Absence is a result, not a
             // failure, so answer with an open stream carrying the empty
             // set and keep watching: when the repo mounts (a join in
@@ -202,15 +196,21 @@ async fn query_on_branch<'a>(
                 // The honest current answer, delivered immediately so the
                 // consumer leaves `loading` and renders its empty state.
                 let _ = sender.send(Bytes::from_static(b"[]"));
-                tonk.reactor.register_pending(
-                    branch.repository.name(),
-                    branch.name,
-                    dialog_reactor::PendingSubscription {
-                        query,
-                        client,
-                        sender,
-                    },
-                );
+                if tonk
+                    .reactor
+                    .register_pending(
+                        branch.repository.name(),
+                        branch.name,
+                        dialog_reactor::PendingSubscription {
+                            query,
+                            client,
+                            sender,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(retry_later(Vec::new()));
+                }
                 return Ok(sse_response(receiver));
             }
             Err(error) => return Err(reactor_to_error(error)),
@@ -230,25 +230,24 @@ async fn query_on_branch<'a>(
     }
 }
 
-/// Whether a newer service worker is installed and WAITING to take over.
-/// `false` off-wasm and whenever the registration is unreadable — a wrongly
-/// refused stream would starve consumers, a wrongly opened one only delays
-/// an update.
-fn update_pending() -> bool {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use wasm_bindgen::JsCast;
-        return js_sys::global()
-            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .map(|scope| scope.registration().waiting().is_some())
-            .unwrap_or(false);
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    false
+/// Tell a query consumer to hold its reconnect for `controllerchange`, then
+/// close immediately so this response cannot pin the retiring worker.
+fn retry_later(conclusions: Vec<Conclusion>) -> Response {
+    let snapshot = serde_json::to_string(&tonk_worker_api::Frame::Snapshot { conclusions })
+        .expect("snapshot frame serialization failed");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(format!(
+            "data: {snapshot}\n\ndata: {{\"control\":\"update-pending\"}}\n\n"
+        )))
+        .expect("response builder failed")
 }
 
 fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     match err {
+        ReactorError::Shutdown => TonkWorkerError::Internal(err.to_string()),
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
             TonkWorkerError::NotFound(err.to_string())
         }
@@ -341,6 +340,7 @@ mod tests {
     fn it_classifies_every_variant_deliberately() {
         fn absent(error: &ReactorError) -> bool {
             match error {
+                ReactorError::Shutdown => false,
                 ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
                     true
                 }

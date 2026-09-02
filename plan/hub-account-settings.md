@@ -54,7 +54,7 @@
 - [x] On a profile-row click, disable switch actions, POST the exact `profileName`, and call `tonk_host::navigate_to("/")` only after a successful response. On failure, keep the current page/account and show the returned error in the menu.
 - [x] On Add account, POST `/api/profiles/add` and call `tonk_host::navigate_to("/account")` only after success. Do not open the sign-in ceremony inside the guest.
 - [x] Replace the Hub's `account▸` link with `<ui-hub-account>` and restore the 216px account stack geometry from the wireframe, including the 144px narrow-phone rung swap and 44px touch targets.
-- [x] Run `cargo fmt --package tonk-host --package tonk-workspace -- --check` and `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`; expect the new DOM and interaction tests to pass.
+- [x] Run `cargo fmt --package tonk-host --package tonk-workspace -- --check` and `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`; expect the new DOM and interaction tests to pass.
 
 ### Task 2: Rework settings as a truthful Account and Devices overlay
 
@@ -81,7 +81,7 @@
 - [x] Commit a display-name edit on Enter or blur, reject blank input by restoring the last confirmed name, show a busy/error state during the write, and repaint both the settings field and Hub account trigger from the authoritative response.
 - [x] Route all passkey, revocation, sign-out, and deletion work to `/account`; do not duplicate confirmations or authority code in the Hub component.
 - [x] Style the settings surface from the FABB geometry: chrome stays visible, the spaces stack steps behind a scrim, the panel is a solid readable surface, rail selection is explicit, focus is visible, controls meet 44px on touch layouts, and the panel becomes a single-column rail/body stack at the existing 640px breakpoint. While open, mark the logo, space stack, and sibling Hub controls inert; remove inert state on every close/disconnect path.
-- [x] Run `cargo fmt --package tonk-workspace -- --check` and `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`; expect all data, failure-state, and keyboard tests to pass.
+- [x] Run `cargo fmt --package tonk-workspace -- --check` and `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`; expect all data, failure-state, and keyboard tests to pass.
 
 ### Task 3: Correct Hub copy at the actual deletion boundary
 
@@ -114,15 +114,15 @@
 - [x] Change the existing multi-account flow so the final switch back happens from `[data-account-menu]`, not `#account-profile-list`; before switching, assert the second account's Hub omits `First Garden`, and after the top-page navigation assert the first account's Hub lists it.
 - [x] In the same signed-in flow, open Hub settings and assert the real email/passkey summary and current device appear, Usage/banner/Syncing controls do not, and the settings close action restores focus to its trigger.
 - [x] Exercise a display-name edit in Hub settings and assert the returned name repaints the Hub account trigger and is present after reopening settings. Do not invoke account deletion or device revocation in this test.
-- [x] Run `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture`; expect the browser to complete both account ceremonies and restore the first account's disjoint space list through the Hub switcher.
+- [x] Run `nix develop . -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture`; expect the browser to complete both account ceremonies and restore the first account's disjoint space list through the Hub switcher.
 
 ### Task 5: Verify the complete Hub slice
 
 - [x] Run `cargo fmt --all -- --check` and `git diff --check`.
 - [x] Run `cargo test -p tonk-worker --test standard_library`.
-- [x] Run `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace --lib`.
-- [x] Run `nix develop path:. -c cargo check -p tonk-host -p tonk-workspace --target wasm32-unknown-unknown`.
-- [x] Run `nix develop path:. -c build:web`.
-- [x] Run `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture` after the final build.
+- [x] Run `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace --lib`.
+- [x] Run `nix develop . -c cargo check -p tonk-host -p tonk-workspace --target wasm32-unknown-unknown`.
+- [x] Run `nix develop . -c build:web`.
+- [x] Run `nix develop . -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture` after the final build.
 - [x] Inspect the built Hub in isolated Chrome at 1440px and 390px widths in light and dark modes. Verify account-stack anchoring, settings scrim/panel layering, rail collapse, long display-name/email/device wrapping, visible focus, 44px touch targets, no horizontal overflow, and no new console errors.
 - [x] Re-read the final diff and rendered copy to confirm there is no Usage/banner/metering UI, no fabricated global Syncing setting, no WebAuthn call from the sealed guest, and no statement that local space removal deletes another replica.

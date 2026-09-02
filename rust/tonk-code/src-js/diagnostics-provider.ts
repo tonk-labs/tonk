@@ -151,10 +151,22 @@ class TonkDiagnosticsProvider extends HTMLElement {
    *  that owned them and ignore events from older sessions. */
   #generation = 0;
 
+  /** Set when the worker answered a subscribe with
+   *  `{"control":"update-pending"}` — it is retiring, so the next
+   *  reconnect holds for `controllerchange` rather than redialing it
+   *  on a timer. Cleared once consumed. */
+  #updatePending = false;
+
   /** Pending reconnect timer, if any. */
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Removes the update hold's controller listener when a newer session
+   *  supersedes it before either controllerchange or the fallback fires. */
+  #controllerChangeCleanup: (() => void) | null = null;
   #reconnectDelay = 5_000;
   static readonly #RECONNECT_MAX_MS = 30_000;
+  /** Fallback for a `controllerchange` that never arrives while an
+   *  update is pending. Long on purpose — see `#scheduleReconnect`. */
+  static readonly #UPDATE_HOLD_MS = 30_000;
 
   connectedCallback(): void {
     this.addEventListener("tonk-code-connect", this.#onConnect);
@@ -270,8 +282,11 @@ class TonkDiagnosticsProvider extends HTMLElement {
       if (generation !== this.#generation || this.#client) return;
       const transport = httpTransport({
         url,
-        onClose: () => {
+        onClose: ({ updatePending }) => {
           if (generation !== this.#generation) return;
+          // Remember BEFORE the teardown: `#scheduleReconnect` reads
+          // it to decide whether to hold for `controllerchange`.
+          this.#updatePending = updatePending;
           this.#tearDown();
           this.#scheduleReconnect();
         },
@@ -346,6 +361,8 @@ class TonkDiagnosticsProvider extends HTMLElement {
 
   #tearDown(): void {
     this.#generation++;
+    this.#controllerChangeCleanup?.();
+    this.#controllerChangeCleanup = null;
     if (this.#reconnectTimer !== null) {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
@@ -364,9 +381,68 @@ class TonkDiagnosticsProvider extends HTMLElement {
     this.#connectedUrl = null;
   }
 
+  /** Reconnect, but HOLD for the controller change when the worker
+   *  told us it is retiring.
+   *
+   *  A timed redial during an update lands back on the OUTGOING
+   *  worker, and an SSE stream is a fetch event that never settles —
+   *  so the redial keeps the worker that is trying to retire alive after
+   *  replacement. From the user's side that is
+   *  "the old version survives every reload", because the reloads keep
+   *  landing on the old worker this reconnect is keeping alive.
+   *
+   *  The signal is the worker's own: `GET /api/language-server`
+   *  answers `503` with `{"control":"update-pending"}` while a
+   *  successor waits (see `router/lsp.rs`). On that we wait for
+   *  `controllerchange` — the successor claiming the page — and
+   *  reconnect onto the NEW worker. The long fallback only backstops a
+   *  `controllerchange` that never arrives; it is deliberately far
+   *  longer than the normal backoff so it can't become a disguised
+   *  timed redial. This mirrors the query-subscription path in
+   *  `tonk-host`, which holds on the same frame. */
   #scheduleReconnect(): void {
     if (!this.isConnected) return;
     if (this.#reconnectTimer !== null) return;
+
+    if (this.#updatePending) {
+      this.#updatePending = false;
+      let swContainer: ServiceWorkerContainer | null = null;
+      try {
+        swContainer = navigator.serviceWorker;
+      } catch {
+        swContainer = null;
+      }
+      if (swContainer) {
+        const generation = this.#generation;
+        const removeControllerChangeListener = () => {
+          swContainer.removeEventListener("controllerchange", onChange);
+          if (
+            this.#controllerChangeCleanup === removeControllerChangeListener
+          ) {
+            this.#controllerChangeCleanup = null;
+          }
+        };
+        const resume = () => {
+          removeControllerChangeListener();
+          if (this.#reconnectTimer !== null) {
+            clearTimeout(this.#reconnectTimer);
+            this.#reconnectTimer = null;
+          }
+          if (generation !== this.#generation || !this.isConnected) return;
+          this.#reconnectDelay = 5_000;
+          this.#ensureClient();
+        };
+        const onChange = () => resume();
+        swContainer.addEventListener("controllerchange", onChange);
+        this.#controllerChangeCleanup = removeControllerChangeListener;
+        this.#reconnectTimer = setTimeout(
+          resume,
+          TonkDiagnosticsProvider.#UPDATE_HOLD_MS,
+        );
+        return;
+      }
+    }
+
     const delay = this.#reconnectDelay;
     this.#reconnectDelay = Math.min(
       delay * 2,
