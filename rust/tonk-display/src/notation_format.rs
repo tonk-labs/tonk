@@ -85,7 +85,11 @@ fn write_value(out: &mut String, value: &Ipld, indent: usize) {
         Ipld::Null => out.push('_'),
         Ipld::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Ipld::Integer(n) => out.push_str(&n.to_string()),
-        Ipld::Float(f) => out.push_str(&f.to_string()),
+        // `{f:?}` keeps the decimal point (`41.0`, not `41`), so the
+        // dump re-parses as a float. (Integers print bare: the wire
+        // flattens signedness into one Ipld integer, so the spelling
+        // of a stored signed value is not recoverable here.)
+        Ipld::Float(f) => out.push_str(&format!("{f:?}")),
         Ipld::String(s) => write_string(out, s, indent),
         Ipld::Bytes(_) | Ipld::Link(_) => {
             // No notation surface for these — fall back to dag-json

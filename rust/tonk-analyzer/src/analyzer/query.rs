@@ -9,10 +9,14 @@ use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
+use super::field::{
+    collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
+    validate_claim_attribute,
+};
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
+use dialog_query::attribute::Relation;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) fn build_query_application(
@@ -45,16 +49,82 @@ pub(crate) fn build_query_application(
             // dialog descriptor from the durability-tagged
             // [`ConceptDefinition`].
             let descriptor = resolved.descriptor.concept().clone();
+            let this_term = this_term_for_query(&this);
             let mut terms = Parameters::new();
-            terms.insert("this".into(), this_term_for_query(&this));
+            let mut join: Vec<ConceptQuery> = Vec::new();
+            terms.insert("this".into(), this_term.clone());
             for (field_name, attr) in descriptor.with().iter() {
+                let user_field = query.fields.iter().find(|f| f.name == *field_name);
+                // A keyed collection binds entries: the value under
+                // the field, the key under the field's key operand.
+                // A key the user left blank (or a field they omitted)
+                // still surfaces, under an auto-named variable, the
+                // same way `_` does for a value.
+                if attr.the().attribute().is_none() {
+                    let entries = match user_field {
+                        Some(field) => collection_entry_terms(
+                            field_name,
+                            &field.value,
+                            field.value_range,
+                            scope,
+                            analysis,
+                            attr.content_type(),
+                        )?,
+                        None => vec![(
+                            Term::<dialog_query::Any>::blank(),
+                            Term::<dialog_query::Any>::var(field_name),
+                        )],
+                    };
+                    // A `_` entry KEY or VALUE means "match anything
+                    // and project it back", like every other query
+                    // blank. (`collection_entry_terms` keeps blanks
+                    // true blanks for the assert path, where
+                    // `{key: _}` retracts.) Left anonymous it would
+                    // match but surface nothing — the match row's
+                    // field drops and a `show: {directory: _}` query
+                    // reads as empty.
+                    let mut entries = entries.into_iter().map(|(key, value)| {
+                        let key = if key.is_blank() {
+                            Term::<dialog_query::Any>::unique()
+                        } else {
+                            key
+                        };
+                        let value = if value.is_blank() {
+                            Term::<dialog_query::Any>::unique()
+                        } else {
+                            value
+                        };
+                        (key, value)
+                    });
+                    let (key, value) = entries
+                        .next()
+                        .expect("collection_entry_terms yields at least one entry");
+                    terms.insert(Relation::key_operand(field_name), key);
+                    terms.insert(field_name.into(), value);
+                    // A `Parameters` map holds one `(key, value)`
+                    // slot pair per field, so every further entry
+                    // rides a satellite query sharing the primary's
+                    // `this` term; the evaluator equi-joins their
+                    // frames, restoring "all entries on one match".
+                    for (key, value) in entries {
+                        let mut satellite = Parameters::new();
+                        satellite.insert("this".into(), this_term.clone());
+                        satellite.insert(Relation::key_operand(field_name), key);
+                        satellite.insert(field_name.into(), value);
+                        join.push(ConceptQuery {
+                            terms: satellite,
+                            predicate: descriptor.clone(),
+                        });
+                    }
+                    continue;
+                }
                 // Fields the user mentioned use whatever they
                 // wrote (literal, variable, blank, etc.). Fields
                 // they *omitted* default to a named variable so
                 // matches surface the value in the response —
                 // `person:` reads the same as
                 // `person:\n  name: ?name\n  age: ?age`.
-                let term = match query.fields.iter().find(|f| f.name == *field_name) {
+                let term = match user_field {
                     Some(field) => field_value_to_term(
                         field_name,
                         &field.value,
@@ -90,6 +160,7 @@ pub(crate) fn build_query_application(
                     terms,
                     predicate: descriptor,
                 },
+                join,
                 this,
                 name: None,
             })
@@ -117,6 +188,13 @@ pub(crate) fn build_query_application(
             parameters.insert("this".into(), this_term_for_query(&this));
             for field in &body_fields {
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
+                // Domain queries are OPEN-ENDED: a blank or variable
+                // matches every value of the attribute regardless of
+                // type, and a literal matches by its spelled type
+                // (`41` unsigned, `+41` signed). A declared attribute
+                // lends only its CARDINALITY (a many-attribute must
+                // enumerate every value, not select a winner) — never
+                // a value type.
                 let term = field_value_to_term(
                     &field.name,
                     &field.value,
@@ -126,11 +204,8 @@ pub(crate) fn build_query_application(
                     None,
                 )?;
                 parameters.insert(field.name.clone(), term);
-                // Declared attributes govern the read side too: a
-                // cardinality-many field must enumerate every value,
-                // not select a winner.
                 if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
-                    attributes.insert(field.name.clone(), declared.descriptor);
+                    attributes.insert(field.name.clone(), untyped_descriptor(&declared.descriptor));
                 }
             }
             Ok(Application::Domain {

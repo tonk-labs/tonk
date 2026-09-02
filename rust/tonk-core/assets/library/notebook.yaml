@@ -1,0 +1,715 @@
+# ===========================================================================
+# notebook — a <tonk-notebook> document whose ```dialog-yaml fences are live cells.
+# ===========================================================================
+# A notebook IS a prose document. What makes it a notebook is that its fenced
+# `dialog` code blocks are evaluated against the branch and their results
+# rendered beneath them, which is the element's business, not the model's.
+#
+# Blocks are the STORED unit: the document the editor shows is the blocks
+# projected (joined with a blank line), and an edit writes back only the
+# blocks that changed. The notebook's `block` field is a SEQUENCE: one fact
+# per block under `xyz.tonk.notebook/<position>`, so document order is the
+# order the facts scan in, an insert touches one block, and two replicas
+# inserting at once merge rather than fight over a list.
+#
+# See plan/notebook.md for the checkpoint model and plan/keyed-collections.md
+# for the sequence field.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &notebook/title
+  description: The notebook's title.
+  the: xyz.tonk.notebook/title
+  as: text
+
+attribute!: &block/source
+  description: A block's markdown source.
+  the: xyz.tonk.notebook.block/source
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concepts
+# ---------------------------------------------------------------------------
+
+concept!: &notebook
+  this: tonk:notebook
+  description: |
+    A notebook - prose with live dialog query cells. Its content is the
+    `block` sequence: every block, keyed by a fractional position, in
+    document order.
+  with:
+    title:
+      description: The notebook's title.
+      the: xyz.tonk.notebook/title
+      cardinality: one
+      as: text
+    block:
+      description: The notebook's blocks, in document order.
+      the: xyz.tonk.notebook
+      # Per ENTRY, and explicit: an omitted cardinality defaults to
+      # `one`, which marks the field SCALAR for the renderer — the
+      # template then substitutes `{block}` once instead of iterating
+      # the entries, so the order rows never render and every block
+      # reads as unplaced.
+      cardinality: many
+      as: {[position]: entity}
+
+# The title alone, so a create or a rename writes one field rather than
+# re-binding the notebook's every field (the same reason `notebook/blocks`
+# exists). Asserting `notebook` itself would require a `block` too, and a
+# notebook with no blocks yet has none.
+concept!: &notebook/named
+  description: A notebook's title, on its own.
+  with:
+    title:
+      description: The notebook's title.
+      the: xyz.tonk.notebook/title
+      as: text
+
+# The sequence alone, so a placement writes one entry rather than
+# re-binding the notebook's every field (the wiki/board pattern).
+concept!: &notebook/blocks
+  description: A notebook's block sequence, as standalone entries.
+  with:
+    block:
+      description: The notebook's blocks, in document order.
+      the: xyz.tonk.notebook
+      as: {[position]: entity}
+
+# Where a block sits, whatever the source of that position.
+#
+# ONE relation over three cases: a block already in the sequence, a block
+# whose position this commit derives, and the document edge. The derivation
+# rule reads its neighbours through this concept, so it does not care which
+# kind a neighbour is — which is what lets an inserted block take its place
+# from a neighbour that was itself just inserted.
+concept!: &block/position
+  this: tonk:notebook/block-position
+  description: A block's position, derived or stored.
+  with:
+    at:
+      description: The position itself.
+      the: xyz.tonk.notebook.block/at
+      cardinality: one
+      as: text
+
+# One block of a notebook. Carries a pointer back to its notebook so the
+# block rows the element reads can be scoped, and so a block written before
+# its placement lands still belongs somewhere.
+concept!: &notebook/block
+  this: tonk:notebook/block
+  description: One markdown block of a notebook.
+  with:
+    notebook:
+      description: The notebook this block belongs to.
+      the: xyz.tonk.notebook.block/notebook
+      cardinality: one
+      as: entity
+    source:
+      description: The block's markdown source.
+      the: xyz.tonk.notebook.block/source
+      cardinality: one
+      as: text
+
+# A block and the block that FOLLOWS it, or `case:none` at the document tail.
+#
+# This is what lets a run of blocks inserted in one commit resolve their
+# positions in a single pass. A block's position is derived from its
+# SUCCESSOR's, and the tail anchors the chain against the document edge, so
+# the recursion terminates at a fact rather than needing a second round.
+#
+# Its own concept, not a field of `notebook/block`: a block whose successor
+# is retracted is still a block, and a rule reading the chain must not have
+# to bind a source it does not care about.
+concept!: &block/chain
+  this: tonk:notebook/block-chain
+  description: A block and the block that follows it.
+  with:
+    next:
+      description: The following block, or `case:none` at the tail.
+      the: xyz.tonk.notebook.block/next
+      cardinality: one
+      as: entity
+
+# ---------------------------------------------------------------------------
+# The space shell.
+#
+# The space route mounts `<tonk-display entity={replica} model=tonk/space>`,
+# so the model the shell renders has to resolve for the REPLICA entity, not
+# a notebook. `tonk:notebook/space` is that model; its view mounts the scratch
+# notebook as a nested display.
+# ---------------------------------------------------------------------------
+
+concept!: &notebook/space
+  this: tonk:notebook/space
+  description: A notebook view of the tonk replica.
+  with:
+    subject:
+      description: The repository's subject DID (shared with tonk/replica)
+      the: dialog.replica/subject
+      as: entity
+
+name!:
+  this: id:tonk/space
+  entity: tonk:notebook/space
+
+view!:
+  this: tonk:notebook/space
+  show:
+    ui: |
+      <div class="notebook-space">
+        <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
+      </div>
+
+# ONE notebook. The element reads two hidden row sets: the notebook's own
+# `block` sequence, one `.notebook-order__item` per entry in position order
+# carrying the entry's key, and the block rows carrying each block's source.
+view!:
+  this: tonk:notebook
+  show:
+    ui: |
+      <tonk-notebook
+        data-subject={this}
+        data-notebook={this}
+        title={title}
+        onblockedit=block/edit
+        onplace=block/place
+        onremove=block/remove
+        ontitlechange=notebook/retitle
+        style="display: block;"
+      >
+        <div class="notebook-data" hidden>
+          <div class="notebook-order">
+            <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
+          </div>
+          <tonk-display model=tonk:notebook/block></tonk-display>
+        </div>
+      </tonk-notebook>
+
+# EVERY notebook — the directory view, which is what core's `/{*model}` route
+# renders at `/space/{repo}/notebook`. A list of links, one per notebook.
+# EVERY notebook — the rows the switcher reads.
+#
+# There is no search form here any more. The index page mounts an empty
+# notebook whose HEADING is the switcher (see `heading-switcher.ts`): typing
+# a title suggests the notebooks that match, and the list carries an
+# explicit "create this" row so Enter always has a visible target.
+#
+# These rows are the switcher's candidates as well as the plain list, so an
+# index whose script never loads is still a working set of links.
+view!:
+  this: tonk:notebook
+  show:
+    directory: |
+      <div class="notebook-index">
+        <!-- ABSOLUTE, like every other link in the library. The guest
+             believes it is at a fake origin (`https://{label}.tonk.network/`),
+             so a relative `notebook/{this}` resolves against that origin's
+             ROOT rather than the current path: picking a notebook took you
+             somewhere that does not exist. -->
+        <a class="notebook-index__item" href="/notebook/{this}">
+          <span class="notebook-index__title">{title}</span>
+        </a>
+      </div>
+
+# The block rows the element reads: one per block, its source on the row.
+view!:
+  this: tonk:notebook/block
+  show:
+    directory: |
+      <div class="notebook-block-rows">
+        <div class="notebook-block-row"
+          subject={this}
+          data-block={this}
+          data-notebook={notebook}
+          data-source={source}></div>
+      </div>
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+# The index — `/space/{repo}/notebook`, with no entity.
+#
+# Its own route and its own concept, NOT the entity route with an optional
+# field. Every route concept reads the same site entity, so a concept that
+# merely *tolerates* a missing `entity` still resolves on the index page and
+# renders an entity-less notebook; and one that requires it reports
+# "Concept mismatch: required attribute missing" beside the working list.
+# A literal path wins over `/{*model}` under the router's specificity rules
+# (fewer broad params first), so this claims the URL outright.
+route!: &route/notebook/index
+  this: id:notebook/index/route
+  path: "/notebook"
+  concept: tonk:notebook/index-route
+
+concept!: &notebook/index-route
+  this: tonk:notebook/index-route
+  description: The notebook index (`/space/{repo}/notebook`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+# The index IS a notebook — a DRAFT one.
+#
+# Not a search page that happens to contain an editor: the same
+# `<tonk-notebook>` you land in, opened on nothing. Its heading is the
+# switcher (type a title, get suggestions, Enter opens or creates), and the
+# body below it is the notebook's real body. Nothing changes shape under
+# the author when the draft becomes a notebook — that is the whole point,
+# and why this is the notebook element rather than a field beside a list.
+#
+# The nested display renders the notebook rows the switcher matches
+# against; they are its data and the no-script fallback both.
+view!:
+  this: tonk:notebook/index-route
+  show:
+    ui: |
+      <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
+        <tonk-notebook
+          draft
+          with="{branch}@{repo}"
+          onblockedit=block/edit
+          onplace=block/place
+          onremove=block/remove
+          ontitlechange=notebook/retitle
+          style="display: block;"
+        ></tonk-notebook>
+        <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+      </tonk-notebook-index>
+
+route!: &route/notebook
+  this: id:notebook/route
+  path: "/notebook/{*entity}"
+  concept: tonk:notebook/route
+
+concept!: &notebook/route
+  this: tonk:notebook/route
+  description: A single notebook page (`/space/{repo}/notebook/{entity}`).
+  with:
+    entity:
+      description: The notebook entity from the path, picked off the site.
+      the: xyz.tonk.site/entity
+      cardinality: one
+      as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:notebook/route
+  show:
+    ui: |
+      <div class="notebook-space">
+        <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
+      </div>
+
+# ---------------------------------------------------------------------------
+# Commands and rules
+# ---------------------------------------------------------------------------
+
+# Insert one block. The element names no entity.
+#
+# A block's identity derives from this command's body the way every
+# anchor-less assertion's does. It used to be minted from the document's
+# block COUNT (`{notebook}/block-{len}-{nth}`) — a position wearing an
+# identity's clothes: delete a block and add another and the count repeats,
+# so the new block claims an entity that already exists and `reconcile`
+# writes one block's source onto another.
+#
+# `next` is the block this one PRECEDES, by entity, or `case:none` at the
+# document tail. Forward, not backward: positions derive by recursion down
+# the chain from the tail, and the tail is the end that has a fixed anchor.
+# A block inserted before another block inserted in the same commit resolves
+# against that one's derived position, in the same round.
+command!: &block/insert
+  description: Insert one block into a notebook, before another.
+  with:
+    # The command's own attributes, distinct from `notebook/block`'s: a
+    # command that wrote the block's attributes directly would BE the block,
+    # and the rule that derives one from it would be tautological.
+    notebook:
+      description: The notebook the block belongs to.
+      the: xyz.tonk.notebook.insert/notebook
+      as: entity
+    source:
+      description: The block's markdown source.
+      the: xyz.tonk.notebook.insert/source
+      as: text
+    next:
+      description: The block this one precedes, or `case:none` at the tail.
+      the: xyz.tonk.notebook.insert/next
+      as: entity
+    prev:
+      description: |
+        The existing block this run of inserts follows, or
+        `tonk:notebook/edge` at the document head. Only the chain's last
+        block consults it; the others take their bound from their successor.
+      the: xyz.tonk.notebook.insert/prev
+      as: entity
+
+# Create a notebook from the index's heading switcher.
+#
+# The switcher's "create" row fires this. It carries only a title: the
+# notebook's first block is written by the ordinary insert path once the
+# author types into the body, so a notebook begins as a name and nothing
+# else.
+command!: &notebook/create
+  description: Create a notebook with a title.
+  with:
+    title:
+      description: |
+        The title typed into the index's heading. Its OWN attribute, not
+        `detail/title`: a retitle carries that one, and two transient
+        commands reading the same attribute both decode from one event, so
+        every rename would also create a notebook.
+      the: dom.event.detail/created-title
+      as: text
+    body:
+      description: |
+        The draft's whole document, so the notebook that gets created keeps
+        what was already written under the heading. Declared here as well as
+        in `CreateNotebook`: a field the struct requires but the command
+        does not declare is simply absent from the descriptor, so the decode
+        fails and the binding falls through in silence.
+      the: dom.event.detail/created-body
+      as: text
+
+# Rename a notebook from its document's own heading.
+#
+# The title is not a separate field the user maintains: it IS the first
+# heading of the document. The element watches the projected document and
+# emits `titlechange` when that heading changes, so renaming a notebook is
+# just editing its `# Heading`.
+command!: &notebook/retitle
+  description: Set a notebook's title from its leading heading.
+  with:
+    subject:
+      description: The notebook entity.
+      the: dom.event.detail/notebook
+      as: entity
+    title:
+      description: The heading text, without its `#` markers.
+      the: dom.event.detail/title
+      as: text
+
+command!: &block/edit
+  description: Write one notebook block's source.
+  with:
+    subject:
+      description: The block entity, stamped on the element's data-subject.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    source:
+      description: The block's new markdown source.
+      the: dom.event.detail/source
+      as: text
+    notebook:
+      description: |
+        The notebook the block belongs to. Carried on every edit, not just a
+        creating one: a block written with only its source does not match
+        `tonk:notebook/block`, so it renders no row. Re-asserting it on an
+        existing block is a no-op.
+      the: dom.event.detail/notebook
+      as: entity
+
+# Placement is per block: put this block into its notebook's sequence under
+# a position. The element derives the position between the block's
+# neighbours (`dialog_artifacts::position`), so a move re-keys only what
+# moved.
+command!: &block/place
+  description: Place one block in its notebook's sequence.
+  with:
+    subject:
+      description: The block entity.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    notebook:
+      description: The notebook whose sequence the block joins.
+      the: dom.event.detail/notebook
+      as: entity
+    key:
+      description: The block's position in the sequence.
+      the: dom.event.detail/key
+      as: text
+
+command!: &block/remove
+  description: Take one block out of its notebook's sequence.
+  with:
+    subject:
+      description: The block entity.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    notebook:
+      description: The notebook whose sequence the block leaves.
+      the: dom.event.detail/notebook
+      as: entity
+    # Its own attribute, not `detail/key`: two transient commands with the
+    # same shape would both decode from one event, and the retraction
+    # would fire alongside every placement.
+    key:
+      description: The position the block held.
+      the: dom.event.detail/removed
+      as: text
+
+# An inserted block exists.
+rule!:
+  description: Persist an inserted block.
+  assert!: notebook/block
+  when:
+    - assert: block/insert
+      where:
+        this: ?this
+        notebook: ?notebook
+        source: ?source
+
+# A block already in the sequence is at the position it is stored under.
+# This is what gives the derivation rule its neighbours.
+rule!:
+  description: A placed block's position.
+  assert: block/position
+  when:
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?block/key: ?this}
+    - assert: "=="
+      where:
+        this: ?at
+        is: ?block/key
+
+# An inserted block's successor, kept as a fact so the position rules can
+# recurse over it. `case:none` at the tail is an ordinary sentinel entity —
+# it simply matches no block, which is what ends the recursion.
+rule!:
+  description: Record an inserted block's successor.
+  assert: block/chain
+  when:
+    - assert: block/insert
+      where:
+        this: ?this
+        next: ?next
+
+# The document's edge HAS a position: the empty one, which
+# `dialog/position` reads as an open bound.
+#
+# That is what keeps the tail rule to a single rule: without it, a body
+# naming `prev` never fires for a run inserted into an empty notebook, and a
+# second present/absent variant is needed instead.
+block/position!:
+  this: tonk:notebook/edge
+  at: ""
+
+# The chain's TAIL anchors against the block it FOLLOWS.
+#
+# A run of new blocks is a chain: each knows its successor, and the last one
+# knows the existing block it comes after (`prev`), or nothing when it is
+# appended to an empty notebook. That existing block's position is stored,
+# so the anchor is a lookup, not an aggregate — which matters, because a
+# reducer over the sequence would sit in the same dependency cycle as the
+# recursion that concludes into it, and dialog rejects that as unstratified.
+#
+# `dialog/position` maps `""` to an OPEN bound, so an absent `prev` gives
+# `create(major::ZERO, ..)`: the start of the range, correct only when there
+# is nothing to come after.
+rule!:
+  description: Position the last new block after the block it follows.
+  assert: block/position
+  when:
+    - assert: block/chain
+      where:
+        this: ?this
+        next: case:none
+    - assert: block/insert
+      where:
+        this: ?this
+        prev: ?prev
+    - assert: block/position
+      where:
+        this: ?prev
+        at: ?prev-at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ?prev-at
+        before: ""
+        is: ?at
+
+# ...and every other block sits BEFORE its successor.
+#
+# This is the recursion: the rule reads its own conclusion for the successor
+# and derives this block from it. It terminates because the chain ends at
+# `case:none`, which the rule above positions without recursing.
+#
+# `before: ?next-at`, NOT `after: ?next-at`: a block precedes its successor.
+# Deriving the other way builds the same chain but numbers it backwards, so
+# a position scan reads the document in reverse.
+#
+# BOTH bounds, though. With `after` left open the derived position is only
+# required to sit below the successor, and nothing stops it from sitting
+# below the block the run FOLLOWS as well — a run appended after the third
+# block had its first member land between the second and the third. The
+# lower bound is the run's anchor, which every insert in the run carries.
+rule!:
+  description: Position a block before its successor.
+  assert: block/position
+  when:
+    - assert: block/chain
+      where:
+        this: ?this
+        next: ?next
+    - assert: block/insert
+      where:
+        this: ?this
+        prev: ?prev
+    - assert: block/position
+      where:
+        this: ?prev
+        at: ?prev-at
+    - assert: block/position
+      where:
+        this: ?next
+        at: ?next-at
+    - assert: dialog/position
+      where:
+        member: ?this
+        after: ?prev-at
+        before: ?next-at
+        is: ?at
+
+# The derived position becomes the block's entry in the sequence.
+rule!:
+  description: Place an inserted block.
+  assert!: notebook/blocks
+  when:
+    - assert: block/insert
+      where:
+        this: ?block
+        notebook: ?this
+    - assert: block/position
+      where:
+        this: ?block
+        at: ?block/key
+
+rule!:
+  description: Retitle a notebook from its heading.
+  assert!: notebook/named
+  when:
+    - assert: notebook/retitle
+      where:
+        subject: ?this
+        title: ?title
+
+rule!:
+  description: Persist a block edit onto its block.
+  assert!: notebook/block
+  when:
+    - assert: block/edit
+      where:
+        subject: ?this
+        source: ?source
+        notebook: ?notebook
+
+# The head's entry is `block: {?block/key: ?block}`: the body binds the
+# block to the field and the position to its key, and the fact lands under
+# `xyz.tonk.notebook/<key>`.
+rule!:
+  description: Persist a placement into the notebook's sequence.
+  assert!: notebook/blocks
+  when:
+    - assert: block/place
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
+
+rule!:
+  description: Retract a block's entry from the notebook's sequence.
+  retract!: notebook/blocks
+  when:
+    - assert: block/remove
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
+
+# The block's own facts go too. Retracting only the entry leaves the block
+# behind with its source, and a block that has a source but no entry is
+# exactly the shape the element treats as "placement never landed" — so it
+# renders at the end and is re-keyed on the next commit. A deleted block
+# would come straight back.
+rule!:
+  description: Retract a removed block's own facts.
+  retract!: notebook/block
+  when:
+    - assert: block/remove
+      where:
+        subject: ?this
+        notebook: ?notebook
+    - assert: notebook/block
+      where:
+        this: ?this
+        notebook: ?notebook
+        source: ?source
+
+# ---------------------------------------------------------------------------
+# Seed
+# ---------------------------------------------------------------------------
+
+notebook!:
+  this: id:notebook/scratch
+  title: "Scratch"
+  block: {N1: id:notebook/scratch/1}
+
+notebook!:
+  this: id:notebook/scratch
+  block: {N5: id:notebook/scratch/2}
+
+notebook!:
+  this: id:notebook/scratch
+  block: {N9: id:notebook/scratch/3}
+
+# The seeded blocks must be exactly what `split` produces from the projected
+# document, or the first edit re-partitions the whole notebook: a heading is
+# grouped with the paragraph it introduces.
+notebook/block!:
+  this: id:notebook/scratch/1
+  notebook: id:notebook/scratch
+  source: |-
+    # Scratch
+
+    A `dialog-yaml` fence is a live cell: it evaluates against this branch and renders its results underneath.
+
+notebook/block!:
+  this: id:notebook/scratch/2
+  notebook: id:notebook/scratch
+  source: |-
+    ```dialog-yaml
+    concept:
+    ```
+
+notebook/block!:
+  this: id:notebook/scratch/3
+  notebook: id:notebook/scratch
+  source: >-
+    Query cells run on their own, because a query has no effect. Cells that
+    assert are recognized and held: they need a checkpoint to land in, which
+    is not built yet.

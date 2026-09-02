@@ -44,6 +44,9 @@ pub fn start() {
     // the host fetch bridge; its `<tonk-code>` editor + diagnostics provider are
     // injected by the portal.
     tonk_inspector::register();
+    // `<tonk-notebook>` — the same evaluate path as the inspector, hosted on a
+    // `<tonk-prose>` document whose ```dialog fences are the cells.
+    tonk_inspector::register_notebook();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —
     // it nests cleanly since the canvas portal is plain `content=` (a

@@ -14,7 +14,8 @@ renders.
 
 ## The shape of a template
 
-A view's `display` field is an HTML fragment with `{field}` holes:
+A view template — one entry of a model's `show` dictionary — is an
+HTML fragment with `{field}` holes:
 
 ```html
 <article>
@@ -146,33 +147,30 @@ case of the same per-conclusion loop.
 
 ## Two renderers, one entity vs. a directory
 
-`<tonk-display>` resolves which view (template) to use by querying a
-`view` concept whose `model` matches the subject's model, then renders:
+`<tonk-display>` resolves which template to use by querying the
+subject's model entity for its `show` dictionary — the model IS the
+view instance — then picks a facet and renders:
 
-- **Single entity** — `entity` attribute set. The query pins
-  `conclusion.this` to that one URI; the template renders once. Any
-  `{this}` iteration runs over a one-element set.
+- **Single entity** — `entity` attribute set. The facet is `ui`
+  (unless `view=` names another). The query pins `conclusion.this` to
+  that one URI; the template renders once. Any `{this}` iteration
+  runs over a one-element set.
 
 - **Directory** — `entity` attribute *not* set. There is no single
-  subject, so the engine resolves a **directory view** for the model
-  (a `tonk:view/directory` whose template lives under
-  `xyz.tonk.view/directory`) and runs a query for *all* instances of
-  the model. The matched subjects arrive as a frame of N conclusions
-  (one per instance). The directory template's chrome renders once and
-  its `{this}` repeat root (the `<tr>`) clones per conclusion.
+  subject, so the engine picks the **`directory` facet** and runs a
+  query for *all* instances of the model. The matched subjects arrive
+  as a frame of N conclusions (one per instance). The directory
+  template's chrome renders once and its `{this}` repeat root (the
+  `<tr>`) clones per conclusion.
 
-  If no `tonk:view/directory` is defined for the model,
-  `<tonk-display>` falls back to a synthesized table (one column per
-  descriptor field, one row per instance) — the same default the
-  concept route renders today. A richer finder/spotlight fallback can
-  replace the table later without changing any view that ships its own
-  directory template.
+  If the model's dictionary has no `directory` entry,
+  `<tonk-display>` falls back to the `tonk:_` default dictionary's
+  `directory` facet (the seeded carousel).
 
-The `view` concept (`tonk:view`) and the directory view concept
-(`tonk:view/directory`) differ only in which attribute carries the
-template (`xyz.tonk.view/display` vs `xyz.tonk.view/directory`), so a
-model can declare a detail view and a directory view independently,
-both keyed by `model`.
+The facets differ only in which entry of the dictionary carries the
+template (`xyz.tonk.view/ui` vs `xyz.tonk.view/directory`), so a
+model declares its detail and directory presentations independently
+— and any other facet (`label`, `title`, …) besides.
 
 ## Worked example
 
@@ -180,14 +178,15 @@ A `trip` concept with `title` (one) and `stop` (many). Detail view:
 
 ```yaml
 view!:
-  model: trip
-  display: |
-    <section>
-      <h1>{title}</h1>
-      <ol>
-        <li data-stop={stop}>{stop}</li>
-      </ol>
-    </section>
+  this: trip
+  show:
+    ui: |
+      <section>
+        <h1>{title}</h1>
+        <ol>
+          <li data-stop={stop}>{stop}</li>
+        </ol>
+      </section>
 ```
 
 Rendered for one trip: one `<section>`, one `<h1>`, and one `<li>` per
@@ -196,18 +195,19 @@ stop.
 Directory view over *all* trips:
 
 ```yaml
-view/directory!:
-  model: trip
-  directory: |
-    <table>
-      <thead><tr><th>trip</th><th>title</th></tr></thead>
-      <tbody>
-        <tr subject={this}>
-          <td>{this}</td>
-          <td>{title}</td>
-        </tr>
-      </tbody>
-    </table>
+view!:
+  this: trip
+  show:
+    directory: |
+      <table>
+        <thead><tr><th>trip</th><th>title</th></tr></thead>
+        <tbody>
+          <tr subject={this}>
+            <td>{this}</td>
+            <td>{title}</td>
+          </tr>
+        </tbody>
+      </table>
 ```
 
 `<tonk-display model=trip>` (no `entity`) runs the all-trips query and
@@ -236,21 +236,22 @@ instances, `ready` once at least one is rendered. The fallback shows
 under `empty` and the entries show under `ready`:
 
 ```yaml
-view/directory!:
-  model: trip
-  directory: |
-    <style>
-      .launchpad { display: none; }
-      tonk-display[data-state="empty"] .launchpad { display: block; }
-      tonk-display[data-state="empty"] .trips    { display: none; }
-    </style>
-    <ul class="trips">
-      <li subject={this}>{title}</li>
-    </ul>
-    <div class="launchpad">
-      <h1>No trips yet</h1>
-      <button onclick=create>Plan one</button>
-    </div>
+view!:
+  this: trip
+  show:
+    directory: |
+      <style>
+        .launchpad { display: none; }
+        tonk-display[data-state="empty"] .launchpad { display: block; }
+        tonk-display[data-state="empty"] .trips    { display: none; }
+      </style>
+      <ul class="trips">
+        <li subject={this}>{title}</li>
+      </ul>
+      <div class="launchpad">
+        <h1>No trips yet</h1>
+        <button onclick=create>Plan one</button>
+      </div>
 ```
 
 The `<ul class="trips">` repeat root clones per trip; the
@@ -271,16 +272,17 @@ is live. The entries stay as the normal repeat; the fallback needs no
 stylesheet:
 
 ```yaml
-view/directory!:
-  model: trip
-  directory: |
-    <ul>
-      <li subject={this}>{title}</li>
-    </ul>
-    <tonk-fallback>
-      <h1>No trips yet</h1>
-      <button onclick=create>Plan one</button>
-    </tonk-fallback>
+view!:
+  this: trip
+  show:
+    directory: |
+      <ul>
+        <li subject={this}>{title}</li>
+      </ul>
+      <tonk-fallback>
+        <h1>No trips yet</h1>
+        <button onclick=create>Plan one</button>
+      </tonk-fallback>
 ```
 
 It is sibling chrome (no subject reference), so it is decoupled from how

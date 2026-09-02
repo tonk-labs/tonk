@@ -18,7 +18,7 @@ tonk guide            # one-screen index of the agent reference
 tonk schema           # every concept + attribute on the branch, as notation
 tonk schema <concept> # one concept's subset, same format
 tonk concept ls       # name<TAB>description, one row per concept this space defines
-tonk view ls          # name<TAB>entity<TAB>model<TAB>bytes, one row per renderable claim carrier
+tonk view ls          # name<TAB>entity<TAB>model<TAB>bytes, one row per model carrying show templates
 tonk status           # synced | ahead | behind | diverged | no-upstream
 ```
 
@@ -49,7 +49,7 @@ Notes:
 ```bash
 tonk concept add <name> --attr <field>:<type>:<card> [--attr …] [--description <text>]
                                     # types: text, entity, unsigned-integer, …; card: one|many
-tonk view add <concept> --template '<html>' | --template-file <path> [--name <anchor>]
+tonk view add <concept> --template '<html>' | --template-file <path> [--kind detail|directory|label|title]
 tonk home <concept> [<concept> …]   # put concept directories on the space home
 ```
 

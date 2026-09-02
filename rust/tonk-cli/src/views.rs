@@ -1,14 +1,11 @@
 //! `tonk view` — enumerate every entity on the local branch that
 //! carries a renderable claim.
 //!
-//! Claim-driven, not concept-driven: we don't care whether an entity
-//! is a member of the `view` concept or picked its claim up some
-//! other way. What counts is the attribute the renderer selects on,
-//! and there are five of them:
+//! Two sources:
 //!
-//! - the four template attributes the display stack resolves —
-//!   `xyz.tonk.view/display` (what `tonk view add` writes), plus the
-//!   `/directory`, `/label`, and `/title` view kinds;
+//! - the `show` dictionary the display stack resolves — every
+//!   `xyz.tonk.view/<facet>` entry on a model entity (what
+//!   `tonk view add` writes);
 //! - `text/html`, which the host route at
 //!   `/api/repository/{repo}/branch/{branch}/host/{host}/{entity}`
 //!   selects on for a one-off page.
@@ -17,19 +14,21 @@
 //! `tonk view` came back empty right after `tonk view add`
 //! succeeded, because the two were looking at different claims.
 //!
-//! The standard library seeds twenty-five views of its own. Those are
-//! filtered out for the same reason `tonk concept` drops the
-//! runtime vocabulary: they resolve everywhere, and listing them
-//! buries the view the author just wrote.
+//! The standard library seeds views of its own. Those are filtered
+//! out for the same reason `tonk concept` drops the runtime
+//! vocabulary: they resolve everywhere, and listing them buries the
+//! view the author just wrote.
 //!
 //! Used by bare `tonk view`.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use anyhow::{Context, Result, anyhow};
 use dialog_artifacts::{Attribute, Entity, Value};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+use tonk_render::QueryBackend as _;
 
 use crate::site::TonkSite;
 
@@ -44,10 +43,10 @@ pub struct ViewSummary {
     /// Entity URI carrying the renderable claim — what a route's
     /// trailing `{entity}` segment takes.
     pub entity: Entity,
-    /// What the view renders: the published name of the concept its
-    /// `xyz.tonk.view/model` points at, or that entity's URI when the
-    /// model publishes no name. `None` for a bare `text/html` page,
-    /// which binds no model.
+    /// What the view renders. The view instance IS the model entity,
+    /// so this is the entity's own published name (or its URI when
+    /// unnamed). `None` for a bare `text/html` page, which binds no
+    /// model.
     pub model: Option<String>,
     /// Byte length of the body claim. Lets the listing show a
     /// rough "is this empty / huge?" without dumping the HTML.
@@ -71,49 +70,59 @@ pub struct ViewDescription {
     pub template: String,
 }
 
-/// The attributes a renderable claim can land under. The four view
-/// kinds the display stack resolves, then the host route's raw page
-/// body. Kept in one place so the listing and its documentation
-/// cannot drift apart.
-const RENDERABLE_ATTRIBUTES: &[&str] = &[
-    "xyz.tonk.view/display",
-    "xyz.tonk.view/directory",
-    "xyz.tonk.view/label",
-    "xyz.tonk.view/title",
-    "text/html",
-];
-
-/// The attribute binding a view to the concept it renders.
-const MODEL_ATTRIBUTE: &str = "xyz.tonk.view/model";
+/// The host route's raw page attribute — the one renderable claim
+/// that is not a `show` entry.
+const TEXT_HTML_ATTRIBUTE: &str = "text/html";
 
 /// Enumerate every distinct entity on the branch holding a renderable
 /// claim, minus the ones the standard library seeded.
 ///
 /// One row per entity. When an entity carries several renderable
-/// claims — a model with both a detail and a directory template, say —
-/// the [`ViewSummary::body_bytes`] field records the longest; the name
-/// and model lookups are unaffected (each entity has at most one of
-/// each).
+/// claims — a model with both a `ui` and a `directory` template, say —
+/// the [`ViewSummary::body_bytes`] field records the longest.
 pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
-    let entities_with_lengths = enumerate_view_claims(site).await?;
-    if entities_with_lengths.is_empty() {
+    let names = name_claims_by_entity(site).await?;
+    let shows = show_dictionaries(site).await?;
+    let mut with_show: HashMap<Entity, usize> = HashMap::new();
+    for (entity, entries) in shows {
+        // The library's views key off its own model entities: pinned
+        // URIs, or — for library concepts without a pinned `this:`
+        // (`board`, `prose`, `table`) — entities whose published name
+        // is a system concept.
+        if crate::site::standard_library_pins_entity(&entity.to_string())
+            || names
+                .get(&entity)
+                .is_some_and(|name| crate::schema::is_system_concept(name))
+        {
+            continue;
+        }
+        let longest = entries.values().map(String::len).max().unwrap_or(0);
+        with_show.insert(entity, longest);
+    }
+    let mut by_entity = with_show;
+    for row in claims_for_attribute(site, TEXT_HTML_ATTRIBUTE).await? {
+        if crate::site::standard_library_pins_entity(&row.of.to_string()) {
+            continue;
+        }
+        let len = body_byte_len(&row.is);
+        by_entity
+            .entry(row.of)
+            .and_modify(|current| {
+                if len > *current {
+                    *current = len;
+                }
+            })
+            .or_insert(len);
+    }
+    if by_entity.is_empty() {
         return Ok(Vec::new());
     }
-    let names = name_claims_by_entity(site).await?;
-    let models = model_claims_by_entity(site).await?;
-    let mut out: Vec<ViewSummary> = entities_with_lengths
+    let mut out: Vec<ViewSummary> = by_entity
         .into_iter()
         .map(|(entity, body_bytes)| ViewSummary {
             name: names.get(&entity).cloned(),
-            // A model is an entity reference; show the concept name it
-            // publishes, since that is the name `tonk view add` took
-            // and `tonk query` will take back.
-            model: models.get(&entity).map(|model| {
-                names
-                    .get(model)
-                    .cloned()
-                    .unwrap_or_else(|| model.to_string())
-            }),
+            // The view instance IS the model: its own published name.
+            model: names.get(&entity).cloned(),
             entity,
             body_bytes,
         })
@@ -150,46 +159,67 @@ pub async fn entity_has_text_html(site: &TonkSite, entity: &Entity) -> Result<bo
     Ok(!rows.is_empty())
 }
 
-/// Run one `(<attribute>, ?of, ?is)` query per entry of
-/// [`RENDERABLE_ATTRIBUTES`] and reduce each entity to (entity, max
-/// body length), dropping the entities the standard library pinned.
-/// String, symbol, and bytes payloads are all counted by their
-/// on-disk byte length; other value flavours surface as zero — they
-/// shouldn't appear under a template attribute in practice, but
-/// ignoring them keeps the listing from panicking if something weird
-/// sneaks in.
-async fn enumerate_view_claims(site: &TonkSite) -> Result<Vec<(Entity, usize)>> {
-    let mut by_entity: HashMap<Entity, usize> = HashMap::new();
-    for uri in RENDERABLE_ATTRIBUTES {
-        for row in claims_for_attribute(site, uri).await? {
-            if crate::site::standard_library_pins_entity(&row.of.to_string()) {
-                continue;
+/// Query every `show` entry on the branch and fold them into one
+/// facet dictionary per entity. The concept query is the same one
+/// the display stack runs (`resolve.rs view_predicate`), with `this`
+/// left as a variable so it matches every model that declares views.
+async fn show_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<String, String>)>> {
+    let body = serde_json::json!({
+        "terms": {
+            "this":     { "?": { "name": "this" } },
+            "show":     { "?": { "name": "show" } },
+            "show/key": { "?": { "name": "show/key" } },
+        },
+        "predicate": {
+            "with": {
+                "show": {
+                    "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
+                    "as": "Text",
+                    "cardinality": "one"
+                }
             }
-            let len = body_byte_len(&row.is);
-            by_entity
-                .entry(row.of)
-                .and_modify(|current| {
-                    if len > *current {
-                        *current = len;
-                    }
-                })
-                .or_insert(len);
+        }
+    });
+    let query: tonk_schema::query::Query =
+        serde_json::from_value(body).context("show query body is well-formed")?;
+    let concept_query = query
+        .into_concept_query()
+        .map_err(|e| anyhow!("show query should lower to a concept query: {e:?}"))?;
+    let rows = site
+        .query(concept_query)
+        .await
+        .map_err(|e| anyhow!("show enumeration failed: {e}"))?;
+    // One flat row per entry, `show` a one-entry `{facet: template}`
+    // map; merge rows by entity.
+    let mut order: Vec<Entity> = Vec::new();
+    let mut folded: HashMap<Entity, BTreeMap<String, String>> = HashMap::new();
+    for row in rows {
+        let Ok(entity) = row.this.parse::<Entity>() else {
+            continue;
+        };
+        let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get("show") else {
+            continue;
+        };
+        let dict = match folded.entry(entity.clone()) {
+            Entry::Occupied(held) => held.into_mut(),
+            Entry::Vacant(slot) => {
+                order.push(entity);
+                slot.insert(BTreeMap::new())
+            }
+        };
+        for (facet, value) in entries {
+            if let ipld_core::ipld::Ipld::String(template) = value {
+                dict.insert(facet.clone(), template.clone());
+            }
         }
     }
-    Ok(by_entity.into_iter().collect())
-}
-
-/// Pull every `xyz.tonk.view/model` claim and return a
-/// `view entity → model entity` map. One branch query, for the same
-/// reason [`name_claims_by_entity`] is one.
-async fn model_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, Entity>> {
-    let mut out = HashMap::new();
-    for claim in claims_for_attribute(site, MODEL_ATTRIBUTE).await? {
-        if let Value::Entity(model) = claim.is {
-            out.insert(claim.of, model);
-        }
-    }
-    Ok(out)
+    Ok(order
+        .into_iter()
+        .filter_map(|entity| {
+            let dict = folded.remove(&entity)?;
+            Some((entity, dict))
+        })
+        .collect())
 }
 
 /// Select every current claim under one attribute URI.
@@ -309,36 +339,32 @@ pub async fn describe(site: &TonkSite, reference: &str) -> Result<Option<ViewDes
         return Ok(None);
     };
 
-    let mut template = None;
-    for uri in RENDERABLE_ATTRIBUTES {
-        if let Some(claim) = claims_for_attribute(site, uri)
+    // The `ui` facet is the canonical body; otherwise the first entry
+    // of the dictionary, else a raw `text/html` page claim.
+    let mut template = show_dictionaries(site)
+        .await?
+        .into_iter()
+        .find(|(this, _)| *this == entity)
+        .and_then(|(_, mut dict)| dict.remove("ui").or_else(|| dict.into_values().next()));
+    if template.is_none()
+        && let Some(claim) = claims_for_attribute(site, TEXT_HTML_ATTRIBUTE)
             .await?
             .into_iter()
             .find(|claim| claim.of == entity)
-        {
-            template = Some(match claim.is {
-                Value::String(value) => value.to_string(),
-                Value::Symbol(value) => value.to_string(),
-                Value::Bytes(value) => String::from_utf8_lossy(&value).into_owned(),
-                value => format!("{value:?}"),
-            });
-            break;
-        }
+    {
+        template = Some(match claim.is {
+            Value::String(value) => value.to_string(),
+            Value::Symbol(value) => value.to_string(),
+            Value::Bytes(value) => String::from_utf8_lossy(&value).into_owned(),
+            value => format!("{value:?}"),
+        });
     }
     let Some(template) = template else {
         return Ok(None);
     };
 
     let names = name_claims_by_entity(site).await?;
-    let model = model_claims_by_entity(site)
-        .await?
-        .get(&entity)
-        .map(|model| {
-            names
-                .get(model)
-                .cloned()
-                .unwrap_or_else(|| model.to_string())
-        });
+    let model = names.get(&entity).cloned();
     let anchor = names
         .get(&entity)
         .cloned()

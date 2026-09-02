@@ -666,7 +666,7 @@ fn build_mounted_node(
                         &template_iter_path,
                         template,
                         body,
-                        (field, value),
+                        (field, &key, value),
                         member,
                         shadow,
                     ) {
@@ -821,6 +821,7 @@ fn update_iteration(
             flush(&parent, &mut batch);
             let mut nested_shadow = shadow.clone();
             nested_shadow.insert(field.to_owned(), value.clone());
+            nested_shadow.insert(row_key_field(field), Ipld::String(key.clone()));
             update_nodes(
                 document,
                 plan_body,
@@ -835,7 +836,7 @@ fn update_iteration(
             template_path,
             template,
             plan_body,
-            (field, value),
+            (field, &key, value),
             member,
             shadow,
         ) {
@@ -865,7 +866,7 @@ fn build_iteration_row(
     template_path: &[usize],
     template: &DocumentFragment,
     body_plan: &[PlanNode],
-    shadow_entry: (&str, Ipld),
+    shadow_entry: (&str, &str, Ipld),
     member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) -> Option<MountedRow> {
@@ -874,8 +875,9 @@ fn build_iteration_row(
     let row_root = template_iter_root.clone_node_with_deep(true).ok()?;
 
     let mut nested_shadow = shadow.clone();
-    let (field, value) = shadow_entry;
+    let (field, key, value) = shadow_entry;
     nested_shadow.insert(field.to_owned(), value);
+    nested_shadow.insert(row_key_field(field), Ipld::String(key.to_owned()));
 
     let body = build_mounted_nodes(
         document,
@@ -980,6 +982,14 @@ fn write_binding(
     }
 }
 
+/// The shadow field a row's key is visible under inside its iteration:
+/// `{block/key}` beside `{block}`. For a keyed collection that is the
+/// entry's own key (a sequence's position); for a list it is the
+/// row's derived key.
+fn row_key_field(field: &str) -> String {
+    format!("{field}/key")
+}
+
 /// Resolve a value into the list of (row-key, row-value) pairs the
 /// iteration renderer needs.
 ///
@@ -991,6 +1001,10 @@ fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, I
     match value {
         None | Some(Ipld::Null) => Vec::new(),
         Some(Ipld::List(items)) => items.into_iter().map(|v| (key_for(&v), v)).collect(),
+        // A keyed collection: one row per entry, keyed by the entry's
+        // own key, so a re-render after an insert keeps every other
+        // row in place.
+        Some(Ipld::Map(entries)) => entries.into_iter().collect(),
         Some(v) => vec![(entity_key.to_owned(), v)],
     }
 }
@@ -1169,6 +1183,47 @@ mod tests {
                 .as_deref(),
             Some("two")
         );
+    }
+
+    /// A keyed-collection field arrives as a `{key: value}` map: one row
+    /// per entry in key order (a sequence's position order), each row
+    /// keyed by its entry key and able to read it as `{field/key}`. A
+    /// later frame inserting an entry between two others lands it
+    /// between them and leaves the rest in place.
+    #[dialog_common::test]
+    fn it_iterates_a_keyed_collection_in_key_order() {
+        fn frame(entries: &[(&str, &str)]) -> Conclusion {
+            let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
+            for (key, value) in entries {
+                map.insert((*key).to_owned(), Ipld::String((*value).to_owned()));
+            }
+            Conclusion {
+                this: "nb".to_owned(),
+                fields: BTreeMap::from([("block".to_owned(), Ipld::Map(map))]),
+            }
+        }
+        fn keys(host: &Element) -> Vec<String> {
+            let items = host.query_selector_all("li").expect("q");
+            (0..items.length())
+                .filter_map(|i| items.item(i))
+                .filter_map(|n| n.dyn_into::<Element>().ok())
+                .filter_map(|li| li.get_attribute("data-key"))
+                .collect()
+        }
+
+        let (mut r, host) = renderer("<ul><li data-key={block/key}>{block}</li></ul>");
+        r.apply(&[frame(&[("N5", "second"), ("N1", "first"), ("N9", "third")])]);
+        assert_eq!(li_texts(&host), vec!["first", "second", "third"]);
+        assert_eq!(keys(&host), vec!["N1", "N5", "N9"]);
+
+        r.apply(&[frame(&[
+            ("N1", "first"),
+            ("N3", "between"),
+            ("N5", "second"),
+            ("N9", "third"),
+        ])]);
+        assert_eq!(li_texts(&host), vec!["first", "between", "second", "third"]);
+        assert_eq!(keys(&host), vec!["N1", "N3", "N5", "N9"]);
     }
 
     #[dialog_common::test]

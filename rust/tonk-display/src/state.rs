@@ -218,12 +218,15 @@ fn set_default_notice(host: &Element) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    // Name the model so the viewer knows exactly which one lacks a view.
+    // Name the model AND the facet, so nested defaults read as what
+    // they are: a directory that found no `directory` view, holding
+    // cards that found no `ui` view — not the same message twice.
     let model = host.get_attribute("model").unwrap_or_default();
-    let text = if model.is_empty() {
-        "No view for this model; showing the default.".to_owned()
-    } else {
-        format!("No view for {model}; showing the default.")
+    let facet = host.get_attribute("data-view-facet").unwrap_or_default();
+    let text = match (model.is_empty(), facet.is_empty()) {
+        (true, _) => "No view for this model; showing the default.".to_owned(),
+        (false, true) => format!("No view for {model}; showing the default."),
+        (false, false) => format!("No `{facet}` view for {model}; showing the default."),
     };
     let label = document.create_text_node(&text);
     let _ = callout.append_child(&label);
@@ -445,6 +448,7 @@ pub fn set_no_entity_diagnostic(
     entity: &str,
     present: &[(String, String)],
     missing: &[(String, String)],
+    mistyped: &[(String, String, String)],
 ) {
     let _ = host.set_attribute("data-state", State::NoEntity.as_str());
     remove_error_callout(host);
@@ -469,7 +473,14 @@ pub fn set_no_entity_diagnostic(
             let _ = icon.set_attribute("name", "circle-info");
             let _ = callout.append_child(&icon);
         }
-        let label = document.create_text_node("Concept mismatch: required attribute missing");
+        // Say what is actually wrong: "missing" over a value that is
+        // right there (just differently typed) sends the author
+        // hunting the wrong problem.
+        let label = document.create_text_node(if missing.is_empty() && !mistyped.is_empty() {
+            "Concept mismatch: attribute value type differs"
+        } else {
+            "Concept mismatch: required attribute missing"
+        });
         let _ = callout.append_child(&label);
         let _ = host.append_child(&callout);
     }
@@ -489,6 +500,15 @@ pub fn set_no_entity_diagnostic(
         line += 1;
     }
     let mut error_lines: Vec<(usize, String)> = Vec::new();
+    // A field whose value EXISTS but under a different value type than
+    // the concept declares: show the value, squiggle it with the type
+    // story — "missing" would send the author hunting a fact that is
+    // right there.
+    for (field, value, message) in mistyped {
+        source.push_str(&format!("  {field}: {value}\n"));
+        error_lines.push((line, message.clone()));
+        line += 1;
+    }
     for (field, uri) in missing {
         source.push_str(&format!("  {field}: _\n"));
         error_lines.push((line, format!("Attribute {uri} is missing")));

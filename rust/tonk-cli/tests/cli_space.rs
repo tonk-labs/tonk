@@ -1775,16 +1775,9 @@ mod when_reading {
                 .any(|recipe| recipe == "tonk assert task --<field> <value>")
         }));
 
-        let view = run(state.path(), &["show", "task-view", "--json"], env);
-        assert!(view.status.success(), "{}", stderr_of(&view));
-        let view: serde_json::Value = serde_json::from_str(&stdout_of(&view)).expect("view JSON");
-        assert_eq!(view["schemaVersion"], "tonk.show-view.v1");
-        assert_eq!(view["anchor"], "task-view");
-        assert_eq!(view["model"], "task");
-        assert_eq!(
-            view["template"].as_str().map(str::trim_end),
-            Some("<b>{title}</b>")
-        );
+        // A view now lives ON the model entity, so `show task` above is
+        // also the view's home; the template itself is listed by
+        // `tonk view` (covered in the views suite).
 
         let seeded = run(
             state.path(),
