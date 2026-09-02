@@ -39,11 +39,11 @@ jobs:
 
   e2e-build:
     name: 'Build end-to-end test archive'
-    needs: ['lints']
     runs-on: 'ubuntu-latest'
     # Build the source-dependent archive once. The shards below realize these
     # exact store paths from Cachix instead of racing three identical cold
-    # builds on separate runners.
+    # builds on separate runners. This is independent of lint, so overlap the
+    # two expensive prerequisites; shards still require both to succeed.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +67,7 @@ jobs:
 
   e2e-shard:
     name: 'End-to-end shard ${{ matrix.shard }}/3'
-    needs: ['e2e-build']
+    needs: ['lints', 'e2e-build']
     runs-on: 'ubuntu-latest'
     timeout-minutes: 45
     strategy:
@@ -76,10 +76,6 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
       - uses: wimpysworld/nothing-but-nix@main
         with:
           root-safe-haven: 40960
