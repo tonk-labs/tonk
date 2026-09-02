@@ -539,11 +539,17 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_treats_an_unmounted_attachment_as_unlinked() {
+    async fn it_finishes_an_unmounted_attachment_at_status_time() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
         // Persist the attachment record directly, without the mount that
-        // link performs: the state a crash mid-link leaves behind. The
-        // record alone must not read as a linked account.
+        // link performs: the state a crash mid-link leaves behind, and
+        // also the ordinary mid-enrollment window between a ceremony's
+        // record write and its replica-mount commit. The record alone
+        // must not READ as a linked account — but a status read that
+        // finds it runs the idempotent mount and answers from the
+        // outcome, so an interrupted link with a usable address heals
+        // into the registered account it was becoming rather than
+        // reporting the signed-out answer.
         {
             let tonk = state.read().await;
             let request = matching_request(&tonk).await;
@@ -553,8 +559,13 @@ mod tests {
 
             assert!(!linked(&tonk).await);
         }
-        let Json(status) = get(State(state)).await.unwrap();
-        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+        let Json(status) = get(State(state.clone())).await.unwrap();
+        assert!(matches!(status, AccountStatus::Registered { .. }));
+        let tonk = state.read().await;
+        assert!(
+            linked(&tonk).await,
+            "the status read completes the mount, not merely reports it"
+        );
     }
 
     #[dialog_common::test]
