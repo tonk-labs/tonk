@@ -431,7 +431,7 @@ mod tests {
             ),
             (
                 AccountAction::DeleteAccount,
-                "identity ceremony verifyPasskey is unavailable",
+                "identity ceremony signAccountPurge is unavailable",
                 "Passkeys are not available in this browser right now. Reload the page, or try another supported browser or device.",
             ),
         ];

@@ -1,19 +1,27 @@
 //! Typed boundary to the top-document passkey ceremony API.
 
 use js_sys::{Function, Promise, Reflect};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_wasm_bindgen::Serializer;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-/// Verification-only assertion input: the account passkey to assert
-/// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
-/// stores it.
+/// Where the custody assertion that recovers the account root resolves
+/// its sealed secret: the page's own `/ucan/` endpoint.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct VerifyPasskeyInput {
-    pub credential_id: String,
+pub(crate) struct SignAccountPurgeInput {
+    pub endpoint: String,
+}
+
+/// The root-signed `/void/customer/purge`, ready for the worker to
+/// present, and the root that signed it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SignedAccountPurge {
+    pub invocation_hex: String,
+    pub root_did: String,
 }
 
 /// Stable failures produced at the JavaScript identity boundary.
@@ -151,10 +159,13 @@ pub(crate) async fn authorize_device(
     call("authorizeDevice", input).await
 }
 
-/// Ask the human to verify with the account's own passkey. Nothing is
-/// signed or derived; success means user presence and verification.
-pub(crate) async fn verify_passkey(input: VerifyPasskeyInput) -> Result<(), IdentityBridgeError> {
-    call("verifyPasskey", input).await
+/// Recover the account root through its passkey and sign the purge
+/// with it. The ceremony is the whole authority: the worker presents
+/// what comes back and signs nothing itself.
+pub(crate) async fn sign_account_purge(
+    input: SignAccountPurgeInput,
+) -> Result<SignedAccountPurge, IdentityBridgeError> {
+    call("signAccountPurge", input).await
 }
 
 #[cfg(test)]
@@ -173,17 +184,27 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
     }
 
-    /// `verifyPasskey` succeeds with no payload: the ceremony resolves
-    /// `undefined` and the bridge decodes it into `()`. An object (or any
-    /// other value) would fail the decode, so this pins the empty shape.
+    fn purge_input() -> SignAccountPurgeInput {
+        SignAccountPurgeInput {
+            endpoint: "https://tonk.example/ucan/".into(),
+        }
+    }
+
+    /// The ceremony hands back the signed purge and the root that
+    /// signed it, camel-cased the way every ceremony output is.
     #[dialog_common::test]
-    async fn it_accepts_the_empty_verify_passkey_output() {
-        install_method("verifyPasskey", "return Promise.resolve(undefined);");
-        verify_passkey(VerifyPasskeyInput {
-            credential_id: "abcd".into(),
-        })
-        .await
-        .expect("an undefined resolution is the valid verifyPasskey output");
+    async fn it_decodes_the_signed_purge() {
+        install_method(
+            "signAccountPurge",
+            "return Promise.resolve({ invocationHex: 'abcd', rootDid: 'did:key:zRoot' });",
+        );
+        assert_eq!(
+            sign_account_purge(purge_input()).await.unwrap(),
+            SignedAccountPurge {
+                invocation_hex: "abcd".into(),
+                root_did: "did:key:zRoot".into(),
+            }
+        );
     }
 
     #[dialog_common::test]
@@ -191,81 +212,53 @@ mod tests {
         let window = web_sys::window().unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            sign_account_purge(purge_input()).await.unwrap_err(),
             IdentityBridgeError::Unavailable
         );
 
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
-            IdentityBridgeError::MissingMethod("verifyPasskey")
+            sign_account_purge(purge_input()).await.unwrap_err(),
+            IdentityBridgeError::MissingMethod("signAccountPurge")
         );
 
         let identity = js_sys::Object::new();
-        Reflect::set(&identity, &"verifyPasskey".into(), &42.into()).unwrap();
+        Reflect::set(&identity, &"signAccountPurge".into(), &42.into()).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
-            IdentityBridgeError::NotCallable("verifyPasskey")
+            sign_account_purge(purge_input()).await.unwrap_err(),
+            IdentityBridgeError::NotCallable("signAccountPurge")
         );
 
-        install_method("verifyPasskey", "return {};");
+        install_method("signAccountPurge", "return {};");
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            sign_account_purge(purge_input()).await.unwrap_err(),
             IdentityBridgeError::NotPromise
         );
 
         install_method(
-            "verifyPasskey",
+            "signAccountPurge",
             "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
         );
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            sign_account_purge(purge_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected(
                 "NotSupportedError: phone authenticator returned no PRF".into()
             )
         );
 
         install_method(
-            "verifyPasskey",
+            "signAccountPurge",
             "return Promise.reject('provider unavailable'); ",
         );
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            sign_account_purge(purge_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
-        install_method("verifyPasskey", "return Promise.resolve({});");
+        install_method("signAccountPurge", "return Promise.resolve({});");
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            sign_account_purge(purge_input()).await.unwrap_err(),
             IdentityBridgeError::MalformedOutput
         );
     }

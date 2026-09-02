@@ -5229,17 +5229,14 @@ mod tests {
             .as_array()
             .context("plan omitted the owned spaces")?;
         assert_eq!(spaces.len(), 1, "one owned hosted space: {plan}");
-        let subject = spaces[0]["subject"]
-            .as_str()
-            .context("plan space omitted its subject")?
-            .to_string();
 
-        // A mistyped confirmation email refuses before anything burns.
+        // A mistyped confirmation email refuses before anything is
+        // presented to the service.
         let refused = post_json(
             &driver,
             "/api/account/delete",
             serde_json::json!({
-                "spaces": [{ "subject": subject }],
+                "invocationHex": "00",
                 "confirmedEmail": "someone-else@example.com",
             }),
         )

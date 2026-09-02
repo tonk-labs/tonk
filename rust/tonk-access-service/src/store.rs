@@ -274,11 +274,13 @@ pub trait Store {
     /// Remove a subscription once its object prefix is empty.
     async fn finish_consumer_deletion(&self, did: &str) -> Result<bool, StoreError>;
 
-    /// Deny the customer's own account-space consumer after root authorization.
-    async fn mark_self_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError>;
+    /// Deny every subscription the customer provides, its own included,
+    /// in one write: the atomic step of a purge. Returns how many rows
+    /// the denial reached; a retry reaches none.
+    async fn deny_customer(&self, did: &str, now: u64) -> Result<u64, StoreError>;
 
-    /// Remove the self consumer and customer row only when all other owned
-    /// consumers are already deleted. Returns whether the customer was removed.
+    /// Remove the customer's subscriptions and its row, releasing the
+    /// address. Returns whether a customer row was removed.
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError>;
 
     /// Claim the right to send this customer's activation link again,
@@ -536,9 +538,10 @@ DELETE FROM subscription
  WHERE consumer = ?1 AND deleted_at IS NOT NULL
 "#;
 
-pub const START_SELF_SUBSCRIPTION_DELETION: &str = r#"
+/// Deny everything a customer provides, its own account space included.
+pub const DENY_CUSTOMER_SUBSCRIPTIONS: &str = r#"
 UPDATE subscription SET deleted_at = ?2
- WHERE consumer = ?1 AND provider = ?1 AND deleted_at IS NULL
+ WHERE provider = ?1 AND deleted_at IS NULL
 "#;
 
 /// Drop the purged subscriptions of a deleted customer.

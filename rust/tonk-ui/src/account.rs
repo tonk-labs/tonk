@@ -13,7 +13,7 @@ use tonk_worker_api::{
     RevokeDeviceAcknowledgement,
 };
 
-use crate::identity_bridge::{VerifyPasskeyInput, verify_passkey};
+use crate::identity_bridge::{SignAccountPurgeInput, sign_account_purge};
 use crate::user_error::{self, AccountAction};
 
 const STYLE_ID: &str = "tonk-account-styles";
@@ -1165,13 +1165,7 @@ fn render_deletion_plan(
             .create_element("li")
             .map_err(|_| "could not render deletion space".to_string())?;
         let label = space.name.as_deref().unwrap_or(&space.subject);
-        // A listed space is either being purged or waiting to be; a
-        // finished deletion leaves no record to show.
-        let state = match space.deleting_since {
-            Some(_) => "deleting",
-            None => "scheduled",
-        };
-        item.set_text_content(Some(&format!("{label} — {state}")));
+        item.set_text_content(Some(label));
         let _ = list.append_child(&item);
     }
     if visible.is_empty() {
@@ -3217,43 +3211,21 @@ fn begin_delete(host: HtmlElement, plan: AccountDeletionPlan, requested: Option<
                 .map_err(DeleteFailure::MutationApi)?;
                 return Ok::<_, DeleteFailure>((Some(deleted.subject), None));
             }
-            // Account deletion asks the human to verify with the
-            // account's passkey, then the worker signs every
-            // destructive invocation with this device's delegated
-            // authority.
-            let credential_id = match crate::api::root_status()
-                .await
-                .map_err(DeleteFailure::PreflightApi)?
-            {
-                tonk_worker_api::RootStatus::Ready {
-                    root_did,
-                    credential_id,
-                    ..
-                } => {
-                    if root_did != plan.root_did {
-                        return Err(DeleteFailure::Diagnostic(
-                            "this device's passkey belongs to a different account".into(),
-                        ));
-                    }
-                    credential_id
-                }
-                tonk_worker_api::RootStatus::Missing { .. } => {
-                    return Err(DeleteFailure::Diagnostic(
-                        "no account passkey is registered on this device to verify with".into(),
-                    ));
-                }
-            };
-            verify_passkey(VerifyPasskeyInput { credential_id })
-                .await
-                .map_err(|error| DeleteFailure::Diagnostic(error.to_string()))?;
-            let spaces = destructive
-                .iter()
-                .map(|space| AccountSpaceDeletionRequest {
-                    subject: space.subject.clone(),
-                })
-                .collect();
+            // Account deletion is the account's own act: the passkey
+            // recovers the root, the root signs the purge, and the
+            // worker presents that one invocation.
+            let signed = sign_account_purge(SignAccountPurgeInput {
+                endpoint: proposed_remote().map_err(DeleteFailure::Diagnostic)?,
+            })
+            .await
+            .map_err(|error| DeleteFailure::Diagnostic(error.to_string()))?;
+            if signed.root_did != plan.root_did {
+                return Err(DeleteFailure::Diagnostic(
+                    "this passkey belongs to a different account".into(),
+                ));
+            }
             let deleted = crate::api::delete_account(&AccountDeletionRequest {
-                spaces,
+                invocation_hex: signed.invocation_hex,
                 confirmed_email,
             })
             .await
@@ -3889,7 +3861,6 @@ mod tests {
             spaces: vec![tonk_worker_api::AccountDeletionSpace {
                 subject: "did:key:zSpace".into(),
                 name: Some("Project One".into()),
-                deleting_since: None,
             }],
             joined_spaces: 2,
         }

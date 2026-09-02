@@ -1,84 +1,44 @@
-//! Reviewable, root-authorized account deletion orchestration.
+//! Account deletion: a review read from the account db, one root-signed
+//! purge presented to the access service, then local cleanup.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use axum::{
     Json,
     extract::{Extension, State},
 };
 use axum_wasm_macros::wasm_compat;
-use serde::Deserialize;
+use dialog_query::{Output as _, Query, Term};
+use dialog_ucan_core::InvocationChain;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_identity::request::PURGE_COMMAND;
+use tonk_schema::SpaceProvider;
+use tonk_schema::domain::space::Provider;
+use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDeletionSpace,
     AccountSpaceDeletionRequest, HostedSpaceDeletionResult,
 };
-use url::Url;
 
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::axum::RequestOrigin;
+use crate::worker::TonkState;
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccessPlan {
-    customer: String,
-    spaces: Vec<AccessSpace>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccessSpace {
-    space: String,
-    #[serde(default)]
-    deleting_since: Option<u64>,
-}
-
-async fn load_plan(
-    state: &crate::worker::TonkState,
-    origin: &Url,
-) -> Result<AccountDeletionPlan, TonkWorkerError> {
+/// The destructive scope, from the account db alone: the directory is
+/// the inventory, and a space this account provides carries a
+/// `SpaceProvider` fact naming the account. Everything else listed is
+/// joined and stays.
+async fn load_plan(state: &TonkState) -> Result<AccountDeletionPlan, TonkWorkerError> {
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".into())
     })?;
-    let root_did = link.issuer().to_string();
+    let root = link.issuer().clone();
     let email = super::account_devices::account_summary(state)
         .await?
         .email
         .ok_or_else(|| TonkWorkerError::Conflict("the account has no verified email".into()))?;
-    let device = state.profile.signer().signer().clone();
-    let inventory_invocation = tonk_identity::request::build_device_invocation(
-        device.clone(),
-        &link,
-        vec!["customer".into(), "deletion".into(), "plan".into()],
-        BTreeMap::new(),
-    )
-    .await
-    .map_err(|error| TonkWorkerError::Internal(format!("build deletion inventory: {error}")))?;
-    let ucan = origin
-        .join("ucan/")
-        .map_err(|error| TonkWorkerError::Internal(format!("access endpoint: {error}")))?;
-    let access: AccessPlan = match super::http::post_cbor(&ucan, &inventory_invocation).await {
-        Ok(response) => serde_json::from_slice(&response.body).map_err(|error| {
-            TonkWorkerError::Internal(format!("access deletion inventory is invalid: {error}"))
-        })?,
-        Err(super::http::HttpError::Upstream(failure)) if failure.status == 404 => AccessPlan {
-            customer: root_did.clone(),
-            spaces: Vec::new(),
-        },
-        Err(error) => return Err(error.into()),
-    };
-    if access.customer != root_did {
-        return Err(TonkWorkerError::Forbidden(
-            "access deletion inventory belongs to another account".into(),
-        ));
-    }
-
-    // The account directory — plain facts on profile main — is the
-    // inventory: display names, deletion grants, and the joined-space
-    // count all come from the synced account DB rather than any
-    // service-side artifact store.
     let main = state
         .reactor
         .profile_repository()
@@ -93,37 +53,34 @@ async fn load_plan(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("account directory query failed: {error:?}"))
         })?;
-    let owned: BTreeSet<_> = access
-        .spaces
-        .iter()
-        .map(|space| space.space.as_str())
-        .collect();
-    let joined_spaces = directory
-        .iter()
-        .filter(|space| !owned.contains(space.subject.to_string().as_str()))
-        .count();
-    let names: BTreeMap<String, String> = directory
-        .iter()
-        .filter_map(|space| {
-            space
-                .name
-                .clone()
-                .map(|name| (space.subject.to_string(), name))
+    let provided: Vec<SpaceProvider> = main
+        .handle()
+        .query()
+        .select(Query::<SpaceProvider> {
+            this: Term::var("this"),
+            provider: Term::from(Provider(root.this())),
         })
-        .collect();
-    let mut spaces = Vec::with_capacity(access.spaces.len());
-    for hosted in access.spaces {
-        spaces.push(AccountDeletionSpace {
-            name: names.get(&hosted.space).cloned(),
-            subject: hosted.space,
-            deleting_since: hosted.deleting_since,
-        });
-    }
+        .perform(&state.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("space provider query failed: {error:?}"))
+        })?;
+    let owned: BTreeSet<_> = provided.into_iter().map(|row| row.this).collect();
+    let (spaces, joined): (Vec<_>, Vec<_>) = directory
+        .into_iter()
+        .partition(|space| owned.contains(&space.subject.this()));
     Ok(AccountDeletionPlan {
-        root_did,
+        root_did: root.to_string(),
         email,
-        spaces,
-        joined_spaces,
+        spaces: spaces
+            .into_iter()
+            .map(|space| AccountDeletionSpace {
+                subject: space.subject.to_string(),
+                name: space.name,
+            })
+            .collect(),
+        joined_spaces: joined.len(),
     })
 }
 
@@ -131,10 +88,9 @@ async fn load_plan(
 #[wasm_compat]
 pub async fn plan(
     State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<AccountDeletionPlan>, TonkWorkerError> {
     let state = state.read().await;
-    Ok(Json(load_plan(&state, origin.url()).await?))
+    Ok(Json(load_plan(&state).await?))
 }
 
 /// POST `/api/account/spaces/delete` deletes one reviewed owned hosted space
@@ -150,10 +106,10 @@ pub async fn delete_space(
 ) -> Result<Json<HostedSpaceDeletionResult>, TonkWorkerError> {
     let current = {
         let state = state.read().await;
-        load_plan(&state, origin.url()).await?
+        load_plan(&state).await?
     };
     // The lookup is the ownership check: a space this account does not
-    // own is not in its plan.
+    // provide is not in its plan.
     current
         .spaces
         .iter()
@@ -174,7 +130,13 @@ pub async fn delete_space(
     }))
 }
 
-/// POST `/api/account/delete` executes a previously reviewed passkey ceremony.
+/// POST `/api/account/delete` presents the page's root-signed purge.
+///
+/// One invocation: the access service denies every consumer the account
+/// provides in a single write and takes the data and the rows from
+/// there, so nothing here loops over spaces or orders service calls.
+/// Presenting it again after it succeeded is still a purge of a
+/// customer that is gone, which the service answers the same way.
 #[wasm_compat]
 pub async fn delete(
     State(state): State<AppState>,
@@ -183,81 +145,40 @@ pub async fn delete(
 ) -> Result<Json<AccountDeletionResult>, TonkWorkerError> {
     let current = {
         let state = state.read().await;
-        load_plan(&state, origin.url()).await?
+        load_plan(&state).await?
     };
-    let required: BTreeSet<_> = current
-        .spaces
-        .iter()
-        .map(|space| space.subject.clone())
-        .collect();
-    let supplied: BTreeSet<_> = request
-        .spaces
-        .iter()
-        .map(|space| space.subject.clone())
-        .collect();
-    if supplied != required {
-        return Err(TonkWorkerError::Forbidden(
-            "the reviewed space set does not match the account's owned hosted spaces".into(),
-        ));
-    }
-
     if request.confirmed_email != current.email {
         return Err(TonkWorkerError::Forbidden(
             "the confirmed email does not match the account's verified email".into(),
         ));
     }
+    // The page signed it; the worker only checks it is the purge of
+    // THIS account before forwarding, so a stray invocation cannot be
+    // laundered through this route.
+    let invocation = hex::decode(&request.invocation_hex)
+        .map_err(|error| TonkWorkerError::Forbidden(format!("purge is not hex: {error}")))?;
+    let chain = InvocationChain::try_from(invocation.as_slice())
+        .map_err(|error| TonkWorkerError::Forbidden(format!("purge is malformed: {error}")))?;
+    if chain.subject().to_string() != current.root_did
+        || chain.command().0 != PURGE_COMMAND.map(str::to_string)
+    {
+        return Err(TonkWorkerError::Forbidden(
+            "the signed purge does not name this account".into(),
+        ));
+    }
+    let ucan = super::customer::ucan_endpoint(origin.url())?;
+    super::http::post_cbor(&ucan, &invocation).await?;
 
-    // Deprovision every reviewed space, then finalize both services.
-    // All of it signs with this device's delegated authority: the
-    // account's chain reaches this device, and possession of that
-    // chain is the deletion policy. The passkey assertion the UI
-    // performed is a user-verification gate, not a signing ceremony.
-    for space in &request.spaces {
+    // The service has nothing of the account's any more; neither should
+    // this device.
+    for space in &current.spaces {
         let subject: dialog_varsig::Did = space.subject.parse().map_err(|error| {
             TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
         })?;
-        let state = state.read().await;
-        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
-    }
-    let (link, device) = {
-        let state = state.read().await;
-        let link = super::account::account_link(&state).await.ok_or_else(|| {
-            TonkWorkerError::NotFound("this profile is not linked to an account".into())
-        })?;
-        (link, state.profile.signer().signer().clone())
-    };
-    let ucan = origin
-        .url()
-        .join("ucan/")
-        .map_err(|error| TonkWorkerError::Internal(format!("access endpoint: {error}")))?;
-    let customer = tonk_identity::request::build_device_invocation(
-        device.clone(),
-        &link,
-        vec!["customer".into(), "delete".into()],
-        BTreeMap::new(),
-    )
-    .await
-    .map_err(|error| TonkWorkerError::Internal(format!("build customer deletion: {error}")))?;
-    match super::http::post_cbor(&ucan, &customer).await {
-        Ok(_) => {}
-        Err(super::http::HttpError::Upstream(failure)) if failure.status == 404 => {
-            // A previous attempt may have completed access-service cleanup
-            // before the account-service call failed. Continue that retry.
-        }
-        Err(error) => return Err(error.into()),
-    }
-
-    // The access service's customer row is keyed on the account and
-    // its email is unique, so leaving it behind keeps the address taken
-    // after the account that held it is gone.
-    delete_customer(&state).await?;
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    for space in &request.spaces {
-        let subject = space.subject.parse().map_err(|error| {
-            TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error}"))
-        })?;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         super::repository::remove_space_inner(&state, &subject).await?;
+        let state = state.read().await;
+        super::customer::retract_space_provider(&state, &subject).await;
     }
     {
         let current_state = state.read().await;
@@ -271,30 +192,7 @@ pub async fn delete(
     let _ = super::profiles::add(State(state.clone())).await?;
 
     Ok(Json(AccountDeletionResult {
-        deleted_spaces: request.spaces.len(),
+        deleted_spaces: current.spaces.len(),
         retained_joined_spaces: current.joined_spaces,
     }))
-}
-
-/// Tell the access service to drop the customer row, releasing the
-/// address it holds.
-async fn delete_customer(state: &AppState) -> Result<(), TonkWorkerError> {
-    let (device, link) = {
-        let tonk = state.read().await;
-        let link = super::account::account_link(&tonk).await.ok_or_else(|| {
-            TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
-        })?;
-        (tonk.profile.signer().signer().clone(), link)
-    };
-    let body = tonk_identity::request::build_device_invocation(
-        device,
-        &link,
-        vec!["customer".to_string(), "delete".to_string()],
-        BTreeMap::new(),
-    )
-    .await
-    .map_err(|error| TonkWorkerError::Internal(format!("build customer deletion: {error}")))?;
-    let endpoint = super::customer::ucan_endpoint(&super::customer::service_origin()?)?;
-    super::http::post_cbor(&endpoint, &body).await?;
-    Ok(())
 }

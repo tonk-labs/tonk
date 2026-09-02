@@ -253,26 +253,31 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VerifyPasskeyInput {
-    credential_id: String,
-}
+/// `signAccountPurge({ endpoint })` → `{ invocationHex, rootDid }`.
+///
+/// The passkey recovers the account root through a custody assertion,
+/// and the root signs `/void/customer/purge` over itself. Nothing is
+/// submitted here: the page hands the invocation to the worker, which
+/// presents it and then clears its own state on the receipt.
+async fn sign_account_purge(input: JsValue) -> Result<JsValue, JsValue> {
+    use dialog_varsig::Principal as _;
 
-/// A user-verification assertion against the account's own passkey,
-/// with nothing derived and nothing signed: destructive account
-/// invocations sign with the device's delegated authority, and this
-/// ceremony only proves a human holding the passkey is present.
-async fn verify_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let input: VerifyPasskeyInput = serde_wasm_bindgen::from_value(input)
-        .map_err(|_| JsValue::from_str("malformed passkey verification input"))?;
-    let credential_id = hex::decode(&input.credential_id)
-        .map_err(|_| JsValue::from_str("malformed passkey credential id"))?;
-    crate::passkey::verify_custody_passkey(&credential_id)
+    let endpoint = string_property(&input, "endpoint")?;
+    let root = crate::ceremony::unlock_root(&endpoint)
         .await
         .map_err(js_error)?;
-    // The bridge decodes this into `()`, which maps to `undefined`.
-    Ok(JsValue::UNDEFINED)
+    let root_did = root.did().to_string();
+    let invocation = crate::request::build_purge_invocation(root)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(
+        &result,
+        &"invocationHex".into(),
+        &hex::encode(invocation).into(),
+    )?;
+    Reflect::set(&result, &"rootDid".into(), &root_did.into())?;
+    Ok(result.into())
 }
 
 /// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
@@ -370,15 +375,15 @@ pub fn install() {
     );
     sign_revocation.forget();
 
-    let verify_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(verify_passkey(input))
+    let sign_account_purge = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(sign_account_purge(input))
     });
     let _ = Reflect::set(
         &identity,
-        &"verifyPasskey".into(),
-        verify_passkey.as_ref().unchecked_ref(),
+        &"signAccountPurge".into(),
+        sign_account_purge.as_ref().unchecked_ref(),
     );
-    verify_passkey.forget();
+    sign_account_purge.forget();
 
     let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(create_passkey(input))
@@ -431,7 +436,7 @@ mod tests {
             "addPasskey",
             "authorizeDevice",
             "signRevocation",
-            "verifyPasskey",
+            "signAccountPurge",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

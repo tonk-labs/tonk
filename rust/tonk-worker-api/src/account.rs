@@ -31,25 +31,22 @@ pub struct AccountDeletionSpace {
     pub subject: String,
     /// Display name from the account directory, when recorded.
     pub name: Option<String>,
-    /// When the access service began purging this space, if it has. A
-    /// finished deletion leaves no record, so such a space is absent
-    /// from the plan rather than listed as already gone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deleting_since: Option<u64>,
 }
 
-/// Reviewable destructive scope loaded before asking for a passkey.
+/// Reviewable destructive scope loaded before asking for a passkey,
+/// read from the account db: the directory, and which of its spaces
+/// this account provides.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionPlan {
-    /// Account root the finalization ceremony must sign for.
+    /// Account root the purge must be signed for.
     pub root_did: String,
     /// Verified email the user must type exactly.
     pub email: String,
-    /// Hosted spaces originally provided by this account.
+    /// Hosted spaces this account provides.
     pub spaces: Vec<AccountDeletionSpace>,
-    /// Directory spaces absent from the owned service inventory; these
-    /// are joined spaces and are not deleted.
+    /// Directory spaces provided by someone else; these are joined
+    /// spaces and are not deleted.
     pub joined_spaces: usize,
 }
 
@@ -64,14 +61,14 @@ pub struct AccountSpaceDeletionRequest {
     pub subject: String,
 }
 
-/// The reviewed destructive scope. The worker signs every deletion
-/// invocation itself with the device's delegated authority; the UI's
-/// passkey assertion is a user-verification gate, not a signing key.
+/// A signed account purge. The page's passkey ceremony recovers the
+/// account root and signs `/void/customer/purge` with it; the worker
+/// presents that invocation and clears its own state on the receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDeletionRequest {
-    /// Every reviewed owned hosted space, deprovisioned by the worker.
-    pub spaces: Vec<AccountSpaceDeletionRequest>,
+    /// Hex-encoded root-signed purge invocation container.
+    pub invocation_hex: String,
     /// The account email the person retyped to confirm the deletion.
     pub confirmed_email: String,
 }
