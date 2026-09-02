@@ -5249,18 +5249,27 @@ mod tests {
             "wrong confirmation email must refuse: {refused}"
         );
 
-        let deleted = post_json(
+        // The real thing: the reviewed dialog, the typed address, the
+        // acknowledgement, and the passkey gesture the virtual
+        // authenticator answers — the path a person takes.
+        click(&driver, "#account-delete-review").await?;
+        wait_for_displayed(&driver, "#account-delete-arming").await?;
+        element(&driver, "#account-delete-email")
+            .await?
+            .send_keys(email)
+            .await?;
+        element(&driver, "#account-delete-understood")
+            .await?
+            .click()
+            .await?;
+        click(&driver, "#account-delete-submit").await?;
+        wait_for_text(&driver, "#account-confirm-title", "complete").await?;
+        wait_for_text_containing(
             &driver,
-            "/api/account/delete",
-            serde_json::json!({
-                "spaces": [{ "subject": subject }],
-                "confirmedEmail": email,
-            }),
+            "#account-confirm-body",
+            "1 owned space removed from Tonk services; 0 joined spaces left intact",
         )
         .await?;
-        let receipt = successful_body("delete the account", &deleted);
-        assert_eq!(receipt["deletedSpaces"], 1, "one hosted space purged");
-        assert_eq!(receipt["retainedJoinedSpaces"], 0);
 
         // The profile is unlinked: the deletion plan is no longer
         // reviewable because there is no account to review.
@@ -5268,6 +5277,19 @@ mod tests {
         assert_eq!(
             after["status"], 404,
             "a deleted account leaves nothing to plan against: {after}"
+        );
+
+        // Leaving the result must land on the fresh profile's page, not
+        // the deleted account's panel still standing under the dialog.
+        click(&driver, "#account-confirm-result-back").await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        assert!(
+            element(&driver, "#account-confirmation")
+                .await?
+                .attr("hidden")
+                .await?
+                .is_some(),
+            "the result dialog must not survive leaving it"
         );
 
         // Permanent deletion retires this account's local profile rather

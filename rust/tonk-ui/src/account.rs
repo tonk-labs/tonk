@@ -3047,8 +3047,16 @@ fn bind(host: &HtmlElement) {
         }
     });
 
+    // The result stands on a page that no longer describes the profile
+    // under it: permanent deletion rotated the browser onto a fresh
+    // profile, and a space deletion removed a listed space. A client-side
+    // route to the same path is a no-op, so load the settings document
+    // afresh, dropping any `?delete-space` entry that would re-open the
+    // flow for a space that is now gone.
     on_click(host, "#account-confirm-result-back", |_| {
-        tonk_host::navigate_to("/settings");
+        if let Some(window) = window() {
+            let _ = window.location().assign("/settings");
+        }
     });
 
     // Opening Add account is reversible navigation. The final Create or Log
