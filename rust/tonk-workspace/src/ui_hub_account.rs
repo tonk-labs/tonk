@@ -10,13 +10,13 @@ use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, KeyboardEvent, Node, window};
+use web_sys::{Element, Event, HtmlElement, KeyboardEvent, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
 type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
-const ADD_ACCOUNT_PATH: &str = "/settings?add=1";
+const ADD_ACCOUNT_PATH: &str = "/account?add=1";
 
 /// The PROFILE branch's routing context — fixed, like `<ui-profile-name>`'s.
 const PROFILE_WITH: &str = "main@profile:tonk";
@@ -90,6 +90,16 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             active.display_name.as_deref().unwrap_or_default(),
         );
         set_trigger_mode(this, active.provider.is_none());
+        // On the /settings route an unlinked profile has no settings to
+        // show — account setup comes first. The moment the roster answer
+        // says provider-free, the page becomes the linking ceremony.
+        if active.provider.is_none()
+            && this.get_attribute("view").as_deref() == Some("settings")
+            && !this.has_attribute("data-linking")
+        {
+            show_settings(this, false);
+            start_linking(this);
+        }
     }
 
     // The current account is the TAB itself, so the page holds only ways
@@ -127,7 +137,6 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
 struct UiHubAccount {
     click: Option<EventClosure>,
     keydown: Option<KeyClosure>,
-    outside_pointer: Option<EventClosure>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
     focusin: Option<EventClosure>,
@@ -142,7 +151,7 @@ impl CustomElement for UiHubAccount {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &["view"]
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
@@ -212,6 +221,27 @@ impl CustomElement for UiHubAccount {
 
         subscribe_account_signals(this, self.subscriptions.clone());
 
+        // The /settings route mounts this element with `view="settings"`:
+        // the same chrome, arriving with the settings page open. On that
+        // route the spaces cell and Escape NAVIGATE home — there is no
+        // spaces stack behind the section to swap back in place.
+        if this.get_attribute("view").as_deref() == Some("settings") {
+            open_settings_view(this);
+        }
+
+        // A ceremony that was up when the route re-rendered is STILL up —
+        // the cluster lives in the top page and survives this element. The
+        // body flag (see `enter_linking`) says so; step back into the
+        // linking page instead of presenting spaces under a live ceremony.
+        if !this.has_attribute("data-linking")
+            && window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.body())
+                .is_some_and(|body| body.has_attribute("data-tonk-linking"))
+        {
+            enter_linking(this);
+        }
+
         // Focus returning to the trigger is the ceremony's own restore
         // path; while the linking page is up it doubles as "the cluster
         // is gone — put the spaces back".
@@ -260,28 +290,7 @@ impl CustomElement for UiHubAccount {
                     // the stack steps aside while the ceremony is up;
                     // focus returning to the trigger (the dialog's own
                     // restore path) puts the page back.
-                    enter_linking(&host);
-                    let anchor = host
-                        .query_selector(".hubbar")
-                        .ok()
-                        .flatten()
-                        .map(|bar| bar.get_bounding_client_rect());
-                    let payload = match anchor {
-                        Some(rect) => serde_json::json!({
-                            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
-                            "space": "",
-                            "anchor": {
-                                "left": rect.left(),
-                                "bottom": rect.bottom(),
-                                "width": rect.width(),
-                            },
-                        }),
-                        None => serde_json::json!({
-                            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
-                            "space": "",
-                        }),
-                    };
-                    tonk_host::request_registration(&payload.to_string());
+                    start_linking(&host);
                     return;
                 }
                 let expanded = account_trigger(&host)
@@ -303,14 +312,13 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                // Settings opens INSIDE the hub — the stack steps aside and
-                // the section hangs from the same bar, exactly like the
-                // account view (the wireframe's reading). A BUTTON, not an
-                // anchor: the sealed guest's link relay performs href
-                // navigations before a bubbling preventDefault can decline,
-                // so an `/settings` href here navigated away no matter what
-                // this handler did (found live; the harness has no relay).
-                open_settings_view(&host);
+                // The settings row is an anchor to the /settings route. In
+                // the guest, the link relay has already taken the click at
+                // capture and sent the navigation; preventing the default
+                // here matters only where NO relay exists (the test
+                // harness), where the anchor's own navigation would tear
+                // the page down mid-suite.
+                event.prevent_default();
                 return;
             }
             if target
@@ -319,6 +327,31 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
+                if host.get_attribute("view").as_deref() == Some("settings") {
+                    // On the /settings route the spaces cell is a tab to
+                    // the spaces page — a navigation, since no stack sits
+                    // behind this section. A ceremony that was up goes
+                    // down with it, or its top-page cluster would linger
+                    // over the next page.
+                    if host.has_attribute("data-linking") {
+                        leave_linking(&host);
+                        tonk_host::request_registration(
+                            &serde_json::json!({ "reason": "dismiss" }).to_string(),
+                        );
+                    }
+                    tonk_host::navigate_to("/");
+                    return;
+                }
+                if host.has_attribute("data-linking") {
+                    // Mid-ceremony the two cells are tabs as well: spaces
+                    // puts the page back and asks the top page to lower
+                    // the cluster.
+                    leave_linking(&host);
+                    tonk_host::request_registration(
+                        &serde_json::json!({ "reason": "dismiss" }).to_string(),
+                    );
+                    return;
+                }
                 close_menu(&host, false);
                 return;
             }
@@ -349,6 +382,30 @@ impl CustomElement for UiHubAccount {
 
         let host = this.clone();
         let keydown: KeyClosure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
+            if event.key() == "Escape" {
+                if host.get_attribute("view").as_deref() == Some("settings") {
+                    event.prevent_default();
+                    if host.has_attribute("data-linking") {
+                        leave_linking(&host);
+                        tonk_host::request_registration(
+                            &serde_json::json!({ "reason": "dismiss" }).to_string(),
+                        );
+                    }
+                    tonk_host::navigate_to("/");
+                    return;
+                }
+                // An open settings section takes the key first: closing
+                // the page you are LOOKING at beats dismissing a ceremony
+                // that may only be a stale flag behind it.
+                if host.has_attribute("data-linking") && !settings_open(&host) {
+                    event.prevent_default();
+                    leave_linking(&host);
+                    tonk_host::request_registration(
+                        &serde_json::json!({ "reason": "dismiss" }).to_string(),
+                    );
+                    return;
+                }
+            }
             let open = account_trigger(&host)
                 .and_then(|trigger| trigger.get_attribute("aria-expanded"))
                 .as_deref()
@@ -383,26 +440,8 @@ impl CustomElement for UiHubAccount {
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
 
-        let host = this.clone();
-        let outside_pointer: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            let inside = event
-                .target()
-                .and_then(|target| target.dyn_into::<Node>().ok())
-                .is_some_and(|target| host.contains(Some(&target)));
-            if !inside {
-                close_menu(&host, true);
-            }
-        }));
-        if let Some(document) = window().and_then(|window| window.document()) {
-            let _ = document.add_event_listener_with_callback(
-                "pointerdown",
-                outside_pointer.as_ref().unchecked_ref(),
-            );
-        }
-
         self.click = Some(click);
         self.keydown = Some(keydown);
-        self.outside_pointer = Some(outside_pointer);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -424,14 +463,6 @@ impl CustomElement for UiHubAccount {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        }
-        if let Some(pointer) = self.outside_pointer.take()
-            && let Some(document) = window().and_then(|window| window.document())
-        {
-            let _ = document.remove_event_listener_with_callback(
-                "pointerdown",
-                pointer.as_ref().unchecked_ref(),
-            );
         }
         close_menu(this, false);
     }
@@ -673,8 +704,45 @@ fn apply_account_name(this: &HtmlElement, name: &str) {
 /// The dialog's dismissal restores focus to the trigger, which is the
 /// signal to put the page back (the `focusin` listener in
 /// `connected_callback`).
+/// Begin the linking ceremony: activate the account tab and ask the top
+/// page to seat the cluster in this bar's column.
+fn start_linking(this: &HtmlElement) {
+    enter_linking(this);
+    let anchor = this
+        .query_selector(".hubbar")
+        .ok()
+        .flatten()
+        .map(|bar| bar.get_bounding_client_rect());
+    let payload = match anchor {
+        Some(rect) => serde_json::json!({
+            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "space": "",
+            "anchor": {
+                "left": rect.left(),
+                "bottom": rect.bottom(),
+                "width": rect.width(),
+            },
+        }),
+        None => serde_json::json!({
+            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "space": "",
+        }),
+    };
+    tonk_host::request_registration(&payload.to_string());
+}
+
 fn enter_linking(this: &HtmlElement) {
     let _ = this.set_attribute("data-linking", "");
+    // The route view re-renders whenever profile facts land (the passkey
+    // itself lands one), replacing this element mid-ceremony. The body
+    // survives those re-renders, so it carries the flag the fresh element
+    // re-enters from (see `connected_callback`).
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|d| d.body())
+    {
+        let _ = body.set_attribute("data-tonk-linking", "");
+    }
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.set_attribute("aria-current", "page");
     }
@@ -700,6 +768,12 @@ fn leave_linking(this: &HtmlElement) {
         return;
     }
     let _ = this.remove_attribute("data-linking");
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|d| d.body())
+    {
+        let _ = body.remove_attribute("data-tonk-linking");
+    }
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.remove_attribute("aria-current");
     }
@@ -837,6 +911,12 @@ fn move_menu_focus(this: &HtmlElement, direction: i32, endpoint: bool) {
 }
 
 fn close_menu(this: &HtmlElement, restore_focus: bool) {
+    // While the linking page is up the account cell IS the current tab;
+    // only its own exits (spaces, Escape) may move the coat. An open
+    // settings section outranks a lingering linking flag.
+    if this.has_attribute("data-linking") && !settings_open(this) {
+        return;
+    }
     let was_open = account_trigger(this)
         .and_then(|trigger| trigger.get_attribute("aria-expanded"))
         .as_deref()
@@ -949,16 +1029,16 @@ mod tests {
     fn account_element() -> HtmlElement {
         super::register();
         let document = window().expect("window").document().expect("document");
+        let body = document.body().expect("body");
+        // The linking flag outlives an element on purpose (it marks a live
+        // top-page ceremony); between tests it is just leakage.
+        let _ = body.remove_attribute("data-tonk-linking");
         let host: HtmlElement = document
             .create_element("ui-hub-account")
             .expect("create account element")
             .dyn_into()
             .expect("HtmlElement");
-        document
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("append account element");
+        body.append_child(&host).expect("append account element");
         host
     }
 
@@ -1003,13 +1083,10 @@ mod tests {
             assert!(host.query_selector(rejected).unwrap().is_none());
         }
         let settings = host
-            .query_selector("button[data-open-settings]")
+            .query_selector("[data-open-settings]")
             .expect("valid selector")
             .expect("settings route");
-        assert!(
-            settings.get_attribute("href").is_none(),
-            "a button, so the guest's link relay has nothing to navigate"
-        );
+        assert!(settings.is_connected());
         host.remove();
     }
 
@@ -1070,7 +1147,7 @@ mod tests {
         );
         assert!(host.query_selector("[data-add-profile]").unwrap().is_some());
         assert!(
-            host.query_selector("[data-account-menu] button[data-open-settings]")
+            host.query_selector("[data-account-menu] [data-open-settings]")
                 .unwrap()
                 .is_some(),
             "settings is the account view's first way onward"
@@ -1102,6 +1179,8 @@ mod tests {
         );
         assert!(!menu.hidden());
 
+        // A tab is a place, not a popover: a pointer landing outside the
+        // bar must not close it or move the coat.
         let pointer_init = EventInit::new();
         pointer_init.set_bubbles(true);
         document
@@ -1111,16 +1190,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             trigger.get_attribute("aria-expanded").as_deref(),
-            Some("false")
+            Some("true")
         );
-        assert!(menu.hidden());
-        assert!(
-            document
-                .active_element()
-                .is_some_and(|active| active.is_same_node(Some(&trigger)))
-        );
+        assert!(!menu.hidden());
 
-        trigger.click();
         let init = KeyboardEventInit::new();
         init.set_key("Escape");
         init.set_bubbles(true);
@@ -1447,18 +1520,24 @@ mod tests {
             .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original_url))
             .unwrap();
 
+        // The settings row is an anchor to the /settings route; in the
+        // harness (no link relay) the element's own preventDefault keeps
+        // the click from tearing the page down. The swap-in below is the
+        // route view's arrival, entered directly.
         let settings: HtmlElement = host
             .query_selector("[data-open-settings]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
+        assert_eq!(settings.get_attribute("href").as_deref(), Some("/settings"));
         settings.click();
         assert_eq!(
             window().unwrap().location().href().unwrap(),
             original_url,
-            "settings opens inside the hub, not on a page of its own"
+            "without a relay the settings anchor must not navigate the harness"
         );
+        super::open_settings_view(&host);
         let settings_view: HtmlElement = host
             .query_selector("[data-settings-view]")
             .unwrap()
@@ -1573,29 +1652,7 @@ mod tests {
         hubcol.append_child(&stack).unwrap();
         document.body().unwrap().append_child(&hubcol).unwrap();
 
-        let settings_button: HtmlElement = host
-            .query_selector("[data-open-settings]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        // A button, deliberately: an anchor's href is navigated by the
-        // guest's link relay before this element can decline it.
-        assert_eq!(settings_button.tag_name(), "BUTTON");
-        assert!(settings_button.get_attribute("href").is_none());
-        assert!(
-            host.query_selector("[data-settings-view]")
-                .unwrap()
-                .is_some(),
-            "the settings section rides the hub markup"
-        );
-        let original_url = window().unwrap().location().href().unwrap();
-        settings_button.click();
-        assert_eq!(
-            window().unwrap().location().href().unwrap(),
-            original_url,
-            "settings must not navigate the hub anywhere"
-        );
+        super::open_settings_view(&host);
         let settings_view: HtmlElement = host
             .query_selector("[data-settings-view]")
             .unwrap()

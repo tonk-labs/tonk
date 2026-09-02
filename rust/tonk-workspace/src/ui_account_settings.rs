@@ -16,7 +16,7 @@ use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, window};
+use web_sys::{Element, Event, HtmlElement, HtmlInputElement, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 
@@ -174,10 +174,10 @@ pub(crate) fn refresh(this: &HtmlElement) {
 /// field is never blank while the member HAS a name. A Hub seat can read it
 /// off the surrounding `<ui-hub-account>`; a dialog seat asks the roster.
 fn prefill_name(this: &HtmlElement) {
-    let Ok(Some(name)) = this.query_selector("[data-settings-name]") else {
+    let Some(name) = name_input(this) else {
         return;
     };
-    if !name.text_content().unwrap_or_default().trim().is_empty() {
+    if !name.value().trim().is_empty() {
         return;
     }
     if let Some(active) = this
@@ -187,7 +187,7 @@ fn prefill_name(this: &HtmlElement) {
         .and_then(|hub| hub.get_attribute("data-active-name"))
         .filter(|active| !active.trim().is_empty())
     {
-        name.set_text_content(Some(&active));
+        name.set_value(&active);
         return;
     }
     let host = this.clone();
@@ -204,13 +204,19 @@ fn prefill_name(this: &HtmlElement) {
             .find(|profile| profile.active || profile.profile_name == response.active)
             .and_then(|profile| profile.display_name.clone())
             .filter(|name| !name.trim().is_empty());
-        if let (Some(active), Ok(Some(name))) =
-            (active, host.query_selector("[data-settings-name]"))
-            && name.text_content().unwrap_or_default().trim().is_empty()
+        if let (Some(active), Some(name)) = (active, name_input(&host))
+            && name.value().trim().is_empty()
         {
-            name.set_text_content(Some(&active));
+            name.set_value(&active);
         }
     });
+}
+
+fn name_input(this: &HtmlElement) -> Option<HtmlInputElement> {
+    this.query_selector("[data-settings-name]")
+        .ok()
+        .flatten()
+        .and_then(|field| field.dyn_into().ok())
 }
 
 fn load_summary(this: &HtmlElement) {

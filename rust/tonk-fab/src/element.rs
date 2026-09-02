@@ -571,17 +571,10 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             return;
         }
         if row.has_attribute("data-mi-cfg") {
-            // Settings is the shared account panel, raised as a dialog the
-            // space route mounts beside this bar (`[data-fab-settings]`).
-            bar::close(&host, &shared);
-            if let Some(dialog) = window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.query_selector("[data-fab-settings]").ok().flatten())
-                && let Ok(show) = js_sys::Reflect::get(dialog.as_ref(), &"show".into())
-                && let Ok(show) = show.dyn_into::<js_sys::Function>()
-            {
-                let _ = show.call0(dialog.as_ref());
-            }
+            // Settings is a page: the /settings route serves the hub chrome
+            // with the settings section open — the wireframes'
+            // showHub-then-openSettings move, as a plain navigation.
+            navigate("/settings");
             return;
         }
         if row.has_attribute("data-mi-rename") {

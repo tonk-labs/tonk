@@ -6,12 +6,13 @@
   <div class="pane" data-pane="account">
     <div class="srowd">
       <span>display name</span>
-      <tonk-editable
+      <input
         class="sname"
         data-rename="tonk:profile"
         data-settings-name
         onchange="profile/rename"
-      ></tonk-editable>
+        aria-label="display name"
+      />
     </div>
     <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
     <div class="sect">passkeys</div>
@@ -26,11 +27,11 @@
     <div class="sect">delete data</div>
     <div class="srowd">
       <span>delete all data associated with this account</span>
-      <a class="cta" href="/settings" data-settings-full>delete account (permanent)</a>
+      <a class="cta" href="/account" data-settings-full>delete account (permanent)</a>
     </div>
     <div class="srowd">
       <span>remove all data associated with this account from this device</span>
-      <a class="cta" href="/settings" data-settings-full>remove this device</a>
+      <a class="cta" href="/account" data-settings-full>remove this device</a>
     </div>
   </div>
   <div class="pane" data-pane="devices" hidden>

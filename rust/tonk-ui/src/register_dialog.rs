@@ -211,7 +211,14 @@ fn open_when_upgraded(host: &Element) {
         if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
             && !dialog.open()
         {
-            let _ = dialog.show_modal();
+            // Anchored under the hub bar, the ceremony is a PAGE the
+            // account tab shows — the bar's cells stay live tabs, so no
+            // modal: a modal would inert the iframe they live in.
+            if dialog.has_attribute("data-anchored") {
+                let _ = dialog.show();
+            } else {
+                let _ = dialog.show_modal();
+            }
         }
         focus_address(&host);
     });
@@ -2138,11 +2145,22 @@ pub fn describe(payload: &str) {
         // stays hidden (the tab that raised it IS the head), and the rows
         // hang one gap under the bar at the bar's own width.
         let _ = host.set_attribute("data-anchored", "");
-        // The way out of the anchored page is back to the spaces list,
-        // not to a space — reword the ghost accordingly.
+        // The way out of the anchored page is the SPACES TAB in the bar
+        // above it — no ghost row of its own. And a non-modal dialog
+        // fires no `cancel` on Escape, so Escape is wired by hand.
         if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
-            dismiss.set_inner_html(r#"<span aria-hidden="true">&#9666;</span> back to spaces"#);
+            let _ = dismiss.set_attribute("hidden", "");
         }
+        let escape = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                if event.key() == "Escape" {
+                    event.prevent_default();
+                    close();
+                }
+            },
+        );
+        let _ = host.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
+        escape.forget();
         let style = host.style();
         let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
         let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));

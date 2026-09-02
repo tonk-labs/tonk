@@ -438,7 +438,7 @@ mod tests {
         email: &str,
     ) -> Result<()> {
         wait_for_service_worker(driver).await?;
-        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(driver, env.tonk_web.join("account")?.as_str()).await?;
         element(driver, "tonk-account[data-mode=\"choice\"]").await?;
         run_cluster_ceremony(driver, email).await?;
         // And that is where it stops. Creating an account leaves the
@@ -657,7 +657,7 @@ mod tests {
         // Device B: a separate browser holding the same passkey.
         let (device_b, authenticator_b) = driver_with_prf_authenticator(&env).await?;
         copy_credentials(&device_a, &authenticator_a, &device_b, &authenticator_b).await?;
-        goto(&device_b, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&device_b, env.tonk_web.join("account")?.as_str()).await?;
         element(&device_b, "tonk-account[data-mode=\"choice\"]").await?;
         element(&device_b, "#account-choose-link")
             .await?
@@ -707,7 +707,7 @@ mod tests {
         // profile rotation orphans it — both of which surfaced in CI as
         // "no account custody is published for this passkey". Stay on
         // the dashboard until it says the backup settled.
-        goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(driver, env.tonk_web.join("account")?.as_str()).await?;
         wait_for_backup_done(driver).await?;
         // Back to where the caller was: activation is a detour, not a
         // navigation the caller asked for.
@@ -716,26 +716,26 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_redirects_legacy_account_routes_without_losing_the_query(
+    async fn it_redirects_legacy_settings_routes_without_losing_the_query(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
-        let mut legacy = env.tonk_web.join("account")?;
+        let mut legacy = env.tonk_web.join("settings")?;
         legacy.set_query(Some("next=%2Fspace%2Fdid%3Akey%3AzOne&add=1"));
         goto(&driver, legacy.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
-        assert_eq!(current.path(), "/settings");
+        assert_eq!(current.path(), "/account");
         assert_eq!(current.query(), legacy.query());
 
-        let mut legacy_link = env.tonk_web.join("account/link")?;
+        let mut legacy_link = env.tonk_web.join("settings/link")?;
         legacy_link.set_query(Some(
             "audience=did%3Akey%3AzCli&callback=http%3A%2F%2F127.0.0.1%3A9999&name=terminal",
         ));
         goto(&driver, legacy_link.as_str()).await?;
         element(&driver, "tonk-account").await?;
         let current = driver.current_url().await?;
-        assert_eq!(current.path(), "/settings/link");
+        assert_eq!(current.path(), "/account/link");
         assert_eq!(current.query(), legacy_link.query());
 
         driver.quit().await?;
@@ -866,7 +866,7 @@ mod tests {
         "#;
 
         driver.enter_default_frame().await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         let settings_light = driver
             .execute(
@@ -912,7 +912,7 @@ mod tests {
             "dark settings tokens drifted from Hub"
         );
         driver.enter_default_frame().await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         for (window_width, expected_total, expected_rail, expected_body) in [(1200, 720, 144, 576)]
         {
@@ -1077,7 +1077,7 @@ mod tests {
         let (second, _second_authenticator) =
             second_device_with_same_passkey(&env, &first, &authenticator).await?;
         wait_for_service_worker(&second).await?;
-        goto(&second, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&second, env.tonk_web.join("account")?.as_str()).await?;
         element(&second, "tonk-account[data-mode=\"choice\"]").await?;
         click(&second, "#account-choose-link").await?;
         await_register_dialog(&second).await?;
@@ -1148,7 +1148,7 @@ mod tests {
         // can still be settling here; the dashboard must keep probing until
         // it can replace its temporary unhydrated fallback with the actual
         // prerequisite.
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
 
         wait_for_text_containing(&driver, "#account-error", "verification link").await?;
@@ -1188,7 +1188,7 @@ mod tests {
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
 
         let opener = element(&driver, "#account-choose-link").await?;
@@ -1375,7 +1375,7 @@ mod tests {
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         click(&driver, "#account-choose-link").await?;
         await_register_dialog(&driver).await?;
@@ -1612,7 +1612,7 @@ mod tests {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         click(&driver, "#account-unlink").await?;
         element(&driver, "[role=alertdialog]").await?;
@@ -1668,7 +1668,7 @@ mod tests {
 
         let (driver, authenticator_id) = driver_with_prf_authenticator(&env).await?;
         wait_for_service_worker(&driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         element(&driver, "#account-choose-link")
             .await?
@@ -1705,7 +1705,7 @@ mod tests {
     ) -> Result<()> {
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
         wait_for_service_worker(&driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         click(&driver, "#account-choose-link").await?;
         await_register_dialog(&driver).await?;
@@ -1741,7 +1741,7 @@ mod tests {
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
         click(&driver, "#account-choose-link").await?;
         await_register_dialog(&driver).await?;
@@ -4606,7 +4606,7 @@ mod tests {
             .await?;
         goto(&claimer, env.tonk_web.as_str()).await?;
         wait_for_service_worker(&claimer).await?;
-        goto(&claimer, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&claimer, env.tonk_web.join("account")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
         run_cluster_login(&claimer, "claimer@example.com").await?;
         if let Err(wait_error) = element(&claimer, "tonk-account[data-mode=\"success\"]").await {
@@ -4664,7 +4664,7 @@ mod tests {
         let email = "short-mobile@example.com";
         sign_up(&driver, &env, email).await?;
 
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         driver.set_window_rect(0, 0, 320, 568).await?;
         click(&driver, "#account-delete-review").await?;
@@ -4775,7 +4775,7 @@ mod tests {
         // sends the client there once the replica lands — so the
         // deletion controls are no longer on screen. Go back to where
         // they live.
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account").await?;
 
         click(&driver, "#account-delete-review").await?;
@@ -4890,7 +4890,7 @@ mod tests {
 
         // Add account first opens a reversible Choice flow. It must not
         // rotate or grow the profile roster until a ceremony is submitted.
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         element(&driver, "#account-add-profile")
             .await?
@@ -5611,7 +5611,7 @@ mod tests {
             .context("CLI device was absent from the account device list")?
             .to_string();
 
-        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
         element(&driver, "tonk-account[data-mode=\"success\"]").await?;
         // The device list lives on the Devices tab, whose pane is
         // hidden until selected — and hidden text reads as empty.
