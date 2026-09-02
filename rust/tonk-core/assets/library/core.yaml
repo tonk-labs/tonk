@@ -517,7 +517,7 @@ view!:
         npx @tonk/cli guide    # how to drive the CLI
         npx @tonk/cli schema   # concepts already on the branch
 
-      Then build."></wa-copy-button>
+      Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home."></wa-copy-button>
         </div>
         <pre class="agent-prompt__pre">You're helping build the "{name}" repo.
 

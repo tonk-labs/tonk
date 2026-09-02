@@ -18,7 +18,7 @@ use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, HtmlInputElement, window};
+use web_sys::{Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 
@@ -32,6 +32,7 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 struct UiAccountSettings {
     click: Option<EventClosure>,
     change: Option<EventClosure>,
+    keydown: Option<EventClosure>,
     dialog_open: Option<EventClosure>,
 }
 
@@ -114,6 +115,29 @@ impl CustomElement for UiAccountSettings {
         let _ = this.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
         self.change = Some(change);
 
+        // A plain text input does not commit on Enter by itself. End the edit
+        // so the browser emits the same `change` event as a pointer blur and
+        // the one save path above handles both gestures.
+        let keydown: EventClosure = Closure::wrap(Box::new(move |event: Event| {
+            let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
+                return;
+            };
+            if key.key() != "Enter" {
+                return;
+            }
+            let Some(input) = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+                .filter(|input| input.has_attribute("data-settings-name"))
+            else {
+                return;
+            };
+            key.prevent_default();
+            let _ = input.blur();
+        }));
+        let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        self.keydown = Some(keydown);
+
         // A `<tonk-dialog>` seat re-raises this panel long after connect;
         // the dialog's own `fabb-open` is the "fill it freshly" signal. The
         // event is composed and bubbles to the document, so one listener
@@ -147,6 +171,10 @@ impl CustomElement for UiAccountSettings {
         if let Some(change) = self.change.take() {
             let _ =
                 this.remove_event_listener_with_callback("change", change.as_ref().unchecked_ref());
+        }
+        if let Some(keydown) = self.keydown.take() {
+            let _ = this
+                .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
         }
         if let Some(dialog_open) = self.dialog_open.take()
             && let Some(document) = window().and_then(|window| window.document())
@@ -424,7 +452,7 @@ pub(crate) fn register() {
 mod tests {
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-    use web_sys::{HtmlElement, window};
+    use web_sys::{HtmlElement, HtmlInputElement, KeyboardEvent, KeyboardEventInit, window};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -465,6 +493,45 @@ mod tests {
         assert!(account_pane.hidden());
         assert!(devices_tab.class_list().contains("cur"));
 
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn enter_ends_a_display_name_edit() {
+        super::register();
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document
+            .create_element("ui-account-settings")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+        let input: HtmlInputElement = host
+            .query_selector("[data-settings-name]")
+            .unwrap()
+            .expect("display-name input")
+            .dyn_into()
+            .unwrap();
+        input.focus().expect("focus display name");
+        assert!(
+            document
+                .active_element()
+                .is_some_and(|active| active.is_same_node(Some(&input))),
+            "the edit must begin focused",
+        );
+
+        let init = KeyboardEventInit::new();
+        init.set_key("Enter");
+        init.set_bubbles(true);
+        let enter = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        input.dispatch_event(&enter).unwrap();
+
+        assert!(
+            document
+                .active_element()
+                .is_none_or(|active| !active.is_same_node(Some(&input))),
+            "Enter must blur the field so its existing change-save path runs",
+        );
         host.remove();
     }
 }

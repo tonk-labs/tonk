@@ -409,6 +409,29 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
+    assert!(
+        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        "an unfocused display-name field must not draw an editing cursor",
+    );
+    assert!(
+        !HUB_STYLES.contains("tonk-settings-caret"),
+        "the removed resting cursor must not leave a blinking animation behind",
+    );
+}
+
+#[test]
+fn it_displays_and_copies_the_same_agent_prompt() {
+    let ending = "Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.";
+    assert_eq!(
+        STANDARD_LIBRARY.matches(ending).count(),
+        2,
+        "the copy-button value and visible prompt must share the complete ending",
+    );
+    assert!(
+        !STANDARD_LIBRARY.contains("Then build.\"></wa-copy-button>"),
+        "the clipboard prompt must not retain its shorter ending",
+    );
 }
 
 #[test]
