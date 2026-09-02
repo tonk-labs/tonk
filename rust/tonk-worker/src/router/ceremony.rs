@@ -7,11 +7,12 @@
 //! the account it opens from them. Progress goes on the profile overlay
 //! as a [`CeremonyStatus`] row the page subscribes to.
 
-use tonk_common::log;
-use tonk_schema::CeremonyStatus;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tonk_schema::{ceremony, ceremony_state};
+use tonk_common::log;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::worker::TonkState;
 
 /// Write where `ceremony` got to, replacing the last report.
