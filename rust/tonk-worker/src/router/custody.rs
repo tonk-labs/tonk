@@ -140,6 +140,7 @@ pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) 
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(tonk_worker_api::CustodyIntent::Enroll(enrollment)),
+        None,
     )
     .await
     {

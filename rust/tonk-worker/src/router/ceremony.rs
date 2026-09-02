@@ -54,14 +54,20 @@ pub(crate) async fn ask_for_passkey(
         .await;
         return;
     };
-    {
+    let credential_id = {
         let tonk = env.state().read().await;
         report(&tonk, ceremony, ceremony_state::PENDING_CEREMONY, "").await;
-    }
+        super::identity::local_root(&tonk)
+            .await
+            .ok()
+            .map(|root| root.credential_id)
+            .filter(|id| !id.is_empty())
+    };
     if let Err(error) = super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(intent),
+        credential_id,
     )
     .await
     {

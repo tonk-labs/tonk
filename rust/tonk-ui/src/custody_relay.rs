@@ -225,102 +225,27 @@ fn show_consent() {
 /// Run the passkey ceremony a guest-asserted command needs, now.
 ///
 /// The person just pressed the act's own verb in the settings page,
-/// which told them the passkey would be asked for; a second card asking
-/// the same question would be one dialog too many. Only a prompt the
-/// browser refuses to open falls back to the card, whose button is a
-/// gesture of this document's own.
-fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent) {
+/// which told them the passkey would be asked for; a card asking the
+/// same question again would be one dialog too many. Progress and
+/// failure are reported where the ask was made: the worker writes the
+/// ceremony row the settings page watches, and a prompt this document
+/// could not finish is logged here and says so in that row through the
+/// worker's own timeout. Pinned to the account's passkey, so a browser
+/// holding several for this origin cannot answer with another
+/// account's.
+fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
     let method = match &intent {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
         _ => "usePasskey",
     };
-    let retry = intent.clone();
-    match begin(method, intent) {
+    match begin_with(method, intent, credential_id) {
         Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
             if let Err(error) = mediation.finish().await {
                 report(&error.message);
-                if !BUSY.with(|busy| busy.replace(true)) {
-                    show_command_consent(retry, Some(error.message));
-                }
             }
         }),
-        Err(error) => {
-            report(&error.message);
-            if !BUSY.with(|busy| busy.replace(true)) {
-                show_command_consent(retry, Some(error.message));
-            }
-        }
+        Err(error) => report(&error.message),
     }
-}
-
-/// The fallback card for a passkey prompt that did not open, or was
-/// dismissed: it says what happened and offers the prompt again from a
-/// click of this document's own.
-fn show_command_consent(intent: tonk_worker_api::CustodyIntent, failure: Option<String>) {
-    let (act, action) = match &intent {
-        tonk_worker_api::CustodyIntent::PurgeAccount(_) => {
-            ("Deleting your account", AccountAction::DeleteAccount)
-        }
-        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => {
-            ("Approving the terminal", AccountAction::LinkCli)
-        }
-        tonk_worker_api::CustodyIntent::AddPasskey(_) => {
-            ("Adding a passkey", AccountAction::AddPasskey)
-        }
-        _ => ("Continuing", AccountAction::FinishAccountBackup),
-    };
-    let text = match failure {
-        Some(failure) if failure.starts_with("NotAllowedError") => {
-            format!("{act} needs your passkey, and the prompt was closed. Use it to try again.")
-        }
-        Some(failure) => format!(
-            "{act} did not finish: {}. Use your passkey to try again.",
-            user_error::diagnostic(action, &failure)
-        ),
-        None => format!("{act} needs your passkey."),
-    };
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-    let (Some(body), Ok(host)) = (document.body(), document.create_element("div")) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-    host.set_id(CARD_ID);
-    host.set_inner_html(CARD_HTML);
-    let _ = body.append_child(&host);
-    // Worded before the buttons are bound, and without `set_card_text`,
-    // which retires the actions: that helper narrates an outcome, and
-    // this card has not been answered yet.
-    if let Ok(Some(message)) = host.query_selector("#tonk-custody-text") {
-        message.set_text_content(Some(&text));
-    }
-    on_click(&host, "#tonk-custody-dismiss", || {
-        remove_card();
-    });
-    on_click(&host, "#tonk-custody-continue", move || {
-        set_card_text("Waiting for your passkey…");
-        // Invoked inside the click, before anything yields: mobile
-        // WebAuthn spends the tap's transient activation synchronously.
-        let mediation = begin(
-            match &intent {
-                tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
-                _ => "usePasskey",
-            },
-            intent.clone(),
-        );
-        wasm_bindgen_futures::spawn_local(async move {
-            match async { mediation?.finish().await }.await {
-                Ok(()) => set_card_text("Done."),
-                Err(error) => {
-                    report(&error.message);
-                    set_card_text(&user_error::diagnostic(action, &error.message));
-                }
-            }
-            remove_card_after(4000);
-        });
-    });
 }
 
 /// Install the service-worker message listener on the top document.
@@ -389,7 +314,7 @@ pub fn install() {
                     // activated this document too (activation reaches every
                     // ancestor), so the prompt runs at once; the card is
                     // only for a prompt the browser would not open.
-                    intent => run_command_ceremony(intent),
+                    intent => run_command_ceremony(intent, message.credential_id),
                 }
             }
         }
@@ -514,6 +439,16 @@ pub(crate) fn begin(
     method: &'static str,
     intent: tonk_worker_api::CustodyIntent,
 ) -> Result<Mediation, CeremonyError> {
+    begin_with(method, intent, None)
+}
+
+/// [`begin`], with the assertion pinned to `credential_id` (hex) when
+/// the caller knows which passkey holds the account.
+pub(crate) fn begin_with(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+    credential_id: Option<String>,
+) -> Result<Mediation, CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
 
     let identity = web_sys::window()
@@ -544,6 +479,9 @@ pub(crate) fn begin(
         .map_err(|error| CeremonyError::said(format!("the request did not serialize: {error}")))?;
     let input = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
+    if let Some(credential_id) = credential_id {
+        let _ = js_sys::Reflect::set(&input, &"credentialId".into(), &credential_id.into());
+    }
     if let Some(email) = email.filter(|email| !email.trim().is_empty()) {
         let _ = js_sys::Reflect::set(&input, &"name".into(), &email.as_str().into());
         let _ = js_sys::Reflect::set(&input, &"displayName".into(), &email.as_str().into());

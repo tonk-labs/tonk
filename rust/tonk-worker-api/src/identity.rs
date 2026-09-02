@@ -82,6 +82,11 @@ pub struct WebAuthnRequest {
     /// [`WebAuthnKind::Custody`] sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<CustodyIntent>,
+    /// The account's own passkey, hex credential id, when the worker
+    /// knows it: the prompt is pinned to it so a browser holding several
+    /// passkeys for this origin cannot answer with another account's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
 }
 
 /// What a custody handoff should do once it holds the handles.

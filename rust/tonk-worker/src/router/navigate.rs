@@ -184,7 +184,7 @@ pub(crate) async fn request_webauthn(
     client: &crate::router::ClientId,
     request: tonk_worker_api::WebAuthnKind,
 ) -> Result<(), crate::TonkWorkerError> {
-    request_webauthn_with(client, request, None).await
+    request_webauthn_with(client, request, None, None).await
 }
 
 /// [`request_webauthn`], carrying what the worker will do once the page
@@ -194,6 +194,7 @@ pub(crate) async fn request_webauthn_with(
     client: &crate::router::ClientId,
     request: tonk_worker_api::WebAuthnKind,
     intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
 ) -> Result<(), crate::TonkWorkerError> {
     use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
@@ -218,6 +219,7 @@ pub(crate) async fn request_webauthn_with(
         message_type: tonk_worker_api::WEBAUTHN.to_string(),
         request,
         intent,
+        credential_id,
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
