@@ -78,9 +78,9 @@ watch = [
 # UCAN_ENDPOINT). Their backend is only known at runtime, and trunk's TOML
 # does not interpolate, so they cannot be written here.
 
-# Serve the user guide at /guide/, matching the path it ships at on the
-# deployed site. The `dev:web` command launches `mdbook serve` on port
-# 3001 (its own live-reload server); trunk proxies `/guide/*` to it.
+# Serve the local user guide at /guide/ during development. The `dev:web`
+# command launches `mdbook serve` on port 3001 (its own live-reload server);
+# trunk proxies `/guide/*` to it.
 # `rewrite` strips the `/guide/` prefix so a request for
 # `/guide/introduction.html` reaches mdbook as `/introduction.html`.
 # Editing files under `guide/src` reloads through mdbook's own watcher,

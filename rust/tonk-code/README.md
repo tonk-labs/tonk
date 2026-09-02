@@ -12,6 +12,7 @@ loader script into the page.
 | `src-js/index.ts` | Custom element implementation (registers `tonk-code`). |
 | `src-js/lang/*.ts` | One file per language pack, bundled as a separate ESM chunk and loaded on demand. |
 | `scripts/build.mjs` | esbuild driver. Produces `assets/tonk-code.js` plus per-language chunks and a shared CodeMirror runtime chunk. |
+| `scripts/source-fingerprint.mjs` | Computes the checked-in source identity stamped into production bundles; the UI Node suite rejects stale artifacts. |
 | `assets/` | Build output. **Committed** to source control so consumers (and CI) don't need a Node toolchain to build the Rust workspace. |
 
 ## Building the bundle

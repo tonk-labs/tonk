@@ -207,6 +207,12 @@
             "ESBUILD_BIN" = "${esbuild}/bin/esbuild";
             "WASM_OPT_BIN" = "${binaryen}/bin/wasm-opt";
             "WBG_POOL_FALLBACK_RUNNER" = "${wasm-bindgen-cli}/bin/wasm-bindgen-test-runner";
+            # Pooled tests run in sibling tabs. Keep Chrome from stretching
+            # their millisecond-scale DOM polling timers to one second when a
+            # tab is not foregrounded, which otherwise trips the runner's
+            # per-test timeout under full-suite concurrency.
+            "WBG_POOL_BROWSER_ARGS" =
+              "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
           }
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
@@ -374,7 +380,21 @@
               test:native:release
               test:web:debug
               test:web:release
+              test:sw
             '';
+          };
+
+          "test:sw" = {
+            description = "Service-worker lifecycle tests (update, rollback, caching)";
+            # Runs against the SHIPPED `assets/service_worker.js` with
+            # stubbed service-worker globals, so it pins the artifact
+            # that actually deploys. No browser and no wasm needed —
+            # these cover the update/rollback paths whose failure mode
+            # is a user stranded on a stale build.
+            # An explicit glob, not the directory: node's directory
+            # discovery skips `.mjs`, so `--test <dir>` silently runs
+            # nothing and still exits non-zero.
+            command = "${pkgs.nodejs}/bin/node --test 'rust/tonk-ui/tests/*.test.mjs'";
           };
 
           "test:e2e" = {
@@ -576,57 +596,12 @@
             '';
           };
 
-          # The user guide (mdBook), built to static HTML. Served under
-          # /guide/ on the deployed site, so `site-url` in book.toml must
-          # match that prefix.
-          tonk-guide = pkgs.stdenv.mkDerivation {
-            pname = "tonk-guide";
-            version = "0.1.0";
-            src = filter {
-              root = ./guide;
-            };
-            nativeBuildInputs = [
-              pkgs.mdbook
-              pkgs.mdbook-mermaid
-            ];
-            buildPhase = ''
-              mdbook build --dest-dir ./book
-            '';
-            installPhase = ''
-              mkdir -p $out
-              cp -r ./book/* $out/
-            '';
-          };
-
-          # The dependency-free product Storybook, validated and shipped as
-          # static assets. Its source map remains in docs/storybook; only the
-          # browser explorer is included in the deployed asset bundle.
-          tonk-storybook = pkgs.runCommand "tonk-storybook" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-            cd ${self}
-            python3 docs/storybook/scripts/build.py --check
-            python3 docs/storybook/scripts/check-links.py docs/storybook
-            mkdir -p $out
-            cp -r docs/storybook/app/* $out/
-          '';
-
           tonk-cloudflare-artifacts = buildWasmCrate {
             pname = "tonk-cloudflare-assets";
             buildPhase = ''
               mkdir -p ./build
               cp -r ${tonk-access-service} ./build/tonk-access-service
               cp -r ${tonk-ui} ./build/tonk-ui
-              # Files copied from the read-only nix store keep their
-              # read-only perms, so make the tonk-ui tree writable before
-              # adding the guide subdirectory into it.
-              chmod -R u+w ./build/tonk-ui
-              # Ship the guide as static assets under tonk-ui/guide so the
-              # Cloudflare asset layer serves it at /guide/ directly.
-              mkdir -p ./build/tonk-ui/guide
-              cp -r ${tonk-guide}/* ./build/tonk-ui/guide/
-              # Keep the same reviewed Storybook available to the whole team
-              # from the deployed Tonk asset origin.
-              mkdir -p ./build/tonk-ui/storybook
-              cp -r ${tonk-storybook}/* ./build/tonk-ui/storybook/
             '';
             installPhase = ''
               mkdir -p $out
@@ -643,26 +618,23 @@
               #!${bash}/bin/bash
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
-              SERVICE_WORKER_ROOT=''${3:-}
+              DEPLOYMENT_FIXTURE_ROOT=''${3:-}
 
-              if [ -n "$SERVICE_WORKER_ROOT" ]; then
-                  mkdir -p "$SERVICE_WORKER_ROOT"
-                  cp ${self.packages.${system}.tonk-ui}/service_worker.js \
-                      "$SERVICE_WORKER_ROOT/service_worker.js"
-                  # The package lives in the read-only Nix store and `cp`
-                  # preserves that mode. Only this per-harness fixture is
-                  # mutable: the upgrade regression rewrites its build stamp
-                  # to make the browser discover a successor worker.
-                  chmod u+w "$SERVICE_WORKER_ROOT/service_worker.js"
-                  SERVICE_WORKER_HANDLE="handle /service_worker.js {
-                      root * \"$SERVICE_WORKER_ROOT\"
-                      file_server
-                  }"
+              if [ -n "$DEPLOYMENT_FIXTURE_ROOT" ]; then
+                  GENERATION_A="$DEPLOYMENT_FIXTURE_ROOT/generation-a"
+                  mkdir -p "$GENERATION_A"
+                  cp -r ${self.packages.${system}.tonk-ui}/. "$GENERATION_A/"
+                  # Integration tests publish a separately stamped generation
+                  # and atomically repoint this symlink. The browser profile,
+                  # registration, caches, and IndexedDB all survive the swap.
+                  chmod -R u+w "$GENERATION_A"
+                  ln -s generation-a "$DEPLOYMENT_FIXTURE_ROOT/current"
+                  TONK_UI_ROOT="$DEPLOYMENT_FIXTURE_ROOT/current"
               else
-                  SERVICE_WORKER_HANDLE=""
+                  TONK_UI_ROOT=${self.packages.${system}.tonk-ui}
               fi
 
-              echo "Test server live at https://tonk.network:$PORT"
+              echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then
               # cannot orphan a grandchild. Stdin avoids leaking a temp config.
@@ -674,7 +646,7 @@
                       protocols h1 h2
                   }
               }
-              https://tonk.network:$PORT {
+              https://tonk.network:$PORT, https://localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
@@ -685,9 +657,8 @@
                   handle /customer/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
-                  $SERVICE_WORKER_HANDLE
                   handle {
-                      root * ${self.packages.${system}.tonk-ui}
+                      root * "$TONK_UI_ROOT"
                       try_files {path} /index.html
                       file_server
                   }

@@ -3,6 +3,24 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Rewritten alongside service_worker.js at post-build. This is the
+             worker API generation this DOCUMENT was emitted against; unlike
+             /version.json it never changes during the document's lifetime. -->
+        <meta name="tonk-worker-build" content="dev" />
+        <script>
+            (() => {
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]',
+                )?.content;
+                // `dev` deliberately remains unstamped: the worker uses the
+                // same placeholder but the production wire format is exactly
+                // 16 lowercase hex characters. The post-build step replaces
+                // the meta value before anything can be deployed.
+                if (/^[0-9a-f]{16}$/.test(build || "")) {
+                    globalThis.tonkBuild = build;
+                }
+            })();
+        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -252,6 +270,8 @@
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
+            const serviceWorkersSupported = "serviceWorker" in navigator;
+
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
             // first data-plane call (this runs inside `serviceWorkerActivates`,
             // which the shell awaits at boot), so on a reload while offline the
@@ -263,19 +283,89 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
+            const OLD_BROWSER_BOOT_FAILURE =
+                "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.";
+            const GENERIC_BOOT_FAILURE =
+                "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+            const presentBootFailure = (message) => {
+                if (typeof self.tonkBootTerminal === "function") {
+                    self.tonkBootTerminal(message);
+                    return;
+                }
+                const status = document.querySelector("[data-boot-status]");
+                if (status) {
+                    status.setAttribute("data-failed", "");
+                    status.textContent = message;
+                }
+            };
+
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
+            const INSTALL_PROGRESS_CHANNEL =
+                "tonk-sw-install-progress-v1";
+            let observingInstallLifecycle = false;
+
+            const noteInstallProgress = (message) => {
+                const wellFormed =
+                    message?.type === "tonk-install-progress" &&
+                    typeof message.build === "string" &&
+                    message.build.length > 0 &&
+                    typeof message.phase === "string" &&
+                    Number.isSafeInteger(message.completed) &&
+                    message.completed >= 0 &&
+                    Number.isSafeInteger(message.total) &&
+                    message.total >= message.completed;
+                if (observingInstallLifecycle && wellFormed) {
+                    self.tonkBootLife?.();
+                }
+            };
+            if (serviceWorkersSupported) {
+                navigator.serviceWorker.addEventListener("message", (event) =>
+                    noteInstallProgress(event.data),
+                );
+                try {
+                    const installProgress = new BroadcastChannel(
+                        INSTALL_PROGRESS_CHANNEL,
+                    );
+                    installProgress.addEventListener("message", (event) =>
+                        noteInstallProgress(event.data),
+                    );
+                } catch {}
+            }
 
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Every caller receives this exact promise, so the
             // pre-mount gate and later host IO cannot start duplicate updates.
             const serviceWorkerActivation = (async () => {
-                if (!("serviceWorker" in navigator)) {
+                if (!serviceWorkersSupported) {
                     throw new Error(
                         "Service workers not supported; Tonk will not work!",
                     );
                 }
 
                 const priorController = navigator.serviceWorker.controller;
+                let reloadRequested = false;
+                const onControllerReplacement = () => {
+                    if (
+                        !priorController ||
+                        !navigator.serviceWorker.controller ||
+                        navigator.serviceWorker.controller === priorController
+                    ) {
+                        return;
+                    }
+                    if (reloadRequested) return;
+                    reloadRequested = true;
+                    // Successor activation replaces the controller of every
+                    // already-controlled tab. Each update-aware document records
+                    // and consumes one alignment reload.
+                    try {
+                        sessionStorage.setItem(UPGRADE_RELOAD, "1");
+                    } catch {}
+                    location.reload();
+                };
+                navigator.serviceWorker.addEventListener(
+                    "controllerchange",
+                    onControllerReplacement,
+                );
                 let resolveControlled;
                 const controlled = new Promise((resolve) => {
                     resolveControlled = resolve;
@@ -302,43 +392,27 @@
                     );
                     throw error;
                 }
+                observingInstallLifecycle = Boolean(registration.installing);
 
                 // First install (or an active-but-unclaimed worker) keeps this
                 // document. Wait until `/api/*` is controlled, nudging an
                 // already-active worker whose activate event happened earlier.
+                // `register()` may resolve while a true first install is still
+                // verifying, when `registration.active` is null. Wait for the
+                // registration to have an active worker before sending the one
+                // claim request; an optional send before that transition is
+                // lost and leaves this document waiting for control forever.
                 if (!priorController) {
                     if (!navigator.serviceWorker.controller) {
-                        // On a genuinely FIRST install the worker is still
-                        // `installing` when register() resolves, so
-                        // `registration.active` is null and a claim sent
-                        // now goes nowhere — and activation deliberately
-                        // does not claim by itself. Ask the moment the
-                        // worker reaches `activated`, whichever slot it is
-                        // in; a claim from any earlier state is refused by
-                        // the browser. Without this, a cleared-storage
-                        // first visit sat uncontrolled forever: the shell
-                        // reached "starting…", every /api/* fetch fell
-                        // through to the asset server, and only a manual
-                        // reload — a navigation under the by-then-active
-                        // registration — unwedged it.
-                        const claimWhenActivated = (worker) => {
-                            if (!worker) return;
-                            if (worker.state === "activated") {
-                                worker.postMessage({ type: "claim" });
-                                return;
-                            }
-                            worker.addEventListener("statechange", () => {
-                                if (worker.state === "activated") {
-                                    worker.postMessage({ type: "claim" });
-                                }
-                            });
-                        };
-                        claimWhenActivated(registration.active);
-                        claimWhenActivated(registration.waiting);
-                        claimWhenActivated(registration.installing);
-                        registration.addEventListener?.("updatefound", () =>
-                            claimWhenActivated(registration.installing),
-                        );
+                        const readyRegistration =
+                            await navigator.serviceWorker.ready;
+                        const firstWorker = readyRegistration.active;
+                        if (!firstWorker) {
+                            throw new Error(
+                                "Service worker became ready without an active worker",
+                            );
+                        }
+                        firstWorker.postMessage({ type: "claim" });
                         await controlled;
                     }
                     navigator.serviceWorker.removeEventListener(
@@ -348,6 +422,7 @@
                     try {
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
+                    observingInstallLifecycle = false;
                     await sendConnectivity();
                     return;
                 }
@@ -373,7 +448,6 @@
                 }
 
                 let incoming = null;
-                let claimRequested = null;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -388,20 +462,8 @@
                 const onWorkerState = () => {
                     noteLife();
                     if (incoming?.state === "redundant") finish("failed");
-                    // Activation alone deliberately leaves older, unaware
-                    // pages on their existing controller. This document owns
-                    // the update protocol, so once its observed successor is
-                    // ready it explicitly asks that worker to take control;
-                    // the resulting controllerchange drives the guarded
-                    // alignment reload below.
-                    if (
-                        incoming?.state === "activated" &&
-                        navigator.serviceWorker.controller === priorController &&
-                        claimRequested !== incoming
-                    ) {
-                        claimRequested = incoming;
-                        incoming.postMessage({ type: "claim" });
-                    }
+                    // Browser activation replaces the incumbent controller;
+                    // `controllerchange` below drives the guarded reload.
                     if (
                         navigator.serviceWorker.controller &&
                         navigator.serviceWorker.controller !== priorController
@@ -413,6 +475,7 @@
                     if (!worker || worker === incoming) return;
                     incoming?.removeEventListener("statechange", onWorkerState);
                     incoming = worker;
+                    observingInstallLifecycle = true;
                     incoming.addEventListener("statechange", onWorkerState);
                     const status = document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "updating…";
@@ -430,6 +493,7 @@
                     }
                 };
                 const cleanup = () => {
+                    observingInstallLifecycle = false;
                     registration.removeEventListener(
                         "updatefound",
                         onUpdateFound,
@@ -485,10 +549,13 @@
 
                 cleanup();
                 if (result === "replaced") {
-                    try {
-                        sessionStorage.setItem(UPGRADE_RELOAD, "1");
-                    } catch {}
-                    location.reload();
+                    if (!reloadRequested) {
+                        reloadRequested = true;
+                        try {
+                            sessionStorage.setItem(UPGRADE_RELOAD, "1");
+                        } catch {}
+                        location.reload();
+                    }
                     await new Promise(() => {});
                     return;
                 }
@@ -507,9 +574,14 @@
             // Observe rejection immediately so the eager promise cannot create
             // a transient `unhandledrejection` before Rust reaches its strict
             // await. The original promise remains rejected for that await.
-            serviceWorkerActivation.catch((error) =>
-                console.error("service-worker activation failed", error),
-            );
+            serviceWorkerActivation.catch((error) => {
+                console.error("service-worker activation failed", error);
+                presentBootFailure(
+                    !serviceWorkersSupported
+                        ? OLD_BROWSER_BOOT_FAILURE
+                        : GENERIC_BOOT_FAILURE,
+                );
+            });
             self.serviceWorkerActivates = () => serviceWorkerActivation;
 
             // Register a one-shot background sync under `tag` so a
@@ -567,16 +639,13 @@
          30 quiet seconds with the app unmounted or uncontrolled trigger
          recovery.
 
-         The recovery ladder is bounded per tab (sessionStorage): first a
-         plain reload; then a reload after clearing CacheStorage and
-         unregistering the workers — the two poison sources boots have
-         actually wedged on; then give up honestly and leave the shell's
-         failure line for the person. A detected wasm load failure
-         (boot-progress.mjs onFailure) jumps straight onto the ladder via
-         tonkBootRecover instead of waiting out the stall window. A known
-         readiness rejection instead enters an idempotent terminal state:
-         it cancels this automatic ladder, clears its retry counter, and
-         leaves a safe-state/next-action message for a deliberate reload. -->
+         Recovery is bounded per tab (sessionStorage): the first silent stall
+         gets one plain reload. A second stall gives up honestly and leaves the
+         shell's failure line for the person; automatic recovery never deletes
+         caches or unregisters workers. A detected wasm load failure
+         (boot-progress.mjs onFailure) enters the same path immediately instead
+         of waiting out the stall window. A known readiness rejection enters
+         the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
                 if (!("serviceWorker" in navigator)) return;
@@ -624,17 +693,13 @@
                     if (terminal) return;
                     clearInterval(timer);
                     const n = attempts();
-                    if (n >= 2) {
+                    if (n >= 1) {
                         console.error(
                             `boot: still stuck after ${n} recoveries (${why}); giving up`,
                         );
-                        const status =
-                            document.querySelector("[data-boot-status]");
-                        if (status) {
-                            status.setAttribute("data-failed", "");
-                            status.textContent =
-                                "failed to load — check your connection and reload";
-                        }
+                        self.tonkBootTerminal(
+                            "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+                        );
                         return;
                     }
                     try {
@@ -644,24 +709,7 @@
                     const status =
                         document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "recovering…";
-                    const reload = () => location.reload();
-                    if (n === 0) return reload();
-                    Promise.allSettled([
-                        caches
-                            .keys()
-                            .then((keys) =>
-                                Promise.all(
-                                    keys.map((key) => caches.delete(key)),
-                                ),
-                            ),
-                        navigator.serviceWorker
-                            .getRegistrations()
-                            .then((regs) =>
-                                Promise.all(
-                                    regs.map((reg) => reg.unregister()),
-                                ),
-                            ),
-                    ]).then(reload, reload);
+                    location.reload();
                 };
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (message) => {
@@ -732,6 +780,10 @@
             rel="copy-file"
             href="./assets/tonk-media-preview.png"
         />
+        <!-- Cache policy for Cloudflare Workers Assets. `immutable` on the
+       content-hashed bundles, `no-store` on the service-worker chain and
+       live build metadata. -->
+        <link data-trunk rel="copy-file" href="./assets/_headers" />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
        injected only in debug builds by the UI shell (see ui.rs,
