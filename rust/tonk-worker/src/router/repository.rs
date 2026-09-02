@@ -1791,6 +1791,223 @@ async fn run_rename_repository(
     Ok(())
 }
 
+/// Post-commit handler for the [`CreateNotebook`] command.
+///
+/// The index's heading switcher fires this when the author names a
+/// notebook that does not exist. The handler writes it and then drops the
+/// author into it, both halves here because neither can happen in the
+/// page: the notebook's entity is derived when the fact is written, so the
+/// element that fired the command never learns it, and a service worker
+/// has no `window` to navigate with — the redirect goes back as a
+/// `navigate` message to the originating client, like the create-space and
+/// join redirects.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct CreateNotebookHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl CreateNotebookHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::CreateNotebook::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNotebookHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::CreateNotebook::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        let decoded = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::CreateNotebook::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = decoded else { return };
+            let title = command.title.0;
+            let body = command.body.0;
+            // The repository the command fired in. Read from the origin
+            // rather than carried on the command: the notebook belongs to
+            // the space whose page the author was on, and a command that
+            // NAMED its target could be committed against any branch.
+            let repo = env.origin().repo.clone();
+            if title.trim().is_empty() || repo.trim().is_empty() {
+                log!("CreateNotebook: blank title or origin repo, skipping");
+                return;
+            }
+            log!("command CreateNotebook title={title} repo={repo}");
+
+            match create_notebook_inner(&env, &repo, &title, &body).await {
+                Ok(entity) => {
+                    // Drop the author into the notebook they just named.
+                    let href = format!("/space/{repo}/notebook/{entity}");
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
+                Err(error) => log!("CreateNotebook '{title}' failed: {error}"),
+            }
+        })
+    }
+}
+
+/// Write the notebook and return its entity.
+///
+/// Through notation rather than a typed assert: the notebook concept lives
+/// in the YAML library, not in `tonk-schema`, so the shape stays in one
+/// place. `notebook/named` is the title-only concept — a notebook with no
+/// blocks yet cannot satisfy `notebook`, which requires one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_notebook_inner(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    title: &str,
+    body: &str,
+) -> Result<String, RepositoryError> {
+    let tonk = env.state().read().await;
+    // The title is data, and goes in as a quoted scalar so a colon or a
+    // quote in a notebook's name cannot change the document's shape.
+    let document = format!(
+        "notebook/named!:\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let response = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook create failed: {e}")))?;
+
+    if response.commits.claims == 0 {
+        return Err(RepositoryError::Internal(
+            "notebook create wrote nothing".to_owned(),
+        ));
+    }
+
+    // Read the entity back by title.
+    //
+    // The commit summary reports entities keyed by VARIABLE, and an
+    // anchor-less head has no variable — so a write whose identity derives
+    // from its body reports none at all. Querying for the title we just
+    // wrote is what recovers it, and the derivation is deterministic, so
+    // this finds exactly the notebook the write created.
+    let lookup = format!(
+        "notebook/named:\n  this: ?this\n  title: {}\n",
+        serde_json::to_string(title)
+            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
+    );
+    let found = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, lookup, false)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("notebook lookup failed: {e}")))?;
+
+    let entity = found
+        .matches_after
+        .first()
+        .and_then(|block| block.results.first())
+        .map(|result| result.this.clone())
+        .ok_or_else(|| {
+            RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
+        })?;
+
+    // Carry the draft's body over, and always leave at least one block.
+    //
+    // Everything under the heading is content the author already typed, so
+    // the notebook they land in has to open with it — otherwise naming a
+    // draft silently discards the writing that prompted the name.
+    //
+    // A title-only create has no body at all, and a notebook with no block
+    // does not satisfy `tonk:notebook` (which requires one), so the page
+    // you land on reports a missing attribute instead of rendering. An
+    // empty first block is also just what a new document is: somewhere to
+    // start typing.
+    let mut blocks = draft_blocks(body);
+    // At least one block, or the notebook does not satisfy `tonk:notebook`
+    // (which requires one) and the page reports a missing attribute
+    // instead of rendering.
+    //
+    // Only one, though: an empty trailing block would be invisible anyway.
+    // `project` drops empty blocks, and markdown collapses trailing blank
+    // lines, so a document ending in one parses back without it. Landing
+    // ready to type is the CARET's job (`caret="end"`), not an extra
+    // block's.
+    if blocks.is_empty() {
+        blocks.push(String::new());
+    }
+    {
+        let mut document = String::new();
+        // Written back to front and chained forward by `next`, the shape
+        // the library's position rules expect (see `insert_notation`):
+        // a variable must be bound by an earlier assertion than the one
+        // naming it.
+        for (index, source) in blocks.iter().enumerate().rev() {
+            document.push_str("block/insert!:\n");
+            document.push_str(&format!("  this: ?b{index}\n"));
+            document.push_str(&format!("  notebook: {entity}\n"));
+            document.push_str(&format!("  source: {}\n", yaml_block_scalar(source)));
+            if index + 1 < blocks.len() {
+                document.push_str(&format!("  next: ?b{}\n", index + 1));
+            } else {
+                document.push_str("  next: case:none\n");
+            }
+            document.push_str("  prev: tonk:notebook/edge\n\n");
+        }
+        super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("draft body failed: {e}")))?;
+    }
+
+    Ok(entity)
+}
+
+/// The draft's blocks, heading and all.
+///
+/// The heading is KEPT. It also becomes the notebook's title, but a title
+/// is metadata: a notebook's document IS its blocks projected, so dropping
+/// the heading opens the new notebook without the line the author just
+/// wrote — they typed `# Counter` and land on an empty page.
+///
+/// Blocks are separated by a blank line, which is what prosemirror-markdown
+/// emits between top-level blocks.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn draft_blocks(body: &str) -> Vec<String> {
+    body.split("\n\n")
+        .map(str::trim)
+        .filter(|chunk| !chunk.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A source as a YAML block scalar, so markdown with newlines, colons and
+/// backticks survives without escaping.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn yaml_block_scalar(source: &str) -> String {
+    let mut out = String::from("|-\n");
+    for line in source.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
 /// Post-commit handler for the [`RemoveSpace`] command.
 ///
 /// Fired when the user confirms a Hub row's delete overlay. Removal is
@@ -5662,6 +5879,51 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Entries the first result row folds together under `field` — an
+    /// open collection query returns ONE row per entity, its entries
+    /// keyed inside the field's dictionary.
+    async fn entry_count(state: &AppState, repo: &str, query: &str, field: &str) -> usize {
+        rows(state, repo, query)
+            .await
+            .first()
+            .and_then(|row| row.get(field))
+            .and_then(|value| value.as_object())
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
+    /// Run a query document and return its result rows, as JSON.
+    async fn rows(
+        state: &AppState,
+        repo: &str,
+        query: &str,
+    ) -> Vec<std::collections::BTreeMap<String, serde_json::Value>> {
+        let guard = state.read().await;
+        let response = evaluate_body(&guard, repo, "main", query.to_owned(), false)
+            .await
+            .unwrap_or_else(|e| panic!("query failed: {e}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| {
+                block
+                    .results
+                    .iter()
+                    .map(|result| {
+                        // `this` is the match's entity, carried beside the
+                        // bound fields rather than among them.
+                        let mut fields = result.fields.clone();
+                        fields.insert(
+                            "this".to_owned(),
+                            serde_json::Value::String(result.this.clone()),
+                        );
+                        fields
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The FAB space-rename must PERSIST. The repository banner writes a
     /// transient `tonk/rename-repository` command (its `subject` is the repo's
     /// own DID, `name` the typed value); the standard-library rule fires on
@@ -5676,6 +5938,418 @@ mod tests {
     /// facts. A drift in those injected names breaks the rule's evaluation
     /// context, so the command commits nothing and the name silently reverts —
     /// exactly the FAB "rename dropped on refresh" symptom.
+    const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+
+    /// The notebook library on a core-seeded branch: the `block`
+    /// sequence seeds three entries, a `block/place` command adds a
+    /// fourth under the position the element derived, and
+    /// `block/remove` takes it back out.
+    #[dialog_common::test]
+    async fn it_places_and_removes_notebook_blocks() {
+        let (_app, state, key) = fresh_repo("test-notebook-sequence").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
+        assert_eq!(
+            entry_count(&state, repo, entries, "block").await,
+            3,
+            "the seed places three blocks"
+        );
+
+        seed(
+            &state,
+            repo,
+            "block/place!:\n  subject: id:notebook/scratch/4\n  notebook: id:notebook/scratch\n  key: \"N7\"\n",
+        )
+        .await;
+        assert_eq!(
+            entry_count(&state, repo, entries, "block").await,
+            4,
+            "a placement adds an entry under its key"
+        );
+        assert_eq!(
+            count(
+                &state,
+                repo,
+                "notebook:\n  this: id:notebook/scratch\n  block: {N7: ?block}\n"
+            )
+            .await,
+            1,
+            "the entry is readable under the literal key"
+        );
+
+        seed(
+            &state,
+            repo,
+            "block/remove!:\n  subject: id:notebook/scratch/4\n  notebook: id:notebook/scratch\n  key: \"N7\"\n",
+        )
+        .await;
+        assert_eq!(
+            entry_count(&state, repo, entries, "block").await,
+            3,
+            "a removal retracts the entry"
+        );
+    }
+
+    /// A RUN of blocks inserted in ONE transaction lands in document order.
+    ///
+    /// This is the case a per-block command cannot express: block 2's
+    /// position depends on block 3's, which does not exist until the same
+    /// commit derives it. The chain (`next`) plus the recursive position
+    /// rules resolve the whole run in a single round; a design that derived
+    /// each block from its PREDECESSOR needed the predecessor's position to
+    /// survive into a second round, which a transient command does not.
+    #[dialog_common::test]
+    async fn it_inserts_a_run_of_blocks_in_document_order() {
+        let (_app, state, key) = fresh_repo("test-notebook-insert-run").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        // Exactly what `insert_notation` emits for three blocks appended
+        // after the seed's last block: written back to front, chained
+        // forward by variable, every one anchored on the block the run
+        // follows.
+        seed(
+            &state,
+            repo,
+            r#"block/insert!:
+  this: ?b2
+  notebook: id:notebook/scratch
+  source: |-
+    three
+  next: case:none
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b1
+  notebook: id:notebook/scratch
+  source: |-
+    two
+  next: ?b2
+  prev: id:notebook/scratch/3
+
+block/insert!:
+  this: ?b0
+  notebook: id:notebook/scratch
+  source: |-
+    one
+  next: ?b1
+  prev: id:notebook/scratch/3
+"#,
+        )
+        .await;
+
+        let blocks = count(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let chains = count(&state, repo, "block/chain:\n  this: ?this\n  next: ?next\n").await;
+        let positions = count(&state, repo, "block/position:\n  this: ?this\n  at: ?at\n").await;
+
+        // An open collection query folds per entity: ONE row for the
+        // notebook, its entries under `block` keyed by position. Order
+        // lives in the KEYS: positions are fractional indices, ordered
+        // lexicographically.
+        let placed = rows(
+            &state,
+            repo,
+            "notebook:\n  this: id:notebook/scratch\n  block: {?block/key: ?block}\n",
+        )
+        .await;
+        let entry_map = placed
+            .first()
+            .and_then(|row| row.get("block"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            entry_map.len(),
+            6,
+            "three seeded blocks plus the three inserted ones \
+             (blocks={blocks} chains={chains} positions={positions} placed={placed:#?})"
+        );
+        let sources = rows(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: ?source\n",
+        )
+        .await;
+        let source_of: std::collections::BTreeMap<String, String> = sources
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("this")?.as_str()?.to_owned(),
+                    row.get("source")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+
+        // Position keys are fractional indices: their LEXICOGRAPHIC
+        // order is the document order, which `serde_json`'s BTreeMap
+        // iteration yields directly.
+        let document: Vec<&str> = entry_map
+            .values()
+            .filter_map(|block| source_of.get(block.as_str()?))
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            document.len(),
+            6,
+            "every placed block resolves to a source: placed={placed:#?}"
+        );
+        assert_eq!(
+            &document[3..],
+            &["one", "two", "three"],
+            "the run reads in document order, after the seeded blocks: {document:#?}"
+        );
+    }
+
+    /// The create handler writes a titled notebook and reports its entity.
+    ///
+    /// The entity is what makes the redirect possible: the page cannot
+    /// learn it (the command is transient and swept before any
+    /// subscription sees it), so the handler that writes the notebook is
+    /// the one that navigates to it.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_and_reports_its_entity() {
+        let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(&env, repo, "Groceries", "")
+            .await
+            .expect("the create writes a notebook");
+        assert!(!entity.is_empty(), "and reports the entity to navigate to");
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titled: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titled.contains(&"Groceries"),
+            "the notebook is readable by title: {named:#?}"
+        );
+        assert!(
+            named
+                .iter()
+                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity.as_str())),
+            "and the reported entity is the one written: {entity} not in {named:#?}"
+        );
+    }
+
+    /// A title with a colon or a quote must not reshape the notation.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_whose_title_carries_yaml_syntax() {
+        let (_app, state, key) = fresh_repo("test-notebook-title-syntax").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let awkward = r#"Notes: "on" quoting"#;
+        super::create_notebook_inner(&env, repo, awkward, "")
+            .await
+            .expect("an awkward title still writes");
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        let titled: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(
+            titled.contains(&awkward),
+            "the title survives verbatim: {named:#?}"
+        );
+    }
+
+    /// Naming a draft keeps what was already written under the heading.
+    ///
+    /// The body is the reason the index is a real notebook rather than a
+    /// search box: the author types into it before the notebook exists,
+    /// and naming it must not throw that away.
+    #[dialog_common::test]
+    async fn it_carries_a_drafts_body_into_the_notebook() {
+        let (_app, state, key) = fresh_repo("test-notebook-draft-body").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        let entity = super::create_notebook_inner(
+            &env,
+            repo,
+            "Groceries",
+            "# Groceries\n\nmilk and eggs\n\n```dialog-yaml\nconcept:\n```",
+        )
+        .await
+        .expect("the draft creates a notebook");
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.contains(&"milk and eggs"),
+            "the body's prose carries over: {blocks:#?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.contains("dialog-yaml")),
+            "and so does a fence: {blocks:#?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.starts_with("# Groceries")),
+            "and so does the heading: it is the title AND the document's \
+             first line, so dropping it opens the notebook blank: {blocks:#?}"
+        );
+    }
+
+    /// A title-only create still leaves a block.
+    ///
+    /// `tonk:notebook` requires one, so a blockless notebook renders as a
+    /// missing-attribute callout instead of a document — which is what the
+    /// author lands on right after naming it.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_with_a_block_from_a_bare_title() {
+        let (_app, state, key) = fresh_repo("test-notebook-bare-title").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        // What the switcher sends for a title with nothing typed under it.
+        let entity = super::create_notebook_inner(&env, repo, "Counter", "# Counter")
+            .await
+            .expect("a bare title creates a notebook");
+
+        let placed = count(
+            &state,
+            repo,
+            &format!("notebook:\n  this: {entity}\n  title: ?title\n  block: {{?key: ?block}}\n"),
+        )
+        .await;
+        assert!(
+            placed > 0,
+            "the notebook resolves as `tonk:notebook`, so the page renders"
+        );
+
+        let blocks = rows(
+            &state,
+            repo,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
+        )
+        .await;
+        let sources: Vec<&str> = blocks
+            .iter()
+            .filter_map(|row| row.get("source")?.as_str())
+            .collect();
+        assert!(
+            sources.iter().any(|s| s.starts_with("# Counter")),
+            "the heading is kept: {blocks:#?}"
+        );
+        assert_eq!(
+            sources.len(),
+            1,
+            "and it is the ONLY block: an empty second one would be dropped \
+             by `project` and collapsed by markdown, so the caret does that \
+             job instead: {blocks:#?}"
+        );
+    }
+
+    /// A rename must not also CREATE. Both commands are transient and both
+    /// carry a title, so they decode from the same event unless their
+    /// attributes differ.
+    #[dialog_common::test]
+    async fn it_does_not_create_a_notebook_when_retitling() {
+        let (_app, state, key) = fresh_repo("test-notebook-retitle-only").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        let before = count(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+
+        seed(
+            &state,
+            repo,
+            "notebook/retitle!:\n  subject: id:notebook/scratch\n  title: \"Renamed\"\n",
+        )
+        .await;
+
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        assert_eq!(
+            named.len(),
+            before,
+            "a rename renames in place, it does not add one: {named:#?}"
+        );
+        let titles: Vec<&str> = named
+            .iter()
+            .filter_map(|row| row.get("title")?.as_str())
+            .collect();
+        assert!(titles.contains(&"Renamed"), "and it took: {named:#?}");
+    }
+
     #[dialog_common::test]
     async fn it_persists_a_space_rename() {
         use dialog_repository::RepositoryExt as _;

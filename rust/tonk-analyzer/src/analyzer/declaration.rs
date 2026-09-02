@@ -67,6 +67,10 @@ pub(crate) fn parse_attribute_fields(
     fields: &[tonk_notation::Field],
 ) -> Result<AttributeBody, AnalyzeError> {
     let mut shape = serde_json::Map::new();
+    // `as: {[position]: entity}` declares a keyed collection: the
+    // bracketed key kind, and the type of each entry's value. `the:`
+    // then names a domain rather than one attribute.
+    let mut keyed: Option<&'static str> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -87,7 +91,35 @@ pub(crate) fn parse_attribute_fields(
         //   non-descriptions like `description: recipe`.
         match field.name.as_str() {
             "as" => {
-                let value_str = stringify_simple_value(field)?;
+                let value_field = match &field.value {
+                    FieldValue::Nested(inner) => {
+                        let [entry] = inner.as_slice() else {
+                            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                                reason: "a keyed collection type is one entry: \
+                                         `{[position]: <type>}` or `{[symbol]: <type>}`"
+                                    .into(),
+                            }
+                            .into());
+                        };
+                        keyed = Some(match entry.name.as_str() {
+                            "[position]" => "sequence",
+                            "[symbol]" => "dictionary",
+                            other => {
+                                return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                                    reason: format!(
+                                        "unknown key kind {other:?} — expected \
+                                         `[position]` (a sequence) or `[symbol]` \
+                                         (a dictionary)"
+                                    ),
+                                }
+                                .into());
+                            }
+                        });
+                        entry
+                    }
+                    _ => field,
+                };
+                let value_str = stringify_simple_value(value_field)?;
                 let normalized = normalize_type_name(&value_str).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
@@ -137,6 +169,24 @@ pub(crate) fn parse_attribute_fields(
             reason: "missing required field `the`".into(),
         }
         .into());
+    }
+    if let Some(keyed) = keyed {
+        let the = shape["the"].as_str().unwrap_or_default().to_owned();
+        if the.contains('/') {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!(
+                    "a keyed collection's `the:` names a domain, not an \
+                     attribute — write `the: {}` and let the key supply the \
+                     name half",
+                    the.split('/').next().unwrap_or_default()
+                ),
+            }
+            .into());
+        }
+        shape.insert(
+            "the".into(),
+            serde_json::json!({ "domain": the, "keyed": keyed }),
+        );
     }
     let description_present = shape
         .get("description")
@@ -583,6 +633,7 @@ pub(crate) fn attribute_application(
             terms,
             predicate: attribute_schema(),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name,
     }
@@ -650,6 +701,7 @@ pub(crate) fn concept_application(
             terms,
             predicate: concept_schema(descriptor),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name,
     }
@@ -774,6 +826,7 @@ fn concept_field_retraction(
             terms,
             predicate: concept_schema(&sub_descriptor),
         },
+        join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name: None,
     })

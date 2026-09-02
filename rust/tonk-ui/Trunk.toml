@@ -50,6 +50,8 @@ watch = [
     "../dialog-reactor",
     "../tonk-router",
     "../tonk-language-server",
+    "../tonk-analyzer",
+    "../tonk-evaluator",
     "../tonk-schema",
     "../tonk-analyzer",
     "../tonk-evaluator",

@@ -21,6 +21,23 @@ use std::collections::BTreeMap;
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 
+/// Read one facet's template out of a folded view conclusion.
+///
+/// A view-resolution frame folds to at most one conclusion (the model
+/// entity) whose `show` field is the facet dictionary
+/// (`{facet: template}`). Returns `None` when the facet has no entry
+/// — the caller then falls back (the `tonk:_` default, or the
+/// notation dump).
+pub fn show_template<'a>(conclusion: &'a Conclusion, facet: &str) -> Option<&'a str> {
+    match conclusion.fields.get("show")? {
+        Ipld::Map(entries) => match entries.get(facet)? {
+            Ipld::String(template) => Some(template),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Group a flat conclusion frame by `this` and fold each group,
 /// yielding **one conclusion per distinct subject** with its
 /// cardinality-many fields collapsed to `Ipld::List`. Groups appear in
@@ -67,6 +84,13 @@ fn fold_group(conclusions: Vec<Conclusion>) -> Conclusion {
     for row in iter {
         for (name, value) in row.fields {
             let bucket = per_field.entry(name).or_default();
+            // A keyed-collection field holds one `{key: value}` entry
+            // per row; entries merge into one map keyed by the
+            // collection's own keys, rather than accumulating a list.
+            if let (Some(Ipld::Map(entries)), Ipld::Map(entry)) = (bucket.last_mut(), &value) {
+                entries.extend(entry.clone());
+                continue;
+            }
             if !bucket.iter().any(|existing| existing == &value) {
                 bucket.push(value);
             }
@@ -119,6 +143,47 @@ mod tests {
     /// a one-element frame.
     fn fold_one(rows: Vec<Conclusion>) -> Option<Conclusion> {
         select_rows(rows).into_iter().next()
+    }
+
+    /// A view frame folds to the model entity's `show` dictionary;
+    /// `show_template` reads one facet's template out of it.
+    #[dialog_common::test]
+    fn it_reads_a_facet_template_from_a_folded_view() {
+        let rows = vec![
+            conclusion(
+                "tonk:counter",
+                &[("show", json!({"ui": "<h1>{count}</h1>"}))],
+            ),
+            conclusion(
+                "tonk:counter",
+                &[("show", json!({"title": "Counter {count}"}))],
+            ),
+        ];
+        let folded = fold_one(rows).expect("rows fold");
+        assert_eq!(show_template(&folded, "ui"), Some("<h1>{count}</h1>"));
+        assert_eq!(show_template(&folded, "title"), Some("Counter {count}"));
+        assert_eq!(
+            show_template(&folded, "directory"),
+            None,
+            "an absent facet reads as none, so the caller falls back"
+        );
+    }
+
+    /// A keyed-collection field arrives as one `{key: value}` entry
+    /// per row; the fold merges them into one map keyed by the
+    /// collection's own keys, which for positions is list order.
+    #[dialog_common::test]
+    fn it_merges_collection_entries_by_key() {
+        let rows = vec![
+            conclusion("did:key:zX", &[("block", json!({"N5": "second"}))]),
+            conclusion("did:key:zX", &[("block", json!({"N": "first"}))]),
+        ];
+        let folded = fold_one(rows).expect("rows fold");
+        assert_eq!(
+            folded.fields.get("block"),
+            Some(&ipld(json!({"N": "first", "N5": "second"}))),
+            "entries merge into one map, in key order"
+        );
     }
 
     #[dialog_common::test]

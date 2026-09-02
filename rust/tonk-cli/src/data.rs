@@ -51,7 +51,13 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
         }
         Some(Type::SignedInt) => {
             raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
-            Ok(raw.to_string())
+            // Spell the signedness: bare digits parse as unsigned, so
+            // a non-negative signed value carries an explicit `+`.
+            if raw.starts_with('+') || raw.starts_with('-') {
+                Ok(raw.to_string())
+            } else {
+                Ok(format!("+{raw}"))
+            }
         }
         Some(Type::Float) => {
             raw.parse::<f64>().map_err(|_| bad("Float"))?;
@@ -158,6 +164,27 @@ pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn it_spells_signed_values_with_an_explicit_sign() {
+        use dialog_query::artifact::Type;
+        assert_eq!(
+            super::render_value(Some(Type::SignedInt), "41").unwrap(),
+            "+41"
+        );
+        assert_eq!(
+            super::render_value(Some(Type::SignedInt), "-7").unwrap(),
+            "-7"
+        );
+        assert_eq!(
+            super::render_value(Some(Type::SignedInt), "+8").unwrap(),
+            "+8"
+        );
+        assert_eq!(
+            super::render_value(Some(Type::UnsignedInt), "41").unwrap(),
+            "41"
+        );
+    }
+
     use super::*;
     use dialog_query::Type;
 

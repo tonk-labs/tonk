@@ -66,6 +66,8 @@ const OBSERVED = [
   "readonly",
   "placeholder",
   "auto-focus",
+  "switcher",
+  "caret",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -152,6 +154,13 @@ class TonkProseElement extends HTMLElement {
 
   /** Mount point handed to the editor core. */
   readonly #mount: HTMLDivElement;
+  /** Documents the heading switcher can offer, set by the host.
+   *
+   *  A property rather than an attribute: this is a list, read on every
+   *  keystroke, and serializing it through the DOM would be both lossy and
+   *  slow. The host assigns it; the switcher reads it fresh each time, so a
+   *  document created elsewhere appears without remounting. */
+  candidates: { title: string; href: string }[] = [];
 
   /** Live editor handle once the core chunk resolved and the view
    *  mounted. Null while loading and after teardown. */
@@ -296,6 +305,22 @@ class TonkProseElement extends HTMLElement {
       onChange: (value) => {
         this.#scheduleChange(value);
       },
+      // The heading acts as a document switcher only where the host says
+      // so. Read once, at construction: an editor that could gain the
+      // behaviour later could navigate away from a document being renamed.
+      switcher: this.hasAttribute("switcher")
+        ? {
+            candidates: () => this.candidates,
+            onOpen: (candidate) => this.#emit("switch", candidate),
+            // The whole document, not just the title: a draft's body is
+            // real content the author typed, and the notebook that gets
+            // created has to carry it or naming the document throws away
+            // everything written under the heading.
+            onCreate: (title) =>
+              this.#emit("create", { title, document: this.value }),
+            onSuggest: (rows, active) => this.#emit("suggest", { rows, active }),
+          }
+        : undefined,
     });
     this.#pendingValue = null;
     this.#editor = editor;
@@ -312,9 +337,35 @@ class TonkProseElement extends HTMLElement {
     // the same tick can't clobber the focus (mirrors `<tonk-code>`).
     if (!this.hasAttribute("readonly") && this.hasAttribute("auto-focus")) {
       setTimeout(() => {
-        if (this.#editor === editor) editor.focus();
+        if (this.#editor !== editor) return;
+        // Claim the FRAME first. In a sealed guest this editor lives two
+        // iframes deep, and focusing an element inside a frame the browser
+        // has not focused leaves the caret invisible and the keyboard
+        // pointed at the top document — the page looks ready to type in
+        // and silently is not.
+        try {
+          window.focus();
+        } catch {
+          // A cross-origin parent can refuse; the element focus below
+          // still works once the user clicks in.
+        }
+        // `caret="end"` opens ready to continue writing rather than to
+        // overwrite: the caret lands after what is already there. Arriving
+        // from the switcher, naming a notebook and carrying on typing is
+        // then one motion.
+        if (this.getAttribute("caret") === "end") editor.caretToEnd();
+        editor.focus();
       }, 0);
     }
+  }
+
+  /** Dispatch a bubbling, composed event carrying `detail`. Composed so
+   *  it crosses this element's shadow boundary to the host listening
+   *  outside it. */
+  #emit(name: string, detail: unknown) {
+    this.dispatchEvent(
+      new CustomEvent(name, { detail, bubbles: true, composed: true }),
+    );
   }
 
   /** Record the latest edited markdown and (re)arm the debounce. The

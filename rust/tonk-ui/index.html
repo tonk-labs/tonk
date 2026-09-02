@@ -750,6 +750,15 @@
             href="../tonk-core/assets/library/profile.yaml"
             data-target-path="library"
         />
+        <!-- The notebook template. The generic template-at-creation
+       mechanism was removed in staging, so this is served to be installed
+       into an existing space by evaluating it against the branch. -->
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../tonk-core/assets/library/notebook.yaml"
+            data-target-path="library"
+        />
         <link data-trunk rel="copy-dir" href="./assets/fonts" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />
