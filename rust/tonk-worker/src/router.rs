@@ -4493,7 +4493,8 @@ employee:
 
         // Retirement is terminal for this worker generation. Reopening after
         // the successor has activated (and `registration.waiting` has become
-        // empty) must still receive a short 503, never a fresh SSE body.
+        // empty) receives one intentional-drop control frame and immediate
+        // EOF, never a fresh subscription that pins the retiring worker.
         for attempt in 0..2 {
             let response = app
                 .clone()
@@ -4508,24 +4509,23 @@ employee:
                 )
                 .await
                 .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(
-                response.status(),
-                StatusCode::SERVICE_UNAVAILABLE,
-                "retired query reconnect {attempt} must be refused"
-            );
-            assert_ne!(
                 response
                     .headers()
                     .get("content-type")
                     .and_then(|v| v.to_str().ok()),
                 Some("text/event-stream")
             );
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
+            let mut body = response.into_body();
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                serde_json::json!({ "control": "update-pending" })
+                read_sse_frame(&mut body).await,
+                serde_json::json!({ "control": "update-pending" }),
+                "retired query reconnect {attempt} must receive the handoff frame",
+            );
+            assert!(
+                body.frame().await.is_none(),
+                "retired query reconnect {attempt} must close after the handoff frame",
             );
         }
     }

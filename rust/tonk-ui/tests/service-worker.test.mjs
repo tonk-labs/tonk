@@ -1510,6 +1510,109 @@ describe("the failure page", () => {
     );
     assert.match(html, /&lt;img/);
   });
+
+  test("a frozen successor install reaches the recovery deadline", async () => {
+    withGlobals();
+    const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
+    mod.workerHealth.state = "failed";
+    mod.workerHealth.error = "boom";
+    mod.workerHealth.attempts = 3;
+
+    const html = await mod.failurePage().text();
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)?.[1];
+    assert.ok(script, "expected the update-recovery script");
+
+    const listeners = new Map();
+    const successor = {
+      state: "installing",
+      postMessage() {},
+      addEventListener(type, listener) {
+        listeners.set(type, listener);
+      },
+      removeEventListener(type, listener) {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      },
+    };
+    const incumbent = {};
+    const registration = {
+      active: incumbent,
+      waiting: null,
+      installing: successor,
+      async update() {},
+    };
+    let click;
+    const inserted = [];
+    const button = {
+      disabled: false,
+      textContent: "Check for update",
+      addEventListener(type, listener) {
+        assert.equal(type, "click");
+        click = listener;
+      },
+      after(node) {
+        inserted.push(node);
+      },
+    };
+    let now = 0;
+    let nextTimer = 0;
+    const timers = new Map();
+    const setTimer = (callback, delay) => {
+      const id = ++nextTimer;
+      timers.set(id, { at: now + delay, callback });
+      return id;
+    };
+    const clearTimer = (id) => timers.delete(id);
+    const advance = async (milliseconds) => {
+      now += milliseconds;
+      const due = [...timers.entries()].filter(([, timer]) => timer.at <= now);
+      for (const [id, timer] of due) {
+        timers.delete(id);
+        timer.callback();
+      }
+      await new Promise(setImmediate);
+    };
+    const context = {
+      navigator: {
+        serviceWorker: {
+          controller: incumbent,
+          async getRegistration() {
+            return registration;
+          },
+        },
+      },
+      document: {
+        getElementById(id) {
+          return id === "update" ? button : null;
+        },
+        createElement() {
+          return { className: "", textContent: "" };
+        },
+      },
+      location: { reload() { assert.fail("a failed adoption must not reload"); } },
+      console: { error() {} },
+      Date: { now: () => now },
+      setTimeout: setTimer,
+      clearTimeout: clearTimer,
+      Promise,
+      Error,
+      String,
+    };
+    new Function("context", `with (context) { ${script} }`)(context);
+    assert.ok(click, "expected the recovery click handler");
+
+    const adoption = click({ currentTarget: button });
+    await new Promise(setImmediate);
+    assert.equal(button.disabled, true);
+
+    await advance(30_001);
+    await adoption;
+
+    assert.equal(button.disabled, false);
+    assert.equal(button.textContent, "Try update again");
+    assert.equal(inserted.length, 1);
+    assert.match(inserted[0].textContent, /did not finish installing/);
+    assert.equal(listeners.size, 0, "the state listener is removed on timeout");
+  });
 });
 
 describe("periodic revocation check", () => {

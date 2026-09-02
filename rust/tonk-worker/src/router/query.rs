@@ -219,14 +219,14 @@ async fn query_on_branch<'a>(
     }
 }
 
-/// Tell a query consumer to hold its reconnect for `controllerchange` rather
-/// than handing it a response body that can pin this worker again.
+/// Tell a query consumer to hold its reconnect for `controllerchange`, then
+/// close immediately so this response cannot pin the retiring worker.
 fn retry_later() -> Response {
     Response::builder()
-        .status(StatusCode::SERVICE_UNAVAILABLE)
-        .header(header::RETRY_AFTER, "5")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"control":"update-pending"}"#))
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from("data: {\"control\":\"update-pending\"}\n\n"))
         .expect("response builder failed")
 }
 

@@ -791,6 +791,18 @@ async function retire(reason) {
     }
 }
 
+/// A registration is shared by the active, waiting, and installing worker
+/// globals. Only the worker object that the browser identifies as the active
+/// incumbent may stop the reactor serving the current pages.
+function isActiveIncumbent() {
+    return self.registration.active === self.serviceWorker;
+}
+
+function retireActiveIncumbent(reason) {
+    if (!isActiveIncumbent()) return;
+    return retire(reason);
+}
+
 // Catch-up check, run at every script evaluation.
 //
 // `updatefound` is an EVENT, and a service worker is killed and
@@ -805,7 +817,11 @@ async function retire(reason) {
 // The registration itself is durable where the event is not, so ask it
 // directly on every startup instead of trusting that we were awake.
 if (self.registration.waiting) {
-    retire("a successor was already waiting at startup");
+    // Defer until this module has initialized the account-safety constants
+    // used by `retire`; top-level execution otherwise enters their TDZ.
+    Promise.resolve().then(() =>
+        retireActiveIncumbent("a successor was already waiting at startup"),
+    );
 }
 
 function watchSuccessor(candidate) {
@@ -821,15 +837,15 @@ function watchSuccessor(candidate) {
     //
     // `registration.installing` is the incoming worker. If that is us, this is
     // our own birth announcement, not our eviction notice.
-    if (self.serviceWorker && candidate === self.serviceWorker) {
-        log("Update found — that is us installing; staying live");
+    if (!isActiveIncumbent()) {
+        log("Update found — this worker is not the active incumbent; staying live");
         return;
     }
 
     const observe = () => {
         if (["installed", "activating", "activated"].includes(candidate.state)) {
             candidate.removeEventListener?.("statechange", observe);
-            return retire("a newer worker installed successfully");
+            return retireActiveIncumbent("a newer worker installed successfully");
         }
         if (candidate.state === "redundant") {
             candidate.removeEventListener?.("statechange", observe);
@@ -1068,12 +1084,27 @@ ${stuck ? `<p class="hint">Checking for an update keeps your local data and offl
 </main>
 <script>
   const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-  const waitForState = async (worker, accepted, description) => {
-    const deadline = Date.now() + 30000;
-    while (!accepted.includes(worker.state) && Date.now() < deadline) {
-      await new Promise(resolve => worker.addEventListener("statechange", resolve, { once: true }));
-    }
-    if (!accepted.includes(worker.state)) throw new Error(description);
+  const waitForState = (worker, accepted, description) => {
+    if (accepted.includes(worker.state)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer;
+      const settle = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.removeEventListener("statechange", onStateChange);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onStateChange = () => {
+        if (accepted.includes(worker.state)) settle();
+        else if (worker.state === "redundant") settle(new Error(description));
+      };
+      worker.addEventListener("statechange", onStateChange);
+      timer = setTimeout(() => settle(new Error(description)), 30000);
+      onStateChange();
+    });
   };
   const adoptSuccessor = async registration => {
     const incumbent = navigator.serviceWorker.controller;
@@ -1159,8 +1190,8 @@ let killSwitchCheckedAt = 0;
 /// remaining contact with the outside world is the fetches it serves,
 /// so the check has to live here too.
 function retireIfSuperseded(event) {
-    if (retired || !self.registration.waiting) return;
-    event.waitUntil?.(retire("a successor is waiting"));
+    if (retired || !self.registration.waiting || !isActiveIncumbent()) return;
+    event.waitUntil?.(retireActiveIncumbent("a successor is waiting"));
 }
 
 function maybeCheckKillSwitch(event, force = false) {
@@ -1421,8 +1452,10 @@ self.onmessage = event => {
         event.data.type === "account-setup-hold-changed" &&
         event.data.version === 1
     ) {
-        if (self.registration.waiting) {
-            event.waitUntil?.(retire("the account-setup hold changed"));
+        if (self.registration.waiting && isActiveIncumbent()) {
+            event.waitUntil?.(
+                retireActiveIncumbent("the account-setup hold changed"),
+            );
         }
         return;
     }
