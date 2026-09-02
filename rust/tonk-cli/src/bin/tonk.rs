@@ -19,6 +19,7 @@ use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::context::SpaceContext;
 use tonk_cli::data_ops;
 use tonk_cli::eval::{self, Source};
+use tonk_cli::highlight;
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::listing::{self, Listing};
 use tonk_cli::migrate::{self, Mode as MigrateMode};
@@ -2701,8 +2702,15 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
     let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
     match auto_sync::run_eval(&site, source, options, sync).await {
         Ok(outcome) => {
+            // JSON is machine output and is never touched; notation is
+            // highlighted only when stdout is a terminal, so a pipe
+            // still sees byte-identical output.
+            let rendered = highlight::notation(
+                &outcome.stdout,
+                !args.json && highlight::Colour::Auto.enabled(),
+            );
             let mut stdout = std::io::stdout().lock();
-            if let Err(e) = stdout.write_all(outcome.stdout.as_bytes()) {
+            if let Err(e) = stdout.write_all(rendered.as_bytes()) {
                 return print_error(format!("failed to write stdout: {e}"));
             }
             ExitCode::Success
@@ -3633,8 +3641,9 @@ async fn query_op(concept: String, json: bool, space: Option<&str>) -> ExitCode 
 
     match data_ops::query(&site, &concept, json).await {
         Ok(text) => {
+            let rendered = highlight::notation(&text, !json && highlight::Colour::Auto.enabled());
             let mut stdout = std::io::stdout().lock();
-            if let Err(e) = stdout.write_all(text.as_bytes()) {
+            if let Err(e) = stdout.write_all(rendered.as_bytes()) {
                 return print_error(format!("failed to write stdout: {e}"));
             }
             ExitCode::Success

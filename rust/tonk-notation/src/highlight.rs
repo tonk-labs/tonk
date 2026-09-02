@@ -46,6 +46,31 @@ pub enum Decoration {
 }
 
 impl Decoration {
+    /// SGR parameters for painting this decoration in a terminal, or
+    /// `None` for plain text.
+    ///
+    /// The terminal counterpart of [`class`](Self::class), kept beside
+    /// it so the two hosts cannot drift. Deliberately restricted to
+    /// emphasis and the eight ANSI colour names: those exist on every
+    /// terminal, and — unlike a literal — they resolve through the
+    /// user's own colour scheme rather than fighting it.
+    pub fn sgr(self) -> Option<&'static str> {
+        match self {
+            // The assertion head is the line you scan for.
+            Decoration::Effect => Some("1"),
+            // Field names are schema; the values beside them are the
+            // content, so keys recede rather than compete.
+            Decoration::Key => Some("2"),
+            Decoration::NameSigil => Some("2"),
+            // Anchors are references you follow.
+            Decoration::Name => Some("33"),
+            // Entity URIs are what people copy out of this output.
+            Decoration::Entity => Some("36"),
+            Decoration::Variable => Some("35"),
+            Decoration::Plain => None,
+        }
+    }
+
     /// The CSS class name to apply to a `<span>` for this
     /// decoration, or `None` for plain text.
     pub fn class(self) -> Option<&'static str> {

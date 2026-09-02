@@ -52,6 +52,7 @@ pub mod data_ops;
 pub mod deployment;
 pub mod eval;
 pub mod guide;
+pub mod highlight;
 pub mod identity;
 pub mod inventory;
 pub mod invite;
