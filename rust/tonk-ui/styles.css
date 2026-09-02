@@ -70,10 +70,7 @@
     --fabb-sep: rgb(56 24 42 / 28%);
     --fabb-hover: rgb(56 24 42 / 6%);
     --fabb-press: rgb(56 24 42 / 12%);
-    /* pre-composited frost: real blur cannot sample the page from inside
-       the portal frame, so the frosted look is carried by density — a
-       whisper of ground, nothing readable through it */
-    --fabb-bg: rgb(253 252 252 / 92%);
+    --fabb-bg: rgb(253 252 252 / 72%);
     --fabb-panel: rgb(247 246 245 / 92%);
     --fabb-ring: rgb(56 24 42 / 85%);
 }

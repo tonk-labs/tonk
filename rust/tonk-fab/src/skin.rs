@@ -39,21 +39,19 @@ pub const SKIN: &str = r#"
   --_sep:   var(--fabb-sep, rgba(56,24,42,.28));
   --_hover: var(--fabb-hover, rgba(56,24,42,.06));
   --_press: var(--fabb-press, rgba(56,24,42,.12));
-  --_bg:    var(--fabb-bg, rgba(253,252,252,.92));
+  --_bg:    var(--fabb-bg, rgba(253,252,252,.72));
   /* the current role — a place you are in, split from the CTA register:
      near-ink, one step toward the page, so a marked row never outshouts
      an action (which keeps solid --_ink) */
   --_cur:   var(--fabb-cur, #552e44);
   --_panel: var(--fabb-panel, rgba(247,246,245,.92));
-  /* No blur. The FABB renders inside its own portal iframe, and a
-     backdrop-filter can only sample content INSIDE that frame — never the
-     space behind it — so the filter bought nothing over the page and
-     actively smeared sibling chrome (the bar's white cells, the round cap)
-     into any stack that opened near them. The frosted look is carried by
-     DENSITY instead: `--_bg` is pre-composited near-solid frost (the
-     reference's own rule for surfaces that cannot blur), letting a whisper
-     of ground through and nothing readable. */
-  --_filter:none;
+  /* Real frost: Chrome composites backdrop-filter through transparent
+     frames (verified against a checkerboard behind a sandboxed iframe), so
+     the blur genuinely samples the space behind the portal. The one thing
+     it must never sit under is an `overflow` ancestor, which becomes the
+     backdrop root and cuts the page off — the stack keeps its glass BESIDE
+     the scrollport for exactly that reason (see `menu.rs`). */
+  --_filter:blur(12px) saturate(1.5);
   --_ring:  0 0 0 1px var(--fabb-ring, rgba(56,24,42,.85));
   --_ringc: var(--fabb-ring, rgba(56,24,42,.85));
   --_ease:  cubic-bezier(0.25,0.46,0.45,0.94);
