@@ -14,22 +14,22 @@ view!:
     ui:  |          # browser
       <article><h2>{title}</h2></article>
     tui: |          # terminal
-      <row><text ink=bold>{title}</text><spacer/><text ink=dim>{status}</text></row>
+      <row spacing=1 width=fill>
+        <text weight=bold>{title}</text>
+        <text width=fill fg=muted align=right>{status}</text>
+      </row>
 ```
 
-Two things make this cheaper than it looks and one makes it more
-opinionated:
+Three things shape the design:
 
 - The **notation half needs no design at all** — `tui` is already a legal
   facet (§1.1), and `alice@todo!tui` already parses.
 - The **pipeline is already DOM-free** down to a `Vec<Node>` seam (§1.4).
-- The **visual language is already decided** — `stripes` (§2) fixes the
-  style vocabulary at five ink treatments with no color, which shrinks the
-  attribute surface dramatically and answers several open questions
-  outright.
+- The **layout and style algebra is the interesting design problem** (§6),
+  and the reference points — elm-ui's vocabulary, ink's use of a real
+  flexbox engine — point at a specific answer.
 
-What is left is the interaction model (§5), which is where all the risk
-is.
+The remaining risk is concentrated in the interaction model (§5).
 
 ## 1. How the existing pipeline is factored
 
@@ -133,96 +133,93 @@ That last property is load-bearing: **a rule written for a browser click
 already works for a terminal keypress**, provided the terminal host posts
 a transient of the same shape.
 
-## 2. `stripes` — the design system, and what it actually covers
+## 2. Reference points and what each one contributes
 
-Source: `tonk-labs/gooey@mvp:tui/showcase.html` (v0.2), with
-`tui/tonk-tui.md` (spec), `tui/README.md` (rationale), `tui/demo.sh`
-(living style guide) and `tui/tokens.json` (machine-readable tokens)
-alongside it. Only the showcase has been read for this plan; the other
-three should be read before implementation.
+### 2.1 elm-ui — the vocabulary
 
-### 2.1 The correction this forces
+`mdgriffith/elm-ui` is the primary reference for the *authoring surface*.
+Its thesis is that CSS layout is too large and too ambiguous, and that a
+small total vocabulary is better. What it actually provides (verified
+against `src/Element.elm` on `master`):
 
-**`stripes` is a CLI *output* design system, not a widget framework.** Its
-components are numbered against `tui/demo.sh` sections and are the
-surfaces of a non-interactive command: log lines, sync-state glyphs,
-prompts, progress, tables, blocks, `USAGE`/`COMMANDS` help, keybar. It
-addresses `tonk eval` / `tonk schema` / `--version` printing to stdout.
+- **Primitives**: `none`, `text`, `el` (single child), `row`, `column`,
+  `wrappedRow`, `paragraph`, `textColumn`, `table` / `indexedTable`.
+- **`Length`**: `px Int`, `shrink` (content-sized), `fill` (= `Fill 1`),
+  `fillPortion Int`, with `|> minimum n` / `|> maximum n` modifiers.
+  `el`, `row` and `column` all **default to `width shrink, height shrink`**.
+- **No margin, at all.** Only `padding` (outer edge → content:
+  `padding`/`paddingXY`/`paddingEach`) and `spacing` (between children:
+  `spacing`/`spacingXY`/`spaceEvenly`). The doc is explicit: *"There's no
+  concept of margin in elm-ui, instead we have padding and spacing."* This
+  kills margin collapse as a category of bug. On a `paragraph`, `spacing`
+  sets line spacing.
+- **Alignment is declared on the child, interpreted by the parent**:
+  `centerX`, `centerY`, `alignLeft/Right/Top/Bottom`. In a `row`, an
+  aligned child *pushes* the others. `row` defaults to children centered
+  on the cross axis; `column` defaults to top-left.
+- **Nearby elements**: `above`, `below`, `onRight`, `onLeft`, `inFront`,
+  `behindContent` — *"put this element below this other element, but don't
+  affect the layout when you do."* Overlays and dropdowns without absolute
+  positioning in the author's face.
+- **State-scoped styling**: `focused`, `mouseOver`, `mouseDown` as
+  `Decoration` attributes. No selector engine, no cascade — a state-keyed
+  attribute bundle on the element itself.
+- **`Element.Input` forces a `Label`** on every input (`labelAbove`,
+  `labelLeft`, …, and `labelHidden` still requires the text). Accessibility
+  is not optional.
+- **`explain`** draws debug borders around every element.
+- Style modules are orthogonal to layout: `Font` (color, size, weight
+  ladder, alignment, underline/strike/italic), `Background` (color,
+  gradient), `Border` (color, width, style, rounded).
 
-That is a *different renderer* from a `tui` view facet, which paints
-branch data into a full-screen alternate buffer. Conflating them would be
-a mistake. The right relationship:
+Nearly all of this maps onto a terminal better than it maps onto a
+browser, because a cell grid has no reflow subtleties, no margin
+collapse, and no baseline alignment to get wrong.
 
-- **`stripes` supplies the visual language** — ink treatments, glyphs,
-  motion timings, degradation rules — to both surfaces.
-- **`stripes` does not supply the widget vocabulary** for `tui` views,
-  because a view renders *user data*, not tool chrome. Its `08 · table`
-  and `09 · blocks` panes are the only components that transfer directly.
+### 2.2 ink / yoga — the engine, not the API
 
-So the showcase **pins the style budget and leaves the widget set open** —
-which is the good outcome, because the style budget is where an
-un-opinionated renderer would have sprawled.
+The interesting part of ink is that it does not hand-roll layout: it
+delegates to yoga, a real flexbox implementation, and supplies a
+measure function for text. That is the right shape and the wrong API —
+ink exposes raw flexbox props (`flexGrow`, `justifyContent`), which is
+exactly the ambiguity elm-ui exists to remove.
 
-Note also that `tonk-cli` today emits plain text with **no styling crate
-at all** (`output.rs` writes strings; the workspace has no
-`owo-colors`/`anstyle`/`crossterm`). Stripes is unimplemented on both
-surfaces. Whoever lands the ink primitives first should land them as a
-shared crate (§9), not inside either renderer.
+**Take the architecture from ink, the vocabulary from elm-ui**: elm-ui's
+surface compiles down to flexbox anyway. §6.3 picks the Rust engine.
 
-### 2.2 The laws, and what each one costs the renderer
+### 2.3 `stripes` — a theme, not a law
 
-| Law | Renderer consequence |
-| --- | --- |
-| **ink only** — no color codes exist; hierarchy is weight | The style attribute has **five values**, not a color space. Kills `fg`/`bg`/`focus-fg` entirely. |
-| **alerts blink, never color** — reverse wash on a 2.4 s calm cycle; interaction calms it; SGR blink forbidden | The renderer needs an **animation clock independent of data change** (§6.3). This is the single most-missed requirement. |
-| **frost is the surface** — washes make chips and selections; plate (full reverse) is the CTA | **Answers the focus-styling question outright**: focus = frost, primary/armed = plate. No focus-style attributes needed. |
-| **fixed cells** — chips never move or resize while visible; hard corners `┌┐`, never `╭╮` | Chips are `Constraint::Length`, never `Fill`. Rules out reflowing a keybar on resize. |
-| **the stripe is the brand** — horizontal bars (`▀`) carry identity | Progress is one stripe of the mark (bold fill / dim track). Never vertical. |
-| **lowercase chrome** — tool words lowercase, user words untouched | A **renderer rule**: vocabulary-owned labels lowercase; `{field}` interpolations pass through verbatim. Worth enforcing in the element set rather than trusting authors. |
+`tonk-labs/gooey@mvp:tui/showcase.html` (v0.2) is a CLI *output* design
+system: its components are numbered against `tui/demo.sh` and are the
+surfaces of a non-interactive command (log lines, sync glyphs, prompts,
+progress, tables, blocks, help, keybar), scoped in its own provenance line
+to "init · eval · schema · guide".
 
-### 2.3 The ink vocabulary — the whole style surface
+**It is a direction of interest, not a constraint on the renderer.** Its
+first law — "ink only, no color codes exist" — is a *theme* decision. A
+color-capable renderer can express a colorless theme; a colorless renderer
+can express nothing else. So: **build the color-capable system, ship
+stripes as the default theme** (§6.7).
 
-| Treatment | SGR | Role |
-| --- | --- | --- |
-| bold | `1` | heads, emphasis, the mark, alert text |
-| plain | — | body (terminal default foreground) |
-| dim | `2` | meta, tracks, hairlines, disabled |
-| frost | `2;7` | quiet chips, **selection / focus washes** |
-| plate | `7` | CTAs, alerts, **the selected option** |
+What stripes contributes regardless of palette, because these are
+renderer requirements rather than aesthetic ones:
 
-Owned surfaces: light `#34332b` on `#fbfaef`; dark `#e9e6d6` on `#21211b`.
-Type: terminal's own mono for content; IBM Plex Sans Condensed 600 for
-chrome tonk controls. Never italic, never underline (except links), never
-SGR blink.
+- **A motion budget**, which implies an animation clock independent of
+  data change: 2.4 s calm cycle, 8 × 300 ms spinner frames, ≤ 10 fps
+  progress repaint, 1.05 s cursor blink, "> 400 ms gets a spinner, > 3 s
+  gets a progress bar". §6.9.
+- **A degradation matrix**: `NO_COLOR`; no-dim → plain; non-UTF-8
+  (`▀`→`#`, `●◐○`→`*o.`, box→`+-|`); not-a-tty → no SGR at all; < 80 cols
+  → reduced chrome. §6.8. This generalizes into the capability ladder that
+  color needs anyway.
+- **Fixed cells** — chips never move or resize while visible. A real
+  layout constraint (`px`, never `fill`, for chip-like elements).
+- **`tui/tokens.json`** — machine-readable ink treatments, glyphs, spinner
+  frames, logo bitmaps. Consume it; do not transcribe it (§6.7).
 
-### 2.4 Motion budget
-
-- 2.4 s **calm cycle** — everything repeating breathes at this rate
-- spinner: 8 frames × 300 ms = one pass per calm cycle
-- progress repaints ≤ 10 fps
-- alert pulse: reverse wash 0→14 % over one calm cycle; interaction calms it
-- block cursor: 1.05 s hard blink (`steps`)
-- \> 400 ms gets a spinner; > 3 s gets a progress bar or log stream
-
-### 2.5 Degradation matrix
-
-| Condition | Behaviour |
-| --- | --- |
-| `NO_COLOR` | already satisfied — the system emits no color |
-| no dim support | dim → plain; frost chips → `[bracketed]` text |
-| non-UTF-8 | `▀`→`#` (tracks `.`) · `●◐○`→`*o.` · box→`+-|` · logo → bold `tonk cli` |
-| not a tty | no SGR, no spinner, no cursor writes; plain log lines |
-| < 80 cols | lockup instead of banner; bars shrink to 12 cells |
-
-This is a **renderer responsibility, not an author responsibility**, and
-it is unusually testable (§12).
-
-### 2.6 `tokens.json` is the source of truth
-
-`tui/tokens.json` carries ink treatments, glyphs, spinner frames and logo
-bitmaps machine-readably. **Consume it; do not retype it.** Either vendor
-it into the ink crate as a build-time asset or mirror it with a parity
-test. Hand-transcribed glyph tables drift.
+`tui/tonk-tui.md` (spec) and `tui/README.md` (rationale, including
+*rejected* directions and a decision checklist) have not been read and
+should be before the theme layer is written.
 
 ## 3. What transfers for free
 
@@ -235,21 +232,19 @@ test. Hand-transcribed glyph tables drift.
 | Reactor `branch.subscribe(ConceptQuery)` | native, no service worker |
 | Commands, transients, rules | host-independent; the reactor never sees the event |
 
-The `html5gum` tokenizer parses `<row><text ink=bold>{title}</text></row>`
+The `html5gum` tokenizer parses `<row spacing=1><text weight=bold>{title}</text></row>`
 today. The *authoring* story — write a template, get a plan, get a
 resolved tree — needs zero new code.
 
 ## 4. What has to be built
 
-1. An **interaction model** with no pointer and no focus manager (§5)
-2. **Terminal event → transient extraction** (§5.3)
-3. An **element vocabulary + layout + stripes paint** (§6)
+1. A **layout and style algebra**, and an engine under it (§6)
+2. An **interaction model** with no pointer and no focus manager (§5)
+3. **Terminal event → transient extraction** (§5.3)
 4. A **subscription seam** — `QueryBackend` is one-shot (§7)
 5. A **default `tui` facet** — the `tonk:_` analogue (§8)
 
-The component list is the *last* interesting problem, not the first.
-
-## 5. The interaction model — the real design surface
+## 5. The interaction model
 
 A browser supplies a pointer, hit-testing, a focus ring, tab order, text
 carets, scroll containers, and `:focus`/`:hover` styling. A terminal
@@ -264,12 +259,14 @@ supplies none of it.
 - **Activation**: `Enter` and `Space` on a focused element fire its
   `onclick`. Mapping activate→`onclick` is deliberate — it keeps browser
   commands reusable verbatim rather than forcing an `onactivate` twin.
-- **Focus styling is settled by law 3**: focused = **frost**, armed /
-  primary = **plate**. No `focus-*` attributes. A destructive key pulses
-  while armed (calm cycle) and never recolors.
+- **Focus styling** follows elm-ui's `focused` decoration: state-prefixed
+  attributes on the element itself (`focused-bg=`, `focused-weight=`), no
+  selector engine (§6.6). `mouseOver`/`mouseDown` become `hover-*` (mouse
+  terminals only) and `active-*` (armed).
 - **Mouse**: crossterm gives real clicks; a click also fires `onclick`,
   with `tui.event/row` / `tui.event/column` available.
-- **Scrolling**: a `<scroll>` container owns an offset and consumes
+- **Scrolling**: elm-ui has `scrollbars`/`scrollbarX`/`scrollbarY` and
+  `clip`. Same attributes; the container owns an offset and consumes
   `PageUp`/`PageDown`/wheel. Host state, not branch state (§5.2).
 
 ### 5.2 Widget-local state has nowhere to live
@@ -329,90 +326,219 @@ real teaching problem.
   **The TUI host should warn** when a command it fires declares a
   `dom.event.do/*` field.
 
-### 5.4 Affordance discovery: the keybar
+### 5.4 Labels, and affordance discovery
 
-Showcase component `11 · keybar` is the CLI's affordance surface: fixed
-cells of `plate`/`frost` chips (`↵ eval`, `tab branch`, `g guide`,
-`q quit`). A `tui` view needs the same, and there is a clean tie to the
-command layer:
+Steal elm-ui's `Element.Input` rule: **every input requires a label**, and
+hiding it still requires supplying the text. In a terminal a label is not
+only accessibility — it is what a generated keybar, a `--json` dump, and a
+non-tty render have to print.
 
-**Proposal — an element carrying `onkey=<command> key=g label=guide`
-contributes a keybar chip automatically.** The keybar is then generated
-from the bindings rather than hand-maintained beside them, and cannot drift
-from what the view actually handles. Law 4 (fixed cells) means chips are
-laid out at `Constraint::Length` and do not reflow while visible.
+Extend it to bindings: an element carrying `onkey=<command> key=g
+label=guide` **contributes a keybar chip automatically**. The keybar is
+then generated from the bindings rather than maintained beside them, and
+cannot drift from what the view actually handles. Stripes' "fixed cells"
+law applies: chips are `px`, never `fill`, so they do not reflow while
+visible.
 
-## 6. Element vocabulary, layout, and paint
+## 6. Layout and style: an elm-ui algebra over a flexbox engine
 
-### 6.1 Syntax
+This is the centre of the design.
 
-Keep HTML syntax. Non-negotiable: it buys the parser, the collector, the
-planner, `{field}`/`{this}`, and nested `<tonk-display>` for free.
+### 6.1 The shape of the answer
 
-### 6.2 Tag set
+**elm-ui for the authoring surface; a real flexbox engine underneath.**
+elm-ui's own implementation compiles to CSS flexbox, so this is not a
+compromise between the two references — it is what elm-ui already is, and
+what ink already does with yoga, with ink's raw-flexbox API replaced by
+elm-ui's smaller one.
 
-Recommend a **distinct terminal vocabulary** with unknown tags degrading to
-"block containing children" rather than erroring — and explicitly *not*
-chasing "one template serves both facets."
+### 6.2 The vocabulary, as template attributes
 
-The temptation to reuse `<div>`/`<span>` is template reuse, and it is a
-trap: terminal layout is a fixed cell grid with no reflow, no free
-overflow-scroll, and no inline-wrapping subtleties. A template satisfying
-both facets will be bad at both. The `tui` facet exists precisely so they
-can differ. Reuse the *syntax* and the *pipeline*, not the *template*.
-
-Two HTML names must be kept because the pipeline depends on them:
-
-- **`<tonk-display>`** — the composition and cross-concept-join primitive.
-  `<tonk-display entity={author} model=person view=label>` must work
-  identically, so `label` facets are shared between hosts (they are just
-  text — a fine thing to share).
-- **`<tonk-fallback>`** — the empty-state affordance, keyed on the host's
-  `data-state`.
-
-Provisional set, with showcase pane numbers where one transfers:
-
-| Group | Elements |
+| elm-ui | template |
 | --- | --- |
-| Layout | `<row>`, `<column>`, `<box>` (`┌─ title ─┐`, pane `09`), `<spacer>`, `<scroll>` |
-| Text | `<text ink=…>`, `<p>` (wrapping) |
-| Collections | `<list>`, `<table>` (bold-dim header + `───` rule, pane `08`) |
-| Blocks | `<block>` (`▌` gutter marker, pane `09`), `<log>` line with `[ok]`/`[··]`/`[--]`/plate `!!` status (pane `04`) |
-| Status | `<sigil>` (`●◐○`, pane `05`), `<spinner>` ("the run", pane `07`), `<progress>` (one stripe, pane `07`) |
-| Input | `<input>`, `<textarea>`, `<checkbox>`, `<select>`, `<form>`, `<prompt>` (pane `06`) |
-| Chrome | `<keybar>`/`<key>` (pane `11`), `<tabs>` |
-| Tonk | `<tonk-display>`, `<tonk-fallback>` |
+| `el`, `row`, `column`, `wrappedRow` | `<el>`, `<row>`, `<column>`, `<wrapped-row>` |
+| `paragraph`, `textColumn`, `text`, `none` | `<paragraph>`, `<text-column>`, text nodes, absent |
+| `table`, `indexedTable` | `<table>` with the `{this}` repeat root as the row |
+| `width fill` / `px 20` / `shrink` / `fillPortion 2` | `width=fill` / `width=20` / `width=shrink` / `width=fill:2` |
+| `|> minimum n`, `|> maximum n` | `min-width=`, `max-width=` |
+| `padding`, `paddingXY`, `paddingEach` | `pad=`, `pad-x=`/`pad-y=`, `pad-top=`… |
+| `spacing`, `spacingXY`, `spaceEvenly` | `spacing=`, `spacing-x=`/`spacing-y=`, `space-evenly` |
+| `centerX`, `alignRight`, … | `align=center-x`, `align=right`, … (on the child) |
+| `above`, `below`, `onRight`, `inFront`, `behindContent` | `<above>`, `<below>`, `<on-right>`, `<in-front>`, `<behind>` as marked children |
+| `clip`, `scrollbars`, `scrollbarY` | `clip`, `scroll`, `scroll-y` |
+| `focused`, `mouseOver`, `mouseDown` | `focused-*`, `hover-*`, `active-*` prefixes (§6.6) |
+| `Font.color`, `Background.color`, `Border.*` | `fg=`, `bg=`, `border=`, `border-x=`… (§6.5) |
+| `explain` | `tonk tui --explain` (§6.10) |
 
-### 6.3 Style, layout, and the clock
+Keep elm-ui's defaults: `el`/`row`/`column` default to `shrink` on both
+axes; `row` centres children on the cross axis; `column` is top-left.
+Keep the **no-margin rule** verbatim — `pad` and `spacing` only.
 
-**Style is one attribute.** `ink=bold|plain|dim|frost|plate`. That is the
-entire style surface (§2.3). No `fg`, no `bg`, no `focus-*`. `<style>`
-blocks are ignored — the collector already skips them as raw-text
-elements, so this costs nothing, and a CSS subset would need a selector
-engine and a cascade for a surface whose styling need is five values.
+Two HTML names must survive because the pipeline depends on them:
+**`<tonk-display>`** (composition and cross-concept joins — so `label`
+facets are shared between hosts) and **`<tonk-fallback>`** (empty state,
+keyed on the host's `data-state`).
 
-**Layout: expose ratatui's constraint vocabulary directly.**
-`Constraint::{Length, Percentage, Min, Max, Fill}` is already the right
-model; do not invent one. Law 4 means chips and cells are `Length`.
+Unknown tags degrade to `<el>`, not an error.
+
+### 6.3 The engine: three options
+
+- **(a) `taffy`** (`0.14.0`, updated 2026-08; used by Zed, Dioxus, Bevy).
+  Full flexbox + grid, `Position::Absolute`, min/max, flex-wrap, and a
+  **leaf measure-function hook** — the seam ink uses yoga for.
+- **(b) ratatui's own `Layout`.** Already integer and cell-native, and
+  closer to elm-ui than it first appears: `Constraint::Length` = `px`,
+  `Fill(n)` = `fillPortion n`, `Min`/`Max` = the modifiers,
+  `Layout::spacing` = `spacing`, `Flex::{Start,Center,SpaceBetween,…}` =
+  alignment.
+- **(c) hand-rolled.**
+
+**Recommend (a).** Ratatui's `Layout` solves one axis of one split and
+does **no content-based sizing** — but `shrink` is elm-ui's *default* on
+`el`/`row`/`column`, so content sizing is the base case, not an edge case.
+Ratatui also gives no flex-wrap (`wrappedRow`), no absolute positioning
+(`inFront`/`behindContent`), and no width-dependent height (`paragraph`).
+taffy gives all four. (c) is re-deriving taffy badly.
+
+The cost of (a) is a translation layer from elm-ui semantics to taffy
+style structs, and it is a real one — elm-ui's alignment-pushes-siblings
+behaviour in a `row` is not a plain `align-self`.
+
+### 6.4 Where a terminal diverges from both references
+
+These are the parts neither elm-ui nor ink can be copied on.
+
+- **Cells are integers.** taffy computes in `f32` and has a rounding pass
+  that rounds **cumulative absolute positions**, not individual sizes,
+  precisely so adjacent boxes never gap or overlap by one unit. Treat one
+  cell as one "pixel" and keep that pass on. Rounding must also be
+  *stable* across frames, or a `fill:1 / fill:1 / fill:1` split of 80
+  columns will shimmer between 26/27/27 and 27/26/27 on unrelated
+  redraws.
+- **Cells are not square.** A terminal cell is roughly 1 : 2. elm-ui's
+  uniform `padding 10` is simply wrong here: `pad=1` is a much larger
+  vertical step than horizontal. Recommend making `pad-x` / `pad-y`
+  (elm-ui's `paddingXY`) the *idiomatic* form and either defaulting `pad=n`
+  to a 2 : 1 x : y ratio or refusing the uniform form outright. This is a
+  small decision with a large effect on whether authored layouts look
+  deliberate.
+- **Text measurement is the hard part, and it is ours.** taffy delegates
+  leaf measurement to us. Terminal width is not character count: it is
+  grapheme clusters scored by `unicode-width` — East Asian wide characters
+  are 2 cells, combining marks 0, and emoji/ZWJ sequences need cluster
+  segmentation first. `unicode-width` is **already a tonk workspace
+  dependency** (`tonk-cli/src/listing.rs`), so half the problem is
+  acknowledged; `unicode-segmentation` is the missing half. A naive
+  `str::len()` or `chars().count()` measurer will be wrong for real data
+  and the bug will look like a layout bug.
+- **Wrapping makes height depend on width.** `<paragraph>` needs
+  line-breaking (`unicode-linebreak`, or `textwrap` which already handles
+  the width scoring) inside the measure function. taffy's measure hook
+  receives available space precisely for this; get it right once, in the
+  measurer, rather than in every widget.
+- **Borders cost a whole cell.** `Border.width 1` in a browser is
+  sub-character; in a terminal it consumes a full row/column. Border width
+  is 0 or 1 and participates in layout as padding.
+
+### 6.5 Color and emphasis are two orthogonal axes
+
+Keep them separate, because SGR keeps them separate.
+
+- **Emphasis** (`weight=bold|normal|dim`, `underline`, `strike`,
+  `reverse`) are SGR attributes, present on every terminal, independent of
+  any palette.
+- **Color** (`fg=`, `bg=`, `border-color=`) is capability-tiered.
+
+A **capability ladder** with an explicit downgrade at each rung, exactly
+parallel to the glyph degradation of §6.8:
 
 ```
-<column gap=1 pad=1>
-  <row height=1><text ink=bold>{title}</text><spacer/><text ink=dim>{count}</text></row>
-  <scroll grow=1>
-    <list subject={this}>
-      <row><text>{title}</text></row>
-    </list>
-  </scroll>
-  <keybar/>
-</column>
+truecolor (24-bit)  →  256 indexed  →  16 ANSI (terminal theme)  →  none
 ```
 
-**The clock is a first-class renderer concern.** Law 2 and §2.4 mean the
-frame loop is driven by `max(subscription events, animation tick)` — a
-2.4 s calm cycle with 300 ms spinner sub-frames and a 1.05 s cursor blink,
-repainting at ≤ 10 fps. An `alert` or `pulse` attribute opts an element
-into the wash; hover/interaction calms it. **This is the requirement most
-easily missed when scoping "just render the tree."**
+Templates should be able to say color two ways:
+
+1. **Semantic tokens** — `fg=muted`, `bg=surface`, `fg=danger` — resolved
+   through the active theme (§6.7). Preferred, because the terminal's own
+   theme has opinions and a token can carry a hand-picked value for *each*
+   rung rather than a nearest-neighbour approximation.
+2. **Literals** — `fg=#8a7f6d` — the escape hatch, downgraded by
+   nearest-neighbour when the terminal cannot do truecolor.
+
+Detection from `COLORTERM` / `TERM` / terminfo, overridable by flag, with
+`NO_COLOR` forcing the bottom rung. Ratatui's `Color` enum already spans
+`Rgb`, `Indexed` and the 16 named, so the whole ladder is expressible in
+the backend.
+
+**Design point worth arguing about:** at the 16-ANSI rung the terminal's
+own theme supplies the actual colors, so a token like `danger` renders as
+whatever the user's theme calls red. That is usually *better* than a
+literal, and it is the reason to push authors toward tokens rather than
+hex.
+
+### 6.6 State-scoped styling without a selector engine
+
+elm-ui's `focused` / `mouseOver` / `mouseDown` are attribute bundles on
+the element, not selectors. Adopt that directly as attribute prefixes:
+
+```html
+<el pad-x=1 bg=surface focused-bg=accent focused-fg=on-accent onclick=open data-todo={this}>
+  {title}
+</el>
+```
+
+No cascade, no specificity, no `<style>` block (the collector already
+skips `<style>` as a raw-text element, so ignoring it costs nothing). The
+state set is small and closed: `focused-`, `hover-`, `active-`, and
+`disabled-`.
+
+### 6.7 Themes, and `tokens.json`
+
+A **theme** resolves semantic tokens to per-rung values, and supplies the
+glyph set and motion timings. Ship at least two:
+
+- **`stripes`** (default): tokens resolve to no color at all — emphasis
+  only (bold / plain / dim / reverse) — which is exactly §2.3's "ink only"
+  expressed as a theme rather than enforced as a law. Glyphs, spinner
+  frames and motion timings come from `tui/tokens.json`; **vendor that
+  file or mirror it with a parity test**, do not transcribe it.
+- **`terminal`**: tokens resolve to the 16 ANSI names, deferring entirely
+  to the user's own terminal theme.
+
+A space could eventually assert its own theme as branch data, which is the
+natural tonk-shaped answer, but that is not needed to ship.
+
+### 6.8 Capability degradation
+
+One matrix covering color, glyphs and motion:
+
+| Condition | Behaviour |
+| --- | --- |
+| `NO_COLOR` | bottom color rung; emphasis only |
+| no truecolor | tokens take their 256 (then 16) value; literals nearest-neighbour |
+| no dim | `dim` → plain; washed chips → `[bracketed]` |
+| non-UTF-8 | `▀`→`#`, tracks `.`; `●◐○`→`*o.`; box drawing→`+-\|` |
+| not a tty | no SGR, no spinner, no cursor writes; plain line output |
+| < 80 cols | reduced chrome (lockup instead of banner) |
+
+This is a **renderer responsibility, not an author responsibility**, and
+it is unusually testable (§12).
+
+### 6.9 The clock
+
+The motion budget of §2.3 means the frame loop is driven by
+`max(subscription events, animation tick)` — a 2.4 s calm cycle with
+300 ms spinner sub-frames and a 1.05 s cursor blink, repainting at
+≤ 10 fps, with `> 400 ms` work getting a spinner and `> 3 s` a progress
+bar. **This is the requirement most easily lost when scoping the work as
+"just render the tree".**
+
+### 6.10 `explain`
+
+elm-ui's `explain` draws a debug border around every element. A template
+language with no devtools needs this more than elm-ui does: `tonk tui
+--explain` should outline every box and label it with its resolved
+`Length`s. Cheap, and the difference between debuggable and not.
 
 ## 7. The subscription seam
 
@@ -457,9 +583,9 @@ existing space.
 The browser solves this with `view!: { this: tonk:_, show: { directory: … } }`
 — a wildcard-model fallback rendering any model's instances in a carousel
 of nested single-entity displays. **The TUI needs the same**: a `tonk:_`
-`tui` facet — pane `08`'s table is the obvious shape, one row per
-instance, each cell a nested `<tonk-display view=label>` — plus the
-notation fallback for single entities.
+`tui` facet — a `<table>` with one row per instance, each cell a nested
+`<tonk-display view=label>` — plus the notation fallback for single
+entities.
 
 That gives every space a usable terminal view with zero authoring and
 makes a hand-written `tui` facet an upgrade rather than a prerequisite.
@@ -468,78 +594,88 @@ first interactive milestone, not last.
 
 ## 9. Where the code lives
 
-- **`rust/tonk-ink`** (new, native-only): the stripes primitives — the
-  five ink treatments, glyph set, spinner frames, calm-cycle clock, and
-  the degradation matrix (§2.5). Sourced from `tui/tokens.json` (§2.6).
-  **Shared by the TUI renderer and the CLI's own output**, so `tonk eval`
-  and a `tui` view cannot drift. No `ratatui` dependency.
-- **`rust/tonk-tui`** (new, native-only): element vocabulary, layout,
-  paint, focus model, terminal-event → transient extraction. Depends on
-  `tonk-template`, `tonk-render` (parse/tree/collect/`render_nodes`),
-  `tonk-schema`, `tonk-ink`, `ratatui`, `crossterm`.
+- **`rust/tonk-layout`** (new, native-only): the elm-ui algebra over
+  taffy — attribute parsing to `Length`/`pad`/`spacing`/alignment, the
+  terminal text measurer (grapheme clusters × `unicode-width`, with
+  line-breaking for `<paragraph>`), and the integer-cell rounding
+  discipline. Depends on `taffy`, `unicode-width`,
+  `unicode-segmentation`. **No `ratatui`, no `tonk-*`** — this is a
+  standalone, heavily unit-testable crate, and keeping it free of both
+  is what makes §12's layout tests cheap.
+- **`rust/tonk-theme`** (new, native-only): semantic tokens, the color
+  capability ladder, glyph sets, motion timings; `stripes` and `terminal`
+  themes; sourced from `tui/tokens.json`. **Shared with `tonk-cli`'s own
+  output**, which today emits plain text with no styling crate in the
+  workspace at all — so `tonk eval` and a `tui` view cannot drift.
+- **`rust/tonk-tui`** (new, native-only): element vocabulary, paint, focus
+  model, the clock, terminal-event → transient extraction. Depends on
+  `tonk-layout`, `tonk-theme`, `tonk-template`, `tonk-render`,
+  `tonk-schema`, `ratatui`, `crossterm`.
 - **`rust/tonk-render`**: the orchestration split from §7.1. No new deps.
 - **`rust/tonk-cli`**: `tonk tui [route]` in `src/tui.rs`, implementing
   `SubscribeBackend` over `TonkSite`'s reactor (mirroring the existing
-  `QueryBackend for TonkSite` impl in `src/render.rs`). Separately, and
-  independently schedulable: `output.rs` adopts `tonk-ink`.
+  `QueryBackend for TonkSite` impl in `src/render.rs`). Separately and
+  independently schedulable: `output.rs` adopts `tonk-theme`.
 
 Do **not** pre-emptively split `tonk-render` into a tree crate and an HTML
 crate. `tonk-tui` depending on `tonk-render` and never calling
 `serialize_nodes` is fine until it isn't.
 
-`ratatui` is already a workspace dependency in the sibling `dialog-db`
-workspace (`dialog-diagnose`), so the stack has precedent.
+`ratatui 0.29` is already a workspace dependency in the sibling
+`dialog-db` workspace (`dialog-diagnose`), so the stack has precedent.
 
-## 10. Ratatui vs. an ink-style reconciler — and how much of ratatui
+## 10. Immediate mode, and how much of ratatui to take
 
-Ink's value proposition is a reconciler over a JS component tree. Tonk has
-no component tree in the host: templates are branch data, plans rebuild
-per frame, retained state lives in the reactor. **A reconciler solves a
-problem this architecture does not have.**
+Ink's reconciler exists because ink owns a JS component tree. Tonk has no
+component tree in the host: templates are branch data, plans rebuild per
+frame, retained state lives in the reactor. **A reconciler solves a
+problem this architecture does not have** — which is why §2.2 takes ink's
+*engine* choice and not its runtime.
 
-**Recommend immediate-mode**: rebuild the widget tree from the resolved
+**Recommend immediate mode**: rebuild the layout tree from the resolved
 `Vec<Node>` each frame. Data arrives at subscription cadence, and the
 browser renderer's incremental DOM diffing exists because the DOM is
-expensive to rebuild — a cell buffer is not.
+expensive to rebuild — a taffy tree over a cell buffer is not. If
+profiling later says otherwise, taffy supports partial relayout via dirty
+marking, so the escape hatch exists.
 
-**But take less of ratatui than the default.** `ratatui::widgets`
-(`Gauge`, `Table`, `Block`, `Tabs`) carry their own aesthetics — colored
-gauges, optional rounded borders, its own emphasis conventions — all of
-which stripes contradicts (§2.2). Fighting a widget library's defaults to
-reach a monochrome fixed-cell design is more work than painting it.
-
-Use ratatui as a **layout solver and cell buffer** (`Layout`,
-`Constraint`, `Buffer`, `Rect`, the crossterm backend) and paint the
-stripes primitives in `tonk-ink` directly. Adopt individual `widgets` only
-where one happens to already match — `Paragraph`'s wrapping is the likely
-candidate.
+**Take ratatui as backend and buffer, not as a widget set.** With
+`tonk-layout` owning geometry, ratatui's role is `Buffer`, `Rect`, `Span`
+styling and the crossterm backend. Its `Layout` is superseded by §6.3(a),
+and its `widgets` carry their own aesthetics and their own layout
+assumptions. Adopt individual widgets only where one already matches —
+`Paragraph`'s wrapping is the likely candidate, and only if its width
+scoring agrees with our measurer.
 
 The cost of immediate mode is §5.2: no per-widget instance state. Real,
 and the reason §5.2 needs an answer before §6 gets interesting.
 
 ## 11. Milestones
 
-- **M0 — static frame.** `tonk tui <route>` resolves a route, renders one
-  frame, exits on `q`. Vocabulary: `<row>`, `<column>`, `<box>`, `<text>`,
-  `<list>`, `<table>`, `<spacer>`. Ink treatments from `tonk-ink`. No
-  events, no focus, no clock. Proves parse → plan → `render_nodes` →
-  cell buffer end to end.
-- **M1 — live.** `SubscribeBackend` over the reactor; redraw on frame
+- **M0 — geometry.** `tonk-layout` standalone: attributes → taffy →
+  integer cell rects, with the terminal text measurer. No tonk
+  dependencies, no rendering. This is where the design is proven or found
+  wrong, and it is testable without a terminal at all.
+- **M1 — static frame.** `tonk tui <route>` resolves a route and paints
+  one frame; `q` exits. `<row>`, `<column>`, `<el>`, `<text>`,
+  `<paragraph>`, `<table>`. `stripes` theme. `--explain`. Proves
+  parse → plan → `render_nodes` → layout → cell buffer.
+- **M2 — live.** `SubscribeBackend` over the reactor; redraw on frame
   change. Empty/loading/error states mapped onto the existing `State`
   enum. The `tonk:_` `tui` fallback from §8.
-- **M2 — activation.** Focus ring (frost), tab traversal, `Enter`/`Space`
-  → `onclick` → transient → transact, generated keybar (§5.4). Browser
-  rules start firing from a terminal.
-- **M3 — motion + input.** The calm-cycle clock, `<spinner>`,
-  `<progress>`, alert pulse, cursor blink. `<input>`, `<textarea>`,
-  `<checkbox>`, `<select>`, `<form>`; `onchange`/`onsubmit`; host-side
-  widget state per §5.2(a).
-- **M4 — chrome + composition.** `<scroll>`, `<tabs>`, mouse, nested
-  `<tonk-display>`, `<tonk-fallback>`, full degradation matrix.
+- **M3 — activation.** Focus ring, tab traversal, `focused-*` decorations,
+  `Enter`/`Space` → `onclick` → transient → transact, generated keybar
+  (§5.4). Browser rules start firing from a terminal.
+- **M4 — color and motion.** The capability ladder (§6.5, §6.8), the
+  `terminal` theme, the clock (§6.9), spinner and progress.
+- **M5 — input and composition.** `<input>`, `<textarea>`, `<checkbox>`,
+  `<select>`, `<form>` with required labels; `onchange`/`onsubmit`;
+  host-side widget state per §5.2(a); `<scroll>`, nearby elements, mouse,
+  nested `<tonk-display>`, `<tonk-fallback>`.
 
-`tonk-ink` + `output.rs` adoption is independent of all of these and can
-land first — it makes the CLI look like the design system regardless of
-whether the view renderer ships.
+`tonk-theme` + `output.rs` adoption is independent of all of these and can
+land first — it makes the CLI look like the design system whether or not
+the view renderer ships.
 
 ## 12. Testing
 
@@ -547,18 +683,25 @@ The repo already treats browser/headless parity as first-class
 (`plan/view-anchor-render-parity.md`). A third renderer makes that
 three-way, but only for the shared half — the planner.
 
+- **Layout unit tests** (`tonk-layout`, no terminal): a tree of attributes
+  in, integer rects out. Cover `shrink` chains, `fill:n` splits that do
+  not divide evenly, min/max clamping, wrapping, and the stability
+  property — the same input must give the same rects on every frame.
+- **Measurement tests**: CJK (2 cells), combining marks (0), ZWJ emoji
+  sequences, and mixed runs. This is where a naive implementation breaks
+  on real data.
 - **Plan parity**: assert `tonk-tui` and `tonk-render` produce identical
   `BindingPlan`s for the same template. Free, since they share the
   collector.
 - **Paint snapshots**: ratatui's `TestBackend` renders to a fixed-size cell
   buffer; snapshot it. The TUI analogue of the existing HTML string
   assertions.
-- **Degradation snapshots**: the §2.5 matrix is unusually testable —
-  the same view under `NO_COLOR` / no-dim / non-UTF-8 / not-a-tty /
-  < 80 cols is five snapshots against one template. Worth wiring in M0,
-  before there is much to regress.
-- **Token parity**: assert `tonk-ink`'s tables match `tui/tokens.json`, so
-  a design-system revision fails a test rather than drifting silently.
+- **Capability snapshots**: the §6.8 matrix is unusually testable — one
+  template under `NO_COLOR` / no-truecolor / no-dim / non-UTF-8 / not-a-tty
+  / < 80 cols is six snapshots. Worth wiring early, before there is much
+  to regress.
+- **Token parity**: assert `tonk-theme` matches `tui/tokens.json`, so a
+  design-system revision fails a test rather than drifting silently.
 - **Command parity**: assert the transient a terminal activation posts is
   byte-identical to the one a browser click posts for the same command
   descriptor and the same `data-*`. This is the claim §5.3 rests on; test
@@ -566,27 +709,30 @@ three-way, but only for the shared half — the planner.
 
 ## 13. Open questions
 
-1. **`tui/tonk-tui.md`, `tui/README.md`, `tui/tokens.json`** have not been
-   read — only `showcase.html`. The spec and the rationale (which records
-   *rejected* directions and a checklist for new decisions) should be read
-   before §6 is treated as settled, and `tokens.json` before `tonk-ink` is
-   written.
-2. **Is the terminal a peer surface for every space, or a TUI-first
+1. **Is the terminal a peer surface for every space, or a TUI-first
    authoring/inspection tool?** §8's answer changes completely. If a peer
-   surface, the `tonk:_` fallback is load-bearing and M1-critical. If an
-   inspection tool, a small hand-authored set of `tui` facets on the
-   standard library models may be enough and §8 shrinks to nothing.
-3. **Does `stripes` intend to cover data views at all, or only tool
-   chrome?** The showcase's provenance line scopes it to
-   "init · eval · schema · guide". A `tui` view painting user data is
-   arguably outside its remit, and §6.2's vocabulary is an extension of the
-   system rather than an application of it. Worth confirming with whoever
-   owns `tui/README.md`'s decision checklist before extending it.
-4. **Does `tui` want sub-facets?** A terminal has modes a browser does not
+   surface, the `tonk:_` fallback is load-bearing and M2-critical. If an
+   inspection tool, a small hand-authored set of `tui` facets may be
+   enough and §8 shrinks to nothing.
+2. **Non-square cells: does `pad=n` mean n cells, or n vertical and 2n
+   horizontal?** (§6.4) A small decision with a large effect on whether
+   authored layouts look deliberate. Worth deciding by building both and
+   looking, not by reasoning.
+3. **How far does elm-ui's alignment model survive translation to taffy?**
+   In elm-ui a `row` child with `alignRight` *pushes* its siblings, which
+   is not plain `align-self`. Either it lowers to a `justify-content`
+   variant per aligned-child pattern, or the model is simplified. This is
+   the most likely place the elm-ui-over-flexbox mapping leaks.
+4. **`tui/tonk-tui.md` and `tui/README.md`** have not been read — only
+   `showcase.html`. The README records *rejected* directions and a
+   decision checklist; it is the document that would say whether a
+   color-capable renderer contradicts a decision already made
+   deliberately.
+5. **Does `tui` want sub-facets?** A terminal has modes a browser does not
    — a compact status line vs. a full pane. `show: { tui: …, tui-line: … }`
    is free in the schema; whether it is a good idea is a question about how
    many facets an author can hold in their head.
-5. **Does the analyzer need to know about `tui`?** It validates
+6. **Does the analyzer need to know about `tui`?** It validates
    `on<event>` targets against transient descriptors today. If TUI-only
    events (`onkey`) exist it needs the vocabulary — or it needs to stop
    caring which events are legal.
