@@ -1,0 +1,5 @@
+[
+  { "this": "id:1", "fields": { "dom.host/model": "todo" } },
+  { "this": "id:2", "fields": { "dom.host/model": "todo" } },
+  { "this": "id:3", "fields": { "dom.host/model": "todo" } }
+]

@@ -1,0 +1,32 @@
+<!--
+  The `tonk:_` wildcard `tui-directory` facet: what any model's
+  instance set looks like in a terminal when the model has authored no
+  facet of its own. The browser's equivalent is the seeded carousel in
+  core.yaml; this is the same idea with a terminal's shape.
+
+  In a real branch each row nests
+  `<tonk-display entity={this} model={dom.host/model} view=label>` so
+  the row shows the instance's own label rather than its URI. This
+  proof of concept has no nested resolution, so it prints `{this}`.
+-->
+<column width=fill height=fill pad-x=2 pad-y=1 spacing-y=1>
+
+  <row width=fill>
+    <text weight=bold>{dom.host/model}</text>
+    <text align=right fg=muted>directory</text>
+  </row>
+
+  <box width=fill height=fill>
+    <column width=fill pad-x=1>
+      <row width=fill subject={this} spacing-x=2>
+        <text fg=muted>{this}</text>
+      </row>
+    </column>
+  </box>
+
+  <keybar width=fill>
+    <key>↵ open</key>
+    <key align=right>q quit</key>
+  </keybar>
+
+</column>

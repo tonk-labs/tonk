@@ -26,28 +26,18 @@ pub use tonk_template::resolve;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod template;
 
-// `notation_tokens` and `notation_format` are the tokenizer and
-// Conclusion-to-source formatter driving the wasm-only `notation`
-// element and `<tonk-display>`'s carousel inspector slide. They are
-// target-independent so their tests run under `cargo test`, but
-// their non-test consumers live behind the wasm cfg — gate them so a
-// plain `cargo build` for the host doesn't flag every internal
-// helper dead.
-//
 // `fold` (the multi-row → single-conclusion collapser for
 // cardinality-many fields) moved to the shared `tonk_template` crate;
 // re-export it so `crate::fold::*` paths keep resolving.
 pub use tonk_template::fold;
-/// Conclusion-to-source notation formatter. `format` turns an
-/// entity (`this` URI + projected `fields`) into a `head!:`
-/// assertion document — the text `<tonk-notation>` renders.
-/// Public so `tonk-ui` can render evaluate results in the same
-/// notation the inspector uses. Pure `std` + `serde_json`, so it
-/// is target-independent — not gated to wasm like the
-/// DOM-touching modules around it.
-pub mod notation_format;
+// The Conclusion-to-source formatter and the highlighter both moved
+// to `tonk-notation`, which owns the syntax tree they walk and is
+// native-clean — so a terminal renderer can reach them without
+// depending on this wasm-oriented crate. Re-exported under their old
+// names so `crate::notation_format::…` paths keep resolving.
+pub use tonk_notation::format as notation_format;
 #[cfg(any(target_arch = "wasm32", test))]
-mod notation_tokens;
+use tonk_notation::highlight as notation_tokens;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod blob_url;

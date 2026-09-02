@@ -467,12 +467,12 @@ primary author, in the core of our renderer.
 
 **Prefer taffy 0.14**, because `shrink` is the base case rather than an
 edge case and flex-wrap / absolute positioning / width-dependent height
-are all needed. But this decision is **downstream of §13.1**: if the
+are all needed. But this decision is **downstream of §14.1**: if the
 terminal is an inspection tool with fixed chrome rather than a peer
 surface for every space, ratatui's `Layout` is entirely adequate and taffy
 is over-engineering.
 
-A contained de-risking path, if §13.1 is not yet settled: build
+A contained de-risking path, if §14.1 is not yet settled: build
 `tonk-layout` against ratatui's `Layout` plus our own measure pass, keep
 the engine behind that crate's boundary, and swap in taffy only if
 `shrink`, wrapping or overlays prove load-bearing. `tonk-layout` existing
@@ -795,7 +795,271 @@ three-way, but only for the shared half — the planner.
   descriptor and the same `data-*`. This is the claim §5.3 rests on; test
   it rather than assume it.
 
-## 13. Open questions
+## 13. What a view definition actually looks like
+
+### 14.1 A model's own `tui` facet
+
+An ordinary `view!:` assertion with one more key. Nothing about the
+schema changes — `show` is `{[symbol]: text}`, so this is legal notation
+today:
+
+```yaml
+view!:
+  this: todo
+  show:
+    ui: |
+      <article class="todo">
+        <h2>{title}</h2>
+        <p class="meta">{status} · {owner}</p>
+      </article>
+
+    tui: |
+      <row width=fill spacing-x=1>
+        <text fg=muted>{status}</text>
+        <text>{title}</text>
+        <text align=right fg=muted>{owner}</text>
+      </row>
+
+    tui-directory: |
+      <column width=fill height=fill pad-x=2 pad-y=1 spacing-y=1>
+        <row width=fill>
+          <text weight=bold>todo</text>
+          <text align=right fg=muted>{dom.host/count} open</text>
+        </row>
+        <box width=fill height=fill>
+          <column width=fill pad-x=1>
+            <row width=fill subject={this} spacing-x=1>
+              <text fg=muted>{status}</text>
+              <text>{title}</text>
+              <text align=right fg=muted>{owner}</text>
+            </row>
+          </column>
+        </box>
+        <keybar width=fill>
+          <key>↵ open</key>
+          <key>n new</key>
+          <key align=right>q quit</key>
+        </keybar>
+      </column>
+
+    label: |
+      {title}
+```
+
+Points worth reading off it:
+
+- **`label` is shared.** A label facet is plain text with no markup, so
+  both hosts use the same entry. It is the one facet that should *not*
+  get a `tui` twin, and it is what makes cross-concept joins
+  (`<tonk-display entity={author} model=person view=label>`) work
+  identically in a terminal.
+- **`tui` and `tui-directory` mirror `ui` and `directory` exactly** —
+  the same two-facet split, one pair per host (§13.3).
+- **The `{this}` repeat root is the same construct.** `subject={this}`
+  on the `<row>` makes it the repeat root: the header, the box and the
+  keybar are chrome and render once, the row clones per conclusion.
+  Verified end to end in `rust/tonk-tui-poc`.
+- **The two templates are not the same shape, and should not be.** The
+  HTML one leans on a stylesheet and reflow; the terminal one declares
+  its own geometry. Sharing the *pipeline* is the win; sharing the
+  *template* was never the goal (§6.2).
+
+### 14.2 The `tonk:_` wildcard facet
+
+`core.yaml` seeds a wildcard-model view whose `directory` facet renders
+any model's instances as a carousel of nested single-entity displays.
+The terminal wants the same entry, in its own vocabulary:
+
+```yaml
+view!:
+  this: tonk:_
+  show:
+    tui-directory: |
+      <column width=fill height=fill pad-x=2 pad-y=1 spacing-y=1>
+        <row width=fill>
+          <text weight=bold>{dom.host/model}</text>
+          <text align=right fg=muted>directory</text>
+        </row>
+        <box width=fill height=fill>
+          <column width=fill pad-x=1>
+            <row width=fill subject={this}>
+              <tonk-display entity={this} model={dom.host/model} view=label />
+            </row>
+          </column>
+        </box>
+      </column>
+```
+
+The nested `<tonk-display …  view=label>` is doing the same job as in
+the browser's carousel: a wildcard view cannot know the model's field
+names, so it renders each instance through *that model's* `label`
+facet — which, per §13.1, is shared with the browser. `{dom.host/model}`
+threads the model down from the host, since an instance carries no
+pointer to its own model.
+
+This is what makes the feature real rather than a demo: a space with no
+hand-authored `tui` facet still gets a usable terminal view, and
+authoring one is an upgrade rather than a prerequisite (§8).
+
+### 14.3 Facet resolution
+
+The existing rule is "explicit facet from the route, else `ui` when an
+entity is named, else `directory`". The terminal adds one parallel pair
+and changes nothing else:
+
+| | single entity | instance set |
+| --- | --- | --- |
+| HTML | `ui` | `directory` |
+| terminal | `tui` | `tui-directory` |
+
+Resolution order in terminal mode, for a model with no explicit facet in
+the route:
+
+1. the model's own `tui` / `tui-directory`
+2. `tonk:_`'s `tui-directory` (§13.2)
+3. the notation fallback (§13.4)
+
+An explicit `!facet` in the route always wins, so
+`tonk render alice@todo!label --as tui` renders the shared `label`
+entry into cells. Note the HTML facets are **not** in the fallback
+chain: painting an `ui` template into a terminal would produce something
+worse than the notation dump, not better.
+
+### 14.4 The notation fallback is not a template
+
+Worth separating, because `tonk:_` and the notation dump are two
+different mechanisms and only one of them is a view definition.
+
+`tonk:_` carries a *template*. But when a model has no view at all, the
+browser mounts something that is not a template:
+`tonk-display/src/element.rs`'s `mount_notation_fallback` formats the
+conclusion back into `head!:` source and highlights it. That is
+host-side Rust in the browser, and it is host-side Rust in a terminal
+too.
+
+**This is not CodeMirror.** The editor element (`tonk-code`) highlights
+through a Lezer `dialog-yaml` grammar, which is a browser-only pack. The
+read-only display path never had Lezer available, so it grew its own
+tokenizer — and being Lezer-free is exactly what makes it portable. The
+browser maps each `Decoration` onto a CSS class; a terminal maps the
+same enum onto a foreground token plus SGR emphasis:
+
+| `Decoration` | browser class | terminal |
+| --- | --- | --- |
+| `Effect` (`todo!`) | `tonk-cm-effect` | bold |
+| `Key` (`title:`) | `tonk-cm-key` | `fg=muted` |
+| `Name` (`&anchor`) | `tonk-cm-name` | `fg=accent` + bold |
+| `NameSigil` (`&`) | `tonk-cm-name-sigil` | `fg=muted` + dim |
+| `Entity` (`id:1`) | `tonk-cm-entity` | `fg=muted` + dim |
+| `Variable` (`?x`) | `tonk-cm-variable` | `fg=accent` |
+| `Plain` | — | — |
+
+Both halves were stranded in the wasm-oriented `tonk-display` despite
+being DOM-free — `tonk-inspector` had already re-inlined `looks_like_uri`
+to avoid depending on it. They now live in `tonk-notation`, which owns
+the syntax tree they walk and is native-clean, re-exported from
+`tonk-display` under their old names.
+
+Under a colourless theme every token resolves to nothing and only the
+emphasis survives, so one mapping serves a full-colour terminal and an
+ink-only one — which is the argument for tokens over literals, made
+concrete.
+
+### 14.5 The CLI surface
+
+`tonk render` already runs the whole model → view → entity resolution
+and takes the `{entity}@{model}!{facet}` route. Terminal output is an
+output *format*, not a new command:
+
+```
+tonk render todo --as tui                  # tui-directory, or the tonk:_ one
+tonk render alice@todo --as tui            # the `tui` facet
+tonk render alice@todo!label --as tui      # an explicit facet
+tonk render todo --as tui --size 80x24     # default: the real terminal size
+tonk render todo --as tui --colour none    # or NO_COLOR, or not a tty
+tonk render todo --as tui --explain        # outline every element
+```
+
+`--as html` stays the default, so nothing about the existing command
+changes. Rendering one frame to stdout — rather than taking over the
+screen — is the right default for a `render` verb, keeps it pipeable,
+and makes the same code path the snapshot-test harness. An interactive
+`tonk tui` that subscribes and handles keys is a *different* command
+(M2-M3), because it needs the `SubscribeBackend` seam and the
+orchestration split of §7.1, neither of which `tonk render` wants.
+
+
+### 13.6 The first consumer: `tonk eval` and `tonk show`
+
+The obvious first user is not a space's hand-authored facets — it is the
+CLI's own output. `tonk eval` and `tonk show` both already print
+notation (`tonk-cli/src/output.rs`, via `render` and `render_results`),
+and **`tonk show`'s output is already shaped like a directory view**: a
+YAML envelope that renders once, a `---`, then one block per matched
+instance. Chrome and a repeat. That mapping is found, not forced.
+
+Making them the first consumer is worth more than it looks:
+
+- It gives the whole stack a user on day one. Nothing has to be
+  authored, and no space has to opt in.
+- It exercises every layer end to end — format, highlight, layout,
+  paint, theme, the capability ladder — against output people already
+  read every day.
+- It partly answers §14.1: the terminal is *first* an inspection surface
+  for the CLI's own output, and a peer surface for spaces later. That
+  ordering also makes the §6.3 engine choice lower-stakes, because
+  inspection chrome is fixed.
+
+Two layers, and they should ship separately:
+
+**(a) Highlight the existing output.** Pipe today's notation string
+through `tonk_notation::highlight` and the §13.4 mapping. No layout
+engine, no views, no new flags. **Critically, this is invisible to
+pipes**: highlighting adds SGR and changes no glyphs, so a non-tty run
+is byte-identical to today's and every script keeps working. That is a
+strong enough safety property to make this shippable on its own.
+
+**(b) Render them as views.** `tonk show todo` resolves the model's
+`tui-directory` facet, falls back to `tonk:_`, and falls back again to
+the notation dump — so a space that authors a facet gets a better
+`tonk show` for free, and one that does not is no worse off.
+
+The constraint on (b) is that it **must be opt-in**, because unlike (a)
+it changes the bytes. `--as notation` stays the default (and the only
+thing a pipe ever sees); `--as tui` asks for the view. `--json` is
+untouched either way.
+
+The mechanism this needs is small, and the proof of concept has it: the
+host injects a synthetic `dom.notation/source` field per conclusion —
+provided exactly like `dom.host/model` — and a `<notation>` element
+interpolates it and highlights it. So a `tonk show` view is an ordinary
+template:
+
+```yaml
+view!:
+  this: tonk:_
+  show:
+    tui-directory: |
+      <column width=fill height=fill pad-x=2 pad-y=1 spacing-y=1>
+        <row width=fill>
+          <text weight=bold>{dom.host/model}</text>
+          <text align=right fg=muted>{dom.host/claims} claims</text>
+        </row>
+        <column width=fill spacing-y=1>
+          <box width=fill pad-x=1 subject={this}>
+            <notation width=fill>{dom.notation/source}</notation>
+          </box>
+        </column>
+      </column>
+```
+
+Nothing about the pipeline changes: `{dom.notation/source}` interpolates
+like any field, the `{this}` repeat root clones the block per instance,
+and the envelope and keybar are chrome. Working in
+`rust/tonk-tui-poc/demo/show.tui.html`.
+
+
+## 14. Open questions
 
 1. **Is the terminal a peer surface for every space, or a TUI-first
    authoring/inspection tool?** The most upstream question here: it

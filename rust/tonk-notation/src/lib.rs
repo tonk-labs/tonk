@@ -14,6 +14,8 @@
 //! for the user-facing notation reference.
 
 pub mod diagnostics;
+pub mod format;
+pub mod highlight;
 pub mod parse;
 pub mod syntax;
 

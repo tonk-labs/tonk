@@ -59,6 +59,10 @@ fn lower_element(element: &RenderElement) -> Option<Element> {
         // markup inside it: the terminal has no inline formatting.
         "text" | "label" | "key" => Element::text(inner_text(element)),
         "spacer" => Element::new(Kind::El),
+        // Notation keeps its own line breaks and gains syntax
+        // highlighting, so it is the one element whose text is taken
+        // raw rather than collapsed onto a single line.
+        "notation" => crate::notation::block(&raw_text(element)),
         _ => {
             let children = lower_children(element);
             if children.is_empty() {
@@ -104,6 +108,14 @@ fn walk_text(nodes: &[Node], out: &mut String) {
             Node::Comment(_) => {}
         }
     }
+}
+
+/// A subtree's text with its line structure intact, trimmed of the
+/// indentation the surrounding template contributed.
+fn raw_text(element: &RenderElement) -> String {
+    let mut out = String::new();
+    walk_text(&element.children, &mut out);
+    out.trim_matches('\n').trim_end().to_string()
 }
 
 fn collapse(text: &str) -> String {

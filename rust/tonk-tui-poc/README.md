@@ -55,6 +55,26 @@ SGR, for snapshots), `--colour truecolor|256|ansi|none`.
    right. Both present as *layout* bugs. `tests/render.rs` pins the
    second; `tonk-layout`'s `measure` tests pin the first.
 
+## The notation fallback, and `tonk show`
+
+```
+cargo run -p tonk-tui-poc -- --data rust/tonk-tui-poc/demo/todo.json --head todo
+```
+
+With no `--template` — "no view resolved" — the conclusions are
+formatted back into `head!:` source and highlighted, the same ultimate
+fallback the browser mounts. This is **not** CodeMirror: the editor
+element's Lezer grammar is browser-only, and the read-only display path
+grew its own tokenizer because of it. Being Lezer-free is what makes it
+port. `tonk_notation::{format, highlight}` are now shared by both hosts;
+the browser maps each `Decoration` onto a CSS class, `notation.rs` maps
+the same enum onto a foreground token plus SGR emphasis.
+
+`demo/show.tui.html` goes one step further and renders `tonk show`-shaped
+output as an ordinary view — envelope as chrome, one highlighted block
+per instance as the `{this}` repeat — using a host-provided
+`{dom.notation/source}` field. See `plan/tui-views.md` §13.6.
+
 ## What it deliberately does not do
 
 - **One frame to stdout, no event loop.** No focus ring, no key
@@ -76,7 +96,7 @@ SGR, for snapshots), `--colour truecolor|256|ansi|none`.
 
 `tonk-layout` is the piece worth keeping regardless of what happens to
 this binary, and it is deliberately engine-swappable: if the scope
-question in `plan/tui-views.md` §13.1 resolves toward an inspection tool
+question in `plan/tui-views.md` §14.1 resolves toward an inspection tool
 with fixed chrome, the same public API can sit on ratatui's own
 `Layout` plus a measure pass instead of `taffy`. `tests/layout.rs` is
 the contract either engine has to satisfy.

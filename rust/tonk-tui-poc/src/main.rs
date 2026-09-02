@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod notation;
 mod paint;
 mod pipeline;
 mod theme;

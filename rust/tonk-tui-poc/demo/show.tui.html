@@ -1,0 +1,32 @@
+<!--
+  `tonk show <concept>` as a view.
+
+  Its output is already shaped like a directory view: an envelope that
+  renders once, then one notation block per matched instance. So the
+  envelope is chrome and the `{this}` repeat root is the block — no new
+  mechanism, just the existing one pointed at the CLI's own output.
+
+  `{dom.notation/source}` is a synthetic field the host provides per
+  conclusion, exactly like `{dom.host/model}`. The `<notation>` element
+  keeps its line breaks and highlights it through the same tokenizer the
+  browser's `<tonk-notation>` uses.
+-->
+<column width=fill height=fill pad-x=2 pad-y=1 spacing-y=1>
+
+  <row width=fill>
+    <text weight=bold>{dom.host/model}</text>
+    <text align=right fg=muted>{dom.host/claims} claims</text>
+  </row>
+
+  <column width=fill spacing-y=1>
+    <box width=fill pad-x=1 subject={this}>
+      <notation width=fill>{dom.notation/source}</notation>
+    </box>
+  </column>
+
+  <keybar width=fill>
+    <key>e eval</key>
+    <key align=right>q quit</key>
+  </keybar>
+
+</column>

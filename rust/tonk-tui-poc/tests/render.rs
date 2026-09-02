@@ -142,3 +142,62 @@ fn rendering_is_deterministic() {
         assert_eq!(render("todo.tui.html", "todo.json", "57x12", &[]), first);
     }
 }
+
+#[test]
+fn no_template_falls_back_to_highlighted_notation() {
+    // What a terminal shows when no view resolves: the conclusion
+    // formatted back into `head!:` source, the same ultimate fallback
+    // the browser mounts — and, like the browser's, not a template.
+    let output = Command::new(binary())
+        .arg("--data")
+        .arg(demo("todo.json"))
+        .args(["--head", "todo", "--size", "60x9", "--plain"])
+        .output()
+        .expect("running tonk-tui-poc");
+    assert!(output.status.success());
+    let frame = String::from_utf8(output.stdout).expect("utf-8");
+    assert!(frame.contains("todo!:"), "{frame}");
+    assert!(frame.contains("this: id:1"), "{frame}");
+    assert!(
+        frame.contains("title: \"port the view pipeline\""),
+        "{frame}"
+    );
+}
+
+#[test]
+fn notation_highlighting_degrades_to_emphasis_without_colour() {
+    // The same `Decoration` mapping serves a full-colour terminal and
+    // an ink-only one: under `--colour none` the tokens resolve to
+    // nothing and only the SGR emphasis survives. This is the argument
+    // for semantic tokens over hex literals, as a test.
+    let run = |colour: &str| {
+        let output = Command::new(binary())
+            .arg("--data")
+            .arg(demo("todo.json"))
+            .args(["--head", "todo", "--size", "60x4", "--colour", colour])
+            .output()
+            .expect("running tonk-tui-poc");
+        String::from_utf8(output.stdout).expect("utf-8")
+    };
+    let full = run("truecolor");
+    let mono = run("none");
+    assert!(full.contains("38;2;"), "truecolor emits rgb: {full:?}");
+    assert!(!mono.contains("38;2;"), "mono emits no colour: {mono:?}");
+    // `head!` is bold in both — emphasis is orthogonal to colour.
+    assert!(full.contains("\u{1b}[0;1mtodo!"), "{full:?}");
+    assert!(mono.contains("\u{1b}[0;1mtodo!"), "{mono:?}");
+}
+
+#[test]
+fn show_output_is_an_ordinary_directory_view() {
+    // `tonk show`'s output is already shaped like a directory view:
+    // an envelope that renders once, then one notation block per
+    // instance. The `{this}` repeat root is the block, and
+    // `{dom.notation/source}` is a host-provided field like
+    // `{dom.host/model}` — so this needs no new mechanism.
+    let frame = render("show.tui.html", "show.json", "58x22", &["--head", "todo"]);
+    assert_eq!(frame.matches("todo!:").count(), 2, "one block per row");
+    assert_eq!(frame.matches("12 claims").count(), 1, "envelope is chrome");
+    assert!(frame.contains("this: id:1") && frame.contains("this: id:2"));
+    assert!(frame.contains("e eval"), "keybar is chrome too");
+}

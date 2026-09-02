@@ -13,7 +13,25 @@ use tonk_render::{Conclusion, Node};
 
 /// Parse, collect bindings, plan, and render `template` against
 /// `conclusions`, returning the resolved node tree.
-pub fn resolve(template: &str, conclusions: &[Conclusion]) -> Vec<Node> {
+///
+/// Each conclusion gains a synthetic `dom.notation/source` field: its
+/// own notation rendering. It is provided the same way `dom.host/*`
+/// fields are, so `<notation>{dom.notation/source}</notation>` needs no
+/// pipeline support of its own — it is ordinary interpolation, and it
+/// is what lets `tonk show` be a view instead of a special case.
+pub fn resolve(template: &str, conclusions: &[Conclusion], head: &str) -> Vec<Node> {
+    let conclusions: Vec<Conclusion> = conclusions
+        .iter()
+        .map(|conclusion| {
+            let mut enriched = conclusion.clone();
+            enriched.fields.insert(
+                "dom.notation/source".to_string(),
+                Ipld::String(crate::notation::source(conclusion, head)),
+            );
+            enriched
+        })
+        .collect();
+    let conclusions = &conclusions[..];
     let mut roots = tonk_render::parse_fragment(template);
     let bindings = tonk_render::collect_bindings(&mut roots);
     let repeat_root = tonk_template::this_repeat_root(&bindings);

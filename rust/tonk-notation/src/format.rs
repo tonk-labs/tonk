@@ -1,5 +1,4 @@
-//! Format a [`Conclusion`] back into source notation suitable for
-//! `<tonk-notation>`. The output mirrors what a user would type:
+//! Format a query conclusion back into source notation. The output mirrors what a user would type:
 //! a `head!:` assertion (optionally followed by `&anchor`) plus a
 //! `this:` field for the entity URI and one indented field per
 //! projected value.

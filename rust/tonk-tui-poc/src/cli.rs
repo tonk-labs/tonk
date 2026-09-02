@@ -9,8 +9,9 @@ use crate::{paint, pipeline, vocabulary};
 
 /// What the binary was asked to do.
 pub struct Options {
-    /// The `tui` facet template.
-    pub template: PathBuf,
+    /// The `tui` facet template. Absent means "no view resolved", so
+    /// the notation fallback renders instead.
+    pub template: Option<PathBuf>,
     /// Conclusions as JSON: `[{"this": "...", "fields": {...}}, ...]`.
     pub data: Option<PathBuf>,
     /// Viewport size in cells.
@@ -25,6 +26,8 @@ pub struct Options {
     pub capability: Capability,
     /// Print the resolved layout tree instead of painting it.
     pub tree: bool,
+    /// Concept name to use as the head of a fallback assertion.
+    pub head: String,
 }
 
 /// Parse `std::env::args`, render one frame, and return it.
@@ -35,8 +38,6 @@ pub fn run() -> Result<String, String> {
 
 /// Render one frame under `options`.
 pub fn render(options: &Options) -> Result<String, String> {
-    let template = std::fs::read_to_string(&options.template)
-        .map_err(|error| format!("reading {}: {error}", options.template.display()))?;
     let conclusions = match &options.data {
         Some(path) => {
             let json = std::fs::read_to_string(path)
@@ -46,8 +47,16 @@ pub fn render(options: &Options) -> Result<String, String> {
         None => Vec::new(),
     };
 
-    let nodes = pipeline::resolve(&template, &conclusions);
-    let root = vocabulary::lower(&nodes);
+    let root = match &options.template {
+        Some(path) => {
+            let template = std::fs::read_to_string(path)
+                .map_err(|error| format!("reading {}: {error}", path.display()))?;
+            vocabulary::lower(&pipeline::resolve(&template, &conclusions, &options.head))
+        }
+        // No view resolved: dump the conclusions as highlighted
+        // notation, the same ultimate fallback the browser mounts.
+        None => crate::notation::dump(&conclusions, &options.head),
+    };
     let viewport = tonk_layout::Rect::new(0, 0, options.width, options.height);
     let laid = tonk_layout::layout(&root, viewport);
 
@@ -91,7 +100,7 @@ fn write_tree(out: &mut String, laid: &tonk_layout::Laid, depth: usize) {
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
-        template: PathBuf::new(),
+        template: None,
         data: None,
         width: 80,
         height: 24,
@@ -99,6 +108,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
         plain: false,
         capability: Capability::TrueColor,
         tree: false,
+        head: "concept".to_string(),
     };
     let mut args = args.peekable();
     let mut saw_template = false;
@@ -108,9 +118,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
         };
         match arg.as_str() {
             "--template" => {
-                options.template = PathBuf::from(value("--template")?);
+                options.template = Some(PathBuf::from(value("--template")?));
                 saw_template = true;
             }
+            "--head" => options.head = value("--head")?,
             "--data" => options.data = Some(PathBuf::from(value("--data")?)),
             "--size" => {
                 let raw = value("--size")?;
@@ -132,22 +143,25 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--tree" => options.tree = true,
             "--help" | "-h" => return Err(USAGE.to_string()),
             other if !saw_template && !other.starts_with('-') => {
-                options.template = PathBuf::from(other);
+                options.template = Some(PathBuf::from(other));
                 saw_template = true;
             }
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
     }
-    if !saw_template {
-        return Err(format!("no template given\n\n{USAGE}"));
+    if !saw_template && options.data.is_none() {
+        return Err(format!("nothing to render\n\n{USAGE}"));
     }
     Ok(options)
 }
 
 const USAGE: &str = "\
-usage: tonk-tui-poc --template <file> [--data <file.json>] [options]
+usage: tonk-tui-poc [--template <file>] --data <file.json> [options]
 
-  --template <file>   the `tui` facet template to render
+  --template <file>   the `tui` facet template to render; omit it to
+                      get the notation fallback, as when no view
+                      resolves for a model
+  --head <name>       concept name for fallback assertion heads
   --data <file.json>  conclusions: [{\"this\": \"...\", \"fields\": {...}}]
   --size WxH          viewport in cells (default 80x24)
   --colour <level>    truecolor | 256 | ansi | none (default truecolor)

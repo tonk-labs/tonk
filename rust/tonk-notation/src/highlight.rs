@@ -1,16 +1,23 @@
-//! Tokenizer for `<tonk-notation>`. Walks a parsed
-//! `tonk_notation::Syntax` tree and emits a sorted,
-//! non-overlapping list of decoration marks tagged with class
-//! names that match the dialog-yaml editor pack
-//! (`tonk-cm-effect`, `tonk-cm-name-sigil`, `tonk-cm-name`,
-//! `tonk-cm-entity`, `tonk-cm-variable`). Kept out of the
-//! wasm-only `notation.rs` so native tests can exercise it
-//! without spinning up the DOM glue.
+//! Syntax highlighting for notation source.
+//!
+//! Walks a parsed [`Syntax`](crate::syntax::Syntax) tree and emits a
+//! sorted, non-overlapping list of decoration marks. This is *not*
+//! CodeMirror: the editor element (`tonk-code`) highlights through a
+//! Lezer `dialog-yaml` grammar, which is a browser-only pack. This
+//! tokenizer exists because the read-only notation *display* path has
+//! no Lezer available, and it deliberately emits the same class names
+//! (`tonk-cm-effect`, `tonk-cm-name-sigil`, …) so the two look alike.
+//!
+//! Being Lezer-free is what makes it portable: it is plain Rust over
+//! this crate's own syntax tree, so a terminal renderer can map
+//! [`Decoration`] onto SGR attributes exactly as the browser maps it
+//! onto CSS classes. It lives here rather than in `tonk-display` for
+//! that reason.
 
-use lsp_types::{Position, Range};
-use tonk_notation::syntax::{
+use crate::syntax::{
     Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Syntax,
 };
+use lsp_types::{Position, Range};
 
 /// Editor decoration class names. The `class()` method returns
 /// `None` for the `Plain` variant so the renderer can fall through
@@ -69,7 +76,7 @@ pub struct Mark {
 /// decoration marks. Returns an empty list when the parse
 /// produces no usable syntax tree (e.g. for an empty input).
 pub fn collect_marks(text: &str) -> Vec<Mark> {
-    let parsed = tonk_notation::parse(text);
+    let parsed = crate::parse(text);
     let Some(syntax) = parsed.syntax else {
         return Vec::new();
     };
