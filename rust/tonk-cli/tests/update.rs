@@ -4,13 +4,21 @@
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 /// Serve a fixed set of `path -> body` responses until dropped.
 /// Anything unmapped gets a 404, which is how the "missing manifest"
 /// case is exercised.
 fn serve(routes: Vec<(String, Vec<u8>)>) -> String {
+    serve_recording(routes).0
+}
+
+/// As [`serve`], but retain every requested path for routing assertions.
+fn serve_recording(routes: Vec<(String, Vec<u8>)>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
@@ -25,6 +33,7 @@ fn serve(routes: Vec<(String, Vec<u8>)>) -> String {
                 .and_then(|line| line.split_whitespace().nth(1))
                 .unwrap_or("/")
                 .to_owned();
+            recorded.lock().expect("record request").push(path.clone());
             let body = routes
                 .iter()
                 .find(|(route, _)| *route == path)
@@ -45,7 +54,7 @@ fn serve(routes: Vec<(String, Vec<u8>)>) -> String {
             let _ = stream.write_all(&response);
         }
     });
-    format!("http://127.0.0.1:{port}/releases")
+    (format!("http://127.0.0.1:{port}/releases"), requests)
 }
 
 fn binary() -> std::path::PathBuf {
@@ -78,40 +87,40 @@ fn run_update(endpoint: &str, state_dir: &std::path::Path, args: &[&str]) -> std
         // Isolated so the test never reads the developer's real
         // telemetry choice; without a key nothing is sent anyway.
         .env("TONK_TELEMETRY_STATE", state_dir)
-        // Even an explicit legacy channel selection must not move
-        // self-update away from staging.
+        // Ambient installer input must not override the matching
+        // receipt (or the safe stable default).
         .env("TONK_CHANNEL", "stable")
         .env_remove("TONK_POSTHOG_KEY")
         .output()
         .expect("run tonk update")
 }
 
-fn manifest_body(version: &str, commit: &str) -> Vec<u8> {
+fn manifest_body(version: &str, commit: &str, channel: &str) -> Vec<u8> {
     format!(
-        r#"{{"version":"{version}","commit":"{commit}","channel":"staging","built_at":"2026-07-16T00:00:00Z"}}"#
+        r#"{{"version":"{version}","commit":"{commit}","channel":"{channel}","built_at":"2026-07-16T00:00:00Z"}}"#
     )
     .into_bytes()
 }
 
-#[dialog_common::test]
-fn it_fetches_staging_even_when_the_matching_receipt_says_stable() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    // install_dir must name the directory this test's binary actually
-    // runs from — the shortcut only fires for a receipt that describes
-    // THIS copy, not just any receipt with a matching commit. The stable
-    // channel is deliberately stale metadata and must not select the URL.
-    let install_dir = running_install_dir();
+fn write_receipt(state_dir: &std::path::Path, channel: &str, install_dir: &str, commit: &str) {
     std::fs::write(
-        dir.path().join("install.json"),
+        state_dir.join("install.json"),
         format!(
-            r#"{{"channel":"stable","version":"0.4.0","commit":"abc1234def","install_dir":"{install_dir}","installed_at":"2026-07-16T00:00:00Z"}}"#
+            r#"{{"channel":"{channel}","version":"0.4.0","commit":"{commit}","install_dir":"{install_dir}","installed_at":"2026-07-16T00:00:00Z"}}"#
         ),
     )
     .expect("write receipt");
+}
+
+#[dialog_common::test]
+fn it_fetches_stable_for_a_matching_stable_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let install_dir = running_install_dir();
+    write_receipt(dir.path(), "stable", &install_dir, "abc1234def");
 
     let endpoint = serve(vec![(
-        "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("0.4.0", "abc1234def"),
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.4.0", "abc1234def", "stable"),
     )]);
 
     let output = run_update(&endpoint, dir.path(), &[]);
@@ -123,29 +132,98 @@ fn it_fetches_staging_even_when_the_matching_receipt_says_stable() {
     );
     assert!(stdout.contains("already current"), "stdout: {stdout}");
     assert!(stdout.contains("abc1234"), "stdout: {stdout}");
-    assert!(stdout.contains("staging"), "stdout: {stdout}");
+    assert!(stdout.contains("stable"), "stdout: {stdout}");
 }
 
 #[dialog_common::test]
-fn it_does_not_report_already_current_when_the_receipt_names_a_different_install_dir() {
+fn it_fetches_staging_for_a_matching_staging_receipt() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // Commit matches the release, but install_dir names a copy that
-    // isn't this one (e.g. a stale receipt beside a second install.sh
-    // copy) — the shortcut must not fire on commit alone.
-    std::fs::write(
-        dir.path().join("install.json"),
-        r#"{"channel":"stable","version":"0.4.0","commit":"abc1234def","install_dir":"/some/other/install/dir","installed_at":"2026-07-16T00:00:00Z"}"#,
-    )
-    .expect("write receipt");
+    let install_dir = running_install_dir();
+    write_receipt(dir.path(), "staging", &install_dir, "abc1234def");
 
     let endpoint = serve(vec![(
         "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("0.4.0", "abc1234def"),
+        manifest_body("0.4.0", "abc1234def", "staging"),
     )]);
 
     let output = run_update(&endpoint, dir.path(), &[]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("already current"), "stdout: {stdout}");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("already current"), "stdout: {stdout}");
+    assert!(stdout.contains("staging"), "stdout: {stdout}");
+}
+
+fn assert_only_stable_was_requested(requests: &Arc<Mutex<Vec<String>>>) {
+    let requests = requests.lock().expect("read requests");
+    assert!(
+        !requests.is_empty(),
+        "expected at least one release request"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|path| path.contains("/latest/download/")),
+        "unexpected non-stable request: {requests:?}"
+    );
+}
+
+#[dialog_common::test]
+fn it_defaults_to_stable_without_a_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (endpoint, requests) = serve_recording(vec![]);
+
+    let output = run_update(&endpoint, dir.path(), &[]);
+    assert!(!output.status.success());
+    assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_defaults_to_stable_for_an_unknown_receipt_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "nightly", &running_install_dir(), "abc1234def");
+    let (endpoint, requests) = serve_recording(vec![]);
+
+    let output = run_update(&endpoint, dir.path(), &[]);
+    assert!(!output.status.success());
+    assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_ignores_a_receipt_for_a_different_install_dir_when_selecting_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(
+        dir.path(),
+        "staging",
+        "/some/other/install/dir",
+        "abc1234def",
+    );
+    let (endpoint, requests) = serve_recording(vec![]);
+
+    let output = run_update(&endpoint, dir.path(), &[]);
+    assert!(!output.status.success());
+    assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_rejects_a_manifest_for_a_different_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "stable", &running_install_dir(), "abc1234def");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.4.0", "abc1234def", "staging"),
+    )]);
+
+    let output = run_update(&endpoint, dir.path(), &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("manifest says channel staging") && stderr.contains("selected stable"),
+        "stderr: {stderr}"
+    );
 }
 
 #[dialog_common::test]
@@ -216,9 +294,9 @@ fn run_probe(
 #[dialog_common::test]
 fn it_nags_on_stderr_when_the_release_is_newer() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let endpoint = serve(vec![(
-        "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("99.0.0", "fff9999"),
+    let (endpoint, requests) = serve_recording(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "stable"),
     )]);
 
     let output = run_probe(&endpoint, dir.path(), &[]);
@@ -229,14 +307,100 @@ fn it_nags_on_stderr_when_the_release_is_newer() {
     assert!(stderr.contains("run `tonk update`"), "stderr: {stderr}");
     // stdout is parsed by agents and must stay clean.
     assert!(!stdout.contains("is available"), "stdout: {stdout}");
+    assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_checks_staging_in_the_background_for_a_matching_staging_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "staging", &running_install_dir(), "abc1234def");
+    let (endpoint, requests) = serve_recording(vec![(
+        "/releases/download/tonk-staging/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "staging"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(output.status.success());
+    let requests = requests.lock().expect("read requests");
+    assert_eq!(
+        requests.as_slice(),
+        ["/releases/download/tonk-staging/manifest.json"]
+    );
+}
+
+#[dialog_common::test]
+fn it_checks_stable_in_the_background_for_a_matching_stable_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "stable", &running_install_dir(), "abc1234def");
+    let (endpoint, requests) = serve_recording(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "stable"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(output.status.success());
+    assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_refreshes_and_does_not_nag_with_cached_data_from_another_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "stable", &running_install_dir(), "abc1234def");
+    std::fs::write(
+        dir.path().join("update.json"),
+        r#"{
+  "check_enabled": true,
+  "channel": "staging",
+  "last_checked_at": "2099-01-01T00:00:00Z",
+  "last_nagged_at": null,
+  "latest_version": "99.0.0",
+  "latest_commit": "fff9999"
+}"#,
+    )
+    .expect("write stale channel cache");
+    let (endpoint, requests) = serve_recording(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.0.1", "aaa0001", "stable"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+    assert_only_stable_was_requested(&requests);
+
+    let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
+    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse state");
+    assert_eq!(parsed["channel"], "stable", "state: {state}");
+    assert_eq!(parsed["latest_version"], "0.0.1", "state: {state}");
+    assert_eq!(parsed["latest_commit"], "aaa0001", "state: {state}");
+}
+
+#[dialog_common::test]
+fn it_does_not_cache_a_background_manifest_for_a_different_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "stable", &running_install_dir(), "abc1234def");
+    let endpoint = serve(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "staging"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+
+    let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
+    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse state");
+    assert!(parsed["latest_version"].is_null(), "state: {state}");
+    assert!(parsed["latest_commit"].is_null(), "state: {state}");
+    assert!(!parsed["last_checked_at"].is_null(), "state: {state}");
 }
 
 #[dialog_common::test]
 fn it_does_not_nag_when_the_release_is_not_newer() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("0.0.1", "aaa0001"),
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.0.1", "aaa0001", "stable"),
     )]);
 
     let output = run_probe(&endpoint, dir.path(), &[]);
@@ -247,8 +411,8 @@ fn it_does_not_nag_when_the_release_is_not_newer() {
 fn it_does_not_nag_when_opted_out() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("99.0.0", "fff9999"),
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "stable"),
     )]);
 
     let output = run_probe(&endpoint, dir.path(), &[("TONK_NO_UPDATE_CHECK", "1")]);
@@ -261,8 +425,8 @@ fn it_does_not_nag_when_opted_out() {
 fn it_does_not_nag_in_ci() {
     let dir = tempfile::tempdir().expect("tempdir");
     let endpoint = serve(vec![(
-        "/releases/download/tonk-staging/manifest.json".to_owned(),
-        manifest_body("99.0.0", "fff9999"),
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("99.0.0", "fff9999", "stable"),
     )]);
 
     let output = run_probe(&endpoint, dir.path(), &[("CI", "true")]);

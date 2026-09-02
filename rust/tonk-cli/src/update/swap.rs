@@ -24,16 +24,14 @@ pub enum ForeignInstall {
 impl ForeignInstall {
     /// The command that actually updates this kind of install.
     ///
-    /// The npm remedy names no dist-tag by default and offers `@stable`
-    /// beside it, matching the root README: `@latest` now means staging
-    /// finals, so telling a `@stable`-pinned user to install it would
-    /// silently move them onto a faster channel.
+    /// npm owns npm-installed binaries. Its default is the final release;
+    /// `@next` is the explicit prerelease channel.
     pub fn remedy(self) -> &'static str {
         match self {
             ForeignInstall::Nix => "update it through nix (e.g. `nix flake update`)",
             ForeignInstall::Npm => {
-                "reinstall it through npm (`npm i -g @tonk/cli`, or `@tonk/cli@stable` \
-                 to stay on the last milestone)"
+                "reinstall it through npm (`npm i -g @tonk/cli`, or `npm i -g \
+                 @tonk/cli@next` for the prerelease channel)"
             }
         }
     }
