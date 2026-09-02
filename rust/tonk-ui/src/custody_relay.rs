@@ -222,35 +222,62 @@ fn show_consent() {
     });
 }
 
-/// The consent card for a passkey a guest-asserted command needs.
+/// Run the passkey ceremony a guest-asserted command needs, now.
 ///
-/// The person already chose the act on the settings page; this names it
-/// again beside the prompt, so the passkey request reads as theirs and
-/// not as something the page sprang on them.
-fn show_command_consent(intent: tonk_worker_api::CustodyIntent) {
-    let (text, action) = match &intent {
-        tonk_worker_api::CustodyIntent::PurgeAccount(_) => (
-            "Deleting your account needs your passkey. Everything this account hosts will be removed and cannot be recovered by Tonk.",
-            AccountAction::DeleteAccount,
+/// The person just pressed the act's own verb in the settings page,
+/// which told them the passkey would be asked for; a second card asking
+/// the same question would be one dialog too many. Only a prompt the
+/// browser refuses to open falls back to the card, whose button is a
+/// gesture of this document's own.
+fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent) {
+    let method = match &intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        _ => "usePasskey",
+    };
+    let retry = intent.clone();
+    match begin(method, intent) {
+        Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = mediation.finish().await {
+                report(&error.message);
+                if !BUSY.with(|busy| busy.replace(true)) {
+                    show_command_consent(retry, Some(error.message));
+                }
+            }
+        }),
+        Err(error) => {
+            report(&error.message);
+            if !BUSY.with(|busy| busy.replace(true)) {
+                show_command_consent(retry, Some(error.message));
+            }
+        }
+    }
+}
+
+/// The fallback card for a passkey prompt that did not open, or was
+/// dismissed: it says what happened and offers the prompt again from a
+/// click of this document's own.
+fn show_command_consent(intent: tonk_worker_api::CustodyIntent, failure: Option<String>) {
+    let (act, action) = match &intent {
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => {
+            ("Deleting your account", AccountAction::DeleteAccount)
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => {
+            ("Approving the terminal", AccountAction::LinkCli)
+        }
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => {
+            ("Adding a passkey", AccountAction::AddPasskey)
+        }
+        _ => ("Continuing", AccountAction::FinishAccountBackup),
+    };
+    let text = match failure {
+        Some(failure) if failure.starts_with("NotAllowedError") => {
+            format!("{act} needs your passkey, and the prompt was closed. Use it to try again.")
+        }
+        Some(failure) => format!(
+            "{act} did not finish: {}. Use your passkey to try again.",
+            user_error::diagnostic(action, &failure)
         ),
-        tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => (
-            &*Box::leak(
-                format!(
-                    "Giving \u{201c}{}\u{201d} access to your account needs your passkey.",
-                    authorization.name
-                )
-                .into_boxed_str(),
-            ),
-            AccountAction::LinkCli,
-        ),
-        tonk_worker_api::CustodyIntent::AddPasskey(_) => (
-            "Adding a passkey asks for the one that holds your account, then creates the new one.",
-            AccountAction::AddPasskey,
-        ),
-        _ => (
-            "Tonk needs your passkey to continue.",
-            AccountAction::FinishAccountBackup,
-        ),
+        None => format!("{act} needs your passkey."),
     };
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         BUSY.with(|busy| busy.set(false));
@@ -267,7 +294,7 @@ fn show_command_consent(intent: tonk_worker_api::CustodyIntent) {
     // which retires the actions: that helper narrates an outcome, and
     // this card has not been answered yet.
     if let Ok(Some(message)) = host.query_selector("#tonk-custody-text") {
-        message.set_text_content(Some(text));
+        message.set_text_content(Some(&text));
     }
     on_click(&host, "#tonk-custody-dismiss", || {
         remove_card();
@@ -358,15 +385,11 @@ pub fn install() {
                     // Enrollment arrives mid-ceremony, on a page whose
                     // gesture is still live.
                     intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
-                    // A command the guest asserted: the worker is asking
-                    // on its behalf, with no gesture of this document's
-                    // to spend. The card supplies one, and says why.
-                    intent => {
-                        if BUSY.with(|busy| busy.replace(true)) {
-                            return;
-                        }
-                        show_command_consent(intent);
-                    }
+                    // A command the guest asserted. The click that asked
+                    // activated this document too (activation reaches every
+                    // ancestor), so the prompt runs at once; the card is
+                    // only for a prompt the browser would not open.
+                    intent => run_command_ceremony(intent),
                 }
             }
         }

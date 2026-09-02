@@ -316,11 +316,18 @@ async fn purge_inner(
     let _ = super::account::unlink(State(state.clone()))
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
+    // Finish on a fresh profile so the released email can immediately
+    // create a genuinely new account.
+    let _ = super::profiles::add(State(state.clone()))
+        .await
+        .map_err(|error| format!("a fresh profile did not open: {error}"))?;
     // Permanent deletion retires this account's profile rather than
     // rebinding its retained joined spaces and delegations to another
     // root. A retired profile that holds nothing is forgotten outright;
     // one that still holds joined spaces stays listed as a local
-    // workspace so they remain reachable.
+    // workspace so they remain reachable. After the rotation: moving
+    // profiles re-records the outgoing one so it stays reachable, which
+    // would undo a removal made before it.
     if current.joined_spaces == 0 {
         let tonk = state.read().await;
         if let Err(error) = tonk
@@ -331,10 +338,5 @@ async fn purge_inner(
             log!("delete-account: the retired profile stays listed: {error}");
         }
     }
-    // Finish on a fresh profile so the released email can immediately
-    // create a genuinely new account.
-    let _ = super::profiles::add(State(state.clone()))
-        .await
-        .map_err(|error| format!("a fresh profile did not open: {error}"))?;
     Ok(())
 }
