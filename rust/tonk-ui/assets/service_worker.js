@@ -559,6 +559,13 @@ self.onmessage = event => {
     );
 };
 
+// Some engines report a structured-clone failure only to the receiver.
+// Never inspect `event.data` here: it may be unavailable, and custody
+// messages can contain transient PRF bytes.
+self.onmessageerror = () => {
+    console.error("messageerror: service-worker message could not be deserialized");
+};
+
 // Background Sync API event handler. A single bare `sync` tag: the worker
 // drains the whole queue regardless, so the tag carries no identity. A
 // rejected promise here tells the user agent to retry the sync with backoff.

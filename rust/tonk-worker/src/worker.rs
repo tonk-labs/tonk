@@ -2071,10 +2071,9 @@ impl TonkServiceWorker {
         let ports = event.ports();
 
         future_to_promise(async move {
-            // A custody envelope carries two `CryptoKey` handles, which
-            // are not JSON: reading it through `serde_wasm_bindgen`
-            // would silently drop them. So it is recognised on the raw
-            // value, before anything parses.
+            // A custody envelope carries two transient PRF typed arrays,
+            // which must not pass through JSON. Recognise it on the raw
+            // value before the ordinary typed protocol parses anything.
             if crate::router::custody::is_custody_envelope(&data) {
                 crate::router::custody::receive(state, data, ports).await;
                 return Ok(JsValue::UNDEFINED);
