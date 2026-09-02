@@ -39,7 +39,7 @@ pub const SKIN: &str = r#"
   --_sep:   var(--fabb-sep, rgba(56,24,42,.28));
   --_hover: var(--fabb-hover, rgba(56,24,42,.06));
   --_press: var(--fabb-press, rgba(56,24,42,.12));
-  --_bg:    var(--fabb-bg, rgba(253,252,252,.72));
+  --_bg:    var(--fabb-bg, rgba(253,252,252,.92));
   /* the current role — a place you are in, split from the CTA register:
      near-ink, one step toward the page, so a marked row never outshouts
      an action (which keeps solid --_ink) */
@@ -49,8 +49,10 @@ pub const SKIN: &str = r#"
      backdrop-filter can only sample content INSIDE that frame — never the
      space behind it — so the filter bought nothing over the page and
      actively smeared sibling chrome (the bar's white cells, the round cap)
-     into any stack that opened near them. The wireframe's translucency is
-     the alpha tint of `--_bg`, which composites through the frame fine. */
+     into any stack that opened near them. The frosted look is carried by
+     DENSITY instead: `--_bg` is pre-composited near-solid frost (the
+     reference's own rule for surfaces that cannot blur), letting a whisper
+     of ground through and nothing readable. */
   --_filter:none;
   --_ring:  0 0 0 1px var(--fabb-ring, rgba(56,24,42,.85));
   --_ringc: var(--fabb-ring, rgba(56,24,42,.85));
