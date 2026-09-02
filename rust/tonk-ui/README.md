@@ -82,7 +82,10 @@ The load lifecycle has four cases:
 Activation alone does not claim already-open documents. Pages cached before
 this update protocol therefore remain on their compatible existing controller
 until navigation; an update-aware page opts into the new controller only when
-it can perform the guarded alignment reload.
+it can perform the guarded alignment reload. Activation also retains every
+generation-named shell and worker-Wasm cache: an older page or retained worker
+may hold the only live reference to an offline generation, so storage pressure
+is the only automatic eviction policy until reference-safe cleanup exists.
 
 An explicit readiness rejection is not treated as a silent boot stall. Before
 returning with the application root unmounted, the UI terminalizes the static
@@ -94,10 +97,11 @@ can retain its own recovery guidance; after correcting the cause, the person
 chooses when to reload. For a boot that stops making progress without producing
 an explicit error, the watchdog performs at most one plain reload. A second
 silent stall terminalizes with the same safe-state guidance and leaves every
-cache and service-worker registration intact. The deployment withdrawal kill
-switch is the sole exception: it shows its specific withdrawal guidance and
-unregisters only the current page's registration, never every scope on the
-origin.
+cache and service-worker registration intact. A deployment withdrawal flag is
+also non-destructive: it compares the flag with the immutable generation
+embedded in this page, stops that worker from serving further data-plane work,
+and offers update/reload recovery without deleting caches or unregistering any
+scope. Ambiguous, missing, or malformed flags leave the running build alone.
 
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. There is one rollout boundary: a shell cached before this

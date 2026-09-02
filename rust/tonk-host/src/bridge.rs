@@ -1,7 +1,7 @@
 //! Guest-side bridge context. Inside a sealed iframe the portal
 //! bootstrap installs `window.tonk`, whose `context` (delivered in the
 //! host's `ready` envelope) carries what the guest cannot read itself —
-//! the host's origin, path, hash, site entity, and the portal's pinned
+//! the host's origin, path, hash, site entity, build, and the portal's pinned
 //! routing context. This module reads that context; it carries NO data
 //! transport (all IO is plain `fetch`, which the bootstrap's override
 //! relays for a guest).
@@ -15,7 +15,7 @@ use web_sys::window;
 
 /// Read a string field off the bridge `window.tonk.context`, if present and
 /// non-empty. The host populates the context (`{this, model, origin, path,
-/// hash, repo, branch, with, site}`) in its `ready` envelope; guest controls
+/// hash, repo, branch, with, site, build}`) in its `ready` envelope; guest controls
 /// read routing they can't resolve from the DOM (the pinned `with` context
 /// lives outside the iframe) from here.
 pub fn context_field(name: &str) -> Option<String> {
@@ -140,7 +140,42 @@ pub fn context_headers() -> Vec<(&'static str, String)> {
     if let Some(hash) = hash {
         headers.push(("x-tonk-hash", hash));
     }
+    // The build this page was loaded from. `skipWaiting` + `claim` swap
+    // the worker underneath a running page, so the page can end up
+    // talking to a worker from a different build than its own wasm. The
+    // storage layer tolerates that by design, but the HTTP surface is
+    // not versioned — a renamed route or a changed DTO would surface as
+    // a confusing 404 or parse error in a page with no idea it is
+    // stale. Sending the build lets the worker answer a structured 409
+    // instead, which the host turns into "reload to update".
+    if let Some(build) = build_id() {
+        headers.push((tonk_worker_api::PAGE_BUILD_HEADER, build));
+    }
     headers
+}
+
+/// This document's immutable build id. A sealed guest inherits it from the
+/// portal's `window.tonk.context.build`; the top document reads the value its
+/// generated HTML published as `window.tonkBuild` before the app mounted.
+/// `None` is retained for development and genuinely pre-protocol documents.
+///
+/// Deliberately NOT `window.tonk.build`. That object is the sealed
+/// guest's bridge, and [`crate::page_effect::forward`] tests for its
+/// presence to decide whether it is running inside a guest — so
+/// creating it on the top page makes the host believe it is a guest
+/// and silently swallows every navigation.
+pub fn build_id() -> Option<String> {
+    let build = context_field("build").or_else(|| {
+        let win = window()?;
+        Reflect::get(&win, &JsValue::from_str("tonkBuild"))
+            .ok()?
+            .as_string()
+    })?;
+    (build.len() == 16
+        && build
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then_some(build)
 }
 
 /// GET a host-relative path and return its body text. One transport

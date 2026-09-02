@@ -15,15 +15,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{CacheQueryOptions, Request, Response, ServiceWorkerGlobalScope};
 
-/// Prefixes for this worker's caches. The full name is the prefix
-/// plus the build id, so every build owns its own caches and two
-/// builds can never read or write the same one.
+/// Prefix for this worker's shell cache. The full name includes the build id,
+/// so two generations never read or write the same cache.
 const SHELL_PREFIX: &str = "TONK_SHELL_";
-const WORKER_PREFIX: &str = "TONK_WORKER_";
 
 /// The build id, handed in by the JS shim at activate time (see
 /// `set_build_id`). The shim gets it from the stamp
-/// `scripts/hash-guest.sh` writes, so both sides derive their cache
+/// `scripts/stamp-service-worker.sh` writes, so both sides derive their cache
 /// names from one injected value instead of hand-syncing a literal
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();

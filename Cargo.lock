@@ -4992,6 +4992,7 @@ dependencies = [
  "serde_ipld_dagjson",
  "serde_json",
  "tonk-common",
+ "tonk-worker-api",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

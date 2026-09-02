@@ -112,10 +112,29 @@ fn default_true() -> bool {
 /// stray value can't accidentally suppress the commit.
 fn deserialize_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::Error> {
     let raw = String::deserialize(de)?;
-    Ok(!matches!(
-        raw.to_ascii_lowercase().as_str(),
-        "false" | "0" | "no"
-    ))
+    Ok(transact_value(&raw))
+}
+
+/// Whether the URI query requests one unambiguous dry run.
+///
+/// The stale-build guard accepts only the canonical lowercase `false` value
+/// before deciding that an evaluate POST is read-like. This is intentionally
+/// stricter than [`EvaluateQuery`]'s user-facing aliases: missing, duplicate,
+/// differently-cased, or non-canonical values stay on the safe side and are
+/// treated as a write. Unknown query keys are ignored by Serde and therefore
+/// ignored here too.
+pub(crate) fn is_unambiguous_dry_run(query: Option<&str>) -> bool {
+    let Some(query) = query else { return false };
+    let mut values = url::form_urlencoded::parse(query.as_bytes())
+        .filter_map(|(name, value)| (name == "transact").then_some(value));
+    let Some(value) = values.next() else {
+        return false;
+    };
+    value == "false" && values.next().is_none()
+}
+
+fn transact_value(raw: &str) -> bool {
+    !matches!(raw.to_ascii_lowercase().as_str(), "false" | "0" | "no")
 }
 
 /// `POST /api/repository/{repo}/branch/{branch}/evaluate`

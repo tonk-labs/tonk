@@ -1,4 +1,4 @@
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 use tonk_worker_api::{
     AccountDeletionPlan, AccountDeletionRequest, AccountDeletionResult, AccountDevice,
@@ -51,7 +51,7 @@ fn account_boundary_error(
 }
 
 async fn send_account(
-    request: reqwest::RequestBuilder,
+    request: crate::worker_client::WorkerRequest,
     method: &'static str,
     path: &'static str,
 ) -> Result<reqwest::Response, TonkUiError> {
@@ -157,11 +157,10 @@ pub fn origin() -> String {
 /// lets the UI use `ErrorBoundary` for genuine failures while
 /// rendering a "not found" view through the normal value path.
 pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiError> {
-    tonk_host::ready::wait().await;
     tonk_common::log!("Fetching repository '{}'...", name);
 
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/repository/{}", origin(), name))
+    let response = crate::worker_client::request(Method::GET, format!("/api/repository/{name}"))
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -190,10 +189,9 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 /// named-repo namespace, so its `RepositoryInfo` has its own
 /// endpoint instead of `/api/repository/{name}`.
 pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError> {
-    tonk_host::ready::wait().await;
     tonk_common::log!("Fetching profile repository...");
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/profile/repository", origin()))
+    let response = crate::worker_client::request(Method::GET, "/api/profile/repository")
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -228,26 +226,23 @@ pub async fn select_claims(
     the: Option<&str>,
     of: Option<&str>,
 ) -> Result<QueryResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let base = format!(
-        "{}/api/repository/{}/branch/{}/claim/select",
-        origin(),
-        repo,
-        branch
-    );
-    let mut url = url::Url::parse(&base).map_err(into_api_error)?;
-    {
-        let mut q = url.query_pairs_mut();
-        if let Some(v) = the {
-            q.append_pair("the", v);
-        }
-        if let Some(v) = of {
-            q.append_pair("of", v);
-        }
+    let base = format!("/api/repository/{repo}/branch/{branch}/claim/select");
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(value) = the {
+        query.append_pair("the", value);
     }
+    if let Some(value) = of {
+        query.append_pair("of", value);
+    }
+    let query = query.finish();
+    let path = if query.is_empty() {
+        base
+    } else {
+        format!("{base}?{query}")
+    };
 
-    let response = reqwest::Client::new()
-        .get(url)
+    let response = crate::worker_client::request(Method::GET, path)
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -294,9 +289,8 @@ pub async fn evaluate(
 /// runs, and the outcome comes back as facts the page is subscribed to.
 /// Nothing is read from the answer beyond whether the commit landed.
 pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/branch/main/transact", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/profile/branch/main/transact")
+        .await?
         .json(&claim)
         .send()
         .await
@@ -334,16 +328,15 @@ async fn evaluate_at(
     content_type: &str,
     transact: bool,
 ) -> Result<EvaluateResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
     // The worker's default is `transact=true`; only attach the
     // query string when we want to override.
-    let url = if transact {
-        format!("{}{}", origin(), path)
+    let endpoint = if transact {
+        path.to_owned()
     } else {
-        format!("{}{}?transact=false", origin(), path)
+        format!("{path}?transact=false")
     };
-    let response = reqwest::Client::new()
-        .post(&url)
+    let response = crate::worker_client::request(Method::POST, &endpoint)
+        .await?
         .header("content-type", content_type)
         .body(body)
         .send()
@@ -420,10 +413,9 @@ pub async fn sync(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
 /// only — fetches the upstream head without merging — so the badge
 /// can refresh without moving any data.
 pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
     let path = format!("/api/repository/{repo}/branch/{branch}/sync/status");
-    let response = reqwest::Client::new()
-        .get(format!("{}{}", origin(), path))
+    let response = crate::worker_client::request(Method::GET, &path)
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -443,7 +435,6 @@ pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse,
 /// POST a sync route. `op` is `"pull"` / `"push"` for the
 /// directional routes, or `""` for the combined `/sync` route.
 async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
     tonk_common::log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
     // `op` is a directional suffix (`/pull`, `/push`); the combined
     // sync route is the bare `/sync` path, so an empty `op` drops
@@ -454,8 +445,8 @@ async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, Ton
         format!("/{op}")
     };
     let path = format!("/api/repository/{repo}/branch/{branch}/sync{suffix}");
-    let response = reqwest::Client::new()
-        .post(format!("{}{}", origin(), path))
+    let response = crate::worker_client::request(Method::POST, &path)
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -514,15 +505,14 @@ impl From<TonkUiError> for JoinError {
 /// profile meta branch and broadcasts on `/api/profile`, so any
 /// subscriber picks up the new tile without an explicit refetch.
 pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
-    tonk_host::ready::wait().await;
     tonk_common::log!("Joining invite...");
 
     let body = JoinRequest {
         url: url.to_string(),
     };
 
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/join", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/profile/join")
+        .await?
         .json(&body)
         .send()
         .await
@@ -548,11 +538,10 @@ pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
 
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
     tonk_common::log!("Fetching identity...");
 
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/identify", origin()))
+    let response = crate::worker_client::request(Method::GET, "/api/identify")
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -562,9 +551,8 @@ pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
 
 /// Return the current profile's provider-neutral local root state.
 pub async fn root_status() -> Result<RootStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/identity/root", origin()))
+    let response = crate::worker_client::request(Method::GET, "/api/identity/root")
+        .await?
         .send()
         .await
         .map_err(into_api_error)?;
@@ -578,9 +566,8 @@ pub async fn save_root(
     passkey: Option<tonk_worker_api::PasskeyMetadata>,
     encryption_key: Option<String>,
 ) -> Result<RootStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/identity/root", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/identity/root")
+        .await?
         .json(&SaveRootRequest {
             credential_id,
             delegation_hex,
@@ -759,8 +746,7 @@ pub async fn kick_sync() -> Result<(), TonkUiError> {
 /// The account's customer registration state: the access service's live
 /// answer joined with the locally recorded enrollment.
 pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/customer", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/customer").await?;
     decode_account(
         send_account(response, "GET", "/api/customer").await?,
         "GET",
@@ -771,8 +757,7 @@ pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
 
 /// Return the current profile's persisted account-link state.
 pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let request = reqwest::Client::new().get(format!("{}/api/account", origin()));
+    let request = crate::worker_client::request(Method::GET, "/api/account").await?;
     decode_account(
         send_account(request, "GET", "/api/account").await?,
         "GET",
@@ -790,9 +775,8 @@ pub async fn save_account_link(
     remote: String,
     initialize_name: bool,
 ) -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/attach", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/attach")
+        .await?
         .json(&AccountLinkRequest {
             provider,
             root_did,
@@ -811,8 +795,7 @@ pub async fn save_account_link(
 
 /// List the devices registered under the linked account.
 pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/account/devices", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/account/devices").await?;
     decode_account(
         send_account(response, "GET", "/api/account/devices").await?,
         "GET",
@@ -823,8 +806,7 @@ pub async fn account_devices() -> Result<Vec<AccountDevice>, TonkUiError> {
 
 /// Load verified account and passkey facts for the linked account.
 pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/account/summary", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/account/summary").await?;
     decode_account(
         send_account(response, "GET", "/api/account/summary").await?,
         "GET",
@@ -835,9 +817,8 @@ pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
 
 /// Commit the authoritative display name for the active account/profile.
 pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/display-name", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/display-name")
+        .await?
         .json(&tonk_worker_api::AccountDisplayNameRequest {
             name: name.to_owned(),
         });
@@ -858,9 +839,8 @@ pub async fn set_account_display_name(name: &str) -> Result<String, TonkUiError>
 /// ran the enrollment ceremony, the worker deposits the consent
 /// through `/provider/add`.
 pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/custody/provision", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/custody/provision")
+        .await?
         .json(&serde_json::json!({
             "custody": custody,
             "consentHex": consent_hex,
@@ -876,8 +856,7 @@ pub async fn provision_custody(custody: &str, consent_hex: &str) -> Result<(), T
 /// The work queued until the account confirms its email, so the page
 /// can run the parts only it can sign.
 pub async fn pending_work() -> Result<tonk_account::pending::PendingQueue, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/customer/pending", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/customer/pending").await?;
     decode_account(
         send_account(response, "GET", "/api/customer/pending").await?,
         "GET",
@@ -894,9 +873,8 @@ pub async fn queue_custody_publish(
     sealed_hex: &str,
     invocation_hex: &str,
 ) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/custody/queue", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/custody/queue")
+        .await?
         .json(&serde_json::json!({
             "custody": custody,
             "consentHex": consent_hex,
@@ -918,9 +896,8 @@ pub async fn register_account_device(
     name: &str,
     delegation_hex: &str,
 ) -> Result<serde_json::Value, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/devices/register", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/devices/register")
+        .await?
         .json(&serde_json::json!({
             "did": did,
             "name": name,
@@ -940,9 +917,8 @@ pub async fn register_account_device(
 pub async fn revoke_account_device(
     did: String,
 ) -> Result<RevokeDeviceAcknowledgement, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/devices/revoke", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/devices/revoke")
+        .await?
         .json(&RevokeDeviceRequest { did });
     decode_account(
         send_account(response, "POST", "/api/account/devices/revoke").await?,
@@ -954,8 +930,7 @@ pub async fn revoke_account_device(
 
 /// List every profile signed in (or local) on this browser.
 pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/profiles", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/profiles").await?;
     decode_account(
         send_account(response, "GET", "/api/profiles").await?,
         "GET",
@@ -967,9 +942,8 @@ pub async fn list_profiles() -> Result<ProfilesResponse, TonkUiError> {
 /// Swap the worker onto another roster profile. The caller reloads the
 /// page afterwards so every surface re-renders the new profile.
 pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/profiles/activate", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/profiles/activate")
+        .await?
         .json(&ActivateProfileRequest { profile });
     decode_account(
         send_account(response, "POST", "/api/profiles/activate").await?,
@@ -983,8 +957,7 @@ pub async fn activate_profile(profile: String) -> Result<ProfilesResponse, TonkU
 /// runs on. Call this only when Create or Log in is actually submitted;
 /// opening the account choice must remain reversible navigation.
 pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().post(format!("{}/api/profiles/add", origin()));
+    let response = crate::worker_client::request(Method::POST, "/api/profiles/add").await?;
     decode_account(
         send_account(response, "POST", "/api/profiles/add").await?,
         "POST",
@@ -995,8 +968,7 @@ pub async fn add_account_profile() -> Result<ProfilesResponse, TonkUiError> {
 
 /// Sign out on this device while preserving its local profile and spaces.
 pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().delete(format!("{}/api/account", origin()));
+    let response = crate::worker_client::request(Method::DELETE, "/api/account").await?;
     decode_account(
         send_account(response, "DELETE", "/api/account").await?,
         "DELETE",
@@ -1007,8 +979,7 @@ pub async fn unlink_account() -> Result<AccountStatus, TonkUiError> {
 
 /// Load the exact, service-authoritative destructive scope for review.
 pub async fn account_deletion_plan() -> Result<AccountDeletionPlan, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/account/deletion/plan", origin()));
+    let response = crate::worker_client::request(Method::GET, "/api/account/deletion/plan").await?;
     decode_account(
         send_account(response, "GET", "/api/account/deletion/plan").await?,
         "GET",
@@ -1021,9 +992,8 @@ pub async fn account_deletion_plan() -> Result<AccountDeletionPlan, TonkUiError>
 pub async fn delete_account(
     request: &AccountDeletionRequest,
 ) -> Result<AccountDeletionResult, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/delete", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/delete")
+        .await?
         .json(request);
     decode_account(
         send_account(response, "POST", "/api/account/delete").await?,
@@ -1037,9 +1007,8 @@ pub async fn delete_account(
 pub async fn delete_owned_space(
     request: &tonk_worker_api::AccountSpaceDeletionRequest,
 ) -> Result<HostedSpaceDeletionResult, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/account/spaces/delete", origin()))
+    let response = crate::worker_client::request(Method::POST, "/api/account/spaces/delete")
+        .await?
         .json(request);
     decode_account(
         send_account(response, "POST", "/api/account/spaces/delete").await?,
