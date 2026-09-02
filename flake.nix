@@ -413,6 +413,11 @@
             '';
           };
 
+          "test:storage" = {
+            description = "Run the focused real-browser storage regression";
+            command = "bash scripts/test-e2e-storage.sh";
+          };
+
           "test:native:debug" = menuTestCommand {
             description = "Unit and integration tests (${system}, debug)";
             package = "tests-native-debug";
@@ -467,6 +472,12 @@
               cd ${self}
               echo "Checking Nix file formatting..."
               ${nixfmt}/bin/nixfmt --check $(find . -name '*.nix' -type f)
+              touch $out
+            '';
+
+            nix-source-refs = runCommand "nix-source-refs" { nativeBuildInputs = [ ripgrep ]; } ''
+              cd ${self}
+              bash scripts/check-nix-source-refs.sh .
               touch $out
             '';
 

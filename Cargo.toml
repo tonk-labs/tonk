@@ -215,6 +215,11 @@ strip = "debuginfo"
 [profile.dev.package."*"]
 opt-level = 3
 
+[profile.test]
+debug = 0
+strip = "debuginfo"
+incremental = false
+
 [profile.release]
 strip = "debuginfo"
 lto = "thin"
@@ -225,5 +230,4 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
-
 

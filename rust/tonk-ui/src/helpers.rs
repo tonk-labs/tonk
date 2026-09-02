@@ -19,6 +19,8 @@ pub struct TestEnvironment {
     pub ca_certificate: Option<std::path::PathBuf>,
     /// Writable per-harness copy of the otherwise immutable service-worker script.
     pub service_worker_script: std::path::PathBuf,
+    /// Parent directory for every Chrome profile created by this harness.
+    pub browser_profile_root: std::path::PathBuf,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,7 +35,8 @@ mod native {
     #[cfg(test)]
     use thirtyfour::extensions::cdp::ChromeDevTools;
     use thirtyfour::{
-        CapabilitiesHelper, ChromiumLikeCapabilities, DesiredCapabilities, WebDriver,
+        CapabilitiesHelper, ChromeCapabilities, ChromiumLikeCapabilities, DesiredCapabilities,
+        WebDriver,
     };
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use tonk_worker_api::DeploymentConfig;
@@ -69,9 +72,37 @@ mod native {
         }
     }
 
+    /// Owns every writable filesystem artifact produced by one E2E harness.
+    struct TestWorkspace(tempfile::TempDir);
+
+    impl TestWorkspace {
+        fn new() -> std::io::Result<Self> {
+            let workspace = tempfile::Builder::new().prefix("tonk-e2e-").tempdir()?;
+            std::fs::write(workspace.path().join(".tonk-e2e-workspace"), b"")?;
+            Ok(Self(workspace))
+        }
+
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+
+        fn directory(&self, name: &str) -> std::io::Result<std::path::PathBuf> {
+            let path = self.path().join(name);
+            std::fs::create_dir_all(&path)?;
+            Ok(path)
+        }
+
+        fn close(self) -> std::io::Result<()> {
+            self.0.close()
+        }
+    }
+
     impl TestEnvironment {
-        /// Creates a new WebDriver instance connected to the test environment.
-        pub async fn driver(&self) -> Result<WebDriver> {
+        fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
+            let profile = tempfile::Builder::new()
+                .prefix("chrome-profile-")
+                .tempdir_in(&self.browser_profile_root)?
+                .keep();
             let mut caps = DesiredCapabilities::chrome();
             // NOTE: Discovered arcana while reverse engineering
             // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
@@ -84,6 +115,7 @@ mod native {
             }
 
             caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
+            caps.add_arg(&format!("--user-data-dir={}", profile.display()))?;
             caps.accept_insecure_certs(true)?;
             let secure_origin = format!(
                 "--unsafely-treat-insecure-origin-as-secure={}",
@@ -105,6 +137,13 @@ mod native {
                     serde_json::json!({ "browser": "ALL" }),
                 );
             }
+
+            Ok(caps)
+        }
+
+        /// Creates a new WebDriver instance connected to the test environment.
+        pub async fn driver(&self) -> Result<WebDriver> {
+            let caps = self.chrome_capabilities()?;
 
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
             // Bound each navigation well under the suite's patience. The
@@ -241,6 +280,7 @@ mod native {
         chromedriver: ManagedChild,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
+        workspace: Option<TestWorkspace>,
     }
 
     impl TestServers {
@@ -251,6 +291,11 @@ mod native {
         /// 2. Start Caddy web server with access service port
         /// 3. Start ChromeDriver
         pub async fn start() -> Result<(Self, TestEnvironment)> {
+            let workspace = TestWorkspace::new()?;
+            let caddy_data = workspace.directory("caddy-data")?;
+            let caddy_config = workspace.directory("caddy-config")?;
+            let service_worker_root = workspace.directory("service-worker")?;
+            let browser_profile_root = workspace.directory("browser-profiles")?;
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
             // access service's own port.
@@ -269,8 +314,6 @@ mod native {
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
                 .port()
                 .ok_or_else(|| anyhow!("Access service URL has no port"))?;
-            let caddy_data = std::env::temp_dir().join(format!("tonk-e2e-caddy-{web_port}"));
-            std::fs::create_dir_all(&caddy_data)?;
             // The runner's variable wins over the compile-time constant:
             // a binary out of the `tests-e2e` archive was compiled in the
             // Nix sandbox, whose source path no longer exists, while
@@ -278,7 +321,7 @@ mod native {
             // variable at the live checkout.
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
                 .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-            let workspace = std::path::Path::new(&manifest_dir)
+            let repository_root = std::path::Path::new(&manifest_dir)
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
@@ -287,9 +330,7 @@ mod native {
             // store every time an integration test starts its web server.
             // Newly added test source must be staged, just as it must be for
             // the committed CI revision that ultimately runs this harness.
-            let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
-            let service_worker_root = caddy_data.join("service-worker");
-            std::fs::create_dir_all(&service_worker_root)?;
+            let test_server = format!("git+file:{}#tonk-ui-test-server", repository_root.display());
             let service_worker_script = service_worker_root.join("service_worker.js");
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
@@ -310,6 +351,7 @@ mod native {
                     // it can speak TLS to the harness origin the
                     // descriptors name.
                     .env("XDG_DATA_HOME", &caddy_data)
+                    .env("XDG_CONFIG_HOME", &caddy_config)
                     .stdout(Stdio::piped())
                     // Nix writes build progress to stderr. Inheriting it prevents a
                     // full unread pipe from deadlocking before Caddy starts.
@@ -387,9 +429,13 @@ mod native {
                 free_local_port().expect("Could not get a free local port for chromedriver");
             let chromedriver_binary =
                 std::env::var("CHROMEDRIVER").unwrap_or_else(|_| "chromedriver".to_string());
+            let chromedriver_log = workspace.path().join("chromedriver.log");
             let mut chromedriver = ManagedChild::new(
                 std::process::Command::new(chromedriver_binary)
-                    .args([&format!("--port={chromedriver_port}")])
+                    .args([
+                        &format!("--port={chromedriver_port}"),
+                        &format!("--log-path={}", chromedriver_log.display()),
+                    ])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::inherit())
                     .spawn()?,
@@ -414,6 +460,7 @@ mod native {
                     web_server,
                     chromedriver,
                     access_service: Some(access_service),
+                    workspace: Some(workspace),
                 },
                 TestEnvironment {
                     tonk_web: Url::parse(&format!("https://tonk.network:{web_port}"))?,
@@ -421,6 +468,7 @@ mod native {
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
                     service_worker_script,
+                    browser_profile_root,
                 },
             ))
         }
@@ -434,10 +482,29 @@ mod native {
             } else {
                 Ok(())
             };
-            web_result?;
-            chromedriver_result?;
-            access_result?;
-            Ok(())
+            let workspace_result = self.workspace.take().map(TestWorkspace::close).transpose();
+
+            let mut failures = Vec::new();
+            if let Err(error) = web_result {
+                failures.push(format!("web server: {error}"));
+            }
+            if let Err(error) = chromedriver_result {
+                failures.push(format!("ChromeDriver: {error}"));
+            }
+            if let Err(error) = access_result {
+                failures.push(format!("access service: {error}"));
+            }
+            if let Err(error) = workspace_result {
+                failures.push(format!("test workspace cleanup: {error}"));
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "failed to stop test servers: {}",
+                    failures.join("; ")
+                ))
+            }
         }
     }
 
@@ -448,6 +515,8 @@ mod native {
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
+            // Child processes must be gone before the workspace tree is removed.
+            self.workspace.take();
         }
     }
 
@@ -466,8 +535,11 @@ mod native {
 
     #[cfg(test)]
     mod tests {
-        use super::retryable_navigation_error;
+        use super::{
+            ChromeCapabilities, TestEnvironment, TestWorkspace, retryable_navigation_error,
+        };
         use thirtyfour::error::{WebDriverErrorInfo, WebDriverErrorInner, WebDriverErrorValue};
+        use url::Url;
 
         fn unknown_navigation_error(message: &str) -> WebDriverErrorInner {
             WebDriverErrorInner::UnknownError(WebDriverErrorInfo {
@@ -485,6 +557,63 @@ mod native {
             assert!(!retryable_navigation_error(&unknown_navigation_error(
                 "unknown error: net::ERR_CONNECTION_REFUSED"
             )));
+        }
+
+        #[test]
+        fn it_pins_chrome_profiles_below_the_test_workspace() -> anyhow::Result<()> {
+            let workspace = TestWorkspace::new()?;
+            let browser_profile_root = workspace.directory("browser-profiles")?;
+            let env = TestEnvironment {
+                tonk_web: Url::parse("https://tonk.network:8443")?,
+                chromedriver: Url::parse("http://127.0.0.1:9515")?,
+                access_service: Url::parse("http://127.0.0.1:8090")?,
+                ca_certificate: None,
+                service_worker_script: workspace.path().join("service_worker.js"),
+                browser_profile_root: browser_profile_root.clone(),
+            };
+
+            let profile_from = |caps: ChromeCapabilities| -> anyhow::Result<std::path::PathBuf> {
+                let value = serde_json::to_value(caps)?;
+                let args = value
+                    .pointer("/goog:chromeOptions/args")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| anyhow::anyhow!("Chrome capabilities contain no arguments"))?;
+                let argument = args
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .find_map(|arg| arg.strip_prefix("--user-data-dir="))
+                    .ok_or_else(|| anyhow::anyhow!("Chrome profile argument is missing"))?;
+                Ok(std::path::PathBuf::from(argument))
+            };
+
+            let first = profile_from(env.chrome_capabilities()?)?;
+            let second = profile_from(env.chrome_capabilities()?)?;
+            assert_ne!(first, second);
+            assert!(first.starts_with(&browser_profile_root));
+            assert!(second.starts_with(&browser_profile_root));
+            assert_ne!(first.parent(), Some(std::env::temp_dir().as_path()));
+            workspace.close()?;
+            Ok(())
+        }
+
+        #[test]
+        fn it_removes_the_test_workspace_after_orderly_shutdown() -> anyhow::Result<()> {
+            let workspace = TestWorkspace::new()?;
+            let root = workspace.path().to_path_buf();
+            for relative in [
+                "caddy-data/caddy/pki/root.crt",
+                "caddy-config/caddy/autosave.json",
+                "service-worker/service_worker.js",
+                "browser-profiles/chrome-profile/sentinel",
+            ] {
+                let path = root.join(relative);
+                std::fs::create_dir_all(path.parent().expect("sentinel has a parent"))?;
+                std::fs::write(path, b"sentinel")?;
+            }
+
+            workspace.close()?;
+            assert!(!root.exists());
+            Ok(())
         }
     }
 }

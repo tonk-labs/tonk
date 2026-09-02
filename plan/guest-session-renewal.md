@@ -82,7 +82,7 @@ pub(crate) async fn save_guest(
 - [ ] Add `it_reads_a_v1_guest_record_as_a_legacy_lease`. Save the current `{version: 1, url}` bytes, load them through the production decoder, and assert the URL survives while `audience` and `expires_at` are `None`; unsupported versions and a v2 record missing either field must return a typed internal/claim failure rather than panic.
 - [ ] Add `it_persists_the_guest_grants_actual_audience_and_expiry`. Visit an open invite, commit it through the existing guest path, reload the credential record, and assert version 2, the exact current operator DID, and the delegation chain's effective expiration rather than an independently calculated `now + 3600` value.
 - [ ] Add `it_enumerates_only_repository_replicas_with_guest_records`. Seed two guest replicas, one durable replica, the profile replica, and the account replica; assert `guest_leases` returns the two guest subjects in stable subject order and never treats an absent/cleared guest site as a guest.
-- [ ] Run `nix develop path:. -c test:web:debug`; expect the new tests to fail because the v2 metadata and helper interfaces do not exist. If disk pressure prevents the run, record `No space left on device` as an environmental block rather than treating it as the expected red result.
+- [ ] Run `nix develop . -c test:web:debug`; expect the new tests to fail because the v2 metadata and helper interfaces do not exist. If disk pressure prevents the run, record `No space left on device` as an environmental block rather than treating it as the expected red result.
 - [ ] Replace the write-only `GuestRecord { version: 1, url }` shape with a decoder that accepts version 1 as missing metadata and writes version 2 as `{version, url, audience, expires_at}`. Parse the audience string as a `Did` on load and reject unsupported versions or incomplete v2 records.
 - [ ] Refactor `guest_url` to project from the shared record loader so membership status and promotion preserve their current behavior. `clear_guest` continues to write empty bytes and remains the only way promotion removes guest state.
 - [ ] Implement `guest_leases` by querying the profile `main` branch for `Replica::repository_kind()` rows belonging to `tonk.profile.did()`, loading each subject's guest credential site, dropping absent/cleared sites, and sorting by subject DID for deterministic batch behavior.
@@ -90,7 +90,7 @@ pub(crate) async fn save_guest(
 - [ ] Change `save_authority` to return `Option<GuestGrant>` after the chain is retained. Pass that result to `save_guest`, which writes the matching v2 record only for `JoinMode::GuestVisit`; durable join/promotion behavior remains unchanged.
 - [ ] Implement `retain_guest_grant` as the chain-retention half and `save_guest` as the metadata-persistence half. Initial visit calls them in that order. Renewal can retain the complete batch first and write the complete metadata batch second, avoiding a state swap while any guest still lacks a chain for the candidate audience. Do not log or return the bearer URL.
 - [ ] Run `cargo test -p tonk-invite it_visits_with_bounded_session_authority_without_changing_the_invite`; expect the unchanged one-hour bound test to pass.
-- [ ] Run `nix develop path:. -c test:web:debug`; expect all guest join, promotion, and new metadata tests to pass.
+- [ ] Run `nix develop . -c test:web:debug`; expect all guest join, promotion, and new metadata tests to pass.
 
 ### Task 2: Renew all guest authority before any remote sync operation
 
@@ -125,7 +125,7 @@ pub(crate) async fn ensure_session_authority(
 - [ ] Add `it_rebinds_every_guest_when_one_guest_forces_rotation`. Create two guests plus one durable space, put only the first guest inside the margin, renew once, and assert both guest records target the same new operator and all three subjects can produce proofs for it. Assert exactly one operator rotation, not one per guest.
 - [ ] Add `it_does_not_rotate_a_healthy_operator_or_guest`. Call the ensure function twice with all expiries outside their margins and assert the operator DID and guest record bytes remain identical.
 - [ ] Add `it_keeps_the_current_operator_when_guest_replay_fails`. Create a valid guest, rewrite its retained v2 record with a syntactically invalid invite URL and an expiry inside the margin, call `ensure_session_authority`, and assert it returns an error without changing `tonk.operator`, `session_expires_at`, or the stored guest bytes. Preserve the malformed record for diagnosis; do not add a generic storage abstraction solely to inject a later write failure.
-- [ ] Run `nix develop path:. -c test:web:debug`; expect the renewal tests to fail because current `renew_session` only considers `session_expires_at` and never replays retained guest invites.
+- [ ] Run `nix develop . -c test:web:debug`; expect the renewal tests to fail because current `renew_session` only considers `session_expires_at` and never replays retained guest invites.
 - [ ] Implement `guest_needs_renewal`: return true for v1 metadata, an audience different from the current operator, or an expiry inside the five-minute margin. When deciding whether a valid invite can trigger automatic renewal, respect an earlier expiration in the original invite chain; an already expired parent invite cannot be made valid by another guest hop.
 - [ ] Replace `renew_session` with `ensure_session_authority`. Its initial read phase loads all guest leases and returns immediately unless the normal session or at least one renewable guest is due. Open the candidate `Session` outside the state lock.
 - [ ] Acquire the exclusive state lock, verify `session_expires_at` still matches the snapshot, and re-read the full current guest set under that lock. Parse and mint a `GuestGrant` for every still-valid guest against the candidate operator, including guests that were not individually due, because the operator is global.
@@ -137,8 +137,8 @@ pub(crate) async fn ensure_session_authority(
 - [ ] Run `cargo test -p tonk-invite`; expect success.
 - [ ] Run `cargo test -p tonk-access-service --features helpers expiry`; expect the existing expired-chain rejection tests to pass.
 - [ ] Run `cargo test -p tonk-worker`; expect native worker tests to pass.
-- [ ] Run `nix develop path:. -c test:web:debug`; expect all WASM worker tests, including guest join/promotion and renewal coverage, to pass.
-- [ ] Run `nix flake check 'path:.'`; expect the repository-defined formatting, lint, native, and build checks to pass. Report any remaining disk-, browser-, Nix-daemon-, or sandbox-bound check separately from code failures.
+- [ ] Run `nix develop . -c test:web:debug`; expect all WASM worker tests, including guest join/promotion and renewal coverage, to pass.
+- [ ] Run `nix flake check '.'`; expect the repository-defined formatting, lint, native, and build checks to pass. Report any remaining disk-, browser-, Nix-daemon-, or sandbox-bound check separately from code failures.
 
 ## Acceptance evidence
 

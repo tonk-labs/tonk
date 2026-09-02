@@ -117,9 +117,9 @@ inspected 2026-08-28.
   from the provider-free Hub account trigger, close with Escape, return to the
   sealed frame, and assert that exact trigger—not merely the iframe—has focus.
 - [x] Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_scopes_registration_focus_and_restores_the_opener -- --test-threads=1 --nocapture`
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_scopes_registration_focus_and_restores_the_opener -- --test-threads=1 --nocapture`
   and
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_restores_registration_focus_to_the_guest_opener -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_restores_registration_focus_to_the_guest_opener -- --test-threads=1 --nocapture`;
   expect the current
   Settings assertion to settle on `BODY` and the Hub assertion to stop at the
   outer iframe.
@@ -144,11 +144,11 @@ inspected 2026-08-28.
   dialog is closed and removed.
 - [x] Add bridge parser/round-trip tests rejecting empty tokens and proving a
   focus-return envelope is sent through the request's own port. Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-portal)'`; expect the
+  `nix develop . -c test:web:debug -E 'package(tonk-portal)'`; expect the
   bridge tests to pass. Rerun the two focused Tonk UI commands above; expect
   both opener-restoration regressions to pass at runtime.
 - [x] Rerun
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_explains_email_verification_before_account_sync -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_explains_email_verification_before_account_sync -- --test-threads=1 --nocapture`;
   expect a completed
   account still refreshes the Settings panel through `ACCOUNT_CHANGED` without
   the dismissal-time repaint.
@@ -176,7 +176,7 @@ inspected 2026-08-28.
   the address you want to use,” the settled email row still names the original
   address, and each attempt is single-flight while pending.
 - [x] Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_retries_the_committed_address_after_a_failed_passkey_ceremony -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_retries_the_committed_address_after_a_failed_passkey_ceremony -- --test-threads=1 --nocapture`;
   expect the first rejection to re-enable
   “create a passkey” and the second click to make no credential call because
   `address()` can no longer find `#tonk-register-email`.
@@ -189,7 +189,7 @@ inspected 2026-08-28.
   claims the attempt; a retryable error calls `set_action(label, true)`; a
   second click/Enter in the same pending turn is rejected.
 - [x] Rerun the retry command above, then run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_begins_only_one_registration_action_per_offered_step -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_begins_only_one_registration_action_per_offered_step -- --test-threads=1 --nocapture`;
   expect two
   sequential rejected ceremonies in the former and exactly one concurrent
   ceremony in the latter.
@@ -221,7 +221,7 @@ inspected 2026-08-28.
   active element remains the guest iframe and the guest active path belongs to
   the open `tonk-dialog`. Escape must close and restore the remove opener.
 - [x] Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_keeps_space_removal_focus_inside_the_sealed_guest -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_keeps_space_removal_focus_inside_the_sealed_guest -- --test-threads=1 --nocapture`;
   expect current forward Tab from “remove
   space” to reach a top-shell control while the guest dialog remains open.
 - [x] In `dialog.rs`, bind `keydown` on the native shadow dialog. Build the
@@ -234,9 +234,9 @@ inspected 2026-08-28.
   controls. Do not mark the parent document inert: the guard exists because a
   native dialog cannot scope the joint tab order outside its iframe.
 - [x] Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-fab)'`,
-  `nix develop path:. -c test:web:debug -E 'package(tonk-workspace)'`, and
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_keeps_space_removal_focus_inside_the_sealed_guest -- --test-threads=1 --nocapture`;
+  `nix develop . -c test:web:debug -E 'package(tonk-fab)'`,
+  `nix develop . -c test:web:debug -E 'package(tonk-workspace)'`, and
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_keeps_space_removal_focus_inside_the_sealed_guest -- --test-threads=1 --nocapture`;
   expect all focus-cycle and restoration assertions to pass.
 
 ### Task 4: Give the Join wordmark and input real mobile targets
@@ -260,7 +260,7 @@ inspected 2026-08-28.
   clean profile at `320x568x2` and `390x844x2`, enter the sealed guest, and
   assert exact `innerWidth`/`innerHeight`, no horizontal overflow, no undersized
   targets, and a `16px` computed share-link input font. Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_keeps_join_targets_accessible_at_phone_sizes -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_keeps_join_targets_accessible_at_phone_sizes -- --test-threads=1 --nocapture`;
   expect
   `.edge-mast` at about `98x32.8` and `.edge-input` at about `186x43` on the
   short viewport.
@@ -276,7 +276,7 @@ inspected 2026-08-28.
   Run `cargo test -p tonk-worker --test standard_library`; expect the current
   seeded CSS to fail the two new contracts, then pass after the CSS change.
 - [x] Rerun
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_keeps_join_targets_accessible_at_phone_sizes -- --test-threads=1 --nocapture`
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_keeps_join_targets_accessible_at_phone_sizes -- --test-threads=1 --nocapture`
   in light and dark schemes at both viewports; expect
   all targets at least `44x44`, no horizontal overflow, and unchanged wordmark
   dimensions.
@@ -304,7 +304,7 @@ inspected 2026-08-28.
   the old diagnostic. Assert the host remains `data-state="ready"`, its direct
   `slot="no-entity"` child stays hidden, and rendered content remains mounted.
 - [x] Run
-  `nix develop path:. -c test:web:debug -E 'test(it_discards_a_no_entity_diagnostic_superseded_by_a_ready_frame)'`;
+  `nix develop . -c test:web:debug -E 'test(it_discards_a_no_entity_diagnostic_superseded_by_a_ready_frame)'`;
   expect the current diagnostic path to restore `no-entity` because it has no
   generation check.
 - [x] In the empty-frame branch, capture `entity_serial` and clone the shared
@@ -318,8 +318,8 @@ inspected 2026-08-28.
   `data-state="no-entity"`; generation ordering is the owning invariant and
   also protects every other display from stale diagnostics.
 - [x] Run the new Wasm command above,
-  `nix develop path:. -c test:web:debug -E 'test(it_keeps_nested_display_lifecycle_slots_scoped_to_their_owner)'`, and
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_replaces_agent_link_progress_with_the_share_refusal -- --test-threads=1 --nocapture`.
+  `nix develop . -c test:web:debug -E 'test(it_keeps_nested_display_lifecycle_slots_scoped_to_their_owner)'`, and
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests it_replaces_agent_link_progress_with_the_share_refusal -- --test-threads=1 --nocapture`.
   The browser test must create a fresh space and see “sharing unavailable” with
   no visible “Generating link…”.
 
@@ -350,13 +350,13 @@ of the loopback harness, so the full-suite item below remains unchecked.
   `cargo test -p tonk-display`, and `cargo test -p tonk-portal`; expect all
   native suites to pass.
 - [ ] With a ChromeDriver compatible with Chrome 152, run
-  `nix develop path:. -c test:web:debug`; expect all Wasm browser tests to
+  `nix develop . -c test:web:debug`; expect all Wasm browser tests to
   execute, not merely compile.
 - [ ] Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests -- --test-threads=1 --nocapture`;
+  `nix develop . -c cargo test -p tonk-ui --features integration-tests -- --test-threads=1 --nocapture`;
   expect the whole serialized browser suite to pass, including the five focused
   regressions.
-- [ ] Run `env -u NO_COLOR nix develop path:. -c build:web`; serve that exact
+- [ ] Run `env -u NO_COLOR nix develop . -c build:web`; serve that exact
   production artifact from a disposable profile and repeat the affected
   journeys at `320x568x2` and `390x844x2`, light and dark. Also verify normal
   and OS-level reduced motion if the automation environment can genuinely set

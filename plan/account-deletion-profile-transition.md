@@ -23,5 +23,5 @@
 - The focused real-browser regression failed before the production change at
   `POST /api/identity/root` with the reported `409 Conflict`, then passed after
   the profile transition change.
-- `nix develop path:. -c test:web:debug`: 1,357 passed, 1 skipped.
+- `nix develop . -c test:web:debug`: 1,357 passed, 1 skipped.
 - `cargo fmt --all -- --check` and `git diff --check` passed.
