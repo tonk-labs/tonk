@@ -1,8 +1,9 @@
 //! The `window.tonkIdentity` ceremony hook.
 //!
 //! WebAuthn only exists on the window, so the ceremony surface installs
-//! from the page main thread; the service worker never sees key
-//! material. Installed as JS functions (rather than Rust-only API) so
+//! from the page main thread. Its two transient PRF outputs cross to the
+//! service worker as typed arrays and are imported there immediately.
+//! Installed as JS functions (rather than Rust-only API) so
 //! WebDriver-driven tests and future non-wasm callers (the CLI linking
 //! handoff page) can invoke ceremonies directly.
 //!
@@ -15,11 +16,18 @@
 //! a guest to that check, and every page effect (navigate, set title,
 //! open) would silently stop working.
 
-use js_sys::{Object, Promise, Reflect};
+use std::cell::Cell;
+use std::rc::Rc;
+
+use js_sys::{Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
+
+const CUSTODY_HANDOFF_TIMEOUT_MS: i32 = 30_000;
+const CUSTODY_HANDOFF_TIMEOUT: &str =
+    "the service worker did not answer the custody handoff in time";
 
 fn js_error(error: anyhow::Error) -> JsValue {
     // A ceremony refusal carries its DOM error name as a variant; hand
@@ -54,37 +62,38 @@ fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
 /// `createPasskey({ name?, displayName? })` → `{ credentialId }`.
 ///
 /// Creates a custody passkey, evaluates its PRF, and hands the service
-/// worker the two derivation handles. Nothing but the credential id
-/// comes back to the caller: the handles go straight to the worker,
-/// which is the only place that mints anything.
+/// worker the two PRF outputs. Nothing but the credential id comes back
+/// to the caller: the worker imports non-extractable derivation handles
+/// immediately and remains the only place that mints anything.
 async fn create_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     let name = optional_string_property(&input, "name");
     let display_name = optional_string_property(&input, "displayName");
-    let custodian = crate::webcrypto_kek::Custodian::create(name, display_name)
-        .perform(&crate::webcrypto_kek::Page)
-        .await
-        .map_err(js_error)?;
+    let credential =
+        crate::passkey::create_custody_passkey(name.as_deref(), display_name.as_deref())
+            .await
+            .map_err(js_error)?;
+    let credential = credential.into_evaluated().await.map_err(js_error)?;
     let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    mediate(custodian, request).await
+    mediate(credential, request).await
 }
 
 /// `addPasskey({ name?, displayName?, request })` → `{ credentialId }`.
 ///
 /// Two ceremonies in one call: assert the passkey that already holds
-/// the account, then create the one being added. Both sets of handles
-/// go to the worker, which is the only place the account secret is
-/// opened and re-sealed.
+/// the account, then create the one being added. Both pairs of PRF
+/// outputs go to the worker, which is the only place the account secret
+/// is opened and re-sealed.
 async fn add_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let holder = crate::webcrypto_kek::Custodian::choose()
-        .perform(&crate::webcrypto_kek::Page)
+    let holder = crate::passkey::evaluate_custody_passkey(None)
         .await
         .map_err(js_error)?;
+    let holder = holder.into_evaluated().await.map_err(js_error)?;
     let name = optional_string_property(&input, "name");
     let display_name = optional_string_property(&input, "displayName");
-    let added = crate::webcrypto_kek::Custodian::create(name, display_name)
-        .perform(&crate::webcrypto_kek::Page)
+    let added = crate::passkey::create_custody_passkey(name.as_deref(), display_name.as_deref())
         .await
         .map_err(js_error)?;
+    let added = added.into_evaluated().await.map_err(js_error)?;
     let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
     mediate_pair(added, Some(holder), request).await
 }
@@ -116,95 +125,67 @@ fn use_passkey(input: JsValue) -> Promise {
     };
     future_to_promise(async move {
         let credential = assertion.finish().await.map_err(js_error)?;
-        let custodian = crate::webcrypto_kek::Custodian::from_credential(credential)
-            .await
-            .map_err(js_error)?;
+        let credential = credential.into_evaluated().await.map_err(js_error)?;
         let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-        mediate(custodian, request).await
+        mediate(credential, request).await
     })
 }
 
-/// Hand a custodian's two derivation handles to the service worker and
-/// wait for it to finish.
+/// Hand a credential's two PRF outputs to the service worker and wait
+/// for it to finish.
 ///
-/// The page's whole job. `structuredClone` — which is what
-/// `postMessage` runs — carries a non-extractable `CryptoKey` intact,
-/// so the worker receives derivation capability without either side
-/// ever holding bytes.
+/// The page's whole job. Fresh fixed-length typed arrays survive service
+/// worker messaging on every supported browser. The sender clears its
+/// copies immediately after the synchronous post; the worker clears its
+/// structured-clone copies after importing non-extractable HKDF handles.
 ///
 /// A fresh `MessageChannel` per call carries the reply. The worker
 /// drops the handles as soon as it is done, so the page must know when
 /// that is; a port answers exactly one request and needs no correlation
 /// id to do it.
 async fn mediate(
-    custodian: crate::webcrypto_kek::Custodian,
+    credential: crate::passkey::EvaluatedCustodyCredential,
     request: JsValue,
 ) -> Result<JsValue, JsValue> {
-    mediate_pair(custodian, None, request).await
+    mediate_pair(credential, None, request).await
 }
 
 /// [`mediate`], optionally carrying a second custodian: the passkey
 /// that already holds the account, for work that must open it before
 /// sealing under the first.
 async fn mediate_pair(
-    custodian: crate::webcrypto_kek::Custodian,
-    holder: Option<crate::webcrypto_kek::Custodian>,
+    credential: crate::passkey::EvaluatedCustodyCredential,
+    holder: Option<crate::passkey::EvaluatedCustodyCredential>,
     request: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let (key, kek) = custodian.handles();
     let channel = web_sys::MessageChannel::new()?;
+    let key = Uint8Array::from(&credential.evaluation.key[..]);
+    let kek = Uint8Array::from(&credential.evaluation.kek[..]);
 
     let message = Object::new();
     Reflect::set(&message, &"type".into(), &"custody".into())?;
     Reflect::set(
         &message,
         &"credentialId".into(),
-        &hex::encode(&custodian.credential_id).into(),
+        &hex::encode(&credential.id).into(),
     )?;
-    Reflect::set(&message, &"key".into(), key)?;
-    Reflect::set(&message, &"kek".into(), kek)?;
+    Reflect::set(&message, &"key".into(), &key)?;
+    Reflect::set(&message, &"kek".into(), &kek)?;
     Reflect::set(&message, &"request".into(), &request)?;
-    if let Some(holder) = &holder {
-        let (holder_key, holder_kek) = holder.handles();
+    let holder_arrays = if let Some(holder) = &holder {
+        let holder_key = Uint8Array::from(&holder.evaluation.key[..]);
+        let holder_kek = Uint8Array::from(&holder.evaluation.kek[..]);
         Reflect::set(
             &message,
             &"holderCredentialId".into(),
-            &hex::encode(&holder.credential_id).into(),
+            &hex::encode(&holder.id).into(),
         )?;
-        Reflect::set(&message, &"holderKey".into(), holder_key)?;
-        Reflect::set(&message, &"holderKek".into(), holder_kek)?;
-    }
-
-    let answer = js_sys::Promise::new(&mut |resolve, reject| {
-        let port = channel.port1();
-        let on_message = Closure::once_into_js(move |event: web_sys::MessageEvent| {
-            let data = event.data();
-            match Reflect::get(&data, &"error".into())
-                .ok()
-                .and_then(|e| e.as_string())
-            {
-                Some(error) => {
-                    // An `Error`, not a bare string: the worker says WHY
-                    // the service refused in a `code` beside the message,
-                    // and a rejection that carried only the sentence left
-                    // the page matching prose to tell "confirm your email"
-                    // from "check your connection".
-                    let failure = js_sys::Error::new(&error);
-                    if let Some(code) = Reflect::get(&data, &"code".into())
-                        .ok()
-                        .and_then(|code| code.as_string())
-                    {
-                        let _ = Reflect::set(failure.as_ref(), &"code".into(), &code.into());
-                    }
-                    let _ = reject.call1(&JsValue::NULL, failure.as_ref());
-                }
-                None => {
-                    let _ = resolve.call1(&JsValue::NULL, &data);
-                }
-            }
-        });
-        port.set_onmessage(Some(on_message.unchecked_ref()));
-    });
+        Reflect::set(&message, &"holderKey".into(), &holder_key)?;
+        Reflect::set(&message, &"holderKek".into(), &holder_kek)?;
+        Some((holder_key, holder_kek))
+    } else {
+        None
+    };
 
     let worker = web_sys::window()
         .ok_or_else(|| JsValue::from_str("no window"))?
@@ -214,11 +195,100 @@ async fn mediate_pair(
         .ok_or_else(|| JsValue::from_str("no service worker controls this page"))?;
     let transfer = js_sys::Array::new();
     transfer.push(&channel.port2());
-    worker.post_message_with_transferable(&message, &transfer)?;
+    let posted = worker.post_message_with_transferable(&message, &transfer);
 
-    let result = wasm_bindgen_futures::JsFuture::from(answer).await?;
-    channel.port1().set_onmessage(None);
-    Ok(result)
+    // Structured clone has taken the receiver's copies before postMessage
+    // returns. Clear every page-side typed array whether posting succeeded
+    // or threw; the Zeroizing Rust arrays are cleared when their credentials
+    // leave this function.
+    key.fill(0, 0, key.length());
+    kek.fill(0, 0, kek.length());
+    if let Some((holder_key, holder_kek)) = &holder_arrays {
+        holder_key.fill(0, 0, holder_key.length());
+        holder_kek.fill(0, 0, holder_kek.length());
+    }
+    posted?;
+
+    wasm_bindgen_futures::JsFuture::from(wait_for_custody_reply(
+        channel.port1(),
+        CUSTODY_HANDOFF_TIMEOUT_MS,
+    ))
+    .await
+}
+
+/// Wait for the one custody reply, or reject when a browser silently
+/// drops the service-worker message.
+///
+/// The timeout starts only after `postMessage` succeeds. Either branch
+/// removes `onmessage`; a reply also cancels the pending timer.
+fn wait_for_custody_reply(port: web_sys::MessagePort, timeout_ms: i32) -> Promise {
+    let window = web_sys::window().expect("custody handoff is window-only");
+    Promise::new(&mut |resolve, reject| {
+        let settled = Rc::new(Cell::new(false));
+        let timer_id = Rc::new(Cell::new(None));
+
+        let reply_port = port.clone();
+        let reply_window = window.clone();
+        let reply_settled = settled.clone();
+        let reply_timer_id = timer_id.clone();
+        let reply_resolve = resolve.clone();
+        let reply_reject = reject.clone();
+        let on_message = Closure::once_into_js(move |event: web_sys::MessageEvent| {
+            if reply_settled.replace(true) {
+                return;
+            }
+            if let Some(timer_id) = reply_timer_id.take() {
+                reply_window.clear_timeout_with_handle(timer_id);
+            }
+            reply_port.set_onmessage(None);
+
+            let data = event.data();
+            match Reflect::get(&data, &"error".into())
+                .ok()
+                .and_then(|error| error.as_string())
+            {
+                Some(error) => {
+                    // An `Error`, not a bare string: the worker says WHY
+                    // the service refused in a `code` beside the message.
+                    let failure = js_sys::Error::new(&error);
+                    if let Some(code) = Reflect::get(&data, &"code".into())
+                        .ok()
+                        .and_then(|code| code.as_string())
+                    {
+                        let _ = Reflect::set(failure.as_ref(), &"code".into(), &code.into());
+                    }
+                    let _ = reply_reject.call1(&JsValue::NULL, failure.as_ref());
+                }
+                None => {
+                    let _ = reply_resolve.call1(&JsValue::NULL, &data);
+                }
+            }
+        });
+        port.set_onmessage(Some(on_message.unchecked_ref()));
+
+        let timeout_port = port.clone();
+        let timeout_settled = settled.clone();
+        let timeout_reject = reject.clone();
+        let on_timeout = Closure::once_into_js(move || {
+            if timeout_settled.replace(true) {
+                return;
+            }
+            timeout_port.set_onmessage(None);
+            let failure = js_sys::Error::new(CUSTODY_HANDOFF_TIMEOUT);
+            let _ = timeout_reject.call1(&JsValue::NULL, failure.as_ref());
+        });
+        match window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            on_timeout.unchecked_ref(),
+            timeout_ms,
+        ) {
+            Ok(id) => timer_id.set(Some(id)),
+            Err(error) => {
+                settled.set(true);
+                port.set_onmessage(None);
+                let _ = reject.call1(&JsValue::NULL, &error);
+            }
+        }
+    })
 }
 
 /// `signRevocation({ delegationCid, pathHex, endpoint })` →
@@ -445,5 +515,20 @@ mod tests {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
         }
+    }
+
+    #[dialog_common::test]
+    async fn it_times_out_when_the_worker_does_not_reply() {
+        let channel = web_sys::MessageChannel::new().unwrap();
+        let error =
+            wasm_bindgen_futures::JsFuture::from(wait_for_custody_reply(channel.port1(), 10))
+                .await
+                .expect_err("an unanswered custody handoff must reject");
+        let message = Reflect::get(&error, &"message".into())
+            .unwrap()
+            .as_string()
+            .unwrap();
+        assert_eq!(message, CUSTODY_HANDOFF_TIMEOUT);
+        assert!(channel.port1().onmessage().is_none());
     }
 }

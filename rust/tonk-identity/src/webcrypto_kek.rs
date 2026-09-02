@@ -1,17 +1,15 @@
 //! Opening an envelope from a **non-extractable** KEK handle.
 //!
 //! The KEK is a 32-byte symmetric AES-256 key. The `aes_gcm` path in
-//! [`crate::envelope`] needs those bytes
-//! (`Aes256Gcm::new_from_slice`), which is exactly what a hardened
-//! custody flow must not hand around: a page that derives the KEK from
-//! a passkey's PRF output would have to materialise it, post it, and
-//! hope both sides zeroize.
+//! [`crate::envelope`] needs those bytes (`Aes256Gcm::new_from_slice`).
+//! A passkey ceremony necessarily returns its PRF outputs to the page;
+//! the page posts those two fixed-length values as transient typed
+//! arrays, and the worker immediately imports them as HKDF bases.
 //!
 //! WebCrypto offers a better shape. `deriveKey` produces a `CryptoKey`
-//! that is born non-extractable — no raw copy is ever materialised —
-//! and a `CryptoKey` is structured-cloneable, so it crosses
-//! `postMessage` as an opaque **handle**. The receiver can decrypt with
-//! it and cannot read it. Restricted to `["decrypt"]`, a leaked handle
+//! that is born non-extractable — no raw KEK copy is ever materialised.
+//! The worker retains only opaque handles after importing the PRF
+//! transport bytes. Restricted to `["decrypt"]`, a leaked KEK handle
 //! cannot even seal something new under that KEK.
 //!
 //! This module is the receiving half: given such a handle and an
@@ -192,16 +190,15 @@ pub async fn open_seed<C: Clearance, K: Capability>(
 /// Derive the custody KEK from a PRF output as a **non-extractable**
 /// WebCrypto key.
 ///
-/// The page's half. Mirrors [`crate::envelope::custody_kek`] exactly —
+/// Mirrors [`crate::envelope::custody_kek`] exactly —
 /// HKDF-SHA256, no salt, expanded at
 /// [`crate::envelope::CUSTODY_KEK_CONTEXT`] — but the result is a
 /// `CryptoKey` rather than 32 bytes, so:
 ///
 /// - no raw KEK is ever materialised in JS or Rust to be zeroized;
 ///   `deriveKey` (not `deriveBits`) produces it already sealed
-/// - it is structured-cloneable, so it crosses `postMessage` to the
-///   service worker as an opaque handle the worker can use and cannot
-///   read
+/// - the resulting handle stays in the realm that imported it and
+///   cannot be read
 /// - it carries only the `decrypt` usage, so a leaked handle can open
 ///   envelopes and can never seal a new one under this KEK
 ///
@@ -218,16 +215,15 @@ pub async fn derive_custody_kek_handle(prf_output: &[u8; 32]) -> Result<CryptoKe
 /// where an account secret is wrapped under a new passkey — account
 /// creation, and enrolling another passkey.
 ///
-/// Worth having even though sealing happens in the page that ran the
-/// ceremony, with no boundary to cross: the point is not transport but
-/// that **no raw KEK is ever materialised**. `custody_kek(&prf)`
+/// The point is not transport but that **no raw KEK is ever
+/// materialised**. `custody_kek(&prf)`
 /// produces 32 bytes in a buffer that must be trusted to zero;
 /// `deriveKey` produces a key that was never readable to begin with.
 ///
 /// Kept separate from [`derive_custody_kek_handle`] rather than
 /// deriving one key with both usages: an opener that cannot forge is
-/// the entire value of the handle the worker receives, and a key with
-/// `encrypt` in its usages is not that.
+/// the entire value of the worker-owned handle, and a key with `encrypt`
+/// in its usages is not that.
 pub async fn derive_custody_sealing_handle(prf_output: &[u8; 32]) -> Result<CryptoKey, JsValue> {
     derive_custody_kek_for(prf_output, "encrypt").await
 }
@@ -287,17 +283,16 @@ async fn derive_custody_kek_for(prf_output: &[u8; 32], usage: &str) -> Result<Cr
 
 /// Import a PRF output as an HKDF base the worker can derive from.
 ///
-/// The page runs the assertion and imports each output here; what
-/// crosses `postMessage` is this handle, not the bytes. Non-extractable
-/// and HKDF-only, so a leaked one derives at contexts the holder chooses
-/// and never yields the output that made it.
+/// The worker calls this after receiving one transient typed array.
+/// Non-extractable and HKDF-only, the resulting handle derives at
+/// contexts the holder chooses and never yields the output that made it.
 ///
 /// Both usages, because the two derivations need different ones: the
 /// KEK is a `deriveKey` target, and the custody seed can only be
 /// `deriveBits` — WebCrypto has no Ed25519 for `deriveKey`.
 ///
-/// The caller still holds the PRF output that produced it, which is
-/// unavoidable while the ceremony returns bytes. Its lifetime ends here.
+/// The caller keeps the copied PRF output in zeroizing Rust storage for
+/// the duration of this import only.
 pub async fn import_derivation_base(prf_output: &[u8; 32]) -> Result<CryptoKey, JsValue> {
     let subtle = subtle()?;
     let material = js_sys::Uint8Array::from(&prf_output[..]);
@@ -378,7 +373,7 @@ async fn derive_kek_from_base(base: &CryptoKey, usage: &str) -> Result<CryptoKey
     .dyn_into()
 }
 
-/// A passkey's two derivation handles, held together.
+/// A passkey's two worker-owned derivation handles, held together.
 ///
 /// The authenticator evaluates its PRF at two salts and the pair is
 /// meaningless split: one names the custody space, the other opens what
@@ -386,10 +381,9 @@ async fn derive_kek_from_base(base: &CryptoKey, usage: &str) -> Result<CryptoKey
 /// deriving a seed under a KEK handle, which would compile and produce
 /// a plausible-looking key for a space that does not exist.
 ///
-/// Neither handle yields bytes. The page imports them, they cross
-/// `postMessage` to the worker, and the worker derives from them —
-/// which is what lets the worker mint custody material without a live
-/// assertion in front of it.
+/// Neither handle yields bytes. The worker imports both from the
+/// transient PRF byte envelope and derives from them for one custody
+/// request.
 #[derive(Clone)]
 pub struct Custodian {
     /// The credential this came from, so a later assertion can name it.
@@ -401,17 +395,10 @@ pub struct Custodian {
 }
 
 impl Custodian {
-    /// Adopt a pair of handles, as they arrive from `postMessage`.
-    pub fn new(credential_id: Vec<u8>, key: CryptoKey, kek: CryptoKey) -> Self {
-        Self {
-            credential_id,
-            key,
-            kek,
-        }
-    }
-
-    /// Import a pair of PRF outputs as handles. Called in the page,
-    /// which is where the bytes are; they go no further.
+    /// Import a pair of PRF outputs as worker-owned handles.
+    ///
+    /// The caller keeps the raw values in zeroizing arrays and drops
+    /// them immediately after this import completes.
     pub async fn adopt(
         credential_id: Vec<u8>,
         key: &[u8; 32],
@@ -458,157 +445,6 @@ impl Custodian {
         Ok(Kek::from_sealing_handle(
             derive_custody_sealer_from_base(&self.kek).await?,
         ))
-    }
-
-    /// The two handles, for putting on a `postMessage`.
-    pub fn handles(&self) -> (&CryptoKey, &CryptoKey) {
-        (&self.key, &self.kek)
-    }
-
-    /// Create a passkey. A command, performed against whatever can run
-    /// WebAuthn — which is a page and never a worker.
-    ///
-    /// Needs no account: there is not one yet when a signup runs this,
-    /// and the account is made afterwards from the handles this yields.
-    ///
-    /// `name` and `display_name` are what a passkey manager shows, and
-    /// with a per-credential user handle they are the only thing telling
-    /// two entries apart.
-    pub fn create(name: Option<String>, display_name: Option<String>) -> CreateCustodian {
-        CreateCustodian { name, display_name }
-    }
-
-    /// Assert a known passkey.
-    ///
-    /// `allowCredentials` pins the assertion to it, so an authenticator
-    /// holding several passkeys for this origin cannot offer one that
-    /// derives a different custody space. For a caller that already
-    /// knows which passkey owns the custody it is opening.
-    pub fn load(credential_id: Vec<u8>) -> LoadCustodian {
-        LoadCustodian {
-            credential_id: Some(credential_id),
-        }
-    }
-
-    /// Let the person pick a passkey.
-    ///
-    /// Discoverable: the authenticator lists what it holds for this
-    /// origin. For the flows where choosing the passkey *is* choosing
-    /// the account — signing in, and the creation chase where no id is
-    /// recorded yet.
-    pub fn choose() -> LoadCustodian {
-        LoadCustodian {
-            credential_id: None,
-        }
-    }
-
-    /// Import a credential's PRF outputs, and let the bytes go.
-    ///
-    /// Creation does not always evaluate — some platforms return a
-    /// credential without PRF outputs — so this asserts once more when
-    /// it must, which is a second prompt on those platforms only.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn from_credential(
-        credential: crate::passkey::CustodyCredential,
-    ) -> anyhow::Result<Self> {
-        use anyhow::Context as _;
-
-        let id = credential.id.clone();
-        let evaluation = match credential.evaluation {
-            Some(evaluation) => evaluation,
-            None => crate::passkey::evaluate_custody_passkey(Some(&id))
-                .await?
-                .evaluation
-                .context("the authenticator returned no PRF outputs")?,
-        };
-        Self::adopt(id, &evaluation.key, &evaluation.kek)
-            .await
-            .map_err(|error| anyhow::anyhow!("importing the custody handles failed: {error:?}"))
-    }
-}
-
-/// Create a passkey and adopt what it evaluates to.
-///
-/// Performed rather than called, so the thing that runs WebAuthn is
-/// named at the call site: `Custodian::create(..).perform(&page)`. The
-/// worker cannot provide it, and saying so in a type beats finding out
-/// at runtime.
-pub struct CreateCustodian {
-    /// What a passkey manager lists it as.
-    pub name: Option<String>,
-    /// The longer form, where a manager shows one.
-    pub display_name: Option<String>,
-}
-
-impl dialog_capability::Command for CreateCustodian {
-    type Input = Self;
-    type Output = anyhow::Result<Custodian>;
-}
-
-/// Assert a passkey. Built by [`Custodian::load`] to name one, or by
-/// [`Custodian::choose`] to let the person pick.
-pub struct LoadCustodian {
-    /// Which credential, or `None` to show what the authenticator holds.
-    /// Two constructors rather than one taking an `Option`, because the
-    /// difference is whether a picker appears.
-    pub credential_id: Option<Vec<u8>>,
-}
-
-impl dialog_capability::Command for LoadCustodian {
-    type Input = Self;
-    type Output = anyhow::Result<Custodian>;
-}
-
-impl CreateCustodian {
-    /// Run this against a provider that can reach WebAuthn.
-    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Custodian>
-    where
-        Env: dialog_capability::Provider<CreateCustodian>,
-    {
-        env.execute(self).await
-    }
-}
-
-impl LoadCustodian {
-    /// Run this against a provider that can reach WebAuthn.
-    pub async fn perform<Env>(self, env: &Env) -> anyhow::Result<Custodian>
-    where
-        Env: dialog_capability::Provider<LoadCustodian>,
-    {
-        env.execute(self).await
-    }
-}
-
-/// The browsing context, which is the only thing that can run WebAuthn.
-///
-/// A unit type rather than a handle to anything: the ceremony reaches
-/// `navigator.credentials` itself. It exists to be the provider, so a
-/// caller in the worker cannot name it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub struct Page;
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<CreateCustodian> for Page {
-    async fn execute(&self, input: CreateCustodian) -> anyhow::Result<Custodian> {
-        let created = crate::passkey::create_custody_passkey(
-            input.name.as_deref(),
-            input.display_name.as_deref(),
-        )
-        .await?;
-        Custodian::from_credential(created).await
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<LoadCustodian> for Page {
-    async fn execute(&self, input: LoadCustodian) -> anyhow::Result<Custodian> {
-        let asserted =
-            crate::passkey::evaluate_custody_passkey(input.credential_id.as_deref()).await?;
-        Custodian::from_credential(asserted).await
     }
 }
 
@@ -657,137 +493,57 @@ mod tests {
             .expect("a CryptoKey")
     }
 
-    /// Can the PRF output cross to a worker as a handle, and still
-    /// derive both keys there?
-    ///
-    /// The design this answers: the page runs WebAuthn and posts one
-    /// non-extractable HKDF handle; the worker derives the KEK and the
-    /// custody signer from it and does all the minting. Nothing
-    /// readable crosses, and the PRF output stops being readable
-    /// anywhere at all — today it sits in page memory as bytes.
-    ///
-    /// Two questions in one test, because either failing sinks it:
-    /// whether a `CryptoKey` survives structured clone (what
-    /// `postMessage` performs), and whether one base handle can serve
-    /// both derivations.
-    ///
-    /// Structured clone rather than a real worker because it is the
-    /// same algorithm: `postMessage` serializes by structured clone, so
-    /// a key that survives one survives the other. That also keeps the
-    /// test runnable where service workers are not — Safari in lockdown
-    /// mode refuses them outright.
-    ///
-    /// Note what this does not buy. The KEK stays a handle the whole
-    /// way, but Ed25519 has no `deriveKey` target in WebCrypto, so its
-    /// seed materialises as bytes wherever it is derived. Posting the
-    /// base handle moves those bytes from the page to the worker rather
-    /// than removing them — what it does remove is the PRF output being
-    /// readable anywhere at all.
+    /// A PRF output crosses structured clone as a typed array, then the
+    /// receiver imports a non-extractable HKDF handle and derives the
+    /// same custody seed as the byte path.
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn it_carries_a_derivation_handle_across_structured_clone() {
+    async fn it_imports_posted_prf_bytes_as_a_derivation_handle() {
         let prf = [7u8; 32];
-        let subtle = web_sys::window().unwrap().crypto().unwrap().subtle();
-
-        // What the page would post: the PRF output as an HKDF base,
-        // non-extractable, able to derive and nothing else.
-        let material = js_sys::Uint8Array::from(&prf[..]);
-        let usages = js_sys::Array::new();
-        usages.push(&JsValue::from_str("deriveKey"));
-        usages.push(&JsValue::from_str("deriveBits"));
-        let base: CryptoKey = JsFuture::from(
-            subtle
-                .import_key_with_str("raw", &material, "HKDF", false, &usages)
-                .expect("import starts"),
-        )
-        .await
-        .expect("HKDF import resolves")
-        .dyn_into()
-        .expect("a CryptoKey");
-
-        // The transport itself. `structuredClone` is the algorithm
-        // `postMessage` runs, so this asks the same question without
-        // standing up a worker.
-        let cloned: CryptoKey = js_sys::Reflect::get(
+        let posted = js_sys::Uint8Array::from(&prf[..]);
+        let cloned: js_sys::Uint8Array = js_sys::Reflect::get(
             &web_sys::window().unwrap(),
             &JsValue::from_str("structuredClone"),
         )
         .ok()
         .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
         .expect("structuredClone exists")
-        .call1(&JsValue::NULL, &base)
-        .expect("a CryptoKey survives structured clone")
+        .call1(&JsValue::NULL, &posted)
+        .expect("a typed array survives structured clone")
         .dyn_into()
-        .expect("and arrives as one");
-
-        // Both derivations, from the clone rather than the original.
-        let params = js_sys::Object::new();
-        let set = |key: &str, value: &JsValue| {
-            js_sys::Reflect::set(&params, &JsValue::from_str(key), value).unwrap();
-        };
-        set("name", &JsValue::from_str("HKDF"));
-        set("hash", &JsValue::from_str("SHA-256"));
-        set("salt", js_sys::Uint8Array::new_with_length(32).as_ref());
-        set(
-            "info",
-            js_sys::Uint8Array::from(crate::envelope::CUSTODY_KEY_CONTEXT).as_ref(),
-        );
-        let bits = JsFuture::from(
-            subtle
-                .derive_bits_with_object(&params, &cloned, 256)
-                .expect("deriveBits starts"),
-        )
-        .await
-        .expect("the seed derives from the cloned handle");
-        let seed = js_sys::Uint8Array::new(&bits).to_vec();
-
-        // And it is the same seed the byte path produces, so a signer
-        // built here names the same custody space.
+        .expect("and arrives as a Uint8Array");
+        let mut received = Zeroizing::new([0u8; 32]);
+        cloned.copy_to(received.as_mut());
+        cloned.fill(0, 0, cloned.length());
+        let base = import_derivation_base(&received)
+            .await
+            .expect("HKDF import");
+        assert!(!base.extractable(), "the worker retains no readable base");
+        let seed = derive_custody_seed(&base).await.expect("seed derives");
         assert_eq!(
-            seed.as_slice(),
+            seed.as_ref(),
             crate::envelope::custody_seed(&prf).as_ref(),
             "the worker derives the seed the page would have"
         );
-        assert!(
-            dialog_credentials::Ed25519Signer::import(
-                &<[u8; 32]>::try_from(seed.as_slice()).unwrap()
-            )
-            .await
-            .is_ok(),
-            "and dialog imports it as a signer"
-        );
     }
 
-    /// Both derivations, from handles that crossed a structured clone,
-    /// reproduce what the byte path produces.
+    /// Both posted PRF values import to handles that reproduce the byte
+    /// path's custody signer and KEK.
     ///
     /// This is the contract the worker design rests on: the page posts
-    /// two HKDF bases, the worker derives the custody seed from one and
-    /// the KEK from the other, and both name the same custody space and
-    /// open the same envelopes as today. A drift in either would strand
-    /// every account whose passkey is the only way back.
+    /// two PRF outputs, the worker imports two HKDF bases and derives the
+    /// custody seed from one and the KEK from the other. Both name the
+    /// same custody space and open the same envelopes as today. A drift
+    /// in either would strand every account whose passkey is the only
+    /// way back.
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn it_derives_both_custody_keys_from_cloned_handles() {
+    async fn it_derives_both_custody_keys_from_posted_bytes() {
         // Two independent PRF outputs, as the authenticator returns:
         // one salted at the key context, one at the KEK context.
         let key_prf = [11u8; 32];
         let kek_prf = [22u8; 32];
 
-        let clone = |key: &CryptoKey| -> CryptoKey {
-            js_sys::Reflect::get(
-                &web_sys::window().unwrap(),
-                &JsValue::from_str("structuredClone"),
-            )
-            .ok()
-            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-            .expect("structuredClone exists")
-            .call1(&JsValue::NULL, key)
-            .expect("a CryptoKey survives structured clone")
-            .dyn_into()
-            .expect("and arrives as one")
-        };
-
-        let key_base = clone(&import_derivation_base(&key_prf).await.expect("key base"));
-        let kek_base = clone(&import_derivation_base(&kek_prf).await.expect("kek base"));
+        let key_base = import_derivation_base(&key_prf).await.expect("key base");
+        let kek_base = import_derivation_base(&kek_prf).await.expect("kek base");
 
         // The seed names the custody space, so it must be the one the
         // byte path derives or the DID moves.
@@ -815,38 +571,20 @@ mod tests {
         assert_eq!(&*opened, &*secret, "and the same secret comes back");
     }
 
-    /// A `Custodian` that crossed a structured clone derives what the
-    /// byte path derives — the same seed, and a KEK that opens the same
-    /// envelopes.
+    /// A `Custodian` rebuilt from posted bytes derives what the byte path
+    /// derives — the same seed, and a KEK that opens the same envelopes.
     ///
     /// The same contract as the test above, through the type a caller
     /// actually holds. Worth pinning separately because the pair being
     /// kept together is the point: a seed derived from the KEK handle
     /// would compile and name a space that does not exist.
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn it_carries_a_custodian_to_the_worker() {
+    async fn it_rebuilds_a_custodian_from_posted_bytes() {
         let key_prf = [11u8; 32];
         let kek_prf = [22u8; 32];
-        let custodian = Custodian::adopt(vec![1, 2, 3], &key_prf, &kek_prf)
+        let received = Custodian::adopt(vec![1, 2, 3], &key_prf, &kek_prf)
             .await
-            .expect("the handles import");
-
-        // What `postMessage` would do to the pair.
-        let clone = |key: &CryptoKey| -> CryptoKey {
-            js_sys::Reflect::get(
-                &web_sys::window().unwrap(),
-                &JsValue::from_str("structuredClone"),
-            )
-            .ok()
-            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-            .expect("structuredClone exists")
-            .call1(&JsValue::NULL, key)
-            .expect("a CryptoKey survives structured clone")
-            .dyn_into()
-            .expect("and arrives as one")
-        };
-        let (key, kek) = custodian.handles();
-        let received = Custodian::new(custodian.credential_id.clone(), clone(key), clone(kek));
+            .expect("the worker imports both handles");
 
         assert_eq!(
             received.seed().await.expect("seed derives").as_ref(),

@@ -3733,6 +3733,87 @@ mod tests {
         Ok(())
     }
 
+    /// The tap-bound assertion hands clone-safe PRF bytes to the worker,
+    /// never `CryptoKey` handles. Keep the real virtual-authenticator
+    /// ceremony and intercept only the final service-worker post.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_posts_prf_bytes_after_the_tap_bound_assertion(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "byte-handoff@example.com";
+
+        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&owner, &env, EMAIL).await?;
+        let (driver, _authenticator) =
+            second_device_with_same_passkey(&env, &owner, &authenticator).await?;
+        owner.quit().await?;
+
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("account")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+        type_into_register_dialog(&driver, EMAIL).await?;
+        await_register_action(&driver, "log in with your passkey").await?;
+
+        driver
+            .execute(
+                r#"
+                window.__tonkCustodyHandoff = null;
+                const original = ServiceWorker.prototype.postMessage;
+                ServiceWorker.prototype.postMessage = function(message, transfer) {
+                    if (message && message.type === "custody") {
+                        const port = transfer && transfer[0];
+                        window.__tonkCustodyHandoff = {
+                            keyIsBytes: message.key instanceof Uint8Array,
+                            kekIsBytes: message.kek instanceof Uint8Array,
+                            keyLength: message.key && message.key.length,
+                            kekLength: message.kek && message.kek.length,
+                            keyIsCryptoKey: typeof CryptoKey !== "undefined"
+                                && message.key instanceof CryptoKey,
+                            kekIsCryptoKey: typeof CryptoKey !== "undefined"
+                                && message.kek instanceof CryptoKey,
+                            replyPortPresent: port instanceof MessagePort,
+                            transferCount: transfer ? transfer.length : 0,
+                        };
+                        port.postMessage({ ok: { credentialId: message.credentialId } });
+                        return;
+                    }
+                    return original.apply(this, arguments);
+                };
+                "#,
+                Vec::new(),
+            )
+            .await?;
+
+        click_register_action(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let observed = loop {
+            let observed = driver
+                .execute("return window.__tonkCustodyHandoff;", Vec::new())
+                .await?;
+            if !observed.json().is_null() {
+                break observed.json().clone();
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the real passkey assertion never posted a custody handoff"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        assert_eq!(observed["keyIsBytes"], true);
+        assert_eq!(observed["kekIsBytes"], true);
+        assert_eq!(observed["keyLength"], 32);
+        assert_eq!(observed["kekLength"], 32);
+        assert_eq!(observed["keyIsCryptoKey"], false);
+        assert_eq!(observed["kekIsCryptoKey"], false);
+        assert_eq!(observed["replyPortPresent"], true);
+        assert_eq!(observed["transferCount"], 1);
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// A late answer must not render as an answer about what is typed
     /// now.
     ///

@@ -42,6 +42,39 @@ pub struct CustodyCredential {
     pub evaluation: Option<CustodyEvaluation>,
 }
 
+/// A custody credential whose two PRF outputs are ready for the
+/// service-worker handoff.
+///
+/// Creation may omit extension results on platforms that only evaluate
+/// PRF during an assertion. [`CustodyCredential::into_evaluated`] hides
+/// that platform difference while keeping the outputs as zeroizing Rust
+/// arrays until the page constructs its one structured-clone envelope.
+pub(crate) struct EvaluatedCustodyCredential {
+    /// Raw credential id, as registered with the authenticator.
+    pub id: Vec<u8>,
+    /// The two independent custody PRF outputs.
+    pub evaluation: CustodyEvaluation,
+}
+
+impl CustodyCredential {
+    /// Ensure both custody PRF outputs are present.
+    ///
+    /// Reuse creation's extension results when the authenticator supplied
+    /// them. Otherwise run the existing credential-pinned follow-up
+    /// assertion and keep the original credential id.
+    pub(crate) async fn into_evaluated(self) -> Result<EvaluatedCustodyCredential> {
+        let id = self.id;
+        let evaluation = match self.evaluation {
+            Some(evaluation) => evaluation,
+            None => evaluate_custody_passkey(Some(&id))
+                .await?
+                .evaluation
+                .context("the authenticator returned no PRF outputs")?,
+        };
+        Ok(EvaluatedCustodyCredential { id, evaluation })
+    }
+}
+
 /// Why a passkey ceremony did not produce a credential.
 ///
 /// The browser answers with a `DOMException` whose `name` is the whole
