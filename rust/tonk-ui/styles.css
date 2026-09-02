@@ -2226,13 +2226,29 @@ ui-account-settings .cta { font: 600 13px/1 var(--cond);
     text-decoration: underline; text-underline-offset: 3px; }
 ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
 /* a real input wearing the ceremony email field's coat: no border, no
-   background, no outline — the row it sits in is all the chrome it gets */
+   background, no outline — the row it sits in is all the chrome it gets.
+   The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
+   which would otherwise hand a bare input its border back. */
+ui-account-settings .sname-seat {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; justify-content: flex-end; }
 ui-account-settings .sname {
     appearance: none; -webkit-appearance: none;
     background: none; border: 0; outline: none; margin: 0; padding: 0;
     font-family: var(--cond); font-weight: 600; font-size: 13.5px;
     color: var(--ink); text-align: right;
     flex: 1; min-width: 6ch; }
+/* the block cursor blinks on the tail at rest — the cursor is the
+   affordance; while editing, the input's own caret takes over */
+ui-account-settings .sname-seat .cur {
+    width: 7px; height: 13px; flex: none; margin-left: 1px;
+    background: var(--ink); pointer-events: none;
+    animation: tonk-settings-caret 1.05s steps(1, end) infinite; }
+ui-account-settings .sname-seat:focus-within .cur { display: none; }
+@keyframes tonk-settings-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    ui-account-settings .sname-seat .cur { animation: none; }
+}
 /* devices — last seen rides soft beside the remove-access verb */
 ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
 ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
@@ -2926,6 +2942,10 @@ tonk-code:focus-within {
     color: inherit;
   }
   #tonk-register[open] { display: block; }
+  /* Suspended = the account tab it is a page of went to the background:
+     hidden with its state intact, shown again on the switch back. After
+     the [open] rule so it wins their specificity tie. */
+  #tonk-register[data-suspended] { display: none; }
   #tonk-register::backdrop { background: var(--dim); }
   /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
      ARE that tab's page, seated in the column one gap under the bar, so

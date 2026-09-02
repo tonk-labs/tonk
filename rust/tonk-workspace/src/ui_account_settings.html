@@ -6,13 +6,15 @@
   <div class="pane" data-pane="account">
     <div class="srowd">
       <span>display name</span>
-      <input
-        class="sname"
-        data-rename="tonk:profile"
-        data-settings-name
-        onchange="profile/rename"
-        aria-label="display name"
-      />
+      <span class="sname-seat"
+        ><input
+          class="sname"
+          data-rename="tonk:profile"
+          data-settings-name
+          onchange="profile/rename"
+          aria-label="display name"
+        /><i class="cur" aria-hidden="true"></i
+      ></span>
     </div>
     <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
     <div class="sect">passkeys</div>

@@ -65,11 +65,41 @@ async fn main() {
     // A guest asking to register raises the dialog here, in the only
     // document that can run the ceremony.
     tonk_portal::on_register(|reason, return_focus| {
-        // The hub's spaces tab (and Escape in the guest) dismisses the
-        // anchored ceremony from the OTHER side of the frame boundary:
-        // the guest cannot reach the top-page cluster, so it asks.
-        if tonk_ui::register_dialog::parse_request(reason).reason == "dismiss" {
-            tonk_ui::register_dialog::close();
+        // The guest steers the anchored ceremony from the OTHER side of
+        // the frame boundary — it cannot reach the top-page cluster, so
+        // it asks. Tab switches SUSPEND and SHOW the cluster (a tab bar
+        // hides the background tab's content, it does not destroy it);
+        // dismiss remains the true teardown.
+        let request = tonk_ui::register_dialog::parse_request(reason);
+        match request.reason.as_str() {
+            "dismiss" => {
+                tonk_ui::register_dialog::close();
+                return;
+            }
+            "suspend" => {
+                tonk_ui::register_dialog::suspend();
+                return;
+            }
+            "show" => {
+                tonk_ui::register_dialog::resume();
+                return;
+            }
+            _ => {}
+        }
+        if tonk_ui::register_dialog::is_open() {
+            // A repeat request re-shows the standing cluster — everything
+            // typed survives the round trip through the spaces tab.
+            tonk_ui::register_dialog::resume();
+            return;
+        }
+        if request.anchor.is_none() && !request.space.is_empty() {
+            // A blocked share: the linking screen IS the hub's settings
+            // route. The space rides sessionStorage across the navigation
+            // so the finished ceremony still offers the share link.
+            tonk_ui::register_dialog::stash_share(&request.space);
+            if let Some(location) = web_sys::window().map(|window| window.location()) {
+                let _ = location.assign("/settings");
+            }
             return;
         }
         match return_focus {
@@ -79,6 +109,7 @@ async fn main() {
             None => tonk_ui::register_dialog::open(),
         }
         tonk_ui::register_dialog::describe(reason);
+        tonk_ui::register_dialog::adopt_stashed_share();
     });
     tonk_ui::account::register();
     tonk_ui::activate::register();

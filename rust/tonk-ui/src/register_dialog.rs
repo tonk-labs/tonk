@@ -2124,6 +2124,75 @@ pub(crate) fn pending_share() -> Option<String> {
 /// runs.
 const PENDING_SHARE: &str = "data-pending-share";
 
+/// Whether a register dialog is currently standing (open, suspended or
+/// not) in this document.
+pub fn is_open() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.dyn_into::<HtmlDialogElement>().ok())
+        .is_some_and(|dialog| dialog.open())
+}
+
+/// Hide the standing cluster without closing it: the account tab it is a
+/// page of went to the background, and everything typed must survive the
+/// switch back. The counterpart of [`resume`].
+pub fn suspend() {
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.set_attribute("data-suspended", "");
+    }
+}
+
+/// Re-show a suspended cluster, seating the cursor back in the address
+/// field. A no-op without one.
+pub fn resume() {
+    if let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+    {
+        let _ = host.remove_attribute("data-suspended");
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        focus_address(&host);
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let _ = host;
+    }
+}
+
+/// The sessionStorage key carrying a blocked share's space across the
+/// navigation to the linking screen.
+const SHARE_STASH: &str = "tonk-pending-share";
+
+/// Park a blocked share's space so it survives the navigation to
+/// `/settings`, where the linking ceremony picks it up.
+pub fn stash_share(space: &str) {
+    if space.is_empty() {
+        return;
+    }
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+    {
+        let _ = storage.set_item(SHARE_STASH, space);
+    }
+}
+
+/// Adopt (and consume) a share parked by [`stash_share`] into the standing
+/// dialog, so the finished ceremony offers the interrupted share's link.
+pub fn adopt_stashed_share() {
+    let Some(storage) =
+        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+    else {
+        return;
+    };
+    let Ok(Some(space)) = storage.get_item(SHARE_STASH) else {
+        return;
+    };
+    let _ = storage.remove_item(SHARE_STASH);
+    remember_space(&space);
+}
+
 /// Re-word the dialog for the refusal that raised it, and remember what
 /// the interrupted click was trying to share.
 ///

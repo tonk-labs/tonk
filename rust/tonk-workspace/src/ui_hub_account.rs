@@ -16,8 +16,6 @@ type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
 type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
-const ADD_ACCOUNT_PATH: &str = "/account?add=1";
-
 /// The PROFILE branch's routing context — fixed, like `<ui-profile-name>`'s.
 const PROFILE_WITH: &str = "main@profile:tonk";
 
@@ -139,7 +137,6 @@ struct UiHubAccount {
     keydown: Option<KeyClosure>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
-    focusin: Option<EventClosure>,
     subscriptions: Rc<RefCell<Vec<Subscription>>>,
     name_reset: Rc<RefCell<Option<FrameClosure>>>,
     name_update: Rc<RefCell<Option<FrameClosure>>>,
@@ -229,36 +226,21 @@ impl CustomElement for UiHubAccount {
             open_settings_view(this);
         }
 
-        // A ceremony that was up when the route re-rendered is STILL up —
+        // A ceremony that existed when the route re-rendered STILL exists —
         // the cluster lives in the top page and survives this element. The
-        // body flag (see `enter_linking`) says so; step back into the
-        // linking page instead of presenting spaces under a live ceremony.
+        // body carries the flag and the tab that was active; step back into
+        // the same tab instead of resetting to rest.
         if !this.has_attribute("data-linking")
+            && ceremony_exists()
             && window()
                 .and_then(|window| window.document())
                 .and_then(|document| document.body())
-                .is_some_and(|body| body.has_attribute("data-tonk-linking"))
+                .and_then(|body| body.get_attribute("data-tonk-hub-tab"))
+                .as_deref()
+                == Some("account")
         {
             enter_linking(this);
         }
-
-        // Focus returning to the trigger is the ceremony's own restore
-        // path; while the linking page is up it doubles as "the cluster
-        // is gone — put the spaces back".
-        let host = this.clone();
-        let focusin: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            if host.has_attribute("data-linking")
-                && event
-                    .target()
-                    .and_then(|target| target.dyn_into::<Element>().ok())
-                    .and_then(|target| target.closest("[data-account-trigger]").ok().flatten())
-                    .is_some()
-            {
-                leave_linking(&host);
-            }
-        }));
-        let _ = this.add_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
-        self.focusin = Some(focusin);
 
         let host = this.clone();
         let generation = self.generation.clone();
@@ -286,10 +268,9 @@ impl CustomElement for UiHubAccount {
                     // cluster, asked through the same bridge the share
                     // row asks through — but seated IN the column, one
                     // gap under the bar, because linking is this tab's
-                    // page, not a dialog over it. The tab activates and
-                    // the stack steps aside while the ceremony is up;
-                    // focus returning to the trigger (the dialog's own
-                    // restore path) puts the page back.
+                    // page, not a dialog over it. The request opens a
+                    // fresh cluster or re-shows a suspended one, so a
+                    // switch back to this tab resumes where it left off.
                     start_linking(&host);
                     return;
                 }
@@ -299,6 +280,19 @@ impl CustomElement for UiHubAccount {
                     == Some("true");
                 if !expanded {
                     open_menu(&host);
+                    if ceremony_exists() {
+                        // A confirmation still pending is account-tab
+                        // content: re-show its cluster with the tab.
+                        tonk_host::request_registration(
+                            &serde_json::json!({ "reason": "show" }).to_string(),
+                        );
+                        if let Some(body) = window()
+                            .and_then(|window| window.document())
+                            .and_then(|document| document.body())
+                        {
+                            let _ = body.set_attribute("data-tonk-hub-tab", "account");
+                        }
+                    }
                 } else if settings_open(&host) {
                     // From settings the account tab leads back to the
                     // account view — the one press that is otherwise dead.
@@ -330,29 +324,33 @@ impl CustomElement for UiHubAccount {
                 if host.get_attribute("view").as_deref() == Some("settings") {
                     // On the /settings route the spaces cell is a tab to
                     // the spaces page — a navigation, since no stack sits
-                    // behind this section. A ceremony that was up goes
-                    // down with it, or its top-page cluster would linger
-                    // over the next page.
-                    if host.has_attribute("data-linking") {
-                        leave_linking(&host);
-                        tonk_host::request_registration(
-                            &serde_json::json!({ "reason": "dismiss" }).to_string(),
-                        );
-                    }
+                    // behind this section. Hide a ceremony that was up, or
+                    // its top-page cluster would linger over the next page.
+                    suspend_linking(&host);
                     tonk_host::navigate_to("/");
                     return;
                 }
                 if host.has_attribute("data-linking") {
-                    // Mid-ceremony the two cells are tabs as well: spaces
-                    // puts the page back and asks the top page to lower
-                    // the cluster.
-                    leave_linking(&host);
-                    tonk_host::request_registration(
-                        &serde_json::json!({ "reason": "dismiss" }).to_string(),
-                    );
+                    // Mid-ceremony the two cells are tabs: spaces puts the
+                    // page back and HIDES the cluster — its state survives
+                    // for the switch back.
+                    suspend_linking(&host);
                     return;
                 }
                 close_menu(&host, false);
+                if ceremony_exists() {
+                    // A linked profile mid-confirmation: the cluster is
+                    // still the account tab's content, so it hides with it.
+                    tonk_host::request_registration(
+                        &serde_json::json!({ "reason": "suspend" }).to_string(),
+                    );
+                    if let Some(body) = window()
+                        .and_then(|window| window.document())
+                        .and_then(|document| document.body())
+                    {
+                        let _ = body.set_attribute("data-tonk-hub-tab", "spaces");
+                    }
+                }
                 return;
             }
             if let Some(profile) = target.closest("button[data-profile]").ok().flatten()
@@ -373,8 +371,27 @@ impl CustomElement for UiHubAccount {
                 .flatten()
                 .is_some()
             {
-                close_menu(&host, false);
-                tonk_host::navigate_to(ADD_ACCOUNT_PATH);
+                // Adding an account IS the regular signup, run for a fresh
+                // profile: rotate the worker onto one, then raise the same
+                // anchored ceremony the unlinked trigger raises. The roster
+                // subscription repaints the bar for the new profile.
+                if action_pending.get() {
+                    return;
+                }
+                action_pending.set(true);
+                set_action_pending(&host, true);
+                let host = host.clone();
+                let action_pending = action_pending.clone();
+                spawn_local(async move {
+                    let added = tonk_host::post_json("/api/profiles/add", "{}").await;
+                    action_pending.set(false);
+                    set_action_pending(&host, false);
+                    if added.is_err() {
+                        return;
+                    }
+                    close_menu(&host, false);
+                    start_linking(&host);
+                });
                 return;
             }
         }));
@@ -385,24 +402,16 @@ impl CustomElement for UiHubAccount {
             if event.key() == "Escape" {
                 if host.get_attribute("view").as_deref() == Some("settings") {
                     event.prevent_default();
-                    if host.has_attribute("data-linking") {
-                        leave_linking(&host);
-                        tonk_host::request_registration(
-                            &serde_json::json!({ "reason": "dismiss" }).to_string(),
-                        );
-                    }
+                    suspend_linking(&host);
                     tonk_host::navigate_to("/");
                     return;
                 }
                 // An open settings section takes the key first: closing
-                // the page you are LOOKING at beats dismissing a ceremony
+                // the page you are LOOKING at beats hiding a ceremony
                 // that may only be a stale flag behind it.
                 if host.has_attribute("data-linking") && !settings_open(&host) {
                     event.prevent_default();
-                    leave_linking(&host);
-                    tonk_host::request_registration(
-                        &serde_json::json!({ "reason": "dismiss" }).to_string(),
-                    );
+                    suspend_linking(&host);
                     return;
                 }
             }
@@ -455,10 +464,6 @@ impl CustomElement for UiHubAccount {
         if let Some(click) = self.click.take() {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
-        }
-        if let Some(focusin) = self.focusin.take() {
-            let _ = this
-                .remove_event_listener_with_callback("focusin", focusin.as_ref().unchecked_ref());
         }
         if let Some(keydown) = self.keydown.take() {
             let _ = this
@@ -699,13 +704,10 @@ fn apply_account_name(this: &HtmlElement, name: &str) {
     set_trigger_mode(this, false);
 }
 
-/// Enter the linking state: the account tab activates and the spaces stack
-/// steps aside while the top page runs the ceremony seated under the bar.
-/// The dialog's dismissal restores focus to the trigger, which is the
-/// signal to put the page back (the `focusin` listener in
-/// `connected_callback`).
-/// Begin the linking ceremony: activate the account tab and ask the top
-/// page to seat the cluster in this bar's column.
+/// Begin (or re-show) the linking ceremony: activate the account tab and
+/// ask the top page to seat the cluster in this bar's column. The top page
+/// opens a fresh cluster, or unhides a suspended one — either way the
+/// state the user typed survives tab switches.
 fn start_linking(this: &HtmlElement) {
     enter_linking(this);
     let anchor = this
@@ -735,13 +737,14 @@ fn enter_linking(this: &HtmlElement) {
     let _ = this.set_attribute("data-linking", "");
     // The route view re-renders whenever profile facts land (the passkey
     // itself lands one), replacing this element mid-ceremony. The body
-    // survives those re-renders, so it carries the flag the fresh element
-    // re-enters from (see `connected_callback`).
+    // survives those re-renders, so it carries the ceremony flag and the
+    // active tab the fresh element re-enters from (`connected_callback`).
     if let Some(body) = window()
         .and_then(|window| window.document())
         .and_then(|d| d.body())
     {
         let _ = body.set_attribute("data-tonk-linking", "");
+        let _ = body.set_attribute("data-tonk-hub-tab", "account");
     }
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.set_attribute("aria-current", "page");
@@ -759,11 +762,14 @@ fn enter_linking(this: &HtmlElement) {
     }
 }
 
-/// Put the page back after the ceremony settles (or is dismissed).
+/// Switch to the spaces tab while a ceremony is up: the tab bar behaves
+/// like any tab bar — the account tab's content (the top-page cluster)
+/// HIDES, its state intact, and switching back shows it again. Nothing is
+/// dismissed.
 ///
 /// Not [`close_menu`]: that restores only from an OPEN menu (it keys on
 /// `aria-expanded`, which the link-mode trigger does not carry).
-fn leave_linking(this: &HtmlElement) {
+fn suspend_linking(this: &HtmlElement) {
     if !this.has_attribute("data-linking") {
         return;
     }
@@ -772,8 +778,10 @@ fn leave_linking(this: &HtmlElement) {
         .and_then(|window| window.document())
         .and_then(|d| d.body())
     {
-        let _ = body.remove_attribute("data-tonk-linking");
+        // The ceremony flag stays — the cluster is only hidden.
+        let _ = body.set_attribute("data-tonk-hub-tab", "spaces");
     }
+    tonk_host::request_registration(&serde_json::json!({ "reason": "suspend" }).to_string());
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.remove_attribute("aria-current");
     }
@@ -788,6 +796,15 @@ fn leave_linking(this: &HtmlElement) {
             stack.set_hidden(false);
         }
     }
+}
+
+/// Whether a linking ceremony exists (visible or suspended) — the body
+/// flag outlives route re-renders and tab switches.
+fn ceremony_exists() -> bool {
+    window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+        .is_some_and(|body| body.has_attribute("data-tonk-linking"))
 }
 
 /// Whether the settings section is the visible page under the bar.
@@ -1033,6 +1050,7 @@ mod tests {
         // The linking flag outlives an element on purpose (it marks a live
         // top-page ceremony); between tests it is just leakage.
         let _ = body.remove_attribute("data-tonk-linking");
+        let _ = body.remove_attribute("data-tonk-hub-tab");
         let host: HtmlElement = document
             .create_element("ui-hub-account")
             .expect("create account element")

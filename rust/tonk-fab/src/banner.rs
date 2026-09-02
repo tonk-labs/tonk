@@ -5,6 +5,18 @@ const CSS: &str = r#"
 :host{ position:fixed; left:50%; bottom:40px; width:min(680px, calc(100vw - 48px));
   z-index:2147483645; transform:translateX(-50%); display:block; }
 :host([hidden]){ display:none; }
+/* The banner follows the PAGE theme, unlike the bar: it floats over the
+   page itself, not over a space, so the one-bright-twin law does not
+   apply (the edges study themes its banner the same way). Restated
+   locally per the skin's own rule; a page without theme tokens falls
+   back to the pinned bright `--fabb-*` API. */
+.w{
+  --_ink:  var(--ink, var(--fabb-ink));
+  --_soft: var(--soft, var(--fabb-ink-soft));
+  --_on:   var(--on-ink, var(--fabb-on-ink));
+  --_bg:   var(--frost, var(--fabb-bg));
+  --_ring: 0 0 0 1px var(--ring, var(--fabb-ring));
+}
 .w{ min-height:44px; display:grid; grid-template-columns:minmax(0,1fr) auto;
   opacity:0; transform:translateY(70px); transition-property:transform,opacity;
   transition-duration:300ms; transition-timing-function:var(--_ease);
