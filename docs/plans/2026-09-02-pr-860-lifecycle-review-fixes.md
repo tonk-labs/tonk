@@ -53,7 +53,7 @@
 - [x] Run `node --test 'rust/tonk-ui/tests/*.test.mjs'`.
 - [x] Run `cargo fmt --all -- --check`.
 - [x] Run `cargo test -p tonk-worker`.
-- [x] Run `NEXTEST_TEST_THREADS=4 nix develop path:. -c test:web:debug`.
+- [x] Run `NEXTEST_TEST_THREADS=4 nix develop . -c test:web:debug`.
 - [ ] Run `nix build .#checks.x86_64-linux.clippy -L` (blocked because the `x86_64-linux` derivation is unavailable on this `aarch64-darwin` host).
 - [x] Run `git diff --check`.
 
