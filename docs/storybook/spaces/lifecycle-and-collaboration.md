@@ -46,6 +46,17 @@ This is a source-derived presentation decision for `COLLAB-01`, `WEB-04`, and
 `WEB-05`, pinned to `a3f8657d3`. No FABB screenshot was recaptured, so the
 existing images retain their older visual provenance.
 
+### FABB naming and blank-space prompt decision
+
+The in-place FABB rename remains an edit while ordinary whitespace is typed;
+Enter or leaving the field commits the complete trimmed name. A blank space's
+agent prompt has one textual contract: the text on screen and the value copied
+by its button include the same task, commands, and final build guidance.
+
+This source-and-browser-tested interaction decision refines `SPACE-03`,
+`SPACE-04`, and `DATA-02` on 2026-09-02. No screenshot was recaptured because
+the resting FABB and prompt geometry are unchanged.
+
 ### Space-switcher and absent-space presentation decision
 
 The FABB space switcher reads the convergent account space directory, not the

@@ -57,8 +57,13 @@ permanent-delete control is described by both the hosted-data consequence and
 the boundary that spaces created by other people and already-replicated copies
 are not erased.
 
+The display-name field commits when Enter or blur ends the edit. Its normal
+native caret is visible while focused; an unfocused field has no blinking
+cursor, so a settled value does not continue to look editable or active.
+
 This is a source-derived presentation decision for `ACCT-B04`, `ACCT-B14`,
-`ACCT-B15`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to `a3f8657d3`. The
+`ACCT-B15`, `ACCT-B13`, `LIFE-21`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to
+`a3f8657d3` and refined by the focused browser regression on 2026-09-02. The
 production-source fixture images were not recaptured and remain pinned to the
 visual commit in `screens.json`.
 
