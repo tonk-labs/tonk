@@ -790,6 +790,12 @@ async fn finish_account_readiness(host: &HtmlElement) {
             }) => {
                 let _ = host.remove_attribute(ACCOUNT_NOT_READY);
                 clear_account_guidance(host);
+                // The whole dashboard read while unhydrated, not only
+                // these two: the summary's passkey facts answer None
+                // until the account state is Ready, so the row it
+                // rendered is a blank that never heals unless it is
+                // re-read here with the rest.
+                load_summary(host.clone());
                 load_profiles(host.clone());
                 load_devices(host.clone());
                 return;
@@ -1833,14 +1839,16 @@ fn landing(
     }
 }
 
-/// Re-read the account and repaint the panel.
+/// Re-read the account and repaint the panel, after a ceremony.
 ///
 /// The ceremony runs in the registration cluster now, which sits over
 /// this panel and finishes without telling it anything — so a panel
 /// that was showing "link an account" when the cluster opened is still
 /// showing it when the cluster closes, over an account that now exists.
-/// The cluster calls this on its way out. It is the same read the panel
-/// does when it boots, which is what decides which face to show.
+/// The cluster calls this on its way out, and ONLY when its ceremony
+/// announced an account: the read is the same one the panel does when
+/// it boots, but a `Unregistered` answer here is the enrollment still
+/// landing rather than the signed-out answer it means on a boot.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn resettle() {
     let Some(host) = web_sys::window()
@@ -1850,10 +1858,59 @@ pub(crate) fn resettle() {
     else {
         return;
     };
-    load_status(host);
+    load_status_with(host, true);
+}
+
+/// One account read that rides out the moment it lands in.
+///
+/// The worker restarts across profile swaps and service-worker
+/// adoption — both routine right after a ceremony — and a read caught
+/// in that window fails at the transport (or decodes the asset
+/// server's fallback) with nothing wrong above it. The panel's whole
+/// face hangs on this one answer, so those failures retry, bounded;
+/// every other error is a real answer and surfaces unchanged.
+async fn account_status_settling(
+    ride_out_unregistered: bool,
+) -> Result<AccountStatus, crate::error::TonkUiError> {
+    let mut last = None;
+    for attempt in 0..30 {
+        match crate::api::account_status().await {
+            Err(error @ crate::error::TonkUiError::ApiError(_)) if attempt < 10 => {
+                last = Some(Err(error));
+            }
+            // A ceremony just said the account exists, and the worker
+            // agrees — the enrollment command that mounts the account
+            // replica is simply still landing. `Unregistered` is that
+            // command's before-state, so after an announcement it reads
+            // as "not yet" for a bounded window rather than as the
+            // signed-out answer it is on an ordinary boot.
+            Ok(status @ AccountStatus::Unregistered { .. }) if ride_out_unregistered => {
+                last = Some(Ok(status));
+            }
+            other => return other,
+        }
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            if let Some(window) = window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500);
+            }
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+    last.unwrap_or_else(|| {
+        Err(crate::error::TonkUiError::ApiError(
+            "account read never settled".to_string(),
+        ))
+    })
 }
 
 fn load_status(host: HtmlElement) {
+    load_status_with(host, false);
+}
+
+/// `after_ceremony` marks a reload requested by the registration cluster
+/// on its way out: a ceremony just finished, so an `Unregistered` answer
+/// is the enrollment command still landing, not a signed-out profile.
+fn load_status_with(host: HtmlElement, after_ceremony: bool) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
         .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
@@ -1873,7 +1930,7 @@ fn load_status(host: HtmlElement) {
                         tonk_analytics::account::Surface::Settings,
                         tonk_analytics::account::Trigger::Automatic,
                         tonk_analytics::account::AccountState::Unknown,
-                        crate::api::account_status(),
+                        account_status_settling(after_ceremony),
                     )
                     .await;
                     match result {
@@ -1965,8 +2022,9 @@ fn load_status(host: HtmlElement) {
             show_action_error(&host, AccountAction::LoadAccount, &error);
             return;
         }
-        match crate::api::account_status().await {
+        match account_status_settling(after_ceremony).await {
             Ok(status) => {
+                tonk_common::log!("account: load_status read {status:?}");
                 load_attempt.finish(
                     tonk_analytics::account::Stage::AccountLoad,
                     tonk_analytics::account::AccountOutcome::success(),
@@ -2804,6 +2862,13 @@ fn bind(host: &HtmlElement) {
                     // flag default.
                     let payload = serde_json::json!({
                         "delegationHex": authorized.delegation_hex,
+                        // The CLI records the account repository under this
+                        // remote — the same one the grant above was minted
+                        // for. Its schema requires the field, so omitting it
+                        // fails the whole handoff as "payload is not
+                        // readable"; the descriptor stays alongside for CLIs
+                        // from before the remote rode the callback.
+                        "remote": proposed_remote()?,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,

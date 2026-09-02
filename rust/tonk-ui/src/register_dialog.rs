@@ -413,6 +413,10 @@ pub(crate) const ACCOUNT_CHANGED: &str = "tonk:account-changed";
 /// Say that this browser's account changed.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn announce_account_change() {
+    // Remembered for `close`: a dialog dismissed after a successful
+    // ceremony re-reads the account differently from one dismissed
+    // without — see the `resettle` call there.
+    ANNOUNCED.with(|announced| announced.set(true));
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -422,11 +426,30 @@ fn announce_account_change() {
     let _ = window.dispatch_event(&event);
 }
 
+// Whether this dialog's ceremony announced an account, so `close` can
+// tell a post-ceremony dismissal from a plain cancel.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+thread_local! {
+    static ANNOUNCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Take the dialog down.
 pub fn close() {
     OPEN.with(|open| open.set(false));
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
+        // A panel under a cluster whose ceremony announced an account
+        // re-reads it on the way out. The mid-ceremony announcement
+        // covers the instant-success path, but a signup parked on its
+        // emailed link lands its enrollment as a command AFTER that
+        // announcement — so a panel that only listened then still
+        // shows the pre-ceremony face, and its pending-activation
+        // banner never appears. A plain cancel changed nothing, and
+        // must not re-read: the re-render would replace the very
+        // opener this close is about to restore focus to.
+        if ANNOUNCED.with(|announced| announced.replace(false)) {
+            crate::account::resettle();
+        }
         finish_action();
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {

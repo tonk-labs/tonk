@@ -306,8 +306,35 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
     container: &[u8],
     now: u64,
 ) -> Result<CustomerDeletionReceipt, Error> {
-    let customer =
-        verify_customer_command(store, container, &CUSTOMER_DELETE_COMMAND, now, true).await?;
+    let customer = match verify_customer_command(
+        store,
+        container,
+        &CUSTOMER_DELETE_COMMAND,
+        now,
+        true,
+    )
+    .await
+    {
+        Ok(customer) => customer,
+        // No customer row is the finished state: finalization takes
+        // it with the data, so a repeat lands here. The worker's
+        // deletion sequence repeats deliberately when the account
+        // and access services share a deployment — both halves post
+        // the same finalization — and the second half must join the
+        // first rather than 404 a deletion that succeeded. The
+        // refusal escapes `verify_customer_command` only after the
+        // chain verified cryptographically, so this answers no one
+        // but the (former) customer.
+        Err(Error::NotRegistered) => {
+            let customer = subject(container)
+                .ok_or_else(|| Error::Malformed("invocation names no subject".into()))?;
+            return Ok(CustomerDeletionReceipt {
+                customer: customer.to_string(),
+                state: "deleted".into(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let consumers = store
         .subscriptions_by_provider(&customer)
         .await
@@ -347,12 +374,15 @@ pub async fn delete_customer<S: Store, P: SpacePurger>(
             .map_err(|error| Error::Internal(error.to_string()))?;
     }
 
-    let self_consumer = store
+    // An absent self consumer is a finalization already past this
+    // point (the row goes before the customer row does): join it and
+    // finish the rest, rather than 404 a retry of a deletion that is
+    // mostly done.
+    if let Some(self_consumer) = store
         .consumer(&customer)
         .await
         .map_err(|error| Error::Internal(error.to_string()))?
-        .ok_or(Error::NotRegistered)?;
-    if self_consumer.deleted_at.is_none()
+        && self_consumer.deleted_at.is_none()
         && !store
             .mark_self_consumer_deleting(&customer, now)
             .await
