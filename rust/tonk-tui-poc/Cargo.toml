@@ -1,0 +1,22 @@
+[package]
+name = "tonk-tui-poc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Proof of concept: render a `tui` view facet into terminal cells"
+
+[[bin]]
+name = "tonk-tui-poc"
+path = "src/main.rs"
+
+[dependencies]
+ipld-core = { workspace = true }
+ratatui = { workspace = true }
+serde_json = { workspace = true }
+tonk-layout = { workspace = true }
+tonk-render = { workspace = true }
+tonk-template = { workspace = true }
+
+[dev-dependencies]
+tonk-layout = { workspace = true }

@@ -1,0 +1,10 @@
+[
+  {
+    "this": "id:card",
+    "fields": {
+      "title": "a wrapping paragraph",
+      "status": "open",
+      "body": "The height of this paragraph is not declared anywhere. It falls out of the width the layout gave it, because the measure function breaks the text and reports the line count back to taffy — which is the seam ink uses yoga for."
+    }
+  }
+]

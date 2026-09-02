@@ -1,0 +1,25 @@
+<column width=fill height=fill spacing-y=1 pad-x=2 pad-y=1>
+
+  <row width=fill>
+    <text weight=bold>todo</text>
+    <text align=right fg=muted>{dom.host/count} open</text>
+  </row>
+
+  <box width=fill height=fill fg=muted>
+    <column width=fill spacing-y=0 pad-x=1>
+      <row width=fill subject={this} spacing-x=1>
+        <text fg=muted>{status}</text>
+        <text>{title}</text>
+        <text align=right fg=muted>{owner}</text>
+      </row>
+    </column>
+  </box>
+
+  <keybar width=fill>
+    <key>↵ open</key>
+    <key>n new</key>
+    <key>d done</key>
+    <key align=right>q quit</key>
+  </keybar>
+
+</column>

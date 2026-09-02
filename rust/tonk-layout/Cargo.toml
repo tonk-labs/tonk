@@ -1,0 +1,15 @@
+[package]
+name = "tonk-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "elm-ui-shaped layout algebra over a flexbox engine, solved in whole terminal cells"
+
+# Deliberately free of every tonk crate and of ratatui: this crate turns an
+# attribute tree into integer cell rectangles and nothing else, which is what
+# keeps its tests cheap and the engine behind it swappable.
+[dependencies]
+taffy = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }

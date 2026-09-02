@@ -21,6 +21,7 @@ members = [
   "rust/tonk-inspector",
   "rust/tonk-invite",
   "rust/tonk-language-server",
+  "rust/tonk-layout",
   "rust/tonk-macros",
   "rust/tonk-notation",
   "rust/tonk-portal",
@@ -32,6 +33,7 @@ members = [
   "rust/tonk-table",
   "rust/tonk-template",
   "rust/tonk-tree",
+  "rust/tonk-tui-poc",
   "rust/tonk-ui",
   "rust/tonk-worker",
   "rust/tonk-worker-api",
@@ -65,6 +67,7 @@ tonk-identity = { path = "./rust/tonk-identity" }
 tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
+tonk-layout = { path = "./rust/tonk-layout" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-portal = { path = "./rust/tonk-portal" }
@@ -76,6 +79,7 @@ tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-table = { path = "./rust/tonk-table" }
 tonk-template = { path = "./rust/tonk-template" }
 tonk-tree = { path = "./rust/tonk-tree" }
+tonk-tui-poc = { path = "./rust/tonk-tui-poc" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
@@ -172,6 +176,10 @@ ulid = "1"
 # off the roster and can hold wide or zero-width characters, which a
 # character count would misalign.
 unicode-width = "0.2"
+unicode-segmentation = "1"
+taffy = { version = "0.14", default-features = false, features = ["std", "flexbox", "taffy_tree", "content_size"] }
+ratatui = "0.30"
+crossterm = "0.29"
 url = "2"
 urlencoding = "2"
 wasm-streams = "0.6"
