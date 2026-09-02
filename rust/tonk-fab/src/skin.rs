@@ -18,9 +18,12 @@
 //! that wrapper, not `:host`, so a component can restate them locally without
 //! reaching for the host element.
 //!
-//! One scheme — the chrome is light (law 8). The dark twin and its
-//! `--fabb-*-dark` knobs left with the mode switch; `COLOR.md` in the design
-//! reference keeps the values against the day the twin comes back.
+//! One twin — the bright one. The bar wears the same bright frost over a
+//! dark space that it wears over a light page (owner's call, restating law
+//! 8), so the `--fabb-*` API carries DESIGN.md's LIGHT column: the theme
+//! file pins the same values, the fallbacks here cover a host without it,
+//! and the app's dark swap never reaches the chrome. The mode switch and
+//! the per-component dark block are gone either way.
 
 /// The token block plus the primitives every component shares: the sync disc,
 /// the terminal block cursor, the blink keyframes, and the button reset.
@@ -40,7 +43,7 @@ pub const SKIN: &str = r#"
   /* the current role — a place you are in, split from the CTA register:
      near-ink, one step toward the page, so a marked row never outshouts
      an action (which keeps solid --_ink) */
-  --_cur:   var(--fabb-cur, #503444);
+  --_cur:   var(--fabb-cur, #552e44);
   --_panel: var(--fabb-panel, rgba(247,246,245,.92));
   /* No blur. The FABB renders inside its own portal iframe, and a
      backdrop-filter can only sample content INSIDE that frame — never the
@@ -99,10 +102,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_carries_one_scheme() {
-        // Law 8: the chrome is light. The dark twin and its `--fabb-*-dark`
-        // knobs left with the mode switch; a returning twin must re-state the
-        // whole token set (see COLOR.md in the design reference).
+    fn it_carries_no_twin_of_its_own() {
+        // The dark twin arrives THROUGH the `--fabb-*` API (the app theme
+        // aliases it onto the shared roles) — never as a second block here,
+        // which is the drift that let the chrome's ink disagree with the
+        // page's (see DESIGN.md's core palette).
         assert!(!SKIN.contains(".w.dark"));
         assert!(!SKIN.contains("-dark,"));
     }

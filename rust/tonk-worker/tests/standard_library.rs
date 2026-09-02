@@ -382,9 +382,15 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 }
 
 #[test]
-fn it_keeps_the_retired_inline_settings_surface_out_of_the_hub() {
+fn it_serves_settings_as_a_page_of_the_account_tab() {
+    // The wireframes brought settings back INTO the hub — an in-column
+    // rail-and-panel section under the same bar — retiring the old
+    // retirement. The `/settings` href survives only as the anchor's
+    // no-handler fallback.
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
-    assert!(!HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
+    assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
+    assert!(HUB_ACCOUNT_MARKUP.contains("data-pane=\"account\""));
+    assert!(HUB_ACCOUNT_MARKUP.contains("data-pane=\"devices\""));
     assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
 }
 

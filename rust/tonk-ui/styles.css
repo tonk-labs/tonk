@@ -40,13 +40,15 @@
     --dim: color-mix(in srgb, var(--ink) 32%, transparent);
     /* the current role — a place you are in, split from the CTA register:
        near-ink, one step toward the page, so a tab never outshouts an
-       action. Derived, so the dark twin follows for free. */
-    --cur: color-mix(in srgb, var(--ink) 86%, var(--page));
+       action. DESIGN.md's core palette pins both twins — the colour pass
+       tuned these, so they are literals, not derivations. */
+    --cur: #552e44;
     /* real glass for genuinely overlaying surfaces; everything on the flat
-       page wears --frost-solid pre-composited instead */
-    --frost: color-mix(in srgb, var(--frost-solid) 75%, transparent);
+       page wears --frost-solid pre-composited instead (DESIGN.md's frost
+       recipe) */
+    --frost: rgb(253 252 252 / 72%);
     --card-hover: color-mix(in srgb, var(--ink) 6%, var(--card));
-    --canvas: color-mix(in srgb, var(--ink) 2%, var(--page));
+    --canvas: var(--wa-color-surface-lowered, #e4e2e0);
     --veil: color-mix(in srgb, var(--page) 90%, transparent);
     --track: color-mix(in srgb, var(--ink) 22%, transparent);
     --stub-ink: #9f968e;
@@ -55,12 +57,14 @@
     --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
     --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 
-    /* The FABB's public skin API. One scheme — the chrome is light (law 8):
-       these are the stone·ink LIGHT values, pinned literals on purpose so
-       the bar never follows the page's dark twin. Recoloring the product is
-       still this one file: the chrome and the page share the same ink. */
+    /* The FABB's public skin API — DESIGN.md's core palette, LIGHT column,
+       pinned: the bar keeps the same bright frost over a dark space that it
+       wears over a light page, so its whole twin is the light one and it
+       never follows the page's dark swap. The values ARE the app theme's
+       light values (one colorset), so text on a bright surface reads
+       identically in the chrome and in the app. */
     --fabb-ink: #38182a;
-    --fabb-cur: #503444; /* = ink 86% toward the stone page — matches --cur */
+    --fabb-cur: #552e44;
     --fabb-ink-soft: #5b4953;
     --fabb-on-ink: #f7f6f5;
     --fabb-sep: rgb(56 24 42 / 28%);
@@ -85,6 +89,8 @@
     --veil: var(--page);
     --track: color-mix(in srgb, var(--ink) 25%, transparent);
     --stub-ink: #736265;
+    --cur: #cdc5c9;
+    --frost: rgb(29 24 25 / 78%);
 }
 
 /* `hidden` has to keep hiding things. Web Awesome skins native form

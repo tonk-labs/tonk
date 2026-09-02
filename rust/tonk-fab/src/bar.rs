@@ -27,8 +27,10 @@
 //!   alerted rung washes. Never a colour (law 5).
 //! - `up` `flip` `responsive` `static`.
 //!
-//! One scheme — the chrome is light (law 8). The mode pill and the dark
-//! twin left together; a dark view gets light chrome floating over it.
+//! No mode pill and one twin — the bright one: the bar keeps the same
+//! bright frost over a dark space that it wears over a light page, so its
+//! `--fabb-*` values are the theme's LIGHT column and the page's dark swap
+//! never reaches it.
 //!
 //! ## Stacks
 //!
