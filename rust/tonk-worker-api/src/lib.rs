@@ -13,6 +13,7 @@
 //! unchanged.
 
 mod account;
+mod analytics;
 mod claim;
 mod conclusion;
 mod deployment;
@@ -34,6 +35,7 @@ pub use account::{
     AccountSpaceDeletionRequest, AccountStatus, AccountSummary, HostedSpaceDeletionResult,
     RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
+pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use deployment::DeploymentConfig;
