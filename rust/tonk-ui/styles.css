@@ -2225,6 +2225,10 @@ ui-account-settings .cta { font: 600 13px/1 var(--cond);
     white-space: nowrap; display: inline-block; cursor: pointer;
     text-decoration: underline; text-underline-offset: 3px; }
 ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
+/* a verb is a button for the keyboard's sake; it wears the word alone */
+ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
+    background: none; border: 0; margin: 0; padding: 0; text-align: right; }
+ui-account-settings .srowd > .cta { flex: none; }
 /* a real input wearing the ceremony email field's coat: no border, no
    background, no outline — the row it sits in is all the chrome it gets.
    The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
@@ -2263,6 +2267,16 @@ ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
    space-removal confirm; the arming row is the gate: type the address,
    the block cursor shows where, and the solid verb stays off until it
    matches. */
+/* the confirm is a solid card in the page's own scheme, like the mock's
+   modal: the page dims, the surface never, and nothing reads through.
+   The cluster element wears the FABB skin, pinned light, so its tokens
+   are re-pointed at the page's here. */
+ui-account-settings tonk-dialog {
+    --fabb-panel: var(--card); --fabb-ink: var(--ink);
+    --fabb-ink-soft: var(--soft); --fabb-on-ink: var(--on-ink);
+    --fabb-ring: var(--ring); --fabb-sep: var(--sep);
+    --fabb-hover: var(--wash); --fabb-press: var(--wash);
+    --fabb-dim: var(--dim); }
 ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }

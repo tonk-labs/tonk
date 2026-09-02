@@ -280,13 +280,16 @@ impl CustomElement for UiAccountSettings {
 
 /// Show one pane and mark its rail tab current.
 fn set_pane(this: &HtmlElement, pane: &str) {
+    // The link approval is a page of the account tab: the tab stays
+    // current and fused to the body while it is up.
+    let tab_for = if pane == "link" { "account" } else { pane };
     if let Ok(tabs) = this.query_selector_all(".s-rail [data-pane]") {
         for index in 0..tabs.length() {
             if let Some(tab) = tabs
                 .item(index)
                 .and_then(|node| node.dyn_into::<Element>().ok())
             {
-                let current = tab.get_attribute("data-pane").as_deref() == Some(pane);
+                let current = tab.get_attribute("data-pane").as_deref() == Some(tab_for);
                 let _ = tab.class_list().toggle_with_force("cur", current);
             }
         }
@@ -416,7 +419,7 @@ fn link_request() -> Option<LinkRequest> {
     })
 }
 
-/// Raise one of this panel's `<tonk-dialog>` clusters.
+/// Raise one of this panel's `<tonk-dialog>` clusters, the confirm.
 fn show_dialog(this: &HtmlElement, selector: &str) {
     let Some(dialog) = this.query_selector(selector).ok().flatten() else {
         return;

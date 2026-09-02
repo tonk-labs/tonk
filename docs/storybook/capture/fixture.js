@@ -51,9 +51,10 @@
     if (screen === "WEB-13") {
       const dialog = host.querySelector("[data-delete-account-dialog]");
       if (dialog && typeof dialog.show === "function") dialog.show();
-      setText(host, "[data-delete-scope]", "2 owned hosted spaces will be deleted. 1 joined space will be left intact.");
-      host.querySelector("[data-delete-spaces]").innerHTML = "<li>Product roadmap</li><li>Research library</li>";
-      host.querySelector("[data-delete-email]").value = "alex@example.com";
+      setText(host, "[data-delete-scope]", "2 owned hosted spaces will be deleted: Product roadmap, Research library. 1 joined space will be left intact.");
+      setText(host, "[data-delete-email-expected-label]", "alex@example.com");
+      setText(host, "[data-delete-email]", "alex@example.com");
+      host.querySelector("[data-delete-account-submit]").removeAttribute("disabled");
     }
   }
 
