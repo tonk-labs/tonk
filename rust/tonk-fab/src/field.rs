@@ -33,6 +33,11 @@ const CSS: &str = r#"
 :host([changeable]) .noun:hover .noun-change,
 :host([changeable]) .noun:focus-visible .noun-change{ display:inline-flex; align-items:flex-end; }
 .row.rejecting{ animation:fabb-wash .45s var(--_ease) 2; }
+/* the skin gives `input.value` the native block caret where the engine
+   draws one; the tail block would double the cursor, so it stands down */
+@supports (caret-shape: block){
+  .value-cur{ display:none; }
+}
 @media (pointer:coarse){
   :host([changeable]) .noun-current{ display:none; }
   :host([changeable]) .noun-change{ display:inline-flex; align-items:flex-end; }
@@ -82,7 +87,6 @@ mod element {
 
         fn observed_attributes() -> &'static [&'static str] {
             &[
-                "mode",
                 "noun",
                 "value",
                 "settled",
@@ -152,9 +156,6 @@ mod element {
             }
 
             self.listeners.push(shadow::install_visibility_pause(this));
-            if let Some(listener) = shadow::install_system_mode(this) {
-                self.listeners.push(listener);
-            }
             sync(this);
         }
 
@@ -186,7 +187,6 @@ mod element {
     }
 
     fn sync(this: &HtmlElement) {
-        shadow::apply_mode(this);
         let Some(root) = this.shadow_root() else {
             return;
         };

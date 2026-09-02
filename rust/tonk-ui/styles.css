@@ -6,44 +6,99 @@
  * how the registration cluster came up ringed in near-white while
  * nothing else in the app was.
  *
- * Values are the fabb studies' own (`~/Projects/gooey/fabb`), both
- * twins. `--ring` is translucent ink rather than a grey border token,
- * which is what gives every block its edge.
+ * Aliases over the Web Awesome theme, not a palette of their own: the
+ * stone-ink material in `:where(.wa-theme-default)` below is the app's
+ * one colorset, and these short names re-express it for the surfaces
+ * built on the fabb studies (the ceremony cluster, the account pages,
+ * the inspector). Restating the values here is how the login ceremony
+ * drifted greenish while everything else read eggplant. Deriving keeps
+ * both themes in step — `.wa-dark` swaps the `--wa-*` values and
+ * everything here follows, so there is no dark block for the derived
+ * names. The `var()` fallbacks are the light values, for the beat
+ * before the theme class lands. `--ring` is translucent ink rather
+ * than a grey border token, which is what gives every block its edge.
  */
 :root {
-    --page: #ececec;
-    --ink: #131313;
-    --on-ink: #fbfaef;
-    --soft: #55544f;
-    --ring: rgb(19 19 19 / 85%);
-    --sep: rgb(19 19 19 / 28%);
-    --frost-solid: #fafafa;
-    --panel: #d2d2d2;
-    --wash: rgb(19 19 19 / 6%);
-    --wash-2: rgb(19 19 19 / 12%);
-    --wash-p: rgb(251 250 239 / 16%);
-    --card: #fff;
-    --dim: rgb(16 16 12 / 32%);
+    /* Both schemes are real: the UA (and every nested guest) must know it.
+       A sealed guest is an opaque-origin iframe, and a cross-origin frame's
+       `prefers-color-scheme` comes from its EMBEDDER'S used color-scheme —
+       without this declaration the OS preference dies at the first frame
+       boundary and everything below it wakes up light. */
+    color-scheme: light dark;
+    --page: var(--wa-color-surface-default, #e8e6e4);
+    --ink: var(--wa-color-text-normal, #38182a);
+    --on-ink: var(--wa-color-neutral-on-loud, #f7f6f5);
+    --soft: var(--wa-color-text-quiet, #5b4953);
+    --ring: color-mix(in srgb, var(--ink) 85%, transparent);
+    --sep: var(--wa-color-neutral-border-normal, rgb(56 24 42 / 28%));
+    --frost-solid: var(--wa-color-neutral-on-loud, #f7f6f5);
+    --panel: var(--wa-color-neutral-fill-normal, #d0ccc8);
+    --wash: color-mix(in srgb, var(--ink) 6%, transparent);
+    --wash-2: color-mix(in srgb, var(--ink) 12%, transparent);
+    --wash-p: color-mix(in srgb, var(--on-ink) 16%, transparent);
+    --card: var(--wa-color-surface-raised, #fcfbfb);
+    --dim: color-mix(in srgb, var(--ink) 32%, transparent);
+    /* the current role — a place you are in, split from the CTA register:
+       near-ink, one step toward the page, so a tab never outshouts an
+       action. DESIGN.md's core palette pins both twins — the colour pass
+       tuned these, so they are literals, not derivations. */
+    --cur: #552e44;
+    /* real glass for genuinely overlaying surfaces; everything on the flat
+       page wears --frost-solid pre-composited instead (DESIGN.md's frost
+       recipe) */
+    --frost: rgb(253 252 252 / 72%);
+    --card-hover: color-mix(in srgb, var(--ink) 6%, var(--card));
+    --canvas: var(--wa-color-surface-lowered, #e4e2e0);
+    --veil: color-mix(in srgb, var(--page) 90%, transparent);
+    --track: color-mix(in srgb, var(--ink) 22%, transparent);
+    --stub-ink: #9f968e;
     --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
     --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
     --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+    /* The FABB's public skin API — DESIGN.md's core palette, LIGHT column,
+       pinned: the bar keeps the same bright frost over a dark space that it
+       wears over a light page, so its whole twin is the light one and it
+       never follows the page's dark swap. The values ARE the app theme's
+       light values (one colorset), so text on a bright surface reads
+       identically in the chrome and in the app. */
+    --fabb-ink: #38182a;
+    --fabb-cur: #552e44;
+    --fabb-ink-soft: #5b4953;
+    --fabb-on-ink: #f7f6f5;
+    --fabb-sep: rgb(56 24 42 / 28%);
+    --fabb-hover: rgb(56 24 42 / 6%);
+    --fabb-press: rgb(56 24 42 / 12%);
+    --fabb-bg: rgb(253 252 252 / 72%);
+    --fabb-panel: rgb(247 246 245 / 92%);
+    --fabb-ring: rgb(56 24 42 / 85%);
 }
 
+/* Chrome surfaces pan without a scrollbar (the fabb studies' L10):
+   the page and the chrome guests keep scrolling, the bar itself never
+   shows. Space CONTENT renders in its own inner frame with its own
+   stylesheet, so app documents keep native scrollbars. */
+html { scrollbar-width: none; }
+html::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+
+/* Only the ratios that differ in the dark theme; the colors themselves
+   follow the `--wa-*` swap. The dim goes to true black — translucent
+   dark ink over a dark page separates nothing. */
 :root.wa-dark {
-    --page: #161613;
-    --ink: #e9e6d6;
-    --on-ink: #22221c;
-    --soft: #cdcaba;
-    --ring: rgb(233 230 214 / 55%);
-    --sep: rgb(233 230 214 / 28%);
-    --frost-solid: #1e1e19;
-    --panel: #3b3a34;
-    --wash: rgb(251 250 239 / 9%);
-    --wash-2: rgb(251 250 239 / 15%);
-    --wash-p: rgb(19 19 19 / 14%);
-    --card: #26251f;
+    --ring: color-mix(in srgb, var(--ink) 55%, transparent);
+    --wash: color-mix(in srgb, var(--ink) 9%, transparent);
+    --wash-2: color-mix(in srgb, var(--ink) 15%, transparent);
+    --wash-p: color-mix(in srgb, var(--on-ink) 14%, transparent);
     --dim: rgb(0 0 0 / 45%);
+    /* in the dark the veil is the page itself — translucency ghosts false
+       edges into the seams, so the layers behind step back fully */
+    --veil: var(--page);
+    --track: color-mix(in srgb, var(--ink) 25%, transparent);
+    --stub-ink: #736265;
+    --cur: #cdc5c9;
+    --frost: rgb(29 24 25 / 78%);
 }
 
 /* `hidden` has to keep hiding things. Web Awesome skins native form
@@ -2124,6 +2179,95 @@ wa-page::part(drawer) {
     flex: 0 0 auto;
 }
 
+/* ── <ui-account-settings> — the account settings panel (DESIGN.md's
+   rail-over-panel reading). One element, two seats: the Hub's account tab
+   embeds it in-column, and the space route raises it in a <tonk-dialog>
+   from the FAB's settings row — so its styling lives here, where both
+   documents receive it. The rail is a run of boxy tabs above the body; the
+   current rail item is a folder tab, same surface as the body, seam
+   erased by an explicit 1px cover. */
+ui-account-settings { display: block; }
+ui-account-settings .s-rail { display: flex; gap: 7px; }
+ui-account-settings .s-rail .blk { flex: 1; height: 36px; display: flex;
+    align-items: flex-end; justify-content: flex-end; padding: 0 12px 9px;
+    cursor: pointer; font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+    text-transform: lowercase; color: var(--ink);
+    background: var(--frost-solid); border: 0;
+    box-shadow: 0 0 0 1px var(--ring); }
+ui-account-settings .s-rail .blk:hover {
+    background: linear-gradient(var(--wash), var(--wash)), var(--frost-solid); }
+ui-account-settings .s-rail .blk.cur { background: var(--panel);
+    box-shadow: none; border: 1px solid var(--ring); border-bottom: 0;
+    position: relative; z-index: 1; cursor: default; }
+ui-account-settings .s-rail .blk.cur::after { content: ""; position: absolute;
+    left: 0; bottom: -1px; width: 100%; height: 1px; background: var(--panel); }
+ui-account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
+    max-height: 60vh; overflow: auto; padding: 8px 18px 18px;
+    background: var(--panel); border: 1px solid var(--ring);
+    font-family: var(--sans); font-weight: 400; font-size: 13.5px;
+    line-height: 1.4; text-transform: none; color: var(--soft); }
+ui-account-settings .pane[hidden] { display: none; }
+ui-account-settings .srowd { display: flex; justify-content: space-between;
+    align-items: baseline; gap: 16px; padding: 9px 0; }
+ui-account-settings .srowd b { font-family: var(--cond); font-weight: 600;
+    font-size: 13.5px; color: var(--ink); text-align: right;
+    white-space: nowrap; }
+ui-account-settings .srowd b.lft { text-align: left; white-space: normal; }
+ui-account-settings .sect { margin-top: 18px; padding-bottom: 7px;
+    font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+    text-transform: lowercase; color: var(--ink);
+    border-bottom: 1px solid var(--sep); }
+ui-account-settings .expl { margin: 6px 0 0; font-size: 13px;
+    line-height: 1.55; max-width: 460px; }
+/* the underline IS the link */
+ui-account-settings .cta { font: 600 13px/1 var(--cond);
+    letter-spacing: 0.02em; color: var(--ink); text-transform: lowercase;
+    white-space: nowrap; display: inline-block; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 3px; }
+ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
+/* a real input wearing the ceremony email field's coat: no border, no
+   background, no outline — the row it sits in is all the chrome it gets.
+   The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
+   which would otherwise hand a bare input its border back. */
+ui-account-settings .sname-seat {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; justify-content: flex-end; }
+ui-account-settings .sname {
+    appearance: none; -webkit-appearance: none;
+    background: none; border: 0; outline: none; margin: 0; padding: 0;
+    font-family: var(--cond); font-weight: 600; font-size: 13.5px;
+    color: var(--ink); text-align: right;
+    flex: 1; min-width: 6ch; }
+/* the caret is the focus affordance here, like the ceremony's email
+   field — the hub's inset focus ring would box the bare input */
+ui-account-settings .sname:focus-visible { box-shadow: none; }
+/* the block cursor blinks on the tail at rest — the cursor is the
+   affordance; while editing, the input's own caret takes over */
+ui-account-settings .sname-seat .cur {
+    width: 7px; height: 13px; flex: none; margin-left: 1px;
+    background: var(--ink); pointer-events: none;
+    animation: tonk-settings-caret 1.05s steps(1, end) infinite; }
+ui-account-settings .sname-seat:focus-within .cur { display: none; }
+@keyframes tonk-settings-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    ui-account-settings .sname-seat .cur { animation: none; }
+}
+/* devices — last seen rides soft beside the remove-access verb */
+ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
+ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
+    color: var(--soft); font-size: 12.5px; white-space: nowrap; }
+/* the current device rides its name as a soft suffix (the mock's d.self) */
+ui-account-settings .dev-self { font-weight: 400; color: var(--soft); }
+/* the device verb surfaces on approach — same law as the spaces rows */
+ui-account-settings [data-settings-devices] .cta { opacity: 0;
+    transition: opacity 0.15s var(--ease); }
+ui-account-settings [data-settings-devices] .srowd:hover .cta,
+ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
+    opacity: 1; }
+@media (hover: none) {
+    ui-account-settings [data-settings-devices] .cta { opacity: 1; }
+}
+
 /* Map our Web Awesome theme into the `<tonk-code>` element's
    public CSS variables. The element ships GitHub-flavored defaults
    that work standalone in light/dark; this block plugs it into our
@@ -2943,7 +3087,26 @@ tonk-notebook-index {
     color: inherit;
   }
   #tonk-register[open] { display: block; }
+  /* Suspended = the account tab it is a page of went to the background:
+     hidden with its state intact, shown again on the switch back. After
+     the [open] rule so it wins their specificity tie. */
+  #tonk-register[data-suspended] { display: none; }
   #tonk-register::backdrop { background: var(--dim); }
+  /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
+     ARE that tab's page, seated in the column one gap under the bar, so
+     there is no veil and no head row (the tab is the head). */
+  #tonk-register[data-anchored]::backdrop { background: transparent; }
+  /* Non-modal and full-viewport, the host would swallow every click —
+     including the bar tabs it sits under, which are the way OUT of the
+     page. Only the seated column is really here. */
+  #tonk-register[data-anchored] { pointer-events: none; }
+  #tonk-register[data-anchored] .ocol { pointer-events: auto; }
+  #tonk-register[data-anchored] .ocol {
+    position: absolute; margin: 0;
+    left: var(--anchor-left, 0); top: var(--anchor-top, 0);
+    width: var(--anchor-width, 432px);
+  }
+  #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
@@ -3023,11 +3186,13 @@ tonk-notebook-index {
      study's editor — no chrome, right-aligned, the row's own type. */
   /* A real input, wearing the study's editor.
      `caret-color: transparent` hides the native caret so the block
-     cursor beside it is the only seat marker — the same trick the study
-     plays on its contenteditable. */
+     cursor over it is the only seat marker — the same trick the study
+     plays on its contenteditable. The trailing padding reserves the
+     seat the block takes when the caret is on the tail. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
-    background: none; border: 0; outline: none; padding: 0; margin: 0;
+    background: none; border: 0; outline: none; margin: 0;
+    padding: 0 8px 0 0;
     font: inherit; letter-spacing: inherit; text-transform: none;
     color: var(--ink); caret-color: transparent;
     text-align: right; width: 100%; min-width: 0;
@@ -3040,16 +3205,62 @@ tonk-notebook-index {
     color: var(--soft); opacity: .55; text-transform: none;
   }
 
-  /* The block cursor: hard-blinking, on the tail of the value. Hidden
-     while the field is unfocused, since the seat is only meaningful
-     where the typing goes. */
+  /* Autofill (an address fill or a passkey's) otherwise repaints the
+     field yellow with the vendor's own ink. */
+  .tonk-ceremony .ed:-webkit-autofill,
+  .tonk-ceremony .ed:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--ink);
+    box-shadow: 0 0 0 100px var(--card) inset;
+  }
+
+  /* The block cursor: hard-blinking, over the character the caret sits
+     on. Absolute so `follow_caret` (register_dialog.rs) can seat it by
+     its offset from the field's right edge; it rests on the tail until
+     that wiring places it. Hidden while the field is unfocused, since
+     the seat is only meaningful where the typing goes. */
+  .tonk-ceremony .v { position: relative; }
+  /* The blend renders the covered glyph in negative rather than hiding
+     it under the block — the same difference/exclusion pair the FABB
+     skin's terminal cursor wears. */
   .tonk-ceremony .cur {
-    display: inline-block; width: 7px; height: 13px;
-    background: var(--ink); vertical-align: -1px; margin-left: 1px;
+    position: absolute; right: 1px; bottom: 3px;
+    width: 7px; height: 13px;
+    background: var(--ink); pointer-events: none;
+    mix-blend-mode: difference;
     animation: tonk-register-caret 1.05s steps(1, end) infinite;
   }
+  :root.wa-dark .tonk-ceremony .cur { mix-blend-mode: exclusion; }
   .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
   @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+
+  /* The mirror `follow_caret` measures with: the text after the caret,
+     in the field's own type. `text-transform: none` has to match the
+     field, or a capital measures wider than it renders. */
+  .tonk-ceremony .measure {
+    position: absolute; visibility: hidden; pointer-events: none;
+    white-space: pre; text-transform: none;
+  }
+
+  /* Engines that draw a block caret natively need none of the above:
+     the real caret takes the block shape and the hard blink, and the
+     faked one stands down. `tonk-block-caret` is page-level on purpose —
+     account.css leans on it for the same treatment. */
+  @supports (caret-shape: block) {
+    .tonk-ceremony .ed {
+      caret-shape: block;
+      caret-animation: manual;
+      /* Solid under the animation, so reduced-motion's `animation: none`
+         leaves a visible caret rather than the transparent base. */
+      caret-color: var(--ink);
+      animation: tonk-block-caret 1.05s steps(1, end) infinite;
+    }
+    .tonk-ceremony .ed:not(:focus) { animation: none; }
+    .tonk-ceremony .cur { display: none; }
+  }
+  @keyframes tonk-block-caret {
+    0%, 49% { caret-color: var(--ink); }
+    50%, 100% { caret-color: transparent; }
+  }
 
   /* An action step: solid ink, full rung, the word bottom-right. While a
      ceremony is out of our hands the block blinks rather than spins. */
@@ -3119,6 +3330,13 @@ tonk-notebook-index {
       font-size: 16px;
       line-height: 44px;
     }
+    /* The row centres at this size, so the block centres with it — and
+       the mirror has to wear the field's grown type to measure true. */
+    .tonk-ceremony .cur {
+      bottom: calc(50% - 8px);
+      height: 16px;
+    }
+    .tonk-ceremony .measure { font-size: 16px; }
     .tonk-ceremony .ghost {
       min-height: 44px;
       display: flex;
@@ -3133,8 +3351,237 @@ tonk-notebook-index {
       transition: none;
     }
     .tonk-ceremony .cur,
+    .tonk-ceremony .ed,
     .tonk-ceremony .obtn.wait,
     .tonk-ceremony .flash {
       animation: none;
     }
   }
+
+/* ──────── hub page — the space directory at `/` and the /settings route.
+   Both views render the same chrome (logo, 432 column, two-cell bar,
+   account view, spaces stack), so its CSS lives here beside the theme
+   tokens rather than inside either view. ──────── */
+
+/* ── The Hub — the space directory at `/`.
+   Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
+   `.hub` block from an earlier launcher (a 56rem centred column),
+   which clipped this page to a band down the middle of the viewport.
+   That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
+   more — but it is not this change's to delete.
+   Chrome, and it runs on the same material as the FAB: a neutral
+   page, 36px frost blocks with ink rings, lowercase condensed words
+   seated bottom-right, ink only.
+
+   COLORS LIVE IN ONE PLACE: the theme block at the top of
+   `tonk-ui/styles.css` (stone·ink over the Web Awesome tokens,
+   light + dark). That stylesheet is injected into every sealed
+   guest, so `--page`, `--ink`, `--cur`, the frosts and the washes
+   all resolve here without being restated — one file recolors the
+   hub, the chrome and the app together, and the dark twin arrives
+   through the same `.wa-dark` swap with no block here. ── */
+.hub-page {
+  position:relative; min-height:100dvh; background:var(--page);
+  color:var(--ink); font-family:var(--cond);
+}
+.hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
+/* selection is chrome too — ink, never the browser's blue */
+.hub-page ::selection { background:var(--ink); color:var(--on-ink); }
+.hub-page :focus-visible { outline:none;
+  box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
+/* A real reset, not a token one. Web Awesome skins NATIVE controls
+   inside `@layer wa-native` — `button` gets `display:inline-flex`,
+   padding, a min-height, a radius and a border — so a cell built on
+   a <button> and one built on an <a> laid their words out
+   differently, and the mode cap came out a rounded slab instead of
+   an 18px pill. Unlayered author rules outrank layered ones, so this
+   wins without `!important`. */
+/* `:where()` so the reset contributes NO specificity: a plain
+   `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
+   cell rule below — which stripped `.hcell`'s padding and left "new
+   space" flush against the corner while the anchor cell next to it
+   sat correctly. A reset must lose every tie it takes part in. */
+.hub-page :where(button) {
+  font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
+  background:none; border:0; border-radius:0; margin:0; padding:0;
+  min-width:0; min-height:0; block-size:auto; inline-size:auto;
+  box-shadow:none; appearance:none; -webkit-appearance:none;
+  cursor:pointer; }
+.hub-page :where(a) { color:inherit; text-decoration:none; }
+
+/* the block: 36px, frost + ink ring. every cell derives from it. */
+.blk { height:36px; background:var(--frost);
+  -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
+  box-shadow:0 0 0 1px var(--ring); }
+.chrome { font-family:var(--cond); font-weight:600; font-size:13px;
+  line-height:1; letter-spacing:.02em; text-transform:lowercase; }
+
+/* ── centered launcher — the mark leads the column, in flow (a fixed
+   corner mark was the left anchor's partner, and the anchor is gone) ── */
+.hub-logo { display:flex; justify-content:center; margin:48px 0 0;
+  color:var(--ink); user-select:none; }
+.hub-logo svg { display:block; height:36px; width:auto; }
+/* two cells now: account 144 · spaces 288 = 432 — the settings cell
+   left the bar for the account view (settings is an account place,
+   and under the name is where hands look for it). 432 is the sheet's
+   own cluster width, and the hub speaks it too. */
+.hubcol { width:432px; margin:56px auto 120px; }
+.hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
+  width:100%; height:36px; background:var(--frost-solid);
+  box-shadow:0 0 0 1px var(--ring); }
+/* every word sits bottom-right on the 9px seat */
+.hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+  padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
+  text-decoration:none; color:inherit; flex:none; }
+.hcell:hover { background:var(--wash); }
+.hcell:active { background:var(--wash-2); }
+/* the account cell flushes its name LEFT against the bar's end */
+.hc-acct { width:144px; min-width:0; justify-content:flex-start; }
+.hc-view { width:288px; border-left:1px solid var(--sep); }
+/* the view you are in wears CURRENT (near-ink) — solid ink stays the
+   CTA register, so a tab never outshouts an action */
+.hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
+  background:var(--cur); color:var(--on-ink); }
+.hc-acct[aria-current="page"]:hover, .hc-view[aria-current="page"]:hover,
+.hc-acct[aria-current="page"]:active, .hc-view[aria-current="page"]:active {
+  background:linear-gradient(var(--wash-p),var(--wash-p)), var(--cur); }
+/* exactly one cell wears the CURRENT coat and it follows the view:
+   spaces while the roster shows, the account cell while its page
+   (linking ceremony or account stack) is up. The mock's solid-ink
+   account cell belongs only to its fully signed-out state, where
+   the roster is gone — an unlinked profile here still has one. */
+ui-hub-account[data-linking] .hc-acct { cursor:default; }
+.hcell .g { font-size:14px; font-weight:500; }
+.settings-icon { width:9px; height:9px; flex:none; margin-bottom:1px; }
+
+/* ── the account view — the second tab's page: it REPLACES the
+   spaces list under the bar. The current account is the tab itself,
+   so the rows are only ways onward: settings first, one row per
+   other account carrying its switch verb, then the add door — the
+   page's one CTA, solid ink. ── */
+.hub-page ui-hub-account { position:relative; display:block; width:100%; }
+.account-trigger { overflow:hidden; }
+.account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; text-transform:none; }
+.account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
+  color:var(--ink); }
+.account-menu[hidden] { display:none; }
+.account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
+.account-menu__profiles:empty { display:none; }
+.account-menu__row { display:flex; align-items:flex-end; justify-content:flex-end;
+  gap:8px; width:100%; min-height:36px; padding:0 10px 9px 16px; text-align:left;
+  background:var(--frost-solid); font:inherit; color:inherit; cursor:pointer;
+  box-shadow:0 0 0 1px var(--ring); }
+.account-menu__row:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+.account-menu__row:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
+/* the name holds the left end; user words ride untouched */
+.account-menu__row .an { margin-right:auto; text-transform:none;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  padding-bottom:4px; margin-bottom:-4px; }
+.account-menu__row .g { font-size:14px; font-weight:500; }
+/* the add door — the page's one CTA */
+.account-menu__row--ink { background:var(--ink); color:var(--on-ink);
+  box-shadow:0 0 0 1px var(--ink); }
+.account-menu__row--ink:hover, .account-menu__row--ink:active {
+  background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+.account-menu__error { padding:10px 12px; background:var(--frost-solid);
+  color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
+  text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
+.account-menu__error[hidden] { display:none; }
+
+/* ── settings — a page of the account tab (the wireframe's reading):
+   the stack steps aside and the section hangs from the same bar.
+   The panel's own styling (rail, body, rows) ships with
+   `<ui-account-settings>` in `tonk-ui/styles.css`, because the FAB
+   raises the same panel in a dialog on the space route — only the
+   hub seat's geometry lives here. ── */
+.settings { display:flex; flex-direction:column; align-items:stretch;
+  margin-top:7px; }
+.settings[hidden] { display:none; }
+
+/* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
+.stack { width:100%; margin-top:7px; display:flex;
+  flex-direction:column; gap:7px; }
+.stack[hidden] { display:none; }
+.sempty { height:36px; padding:0 10px 9px 16px; display:flex;
+  align-items:flex-end; justify-content:flex-end; color:var(--soft);
+  background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
+.stack:has(.srow-wrap) .sempty { display:none; }
+/* the wrapper, not the link, is the positioning context: the verbs
+   and the confirm cluster sit OUTSIDE the anchor (a control inside
+   one is invalid markup, and a label inside one navigates instead of
+   doing its job) while reading as part of the row */
+.srow-wrap { position:relative; }
+.srow { display:flex; align-items:flex-end;
+  justify-content:flex-end; padding:0 10px 9px 16px; cursor:pointer;
+  text-decoration:none; color:var(--ink);
+  background:var(--frost-solid);
+  -webkit-backdrop-filter:none; backdrop-filter:none; }
+.srow:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+.srow:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
+/* the ellipsis clip needs descender room: at line-height 1 the box
+   ends at the baseline's feet and takes the tails off g, p and y.
+   The padding gives the clip air; the negative margin hands it back
+   so the seat does not move. */
+.srow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  text-transform:none; padding-bottom:4px; margin-bottom:-4px;
+  max-width:calc(100% - 130px); }
+/* a space still seeding, and one this device has not replicated:
+   quieter, but still openable — visiting replicates it */
+.srow-wrap[data-status="tonk:blank"] .srow .n { opacity:.6; }
+.srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
+/* the verbs — soft until approached, left of the row. Soft ink is
+   metadata-only, so they take full ink the moment they are live. */
+.verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
+  opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
+.srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
+ui-space-remove { display:contents; }
+.verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
+  color:inherit; font:inherit; letter-spacing:inherit;
+  text-transform:lowercase; cursor:pointer; }
+.verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
+  text-decoration:underline; text-underline-offset:3px; }
+/* creation is the stack's final, and only, solid ink row */
+.snew-form { display:block; }
+.snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+  width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
+  color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
+.snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+.remove-form { margin:0; font-family:var(--sans); font-weight:600;
+  font-size:13.5px; line-height:1.6; text-transform:none; }
+.m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
+  min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
+  background:var(--card); color:var(--ink); font:inherit; font-size:13px;
+  cursor:pointer; }
+.m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
+.m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+  min-width:144px; padding:0 10px 9px 24px; border:0; background:var(--ink);
+  color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
+  cursor:pointer; white-space:nowrap; }
+/* brightness on near-black reads as nothing — wash it instead */
+.m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .verbs, .account-menu__row { transition:none; }
+}
+
+/* ── one breakpoint, the bar's own fold. Approach hides nothing from
+   a hand that cannot hover. ── */
+@media (hover:none), (max-width:640px) {
+  .verbs { opacity:1; gap:24px; }
+  /* the 44 target law, invisibly — centres 44 apart, no overlap */
+  .verbs button, .verbs .verb-remove { padding:16px; margin:-16px -12px; }
+  .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
+  .srow .n { max-width:calc(100% - 150px); }
+}
+@media (max-width:640px) {
+  .hub-logo { margin-top:20px; }
+  .hub-logo svg { height:28px; }
+  .hubcol { width:calc(100vw - 32px); margin:40px auto 120px; }
+  /* account holds its 144; the spaces cell follows the column */
+  .hc-view { width:auto; flex:1; min-width:0; }
+  .hubbar, .hcell { height:44px; min-height:44px; }
+  .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
+  .m-cancel, .m-go { min-height:44px; }
+}
+

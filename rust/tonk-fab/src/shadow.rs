@@ -1,30 +1,21 @@
 //! Shared scaffolding for the FABB component family.
 //!
 //! `fabb.js` gets this from a `Fabb` base class every component extends:
-//! shadow attach, mode plumbing reactive to `prefers-color-scheme`, the
-//! `fabb-*` event emitter, and the block-cursor editable. Rust has no class
-//! inheritance, so the same surface is free functions over the host element,
-//! called from each component's `connected_callback`.
+//! shadow attach, the `fabb-*` event emitter, and the block-cursor editable.
+//! Rust has no class inheritance, so the same surface is free functions over
+//! the host element, called from each component's `connected_callback`.
 //!
-//! Mode resolution is the law: follow the system unless a `mode` attribute
-//! overrides it. The resolved mode is a `dark` class on the `.w` wrapper, so
-//! the tokens in [`crate::skin::SKIN`] swap without a media query — which is
-//! what lets one element be dark while the page is light.
+//! One scheme — the chrome is light (law 8). The mode plumbing left with the
+//! dark twin; it was the only thing that walked the light-DOM children.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{
-    CustomEvent, CustomEventInit, Element, HtmlElement, MediaQueryList, Range, ShadowRoot, window,
-};
+use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Range, ShadowRoot, window};
 
 use crate::skin::SKIN;
-
-/// The system dark-mode query. Every component listens to it so an element
-/// with no explicit `mode` follows the OS live, not just at mount.
-pub const DARK_QUERY: &str = "(prefers-color-scheme: dark)";
 
 /// An event listener that detaches itself when dropped.
 ///
@@ -79,25 +70,6 @@ pub fn el(tag: &str) -> Element {
     document().create_element(tag).expect("createElement")
 }
 
-/// The system's current dark preference, or `false` where `matchMedia` is
-/// unavailable (older test harnesses).
-pub fn system_dark() -> bool {
-    window()
-        .and_then(|w| w.match_media(DARK_QUERY).ok().flatten())
-        .map(|m: MediaQueryList| m.matches())
-        .unwrap_or(false)
-}
-
-/// Resolve the mode for `this`: an explicit `mode` attribute wins, otherwise
-/// the system preference.
-pub fn is_dark(this: &HtmlElement) -> bool {
-    match this.get_attribute("mode").as_deref() {
-        Some("dark") => true,
-        Some("light") => false,
-        _ => system_dark(),
-    }
-}
-
 /// Attach the shadow root, or return the one already attached.
 ///
 /// Attach is done here rather than through `CustomElement::shadow()` so the
@@ -119,61 +91,7 @@ pub fn ensure_shadow(this: &HtmlElement) -> ShadowRoot {
 pub fn build(this: &HtmlElement, css: &str, html: &str) -> ShadowRoot {
     let root = ensure_shadow(this);
     root.set_inner_html(&format!("<style>{SKIN}{css}</style>{html}"));
-    apply_mode(this);
     root
-}
-
-/// Toggle the resolved mode onto the `.w` wrapper.
-pub fn apply_mode(this: &HtmlElement) {
-    let dark = is_dark(this);
-    if let Some(root) = this.shadow_root()
-        && let Ok(Some(w)) = root.query_selector(".w")
-    {
-        let _ = w.class_list().toggle_with_force("dark", dark);
-    }
-}
-
-/// Pass the resolved mode down to a light-DOM FABB child.
-///
-/// Custom properties inherit through a shadow boundary but a class does not,
-/// so slotted children — which render in their OWN shadow roots — have to be
-/// told explicitly. Without this a slotted `<tonk-mi>` inside a dark bar
-/// renders light.
-/// Set `mode` on `element`, or clear it, only when that changes anything.
-///
-/// `mode` is observed by every element it is set on, and `set_attribute`
-/// runs `attributeChangedCallback` SYNCHRONOUSLY — so a write that
-/// changes nothing still re-enters the element's own state lock, which
-/// on wasm is not reentrant and panics with `cannot recursively acquire
-/// mutex` rather than deadlocking.
-pub fn set_mode(element: &Element, mode: Option<&str>) {
-    let current = element.get_attribute("mode");
-    match mode {
-        Some(mode) => {
-            if current.as_deref() == Some(mode) {
-                return;
-            }
-            let _ = element.set_attribute("mode", mode);
-        }
-        None => {
-            if current.is_none() {
-                return;
-            }
-            let _ = element.remove_attribute("mode");
-        }
-    }
-}
-
-pub fn pass_mode(this: &HtmlElement, child: &Element) {
-    let mode = if is_dark(this) { "dark" } else { "light" };
-    // Only when it actually changes. `mode` is an observed attribute on
-    // every element this is called for, and `set_attribute` runs their
-    // `attributeChangedCallback` SYNCHRONOUSLY — so a write that changes
-    // nothing still re-enters, and on wasm the state lock is not
-    // reentrant: it panics with `cannot recursively acquire mutex`
-    // rather than deadlocking. The dialog propagates its mode to every
-    // child on open, which is exactly when that fires.
-    set_mode(child, Some(mode));
 }
 
 /// Dispatch a composed, bubbling `fabb-*` event.
@@ -210,13 +128,6 @@ pub fn install_visibility_pause(this: &HtmlElement) -> Bound {
             let _ = w.class_list().toggle_with_force("vispause", hidden);
         }
     })
-}
-
-/// Follow the system dark preference while no explicit `mode` is set.
-pub fn install_system_mode(this: &HtmlElement) -> Option<Bound> {
-    let query = window()?.match_media(DARK_QUERY).ok()??;
-    let host = this.clone();
-    Some(bind(&query, "change", move |_| apply_mode(&host)))
 }
 
 /// A live in-place edit: the contenteditable span plus its block cursor.

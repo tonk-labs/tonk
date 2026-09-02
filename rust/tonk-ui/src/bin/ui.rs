@@ -6,14 +6,22 @@
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn canonical_account_url(path: &str, search: &str) -> Option<String> {
-    if path == "/settings" || path.starts_with("/settings/") {
+    if path == "/account" || path.starts_with("/account/") {
         return Some(format!("{path}{search}"));
     }
-    if path == "/account" {
-        return Some(format!("/settings{search}"));
+    // `/settings` belongs to the hub now (a real route: the settings page
+    // per the wireframes). The account panel — the WebAuthn and
+    // destructive ceremonies — lives at `/account`; old deep links
+    // (`/settings/link`, `/settings?add=1`) redirect to it, while the bare
+    // path falls through to the routed page.
+    if path == "/settings" && search.is_empty() {
+        return None;
     }
-    path.strip_prefix("/account/")
-        .map(|suffix| format!("/settings/{suffix}{search}"))
+    if path == "/settings" {
+        return Some(format!("/account{search}"));
+    }
+    path.strip_prefix("/settings/")
+        .map(|suffix| format!("/account/{suffix}{search}"))
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -57,6 +65,43 @@ async fn main() {
     // A guest asking to register raises the dialog here, in the only
     // document that can run the ceremony.
     tonk_portal::on_register(|reason, return_focus| {
+        // The guest steers the anchored ceremony from the OTHER side of
+        // the frame boundary — it cannot reach the top-page cluster, so
+        // it asks. Tab switches SUSPEND and SHOW the cluster (a tab bar
+        // hides the background tab's content, it does not destroy it);
+        // dismiss remains the true teardown.
+        let request = tonk_ui::register_dialog::parse_request(reason);
+        match request.reason.as_str() {
+            "dismiss" => {
+                tonk_ui::register_dialog::close();
+                return;
+            }
+            "suspend" => {
+                tonk_ui::register_dialog::suspend();
+                return;
+            }
+            "show" => {
+                tonk_ui::register_dialog::resume();
+                return;
+            }
+            _ => {}
+        }
+        if tonk_ui::register_dialog::is_open() {
+            // A repeat request re-shows the standing cluster — everything
+            // typed survives the round trip through the spaces tab.
+            tonk_ui::register_dialog::resume();
+            return;
+        }
+        if request.anchor.is_none() && !request.space.is_empty() {
+            // A blocked share: the linking screen IS the hub's settings
+            // route. The space rides sessionStorage across the navigation
+            // so the finished ceremony still offers the share link.
+            tonk_ui::register_dialog::stash_share(&request.space);
+            if let Some(location) = web_sys::window().map(|window| window.location()) {
+                let _ = location.assign("/settings");
+            }
+            return;
+        }
         match return_focus {
             Some(return_focus) => tonk_ui::register_dialog::open_with_return_focus(move || {
                 return_focus.restore();
@@ -64,6 +109,7 @@ async fn main() {
             None => tonk_ui::register_dialog::open(),
         }
         tonk_ui::register_dialog::describe(reason);
+        tonk_ui::register_dialog::adopt_stashed_share();
     });
     tonk_ui::account::register();
     tonk_ui::activate::register();
@@ -143,10 +189,13 @@ fn render_root(shell: &web_sys::Element) {
         .unwrap_or_else(|| "/".to_owned());
     let search = window.location().search().unwrap_or_default();
     let canonical_account = canonical_account_url(&path, &search);
-    if path == "/account" || path.starts_with("/account/") {
-        if let Some(canonical) = canonical_account {
-            let _ = window.location().replace(&canonical);
-        }
+    // Redirect the OLD panel addresses onto their /account home; render the
+    // panel when we are already there.
+    let here = format!("{path}{search}");
+    if let Some(canonical) = canonical_account.as_ref()
+        && canonical != &here
+    {
+        let _ = window.location().replace(canonical);
         return;
     }
     let account_route = canonical_account.is_some();
@@ -240,22 +289,25 @@ mod tests {
     use super::canonical_account_url;
 
     #[test]
-    fn it_canonicalizes_settings_routes_without_losing_query_parameters() {
+    fn it_canonicalizes_account_routes_without_losing_query_parameters() {
+        // The account panel's home is /account; legacy /settings deep
+        // links redirect there. Bare /settings is the routed page now.
+        assert_eq!(canonical_account_url("/settings", ""), None);
         assert_eq!(
             canonical_account_url("/settings", "?next=%2Fspace%2Fone"),
-            Some("/settings?next=%2Fspace%2Fone".into())
+            Some("/account?next=%2Fspace%2Fone".into())
         );
         assert_eq!(
             canonical_account_url("/settings/link", "?callback=http%3A%2F%2Flocalhost"),
-            Some("/settings/link?callback=http%3A%2F%2Flocalhost".into())
+            Some("/account/link?callback=http%3A%2F%2Flocalhost".into())
         );
         assert_eq!(
             canonical_account_url("/account", "?revoke=did%3Akey%3Aone"),
-            Some("/settings?revoke=did%3Akey%3Aone".into())
+            Some("/account?revoke=did%3Akey%3Aone".into())
         );
         assert_eq!(
             canonical_account_url("/account/link", "?audience=did%3Akey%3Acli"),
-            Some("/settings/link?audience=did%3Akey%3Acli".into())
+            Some("/account/link?audience=did%3Akey%3Acli".into())
         );
         assert_eq!(canonical_account_url("/space/one", ""), None);
     }

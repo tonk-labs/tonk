@@ -83,8 +83,10 @@ getrandom_0_3 = { workspace = true }
 workspace = true
 features = [
     "BroadcastChannel",
+    "css",
     "CustomEvent",
     "Document",
+    "DomRect",
     "Element",
     "Event",
     "HtmlButtonElement",

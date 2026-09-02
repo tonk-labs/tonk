@@ -7,13 +7,16 @@
     aria-expanded="false"
     aria-controls="hub-account-menu"
   >
-    <span data-account-label>account</span><span class="g" aria-hidden="true">&#9662;</span>
+    <span data-account-label>account</span>
   </button>
   <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
     spaces
   </button>
-  <a class="hcell hc-cfg" href="/settings" data-open-settings aria-label="settings">
-    <span class="settings-word">settings</span>
+</nav>
+
+<div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
+  <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
+    settings
     <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
       <g stroke="currentColor" stroke-width="1.2">
         <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
@@ -23,13 +26,13 @@
       <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
     </svg>
   </a>
-  <ui-mode-switch></ui-mode-switch>
-</nav>
-
-<div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
-  <div class="account-menu__profiles" data-profile-list aria-label="accounts on this browser"></div>
-  <button type="button" class="account-menu__row" data-add-profile role="menuitem">
-    add account<span aria-hidden="true">+</span>
+  <div class="account-menu__profiles" data-profile-list aria-label="other accounts on this browser"></div>
+  <button type="button" class="account-menu__row account-menu__row--ink" data-add-profile role="menuitem">
+    add account<span class="g" aria-hidden="true">+</span>
   </button>
   <div class="account-menu__error" data-account-error role="status" hidden></div>
 </div>
+
+<section class="settings chrome" data-settings-view hidden>
+  <ui-account-settings></ui-account-settings>
+</section>

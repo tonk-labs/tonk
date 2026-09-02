@@ -48,9 +48,9 @@ use web_sys::{
 
 use crate::bar;
 use crate::logic::{
-    DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position, dock_claim_json,
-    dock_from_conclusions, nearest_dock, pause_claim_json, repository_endpoint,
-    snap_to_nearest_edge,
+    DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position, collapsed_claim_json,
+    collapsed_from_conclusions, dock_claim_json, dock_from_conclusions, nearest_dock,
+    pause_claim_json, repository_endpoint, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -108,7 +108,6 @@ impl CustomElement for TonkFab {
 
     fn observed_attributes() -> &'static [&'static str] {
         &[
-            "mode",
             "space",
             "label",
             "state",
@@ -148,6 +147,7 @@ impl CustomElement for TonkFab {
             .extend(attach_keyboard_lift(this));
         mount_refusal_dialogs();
         restore_position(this);
+        restore_collapse(this, &self.state);
         self.listeners.borrow_mut().extend(attach_presence(this));
         self.activation_watch = crate::activation::watch(this);
     }
@@ -174,11 +174,6 @@ impl CustomElement for TonkFab {
             return;
         }
         match name.as_str() {
-            "mode" => {
-                crate::shadow::apply_mode(this);
-                bar::propagate(this);
-                bar::update(this);
-            }
             "flip" => bar::apply_flip(this),
             "data-sync-status" => bar::update(this),
             // The space is what every subscription is addressed to. The
@@ -238,7 +233,7 @@ fn restamp_space(this: &HtmlElement, space: &str) {
     for (selector, attribute, value) in [
         ("ui-space-name", "space", space.to_string()),
         ("ui-member-roster", "space", space.to_string()),
-        ("ui-space-switcher", "exclude", space.to_string()),
+        ("ui-space-switcher", "current", space.to_string()),
         ("ui-sync-status", "with", format!("main@{space}")),
     ] {
         if let Ok(Some(child)) = this.query_selector(selector) {
@@ -533,8 +528,10 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 dispatch_pause(&host);
             } else if shared.borrow().collapsed {
                 bar::expand(&host, &shared);
+                persist_collapsed(false);
             } else {
                 bar::collapse(&host, &shared);
+                persist_collapsed(true);
             }
         }));
     }
@@ -561,14 +558,23 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             return;
         };
 
-        // A space row: go there. The routing key is the suffix after the
-        // last `:` of the subject DID, which `/space/{did}` resolves.
+        // A space row: go there — unless it is the space you are on, where
+        // the pick has nothing to do but put the stack away.
         if let Some(subject) = row.get_attribute("data-space") {
-            navigate(&format!("/space/{subject}"));
+            if !row.has_attribute("current") {
+                navigate(&format!("/space/{subject}"));
+            }
             return;
         }
         if row.has_attribute("data-mi-home") {
             navigate("/");
+            return;
+        }
+        if row.has_attribute("data-mi-cfg") {
+            // Settings is a page: the /settings route serves the hub chrome
+            // with the settings section open — the wireframes'
+            // showHub-then-openSettings move, as a plain navigation.
+            navigate("/settings");
             return;
         }
         if row.has_attribute("data-mi-rename") {
@@ -1099,6 +1105,46 @@ fn persist_dock(dock: Dock) {
     transact(&dock_claim_json(dock));
 }
 
+/// Persist whether the bar is collapsed, beside the dock.
+fn persist_collapsed(collapsed: bool) {
+    transact(&collapsed_claim_json(collapsed));
+}
+
+/// Run a `window.tonk.query` and hand the settled result to `then` on a
+/// later task. `then` never runs when the bridge is missing — callers
+/// leave their defaults standing — and runs with `None` when the query
+/// itself fails.
+fn profile_query(query_body: serde_json::Value, then: impl FnOnce(Option<JsValue>) + 'static) {
+    let Ok(json) = serde_json::to_string(&query_body) else {
+        return;
+    };
+    let Some(win) = window() else { return };
+    let Some(tonk) = Reflect::get(&win, &"tonk".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Object>().ok())
+    else {
+        return;
+    };
+    let Some(query) = Reflect::get(&tonk, &"query".into())
+        .ok()
+        .and_then(|v| v.dyn_into::<Function>().ok())
+    else {
+        return;
+    };
+    let Ok(body) = js_sys::JSON::parse(&json) else {
+        return;
+    };
+    let Ok(result) = query.call1(&tonk, &body) else {
+        return;
+    };
+    let Ok(promise) = result.dyn_into::<Promise>() else {
+        return;
+    };
+    spawn_local(async move {
+        then(JsFuture::from(promise).await.ok());
+    });
+}
+
 /// Restore the persisted dock, defaulting to bottom-right.
 ///
 /// The default is queued for the first microtask so the bar is seated before
@@ -1128,41 +1174,47 @@ fn restore_position(this: &HtmlElement) {
             }
         }
     });
-    let Ok(json) = serde_json::to_string(&query_body) else {
-        return;
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(query) = Reflect::get(&tonk, &"query".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    let Ok(body) = js_sys::JSON::parse(&json) else {
-        return;
-    };
-    let Ok(result) = query.call1(&tonk, &body) else {
-        return;
-    };
-    let Ok(promise) = result.dyn_into::<Promise>() else {
-        return;
-    };
     let host = this.clone();
-    spawn_local(async move {
+    profile_query(query_body, move |rows| {
         // Fall back explicitly rather than by omission: a query that answers
         // with nothing, or fails, must still land the bar in its default
         // corner instead of wherever a half-applied earlier state left it.
-        let dock = match JsFuture::from(promise).await {
-            Ok(rows) => read_dock_from_rows(&rows).unwrap_or(DEFAULT_DOCK),
-            Err(_) => DEFAULT_DOCK,
-        };
+        let dock = rows
+            .as_ref()
+            .and_then(read_dock_from_rows)
+            .unwrap_or(DEFAULT_DOCK);
         apply_dock(&host, dock);
+    });
+}
+
+/// Restore the persisted collapse.
+///
+/// Expanded is both the default and the DOM's starting state, so only a
+/// stored `true` does anything — and it seats the bar without the focus
+/// move a user's own collapse carries.
+fn restore_collapse(this: &HtmlElement, state: &bar::Shared) {
+    let query_body = serde_json::json!({
+        "terms": {
+            "this": "state:fab",
+            "collapsed": { "?": { "name": "collapsed" } }
+        },
+        "predicate": {
+            "description": "Persisted FAB collapse (profile claim).",
+            "with": {
+                "collapsed": { "the": "xyz.tonk.fab/collapsed", "cardinality": "one", "as": "Boolean" }
+            }
+        }
+    });
+    let host = this.clone();
+    let state = state.clone();
+    profile_query(query_body, move |rows| {
+        if rows
+            .as_ref()
+            .and_then(read_collapsed_from_rows)
+            .unwrap_or(false)
+        {
+            bar::seat_collapsed(&host, &state);
+        }
     });
 }
 
@@ -1171,6 +1223,13 @@ fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
     let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
     let value: serde_json::Value = serde_json::from_str(&json).ok()?;
     dock_from_conclusions(&value)
+}
+
+/// Extract the persisted collapse from a `Conclusion[]` value.
+fn read_collapsed_from_rows(rows: &JsValue) -> Option<bool> {
+    let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    collapsed_from_conclusions(&value)
 }
 
 /// Mark the space present and clear any earlier absence stamps.

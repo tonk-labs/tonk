@@ -8,12 +8,14 @@
 //! the behaviour that drives them. The shared token block they layer over
 //! lives in [`crate::skin::SKIN`].
 //!
-//! ## The absent rung
+//! ## The absent rungs
 //!
-//! The full product bar is `[circle 36][space 216][share 144][mode 18]`.
+//! The full product bar is `[circle 36][space 216][share 144]`.
 //! The reference's `changes` rung is omitted here — it drives preview /
 //! accept / discard / restore over proposals and history points, and this
-//! repo implements neither. See `plan/fabb-conformance.md`.
+//! repo implements neither. See `plan/fabb-conformance.md`. The mode cell
+//! left with the switcher: the theme follows the system, and only the
+//! system.
 
 /// The `.w` state classes and cell geometry, layered over
 /// [`crate::skin::SKIN`] in the bar's shadow root.
@@ -24,14 +26,23 @@ pub const BAR_CSS: &str = r#"
 :host([hidden]){ display:none; }
 @media (prefers-reduced-motion: reduce){ :host{ transition:none; } }
 .w{ position:relative; }
+/* the bar ends on a straight line — the single round cap belongs to the
+   circle and swaps ends with it on the flip; collapsed, the circle alone
+   rounds fully (the radius rides the telescope easing) */
 .bar{ position:relative; display:flex; align-items:stretch; height:36px;
-  border-radius:100px; overflow:hidden; user-select:none;
+  border-radius:18px 0 0 18px; overflow:hidden; user-select:none;
+  transition:border-radius .4s var(--_ease);
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   box-shadow:var(--_ring); }
+.w.flip .bar{ border-radius:0 18px 18px 0; }
+.w.collapsed .bar, .w.collapsed.flip .bar{ border-radius:100px; }
 .run{ display:flex; align-items:stretch; max-width:378px; opacity:1; visibility:visible;
   overflow:hidden; transition-property:max-width,opacity,visibility;
   transition-duration:200ms,160ms,0s; transition-delay:0s,0s,0s;
   transition-timing-function:var(--_ease); }
+/* the hidden attribute must actually win: `.w.compact .more` sets a display
+   of its own, which outranks the UA's `[hidden]` rule */
+.cell[hidden]{ display:none !important; }
 .cell{ display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
   padding:0 10px 9px 0; font-size:13px; line-height:1; color:var(--_ink);
   white-space:nowrap; overflow:hidden; cursor:pointer; flex:none; }
@@ -45,9 +56,6 @@ pub const BAR_CSS: &str = r#"
 .share{ width:144px; }
 .more{ display:none; width:44px; align-items:center; justify-content:center; padding:0;
   font-size:14px; font-weight:500; line-height:1; color:var(--_ink); }
-.toggle{ width:18px; background:var(--_ink); padding:0; }
-.toggle:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_ink); }
-.toggle:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_ink); }
 .w:not(.flip) .run > .cell:not([hidden]){ border-left:1px solid var(--_sep); }
 .w.flip .run > .cell:not([hidden]) ~ .cell:not([hidden]){ border-left:1px solid var(--_sep); }
 .w.flip .fab{ border-left:1px solid var(--_sep); }
@@ -65,7 +73,6 @@ pub const BAR_CSS: &str = r#"
 .w.compact .bar{ height:44px; }
 .w.compact .fab{ width:44px; }
 .w.compact .more{ display:flex; }
-.w.compact .toggle{ display:none; }
 .w.compact.hide-share .share{ display:none; }
 /* A missing replica leaves the space cell available as the way out, but
    removes the share control because there is nothing local to share. */
@@ -99,7 +106,6 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="cell space" data-cell="space" title="space name" aria-expanded="false" aria-controls="fabb-space-menu"><span class="n"></span></button>
       <button class="cell share chrome" data-cell="share" title="share with others" aria-expanded="false" aria-controls="fabb-share-menu">share</button>
       <button class="cell more chrome" data-cell="more" title="more actions" aria-label="more actions" aria-expanded="false" aria-controls="fabb-overflow-menu"><span class="more-glyph" aria-hidden="true">&#9652;</span></button>
-      <button class="cell toggle" data-cell="toggle" role="switch" title="dark / light" aria-label="dark mode"></button>
     </div>
   </div>
   <div class="mw" part="menus"><slot name="menu"></slot></div>
@@ -124,9 +130,9 @@ pub const STACK_GAP_PX: i32 = 7;
 /// `new · open ▸ · rename`. `open`'s sub-stack is filled by
 /// `<ui-space-switcher>`; the share stack's roster by `<ui-member-roster>`.
 ///
-/// The spec's `settings` row is absent for the same reason as the `changes`
-/// rung: there are no space settings for it to open. It comes back with the
-/// surface it leads to.
+/// The `settings` row raises the shared `<ui-account-settings>` panel in a
+/// `<tonk-dialog>` the space route mounts beside this bar — the surface it
+/// was waiting for exists now.
 ///
 /// ## Glyphs
 ///
@@ -140,11 +146,12 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
   <tonk-mi chrome data-mi-new>new<span class="g">+</span></tonk-mi>
   <tonk-mi chrome data-mi-open>open<span class="g">&#9656;</span>
     <tonk-menu slot="sub" role="group" aria-label="spaces">
-      <ui-space-switcher exclude="{space}"></ui-space-switcher>
+      <ui-space-switcher current="{space}"></ui-space-switcher>
       <tonk-mi muted chrome data-mi-home title="back to the directory at home">more<span class="g">&#8598;</span></tonk-mi>
     </tonk-menu>
   </tonk-mi>
   <tonk-mi chrome data-mi-rename>rename<span class="g rename-mark" aria-hidden="true"></span></tonk-mi>
+  <tonk-mi chrome data-mi-cfg>settings<svg class="g" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><g stroke="currentColor" stroke-width="1.2"><line x1="0" y1="2.5" x2="9" y2="2.5"></line><line x1="0" y1="6.5" x2="9" y2="6.5"></line></g><rect x="5" y="1" width="3" height="3" fill="currentColor"></rect><rect x="1" y="5" width="3" height="3" fill="currentColor"></rect></svg></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-menu id="fabb-share-menu" slot="menu" data-for="share" role="group" aria-label="share actions" hidden>
@@ -161,7 +168,6 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 </tonk-menu>
 <tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" role="group" aria-label="more actions" hidden>
   <tonk-mi chrome data-overflow-share>share<span class="g">&#9656;</span></tonk-mi>
-  <tonk-mi chrome data-overflow-mode pressed="false"><span data-mode-label>dark mode</span></tonk-mi>
 </tonk-menu>"#;
 
 /// Styles for the slotted stack content.
@@ -238,7 +244,9 @@ mod tests {
     use crate::skin::SKIN;
 
     #[test]
-    fn it_exposes_the_stone_ink_palette_in_both_modes() {
+    fn it_exposes_the_mono_ink_palette() {
+        // One scheme (law 8): the light twin is the whole palette, and every
+        // default is the mono scheme's own value (COLOR.md).
         for declaration in [
             "--fabb-ink, #38182a",
             "--fabb-ink-soft, #5b4953",
@@ -247,13 +255,6 @@ mod tests {
             "--fabb-hover, rgba(56,24,42,.06)",
             "--fabb-press, rgba(56,24,42,.12)",
             "--fabb-ring, rgba(56,24,42,.85)",
-            "--fabb-ink-dark, #e2dfdd",
-            "--fabb-ink-soft-dark, #c8c3bf",
-            "--fabb-on-ink-dark, #221c1d",
-            "--fabb-sep-dark, rgba(226,223,221,.28)",
-            "--fabb-hover-dark, rgba(226,223,221,.09)",
-            "--fabb-press-dark, rgba(226,223,221,.15)",
-            "--fabb-ring-dark, rgba(226,223,221,.55)",
         ] {
             assert!(
                 SKIN.contains(declaration),
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn it_keeps_full_geometry_and_names_compact_targets() {
-        for (cell, width) in [(".fab", "36px"), (".share", "144px"), (".toggle", "18px")] {
+        for (cell, width) in [(".fab", "36px"), (".share", "144px")] {
             assert!(
                 BAR_CSS.contains(&format!("{cell}{{ width:{width}")),
                 "{cell} must be fixed at {width}",
@@ -363,7 +364,7 @@ mod tests {
         // child is pointed at nothing.
         assert!(html.contains(r#"<ui-space-name headless space="did:key:z6Mk""#));
         assert!(html.contains(r#"<ui-member-roster space="did:key:z6Mk""#));
-        assert!(html.contains(r#"<ui-space-switcher exclude="did:key:z6Mk""#));
+        assert!(html.contains(r#"<ui-space-switcher current="did:key:z6Mk""#));
         // The sync disc's contract is branch@repo, not a bare DID.
         assert!(html.contains(r#"with="main@did:key:z6Mk""#));
         assert!(!html.contains("{space}"), "every slot must be substituted");
@@ -371,28 +372,34 @@ mod tests {
 
     #[test]
     fn it_carries_the_bars_information_architecture() {
-        // The space stack IS the IA: new · open ▸ · rename, in that order.
+        // The space stack IS the IA: new · open ▸ · rename · settings.
         let html = stacks_html("did:key:z6Mk");
-        let order: Vec<usize> = ["data-mi-new", "data-mi-open", "data-mi-rename"]
-            .iter()
-            .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
-            .collect();
+        let order: Vec<usize> = [
+            "data-mi-new",
+            "data-mi-open",
+            "data-mi-rename",
+            "data-mi-cfg",
+        ]
+        .iter()
+        .map(|hook| html.find(hook).unwrap_or_else(|| panic!("{hook} present")))
+        .collect();
         assert!(
             order.windows(2).all(|pair| pair[0] < pair[1]),
-            "the space stack must read new · open · rename",
+            "the space stack must read new · open · rename · settings",
         );
         assert!(
-            !html.contains("data-mi-settings"),
-            "no settings row until there are settings to open",
+            html.contains("data-mi-cfg"),
+            "the settings row raises the account panel",
         );
     }
 
     #[test]
-    fn it_orders_the_compact_overflow_actions() {
+    fn it_keeps_the_overflow_to_the_share_route() {
         let html = stacks_html("did:key:z6Mk");
-        let share = html.find("data-overflow-share").expect("share route");
-        let mode = html.find("data-overflow-mode").expect("appearance action");
-        assert!(share < mode);
+        assert!(html.contains("data-overflow-share"), "share route");
+        // The appearance action left with the mode switcher: the theme
+        // follows the system, and only the system.
+        assert!(!html.contains("data-overflow-mode"));
         assert!(!html.contains("data-overflow-collapse"));
         assert_eq!(html.matches(r#"data-for="share""#).count(), 1);
     }
@@ -412,7 +419,6 @@ mod tests {
         }
         assert!(!html.contains("menuitemcheckbox"));
         assert!(!html.contains("aria-checked"));
-        assert!(html.contains(r#"data-overflow-mode pressed="false""#));
     }
 
     #[test]
@@ -501,7 +507,12 @@ mod tests {
         assert!(html.contains("&#9656;"), "open is the ▸ triangle");
         assert!(html.contains("rename-mark"), "rename is the block cursor");
         assert!(!html.contains("<wa-icon"), "no icon library in the chrome");
-        assert!(!html.contains("<svg"), "and no illustration either");
+        // The settings sliders are the one bespoke SVG (the wireframes'
+        // own mark), drawn in currentColor so it follows the ink.
+        assert_eq!(html.matches("<svg").count(), 1, "one drawn mark only");
+        let mark = html.split("data-mi-cfg").nth(1).expect("settings row");
+        assert!(mark.contains("<svg"), "the mark rides the settings row");
+        assert!(mark.contains("currentColor"));
     }
 
     #[test]
