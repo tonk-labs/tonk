@@ -5052,6 +5052,7 @@ dependencies = [
  "tokio",
  "tonk-host",
  "tonk-notation",
+ "tonk-worker-api",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5092,6 +5093,7 @@ dependencies = [
  "tonk-analyzer",
  "tonk-notation",
  "tonk-schema",
+ "tonk-worker-api",
  "wasm-bindgen-test",
 ]
 

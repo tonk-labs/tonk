@@ -3,6 +3,348 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Rewritten alongside service_worker.js at post-build. This is the
+             worker API generation this DOCUMENT was emitted against; unlike
+             /version.json it never changes during the document's lifetime. -->
+        <meta name="tonk-worker-build" content="dev" />
+        <script>
+            (() => {
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]',
+                )?.content;
+                // `dev` deliberately remains unstamped: the worker uses the
+                // same placeholder but the production wire format is exactly
+                // 16 lowercase hex characters. The post-build step replaces
+                // the meta value before anything can be deployed.
+                if (/^[0-9a-f]{16}$/.test(build || "")) {
+                    globalThis.tonkBuild = build;
+                }
+
+                // Account setup crosses an external WebAuthn ceremony and a
+                // staged/durable recovery boundary. Reloading after Arm but
+                // before Stage/Inspect proves recovery durable can strand the
+                // account, so every automatic update/recovery reload queues
+                // behind the UI's stable top-document critical-section
+                // contract. The root attribute is the source of truth; the
+                // predicate is consulted when available and failures block.
+                const ACCOUNT_SETUP_CRITICAL =
+                    "data-tonk-account-setup-critical";
+                const ACCOUNT_SETUP_CRITICAL_CHANGE =
+                    "tonk:account-setup-critical-change";
+                const UPDATE_SAFETY_NAME = "tonk-update-safety-v1";
+                const UPDATE_SAFETY_STORE = "holds";
+                const ACCOUNT_SETUP_HOLD_KEY = "account-setup";
+                const ACCOUNT_SETUP_HOLD_CHANGE =
+                    "tonk:account-setup-hold-change";
+                const MAX_U64 = 18446744073709551615n;
+                let automaticReloadPending = false;
+                const accountSetupMayReload = () => {
+                    const root = document.documentElement;
+                    if (!root || root.hasAttribute(ACCOUNT_SETUP_CRITICAL)) {
+                        return false;
+                    }
+                    const predicate = window.tonkAccountSetupMayReload;
+                    if (typeof predicate !== "function") return true;
+                    try {
+                        return predicate() === true;
+                    } catch (error) {
+                        console.warn(
+                            "account-setup reload predicate failed; deferring reload",
+                            error,
+                        );
+                        return false;
+                    }
+                };
+
+                const validAccountSetupHold = (value) => {
+                    if (
+                        value == null ||
+                        typeof value !== "object" ||
+                        Array.isArray(value)
+                    ) {
+                        return false;
+                    }
+                    const keys = Object.keys(value).sort();
+                    if (
+                        keys.join("|") !==
+                        "kind|leasedRevision|operationId|version"
+                    ) {
+                        return false;
+                    }
+                    if (
+                        value.version !== 1 ||
+                        value.kind !== ACCOUNT_SETUP_HOLD_KEY ||
+                        typeof value.operationId !== "string" ||
+                        !/^[0-9a-f]{64}$/.test(value.operationId) ||
+                        typeof value.leasedRevision !== "string" ||
+                        !/^(0|[1-9][0-9]*)$/.test(value.leasedRevision)
+                    ) {
+                        return false;
+                    }
+                    try {
+                        return BigInt(value.leasedRevision) <= MAX_U64;
+                    } catch {
+                        return false;
+                    }
+                };
+                const openUpdateSafetyDatabase = () =>
+                    new Promise((resolve, reject) => {
+                        let request;
+                        let settled = false;
+                        const fail = (error) => {
+                            if (settled) return;
+                            settled = true;
+                            reject(error);
+                        };
+                        try {
+                            request = indexedDB.open(UPDATE_SAFETY_NAME, 1);
+                        } catch (error) {
+                            fail(error);
+                            return;
+                        }
+                        request.onupgradeneeded = () => {
+                            try {
+                                const database = request.result;
+                                if (
+                                    !database.objectStoreNames.contains(
+                                        UPDATE_SAFETY_STORE,
+                                    )
+                                ) {
+                                    database.createObjectStore(
+                                        UPDATE_SAFETY_STORE,
+                                    );
+                                }
+                            } catch (error) {
+                                try {
+                                    request.transaction?.abort();
+                                } catch {}
+                                fail(error);
+                            }
+                        };
+                        request.onerror = () =>
+                            fail(
+                                request.error ||
+                                    new Error(
+                                        "update safety database open failed",
+                                    ),
+                            );
+                        request.onblocked = () =>
+                            fail(
+                                new Error(
+                                    "update safety database open blocked",
+                                ),
+                            );
+                        request.onsuccess = () => {
+                            if (settled) {
+                                request.result?.close();
+                                return;
+                            }
+                            settled = true;
+                            resolve(request.result);
+                        };
+                    });
+                const readAccountSetupHold = async () => {
+                    const database = await openUpdateSafetyDatabase();
+                    try {
+                        return await new Promise((resolve, reject) => {
+                            let transaction;
+                            let request;
+                            let result;
+                            let requestComplete = false;
+                            try {
+                                transaction = database.transaction(
+                                    UPDATE_SAFETY_STORE,
+                                    "readonly",
+                                );
+                                request = transaction
+                                    .objectStore(UPDATE_SAFETY_STORE)
+                                    .get(ACCOUNT_SETUP_HOLD_KEY);
+                            } catch (error) {
+                                reject(error);
+                                return;
+                            }
+                            request.onsuccess = () => {
+                                requestComplete = true;
+                                result = request.result;
+                            };
+                            request.onerror = () =>
+                                reject(
+                                    request.error ||
+                                        new Error(
+                                            "account setup hold read failed",
+                                        ),
+                                );
+                            transaction.onabort = () =>
+                                reject(
+                                    transaction.error ||
+                                        new Error(
+                                            "account setup hold read aborted",
+                                        ),
+                                );
+                            transaction.onerror = () =>
+                                reject(
+                                    transaction.error ||
+                                        new Error(
+                                            "account setup hold transaction failed",
+                                        ),
+                                );
+                            transaction.oncomplete = () => {
+                                if (!requestComplete) {
+                                    reject(
+                                        new Error(
+                                            "account setup hold transaction completed without a result",
+                                        ),
+                                    );
+                                    return;
+                                }
+                                resolve(result);
+                            };
+                        });
+                    } finally {
+                        database.close();
+                    }
+                };
+                const accountSetupHoldAbsent = async () => {
+                    try {
+                        const hold = await readAccountSetupHold();
+                        if (hold === undefined) return true;
+                        if (!validAccountSetupHold(hold)) {
+                            console.warn(
+                                "malformed durable account-setup hold; deferring update",
+                            );
+                        }
+                        return false;
+                    } catch (error) {
+                        console.warn(
+                            "durable account-setup hold read failed; deferring update",
+                            error,
+                        );
+                        return false;
+                    }
+                };
+                const runWithAccountSetupUpdateSafety = async (callback) => {
+                    const locks = navigator.locks;
+                    if (!locks || typeof locks.request !== "function") {
+                        console.warn(
+                            "Web Locks unavailable; deferring automatic update",
+                        );
+                        return false;
+                    }
+                    try {
+                        return await locks.request(
+                            UPDATE_SAFETY_NAME,
+                            { mode: "exclusive" },
+                            async () => {
+                                if (
+                                    !accountSetupMayReload() ||
+                                    !(await accountSetupHoldAbsent()) ||
+                                    !accountSetupMayReload()
+                                ) {
+                                    return false;
+                                }
+                                // Invoke the irreversible handoff while the
+                                // same lock used by write-before-Arm is still
+                                // held. A peer cannot publish a new hold in a
+                                // read-to-callback gap.
+                                return callback();
+                            },
+                        );
+                    } catch (error) {
+                        console.warn(
+                            "account update-safety lock failed; deferring update",
+                            error,
+                        );
+                        return false;
+                    }
+                };
+
+                try {
+                    const channel = new BroadcastChannel(
+                        UPDATE_SAFETY_NAME,
+                    );
+                    channel.addEventListener("message", (event) => {
+                        const message = event.data;
+                        if (
+                            message?.type !==
+                                "account-setup-hold-changed" ||
+                            message?.version !== 1
+                        ) {
+                            return;
+                        }
+                        window.dispatchEvent(
+                            new Event(ACCOUNT_SETUP_HOLD_CHANGE),
+                        );
+                    });
+                } catch (error) {
+                    console.warn(
+                        "account update-safety broadcast unavailable",
+                        error,
+                    );
+                }
+                globalThis.tonkWhenAccountSetupDurable = (callback) => {
+                    let finished = false;
+                    let check = 0;
+                    const resume = async () => {
+                        const current = ++check;
+                        if (finished || !accountSetupMayReload()) return;
+                        await runWithAccountSetupUpdateSafety(() => {
+                            if (
+                                finished ||
+                                current !== check ||
+                                !accountSetupMayReload()
+                            ) {
+                                return false;
+                            }
+                            // A claim callback returns false deliberately: if
+                            // the worker's authoritative re-read sees a hold
+                            // queued ahead of it, the later clear broadcast
+                            // must retry. Reload callbacks finish immediately.
+                            const complete = callback() !== false;
+                            if (complete) {
+                                finished = true;
+                                window.removeEventListener(
+                                    ACCOUNT_SETUP_CRITICAL_CHANGE,
+                                    resume,
+                                );
+                                window.removeEventListener(
+                                    ACCOUNT_SETUP_HOLD_CHANGE,
+                                    resume,
+                                );
+                            }
+                            return true;
+                        });
+                    };
+                    window.addEventListener(
+                        ACCOUNT_SETUP_CRITICAL_CHANGE,
+                        resume,
+                    );
+                    window.addEventListener(
+                        ACCOUNT_SETUP_HOLD_CHANGE,
+                        resume,
+                    );
+                    // Register before the first predicate read so a durable
+                    // transition cannot be lost between checking and waiting.
+                    resume();
+                };
+                globalThis.tonkReloadWhenAccountSetupDurable = (
+                    beforeReload,
+                ) => {
+                    if (automaticReloadPending) return;
+                    automaticReloadPending = true;
+                    globalThis.tonkWhenAccountSetupDurable(() => {
+                        try {
+                            beforeReload?.();
+                        } catch (error) {
+                            console.warn(
+                                "pre-reload update handoff failed; reloading safely",
+                                error,
+                            );
+                        }
+                        location.reload();
+                    });
+                };
+            })();
+        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -281,18 +623,19 @@
                 }
             };
 
-            // Whether the currently deployed build has been revoked. Ambiguous
-            // answers fail open: a network problem must not discard a healthy
-            // worker.
+            // Whether THIS immutable document generation has been withdrawn.
+            // `version.json` is mutable deployment discovery and must never be
+            // used to identify bytes that are already running. Ambiguous
+            // answers fail open, and withdrawal never deletes local artifacts.
             const isRevoked = async () => {
                 try {
-                    const [flagResponse, versionResponse] = await Promise.all([
-                        fetch("/kill-switch.json", { cache: "no-store" }),
-                        fetch("/version.json", { cache: "no-store" }),
-                    ]);
-                    if (!flagResponse.ok || !versionResponse.ok) return false;
+                    const build = globalThis.tonkBuild;
+                    if (!build) return false;
+                    const flagResponse = await fetch("/kill-switch.json", {
+                        cache: "no-store",
+                    });
+                    if (!flagResponse.ok) return false;
                     const { revoked } = JSON.parse(await flagResponse.text());
-                    const { build } = JSON.parse(await versionResponse.text());
                     return Array.isArray(revoked) && revoked.includes(build);
                 } catch {
                     return false;
@@ -312,9 +655,6 @@
                 }
 
                 if (await isRevoked()) {
-                    const registration =
-                        await navigator.serviceWorker.getRegistration();
-                    await registration?.unregister().catch(() => {});
                     presentBootFailure(WITHDRAWN_BOOT_FAILURE);
                     throw new Error("This Tonk build has been revoked");
                 }
@@ -365,15 +705,19 @@
                         // through to the asset server, and only a manual
                         // reload — a navigation under the by-then-active
                         // registration — unwedged it.
+                        const requestClaim = (worker) =>
+                            globalThis.tonkWhenAccountSetupDurable(() =>
+                                (worker.postMessage({ type: "claim" }), false),
+                            );
                         const claimWhenActivated = (worker) => {
                             if (!worker) return;
                             if (worker.state === "activated") {
-                                worker.postMessage({ type: "claim" });
+                                requestClaim(worker);
                                 return;
                             }
                             worker.addEventListener("statechange", () => {
                                 if (worker.state === "activated") {
-                                    worker.postMessage({ type: "claim" });
+                                    requestClaim(worker);
                                 }
                             });
                         };
@@ -443,8 +787,11 @@
                         navigator.serviceWorker.controller === priorController &&
                         claimRequested !== incoming
                     ) {
-                        claimRequested = incoming;
-                        incoming.postMessage({ type: "claim" });
+                        const successor = incoming;
+                        claimRequested = successor;
+                        globalThis.tonkWhenAccountSetupDurable(() =>
+                            (successor.postMessage({ type: "claim" }), false),
+                        );
                     }
                     if (
                         navigator.serviceWorker.controller &&
@@ -532,7 +879,7 @@
                     try {
                         sessionStorage.setItem(UPGRADE_RELOAD, "1");
                     } catch {}
-                    location.reload();
+                    globalThis.tonkReloadWhenAccountSetupDurable();
                     await new Promise(() => {});
                     return;
                 }
@@ -688,7 +1035,7 @@
                     const status =
                         document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "recovering…";
-                    location.reload();
+                    globalThis.tonkReloadWhenAccountSetupDurable();
                 };
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (message) => {
@@ -963,10 +1310,13 @@
                         "color:inherit",
                     ].join(";");
                     reload.addEventListener("click", () => {
-                        // Ask the waiting worker to take over before
-                        // reloading, so ONE reload converges instead of two.
-                        registration.waiting?.postMessage({ type: "claim" });
-                        location.reload();
+                        // Keep claim + reload on the same safe side of account
+                        // setup: claiming first would put an Armed/pre-Stage
+                        // old document behind the successor's stale-write
+                        // barrier before it could persist recovery.
+                        globalThis.tonkReloadWhenAccountSetupDurable(() =>
+                            registration.waiting?.postMessage({ type: "claim" }),
+                        );
                     });
 
                     const dismiss = document.createElement("button");
@@ -1053,58 +1403,26 @@
                 // ---- Version probe ---------------------------------------
                 //
                 // `version.json` is written by the build (see
-                // `scripts/hash-guest.sh`) and served `no-store`. Polling it
+                // `scripts/stamp-service-worker.sh`) and served `no-store`. Polling it
                 // detects a new deploy WITHOUT depending on service-worker
                 // update machinery — which matters precisely because that
                 // machinery being wedged is the failure being solved. When it
                 // reports a build other than the one this worker is running,
                 // announce it; `<tonk-site>` renders the reload affordance.
                 const BUILD_PROBE_MS = 15 * 60 * 1000;
-                // The build THIS document loaded with, fixed for its
-                // lifetime. Staleness is measured against it: the page is
-                // stale exactly when the served build differs from the one
-                // it started on, and a reload is what resolves that.
-                let ourBuild = null;
-
-                // Publish this document's build so the host layer can
-                // send it on every `/api/*` request. `skipWaiting` +
-                // `claim` swap the worker underneath a running page, so
-                // without this the page cannot tell that the worker
-                // answering it belongs to a different build.
-                //
-                // NOT on `window.tonk`. That name is the sealed guest's
-                // bridge object, and `page_effect::forward` tests for its
-                // presence to decide "am I running inside a guest?" —
-                // creating it on the TOP page made the host believe it was
-                // a guest, so every `navigate_to` forwarded to a
-                // `navigate` method that does not exist here and returned
-                // early. Links and menu buttons silently stopped working.
-                const publishBuild = (build) => {
-                    ourBuild = build;
-                    globalThis.tonkBuild = build;
-                };
-                // Record our own build first, then poll for divergence.
-                void (async () => {
-                    try {
-                        const response = await fetch("/version.json", {
-                            cache: "no-store",
-                        });
-                        if (response.ok) {
-                            const { build } = await response.json();
-                            if (build) publishBuild(build);
-                        }
-                    } catch {
-                        // Offline at boot — the handshake header is simply
-                        // absent, which the worker treats as "cannot
-                        // classify" and lets through.
-                    }
-                    setInterval(checkStale, BUILD_PROBE_MS);
-                    // Also on focus: a tab returned to after a deploy is the
-                    // likeliest moment for the prompt to matter.
-                    document.addEventListener("visibilitychange", () => {
-                        if (document.visibilityState === "visible") checkStale();
-                    });
-                })();
+                // The post-build step stamped this immutable value into the
+                // document and the early head script published it before the
+                // app loader. `/version.json` is discovery only: using its
+                // mutable answer as provenance lets a cached old document
+                // impersonate the currently deployed generation.
+                const ourBuild = globalThis.tonkBuild ?? null;
+                void checkStale();
+                setInterval(checkStale, BUILD_PROBE_MS);
+                // Also on focus: a tab returned to after a deploy is the
+                // likeliest moment for the prompt to matter.
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") checkStale();
+                });
 
         </script>
     </body>
