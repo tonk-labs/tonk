@@ -6088,59 +6088,76 @@ mod tests {
     }
 
     /// Link a second browser to an existing account the way a page from
-    /// before the encryption key existed did: the same unlock ceremony and
-    /// the same two saves, but the root is stored WITHOUT the key. The
+    /// before the encryption key existed did: the account passkey signs
+    /// this device in, and the root is stored WITHOUT the key. The
     /// account's virtual authenticator must already hold the passkey.
-    async fn legacy_link(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
+    ///
+    /// Built on today's ceremony surface: `authorizeDevice` unlocks the
+    /// account and mints the `account → device` grant (the ceremony
+    /// `unlockWithPasskey` became), and the two worker saves replay what
+    /// a legacy page persisted — the root save deliberately omitting the
+    /// `encryptionKey` the modern path would carry. The credential id is
+    /// read from the virtual authenticator over CDP: it is the value a
+    /// legacy page had stored, and the custody relay later asserts
+    /// against exactly that credential.
+    async fn legacy_link(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        authenticator_id: &str,
+    ) -> Result<()> {
         let identify = get_json(driver, "/api/identify").await?;
         let device_did = successful_body("identify", &identify)["did"]
             .as_str()
             .context("identify omitted the device DID")?
             .to_string();
+
+        use base64::Engine as _;
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        let held = devtools
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": authenticator_id }),
+            )
+            .await?;
+        let credential_id = held["credentials"]
+            .get(0)
+            .and_then(|credential| credential["credentialId"].as_str())
+            .context("the virtual authenticator holds no credential to link with")?;
+        let credential_id = hex::encode(
+            base64::engine::general_purpose::STANDARD
+                .decode(credential_id)
+                .context("CDP credential id is not base64")?,
+        );
+
         let ceremony = driver
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                const [deviceDid, service] = arguments;
-                window.tonkIdentity.unlockWithPasskey({
+                const [deviceDid] = arguments;
+                window.tonkIdentity.authorizeDevice({
                     deviceDid,
-                    deviceName: "Legacy Chrome",
+                    remote: `${window.location.origin}/ucan/`,
                     endpoint: `${window.location.origin}/ucan/`,
-                }).then(async ceremony => {
-                    const bytes = Uint8Array.from(
-                        ceremony.invocationHex.match(/../g).map(pair => parseInt(pair, 16)),
-                    );
-                    const response = await fetch(`${service}devices/link`, {
-                        method: "POST",
-                        headers: { "content-type": "application/cbor" },
-                        body: bytes,
-                    });
-                    const linked = await response.json();
-                    done({ status: response.status, ceremony, linked });
-                }).catch(error => done({ error: String(error) }));
+                }).then(authorized => done({ authorized }))
+                    .catch(error => done({ error: String(error) }));
                 "#,
-                vec![
-                    serde_json::json!(device_did),
-                    serde_json::json!(env.access_service.as_str()),
-                ],
+                vec![serde_json::json!(device_did)],
             )
             .await?
             .json()
             .clone();
         anyhow::ensure!(
-            ceremony.get("error").is_none() && ceremony["status"] == 200,
+            ceremony.get("error").is_none(),
             "legacy link ceremony failed: {ceremony}"
         );
-        anyhow::ensure!(
-            ceremony["ceremony"]["encryptionKey"].is_string(),
-            "the unlock ceremony derives the key; the legacy page just never saved it: {ceremony}"
-        );
+        let authorized = &ceremony["authorized"];
+
         let saved = post_json(
             driver,
             "/api/identity/root",
             serde_json::json!({
-                "credentialId": ceremony["ceremony"]["credentialId"],
-                "delegationHex": ceremony["ceremony"]["delegationHex"],
+                "credentialId": credential_id,
+                "delegationHex": authorized["delegationHex"],
             }),
         )
         .await?;
@@ -6149,11 +6166,11 @@ mod tests {
             driver,
             "/api/account/attach",
             serde_json::json!({
-                "provider": env.access_service.as_str(),
-                "rootDid": ceremony["ceremony"]["rootDid"],
-                "credentialId": ceremony["ceremony"]["credentialId"],
-                "delegationHex": ceremony["ceremony"]["delegationHex"],
-                "descriptorHex": ceremony["linked"]["descriptorHex"],
+                "provider": env.tonk_web.join("ucan/")?,
+                "rootDid": authorized["rootDid"],
+                "credentialId": credential_id,
+                "delegationHex": authorized["delegationHex"],
+                "remote": env.tonk_web.join("ucan/")?,
                 "initializeName": false,
             }),
         )
@@ -6191,7 +6208,7 @@ mod tests {
     async fn it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key(
         env: TestEnvironment,
     ) -> Result<()> {
-        let creator = driver_with_prf(&env).await?;
+        let (creator, authenticator) = driver_with_prf_authenticator(&env).await?;
         sign_up(&creator, &env, EMAIL).await?;
         // A second device on the same account, in the same session so the
         // virtual authenticator still holds the passkey: "Add account"
@@ -6200,7 +6217,7 @@ mod tests {
         let added = post_json(&creator, "/api/profiles/add", serde_json::json!({})).await?;
         successful_body("add profile", &added);
         goto(&creator, env.tonk_web.as_str()).await?;
-        legacy_link(&creator, &env).await?;
+        legacy_link(&creator, &env, &authenticator).await?;
 
         let root = get_json(&creator, "/api/identity/root").await?;
         let root = successful_body("root status", &root);
