@@ -78,6 +78,62 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
     });
 }
 
+/// Post a typed launch-funnel success to the originating page.
+///
+/// The message never leaves the browser. It carries the local space routing
+/// key so the page can hash it at the analytics boundary before capture.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_analytics(
+    client: Option<&crate::router::ClientId>,
+    event: tonk_worker_api::AnalyticsEvent,
+) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("analytics: no originating client; skipping event");
+        return;
+    };
+    let client_id = client.0.clone();
+    let message = tonk_worker_api::AnalyticsMessage::new(event);
+
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => {
+            log!("analytics: not in a service worker scope; skipping event");
+            return;
+        }
+    };
+
+    spawn_local(async move {
+        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("analytics: originating client {client_id} is gone; skipping event");
+                return;
+            }
+            Err(error) => {
+                log!("analytics: clients.get failed: {error:?}");
+                return;
+            }
+        };
+        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
+            log!("analytics: clients.get did not yield a Client; skipping event");
+            return;
+        };
+        let message = match serde_wasm_bindgen::to_value(&message) {
+            Ok(message) => message,
+            Err(error) => {
+                log!("analytics: failed to serialize event: {error}");
+                return;
+            }
+        };
+        if let Err(error) = client.post_message(&message) {
+            log!("analytics: post_message failed: {error:?}");
+        }
+    });
+}
+
 /// Ask the originating document to run a WebAuthn ceremony the worker
 /// cannot: it has no `window`. The page answers through the ordinary API
 /// (`POST /api/identity/root`), which is what the worker then waits on.

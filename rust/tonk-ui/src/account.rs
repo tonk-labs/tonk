@@ -2280,6 +2280,8 @@ pub(crate) async fn run_account_ceremony(
     )
     .await
     .map_err(|error| error.message)?;
+    crate::analytics::identify().await;
+    tonk_analytics::web::capture_account_created();
     Ok(())
 }
 
@@ -2597,6 +2599,8 @@ fn bind(host: &HtmlElement) {
                     ),
                 )
                 .await?;
+                crate::analytics::identify().await;
+                tonk_analytics::web::capture_account_created();
                 set_busy(&host, true, "Creating your account…");
                 Ok::<(), crate::custody_relay::CeremonyError>(())
             }

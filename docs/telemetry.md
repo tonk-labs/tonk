@@ -38,6 +38,24 @@ before a profile exists report as `tonk:anonymous`.
 | `sheet_activated` | none |
 | `panic` | `type` (constant `wasm_panic`), repository-relative `location`, and a fingerprint derived only from those static values; the panic message stays in the local console |
 | `account_event` | The same closed account journey schema emitted by the CLI. |
+| `visit` | `schema_version`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
+| `account_created` | `schema_version`; fired after account creation, configured enrollment, and a best-effort refresh of the hashed profile identity, even though the account journey then waits for email activation |
+| `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
+| `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
+
+`visit` is captured before the other web events and its reviewed attribution
+properties are registered for the current in-memory PostHog session. That puts
+the same `channel`, `attribution_source`, `entry_type`, `entry_route`, and
+optional `entry_space_id` on subsequent account, space, and sharing events.
+PostHog supplies the event timestamp and session ID. Tonk does not duplicate
+them as custom properties.
+
+Campaign links use `tonk_channel=outreach`, `tonk_channel=reshare`, or
+`tonk_channel=clearnet`. Equivalent reviewed UTM values are accepted. Without
+an explicit campaign value, a shared-space or join route is classified as an
+organic re-share and the Tonk network shell as clearnet discovery. Referrers
+are reduced to the `referrer` attribution-source class; their domains and paths
+are never captured.
 
 ### Account journey schema
 
@@ -112,8 +130,9 @@ The web shell also listens for a generic `tonk:analytics` DOM event
 without new dependencies. Nothing dispatches it today; any future
 dispatcher is responsible for keeping its payload content-free
 (hashes and counts only), like every event above.
-The bridge cannot emit `account_event`; that name is reserved for the typed,
-validated account capture interface.
+The bridge cannot emit `account_event`, `visit`, `account_created`,
+`space_conversion`, or `space_shared`; those names are reserved for typed,
+validated capture interfaces.
 
 ## Operational logs
 
