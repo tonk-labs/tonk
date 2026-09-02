@@ -2222,9 +2222,9 @@ fn deliver_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), St
 /// `409 a different account is already signed in on this profile`,
 /// because saving a new root over an existing one is what creation does.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn run_login_ceremony(
+pub(crate) fn begin_login_ceremony(
     narrate: impl Fn(&str),
-) -> Result<(), crate::custody_relay::CeremonyError> {
+) -> Result<crate::custody_relay::Mediation, crate::custody_relay::CeremonyError> {
     use crate::custody_relay::CeremonyError;
 
     narrate("Waiting for your passkey…");
@@ -2233,7 +2233,7 @@ pub(crate) async fn run_login_ceremony(
     // the root and submits the link. The page holds no key material.
     let provider = proposed_remote().map_err(CeremonyError::said)?;
     narrate("Linking this browser…");
-    crate::custody_relay::mediate_now(
+    crate::custody_relay::begin(
         "usePasskey",
         tonk_worker_api::CustodyIntent::Login(tonk_worker_api::DeviceLink {
             device_name: crate::device_name::current(),
@@ -2241,8 +2241,6 @@ pub(crate) async fn run_login_ceremony(
             provider,
         }),
     )
-    .await?;
-    Ok(())
 }
 
 /// Run the account-creation ceremony, with no panel to report into.

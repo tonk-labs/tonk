@@ -3,6 +3,10 @@
 use crate::error::TonkUiError;
 use tonk_analytics::account::{AccountOutcome, FailureKind, HttpStatusClass, ServiceCode};
 
+const CUSTODY_HANDOFF_TIMEOUT: &str =
+    "the service worker did not answer the custody handoff in time";
+const CUSTODY_HANDOFF_RECOVERY: &str = "Your passkey was approved, but this browser did not finish the secure handoff. Reload the page and try again.";
+
 /// One account failure projected into safe presentation and analytics fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AccountProblem {
@@ -59,13 +63,23 @@ pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
     problem_from_diagnostic(action, detail).message
 }
 
-/// Compatibility diagnostics have no typed evidence. Their prose may improve
-/// recovery copy, but analytics always sees `unknown`.
+/// Compatibility diagnostics usually have no typed evidence. Their prose may
+/// improve recovery copy while analytics sees `unknown`; the locally emitted,
+/// stable custody-handoff timeout is the one closed diagnostic classified here.
 pub(crate) fn problem_from_diagnostic(action: AccountAction, detail: &str) -> AccountProblem {
-    AccountProblem::new(
-        diagnostic_message(action, detail),
-        AccountOutcome::retryable(FailureKind::Unknown),
-    )
+    let outcome = if is_custody_handoff_timeout(action, detail) {
+        AccountOutcome::retryable(FailureKind::Timeout)
+    } else {
+        AccountOutcome::retryable(FailureKind::Unknown)
+    };
+    AccountProblem::new(diagnostic_message(action, detail), outcome)
+}
+
+fn is_custody_handoff_timeout(action: AccountAction, detail: &str) -> bool {
+    matches!(
+        action,
+        AccountAction::CreateAccount | AccountAction::LogIn | AccountAction::AddPasskey
+    ) && detail.contains(CUSTODY_HANDOFF_TIMEOUT)
 }
 
 fn diagnostic_message(action: AccountAction, detail: &str) -> String {
@@ -79,6 +93,9 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
         == "Please verify your email using the verification link we sent before changing your display name."
     {
         return original.to_owned();
+    }
+    if is_custody_handoff_timeout(action, original) {
+        return CUSTODY_HANDOFF_RECOVERY.to_owned();
     }
     let detail = detail.to_ascii_lowercase();
     if detail.contains("an account already exists for this email address") {
@@ -188,6 +205,9 @@ pub(crate) fn ceremony_problem(
             diagnostic_message(action, &error.message),
             AccountOutcome::terminal_failure(FailureKind::AccessDenied),
         ),
+        None if is_custody_handoff_timeout(action, &error.message) => {
+            problem_from_diagnostic(action, &error.message)
+        }
         None => {
             let outcome = match error.refusal.unwrap_or(CeremonyRefusal::Other) {
                 CeremonyRefusal::NotAllowed => AccountOutcome::cancelled(),
@@ -438,6 +458,23 @@ mod tests {
 
         for (action, detail, expected) in cases {
             assert_eq!(diagnostic(action, detail), expected);
+        }
+    }
+
+    #[test]
+    fn custody_handoff_timeout_is_retryable_with_reload_guidance() {
+        for action in [
+            AccountAction::LogIn,
+            AccountAction::CreateAccount,
+            AccountAction::AddPasskey,
+        ] {
+            let problem = problem_from_diagnostic(action, CUSTODY_HANDOFF_TIMEOUT);
+            assert_eq!(problem.message, CUSTODY_HANDOFF_RECOVERY);
+            assert_eq!(problem.outcome.failure_kind(), Some(FailureKind::Timeout));
+            assert_eq!(
+                problem.outcome.result(),
+                tonk_analytics::account::AccountResult::RetryableFailure
+            );
         }
     }
 

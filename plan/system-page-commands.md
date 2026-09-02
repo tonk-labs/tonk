@@ -340,50 +340,47 @@ account/unseal:                  # "I need the account secret opened"
 and its answer is a second command carrying only what was unsealed —
 not five API calls the page makes on the worker's behalf.
 
-### Hand over a key, not key material
+### Hand over transient PRF bytes, import handles in the worker
 
-The narrowest version is better than it first looks, because what
-crosses the boundary does not have to be bytes.
-
-A `CryptoKey` created with `extractable: false` is structured-cloneable:
-it survives `postMessage` as an **opaque handle**. The receiver can use
-it — decrypt, derive, sign — and cannot read it. So:
+The system page receives the PRF outputs as bytes because that is the
+WebAuthn API. It posts fresh fixed-length `Uint8Array`s, then clears its
+copies immediately. The worker validates and clears its structured-clone
+copies while importing non-extractable HKDF handles:
 
 ```
 system page                                worker
 ───────────                                ──────
 run the passkey ceremony
-derive the PRF output
-import it as a non-extractable CryptoKey
+receive both PRF outputs
         │
-        └──── postMessage(handle) ────────▶ use it
-                                            drop it
+        └──── postMessage(Uint8Array × 2) ─▶ validate 32 bytes each
+        clear sender arrays                 import non-extractable handles
+                                            clear receiver arrays
+                                            derive, use, drop handles
 ```
 
-That dissolves the tradeoff above. The worry with asking for the KEK
-rather than the encryption key was that the KEK is the stronger secret,
-so a narrower capability would move *more* sensitive material across the
-boundary. It does not, if no material moves: the page hands over the
-**capability to use** the key, never the key.
+The raw values are never converted to JSON, text, logs, storage,
+analytics, or URLs. They stay as zeroizing Rust arrays and short-lived JS
+typed arrays until import completes. The worker then holds only the
+capability to derive and use the custody keys.
 
-It also means the worker keeps nothing. Today it stores an encryption
-key it can read; here it holds a handle for one operation and drops it.
-Nothing on disk opens anything.
+The earlier implementation posted `CryptoKey` handles directly. Desktop
+`structuredClone` and worker tests passed, but iOS Safari silently
+dropped the service-worker message before `onmessage` ran. The typed-array
+handoff is the compatibility boundary. It does not expose a new page
+secret: the PRF bytes already existed in the page realm as the WebAuthn
+result, and the compatible path adds one transient worker clone.
+
+The worker keeps nothing on disk that opens custody. It holds imported
+handles for the operation (or the existing activation-gated parked login)
+and drops them afterwards.
 
 **This pattern already exists in the codebase.** `onboarding.rs`'s
 custodian is a non-extractable `CryptoKeyPair` whose KEK is recomputed
 from a fresh signature on every boot and written nowhere —
 "a stand-in for a passkey rather than a password sitting next to the
-thing it locks". The proposal generalises it from a key the worker
-generates to a key the page derives and hands over.
-
-Note that case derives its KEK from a *signature*, not from raw imported
-bytes. Whether the PRF output can be imported as a non-extractable key
-that WebCrypto will accept for the unseal operation is the thing to
-verify first — `importKey` with `extractable: false` for HKDF/AES-KW
-usage. If the sealed envelope's KDF does not match what WebCrypto can
-do with a non-extractable key, this needs the envelope format to change,
-which is the one part that is not free.
+thing it locks". The passkey path now imports its worker-owned handles
+from the transient PRF transport bytes instead.
 
 #### Verified: the crypto lines up, the code path does not
 
@@ -423,8 +420,8 @@ as the AES-256-GCM key. The asymmetric material (`signer()`,
 `encryption_key()`) is derived from the account secret *after*
 unsealing, which is a separate step further down.
 
-That makes it importable, and better than importable — derivable
-in place, so the bytes never exist in JS:
+That makes it importable and derivable in place after the handoff, so no
+raw KEK is ever materialised:
 
 ```js
 const prfKey = await crypto.subtle.importKey("raw", prf, "HKDF", false, ["deriveKey"]);
@@ -435,11 +432,10 @@ const kek = await crypto.subtle.deriveKey(
   false,            // non-extractable
   ["decrypt"],      // can open envelopes, can never seal one
 );
-postMessage(kek);   // opaque handle
 ```
 
 `deriveKey` rather than `deriveBits` is the point: the KEK is born
-non-extractable and no raw copy is ever materialised to zeroize.
+non-extractable in the worker and no raw KEK copy is ever materialised.
 `["decrypt"]` alone means a leaked handle cannot wrap anything new
 under that KEK.
 
