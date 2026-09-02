@@ -75,12 +75,13 @@ You can also download a `tonk-<platform>.tar.gz` directly from the [releases pag
 tonk update
 ```
 
-This upgrades an install made by the install script: it downloads the
-newest staging release, matching npm's default `latest` deployment,
-verifies it against the release checksums, checks the new binary runs,
-and only then replaces the old one — so a failed update leaves your
-working `tonk` untouched. On macOS it preserves the published Developer
-ID signature while replacing the executable.
+This upgrades an install made by the install script on its recorded
+channel. A default install follows the stable GitHub release; an install
+made with `TONK_CHANNEL=staging` follows the rolling staging release. It
+verifies the download against the release checksums, checks the new
+binary runs, and only then replaces the old one — so a failed update
+leaves your working `tonk` untouched. On macOS it preserves the published
+Developer ID signature while replacing the executable.
 
 `tonk` checks for new releases once a day and prints a one-line notice
 on stderr when one exists. Turn that off with `tonk update
@@ -88,13 +89,15 @@ on stderr when one exists. Turn that off with `tonk update
 update --enable-check`. It never runs in CI.
 
 Check what you have with `tonk --version`. `tonk update` and the daily
-release check always follow staging, regardless of the channel recorded
-at installation or the current value of `TONK_CHANNEL`.
+release check follow the channel in the matching install receipt; the
+ambient `TONK_CHANNEL` value does not switch an existing binary. Rerun
+the installer with or without `TONK_CHANNEL=staging` to deliberately
+switch that installation's channel.
 
 If `tonk` was installed some other way, `tonk update` says so instead
-of interfering: use `npm i -g @tonk/cli` for an npm install (or
-`@tonk/cli@stable` to pin to the last milestone), or your flake for a
-nix one. Re-running the install command also still works:
+of interfering: use `npm i -g @tonk/cli` for a stable npm install,
+`npm i -g @tonk/cli@next` for a prerelease npm install, or your flake for
+a nix one. Re-running the install command also still works:
 
 ```sh
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh

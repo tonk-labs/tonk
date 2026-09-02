@@ -176,248 +176,10 @@ view!:
   show:
     directory: |
       <div class="hub-page">
-        <style>
-          /* ── The Hub — the space directory at `/`.
-             Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
-             `.hub` block from an earlier launcher (a 56rem centred column),
-             which clipped this page to a band down the middle of the viewport.
-             That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
-             more — but it is not this change's to delete.
-             Chrome, and it runs on the same material as the FAB: a neutral
-             page, 36px frost blocks with ink rings, lowercase condensed words
-             seated bottom-right, ink only. The bar's tokens are restated here
-             rather than shared, because the bar seals its own inside a shadow
-             root — a boundary custom properties would have to be invited
-             across one at a time. The two sets must agree; if the bar's
-             `skin.rs` changes, this changes with it.
-
-             The dark twin keys off `.wa-dark` on the root, which is the app's
-             existing theme signal (set by index.html from the OS, overridden
-             by <ui-mode-switch>) — not a second signal of the Hub's own, which
-             would be free to disagree with the rest of the page. ── */
-          .hub-page {
-            --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
-            --ring:rgba(56,24,42,.85); --sep:rgba(56,24,42,.28);
-            /* frost pre-composited over the flat page — a flat page blurs to
-               itself, so the rows get the same look with no filter. Only the
-               genuinely overlaying surfaces (the bar and account roster) wear
-               real glass. */
-            --frost:rgba(253,252,252,.72); --frost-solid:#f7f6f5;
-            --panel:#d0ccc8; --cur:var(--panel); --card:#fcfbfb; --card-hover:#eeedec;
-            --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
-            --wash-p:rgba(56,24,42,.16); --canvas:#e4e2e0; --stub-ink:#9f968e;
-            --veil:rgba(232,230,228,.9); --dim:rgba(56,24,42,.32);
-            --track:rgba(56,24,42,.22);
-            --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
-            --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
-            --ease:cubic-bezier(.25,.46,.45,.94);
-            position:relative; min-height:100dvh; background:var(--page);
-            color:var(--ink); font-family:var(--cond);
-          }
-          :root.wa-dark .hub-page {
-            --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
-            --ring:rgba(226,223,221,.55); --sep:rgba(226,223,221,.28);
-            --frost:rgba(29,24,25,.78); --frost-solid:#1b1718;
-            --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
-            --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15);
-            --wash-p:rgba(34,28,29,.14); --canvas:#1c1718; --stub-ink:#736265;
-            --veil:#161313; --dim:rgba(0,0,0,.45); --track:rgba(226,223,221,.25);
-          }
-          .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
-          /* selection is chrome too — ink, never the browser's blue */
-          .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
-          .hub-page :focus-visible { outline:none;
-            box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
-          /* A real reset, not a token one. Web Awesome skins NATIVE controls
-             inside `@layer wa-native` — `button` gets `display:inline-flex`,
-             padding, a min-height, a radius and a border — so a cell built on
-             a <button> and one built on an <a> laid their words out
-             differently, and the mode cap came out a rounded slab instead of
-             an 18px pill. Unlayered author rules outrank layered ones, so this
-             wins without `!important`. */
-          /* `:where()` so the reset contributes NO specificity: a plain
-             `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
-             cell rule below — which stripped `.hcell`'s padding and left "new
-             space" flush against the corner while the anchor cell next to it
-             sat correctly. A reset must lose every tie it takes part in. */
-          .hub-page :where(button) {
-            font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
-            background:none; border:0; border-radius:0; margin:0; padding:0;
-            min-width:0; min-height:0; block-size:auto; inline-size:auto;
-            box-shadow:none; appearance:none; -webkit-appearance:none;
-            cursor:pointer; }
-          .hub-page :where(a) { color:inherit; text-decoration:none; }
-
-          /* the block: 36px, frost + ink ring. every cell derives from it. */
-          .blk { height:36px; background:var(--frost);
-            -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
-            box-shadow:0 0 0 1px var(--ring); }
-          .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
-            line-height:1; letter-spacing:.02em; text-transform:lowercase; }
-
-          /* ── centered launcher — one proportional grid, logo above it ── */
-          .hub-logo { position:absolute; top:clamp(62px,11vh,106px); left:50%; z-index:10;
-            transform:translateX(-50%); color:var(--ink); user-select:none; }
-          .hub-logo svg { display:block; width:132px; height:auto; }
-          .hubcol { position:relative; width:min(576px, calc(100vw - 32px));
-            margin-inline:auto; padding-top:clamp(148px,23vh,220px); }
-          .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
-            width:100%; height:36px; overflow:hidden; background:var(--frost);
-            -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
-            box-shadow:0 0 0 1px var(--ring); }
-          /* every word sits bottom-right on the 9px seat */
-          .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-            padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
-            text-decoration:none; color:inherit; flex:none; }
-          .hcell:hover { background:var(--wash); }
-          .hcell:active { background:var(--wash-2); }
-          .hc-acct { width:224px; min-width:0; }
-          .hc-view { width:192px; border-left:1px solid var(--sep); }
-          .hc-cfg { width:112px; border-left:1px solid var(--sep);
-            padding-right:8px; padding-left:10px; }
-          .hc-acct[aria-current="page"], .hc-view[aria-current="page"],
-          .hc-cfg[aria-current="page"] {
-            background:var(--cur); }
-          .hcell .g { font-size:14px; font-weight:500; }
-          .settings-icon { width:9px; height:9px; flex:none; }
-          /* The mode stays in the grid but reads as a half-lit circle, centred
-             inside its own cell instead of as a second sidebar glyph. */
-          .hub-page ui-mode-switch { display:flex; flex:none; }
-          .hub-page .mode-cap { display:flex; align-items:center; justify-content:center;
-            width:48px; height:36px; padding:0; flex:none;
-            border-left:1px solid var(--sep); background:var(--frost); }
-          .hub-page .mode-cap:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost); }
-          .hub-page .mode-cap:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost); }
-          .hub-page .mode-mark { display:block; width:10px; height:10px; border-radius:50%;
-            background:linear-gradient(90deg,var(--ink) 50%,transparent 50%);
-            box-shadow:0 0 0 1px var(--ink); }
-
-          /* ── account roster — a third attached view below the header ── */
-          .hub-page ui-hub-account { position:relative; display:block; width:100%; }
-          .account-trigger { overflow:hidden; }
-          .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; text-transform:none; }
-          .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
-            color:var(--ink); text-transform:none; }
-          .account-menu[hidden] { display:none; }
-          .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
-          .account-menu__row { display:flex; align-items:center; justify-content:space-between;
-            gap:12px; width:100%; min-height:36px; padding:8px 12px; text-align:left;
-            background:var(--frost-solid); font:inherit; color:inherit;
-            box-shadow:0 0 0 1px var(--ring);
-            overflow-wrap:anywhere; transition-property:scale; transition-duration:150ms;
-            transition-timing-function:ease-out; }
-          button.account-menu__row:hover { background:var(--wash); }
-          button.account-menu__row:active { background:var(--wash-2); scale:.96; }
-          .account-menu__profile[aria-current="true"] { color:var(--soft); }
-          .account-menu__current { flex:none; font-size:13px; text-transform:lowercase; }
-          .account-menu__error { padding:10px 12px; background:var(--frost-solid);
-            color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
-            text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
-          .account-menu__error[hidden] { display:none; }
-
-          /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
-          .stack { width:100%; margin-top:7px; padding-bottom:120px; display:flex;
-            flex-direction:column; gap:7px; }
-          .stack[hidden] { display:none; }
-          .sempty { height:36px; padding:0 10px 9px 16px; display:flex;
-            align-items:flex-end; justify-content:flex-end; color:var(--soft);
-            background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
-          .stack:has(.srow-wrap) .sempty { display:none; }
-          /* the wrapper, not the link, is the positioning context: the verbs
-             and the confirm cluster sit OUTSIDE the anchor (a control inside
-             one is invalid markup, and a label inside one navigates instead of
-             doing its job) while reading as part of the row */
-          .srow-wrap { position:relative; }
-          .srow { display:flex; align-items:flex-end;
-            justify-content:flex-end; padding:0 10px 9px 16px; cursor:pointer;
-            text-decoration:none; color:var(--ink);
-            background:var(--frost-solid);
-            -webkit-backdrop-filter:none; backdrop-filter:none; }
-          .srow:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
-          .srow:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
-          /* the ellipsis clip needs descender room: at line-height 1 the box
-             ends at the baseline's feet and takes the tails off g, p and y.
-             The padding gives the clip air; the negative margin hands it back
-             so the seat does not move. */
-          .srow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-            text-transform:none; padding-bottom:4px; margin-bottom:-4px;
-            max-width:calc(100% - 130px); }
-          /* a space still seeding, and one this device has not replicated:
-             quieter, but still openable — visiting replicates it */
-          .srow-wrap[data-status="tonk:blank"] .srow .n { opacity:.6; }
-          .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
-          /* the verbs — soft until approached, left of the row. Soft ink is
-             metadata-only, so they take full ink the moment they are live. */
-          .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
-            opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
-          .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
-          ui-space-remove { display:contents; }
-          .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
-            color:inherit; font:inherit; letter-spacing:inherit;
-            text-transform:lowercase; cursor:pointer; }
-          .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
-            text-decoration:underline; text-underline-offset:3px; }
-          /* creation is the stack's final, and only, solid ink row */
-          .snew-form { display:block; }
-          .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-            width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
-            color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
-          .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
-          .remove-form { margin:0; font-family:var(--sans); font-weight:600;
-            font-size:13.5px; line-height:1.6; text-transform:none; }
-          .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
-            min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
-            background:var(--card); color:var(--ink); font:inherit; font-size:13px;
-            cursor:pointer; }
-          .m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
-          .m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
-            min-width:144px; padding:0 10px 9px 24px; border:0; background:var(--ink);
-            color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
-            cursor:pointer; white-space:nowrap; }
-          /* brightness on near-black reads as nothing — wash it instead */
-          .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
-
-          @media (prefers-reduced-motion: reduce) {
-            .verbs, .account-menu__row { transition:none; }
-          }
-
-          /* ── one breakpoint, the bar's own fold. Approach hides nothing from
-             a hand that cannot hover. ── */
-          @media (hover:none), (max-width:640px) {
-            .verbs { opacity:1; gap:24px; }
-            /* the 44 target law, invisibly — centres 44 apart, no overlap */
-            .verbs button, .verbs .verb-remove { padding:16px; margin:-16px -12px; }
-            .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
-            .srow .n { max-width:calc(100% - 150px); }
-          }
-          @media (max-width:640px) {
-            .hubbar, .hcell, .hub-page .mode-cap { height:44px; min-height:44px; }
-            .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
-            .m-cancel, .m-go { min-height:44px; }
-          }
-          @media (max-width:607px) {
-            .hubcol { width:min(432px, calc(100vw - 32px)); }
-            .hc-acct { width:168px; }
-            .hc-view { width:144px; }
-            .hc-cfg { width:76px; }
-            .hub-page .mode-cap { width:44px; flex:0 0 44px; }
-          }
-          @media (max-width:519px) {
-            .hub-logo { top:62px; }
-            .hub-logo svg { width:98px; }
-            .hubcol { padding-top:132px; }
-          }
-          @media (max-width:463px) {
-            .hc-acct { width:50%; }
-            .hc-view { width:auto; flex:1; }
-            .hc-cfg, .hub-page .mode-cap { width:44px; flex:0 0 44px; }
-            .hc-cfg { justify-content:center; padding-inline:0; }
-            .settings-word { position:absolute; width:1px; height:1px; padding:0;
-              margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
-              border:0; }
-          }
-        </style>
+        <!-- The hub chrome's CSS lives in `tonk-ui/styles.css` (the "hub
+             page" block), NOT here: the /settings route renders the same
+             chrome from its own view, and a style block scoped to this
+             view would leave that page bare. One file styles both. -->
 
         <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
 
@@ -462,7 +224,7 @@ view!:
                registers stays local until it is shared. -->
           <form class="snew-form" onsubmit=space/create>
             <input type="hidden" name="name" value="Untitled">
-            <button class="snew chrome" type="submit">create a new space<span class="g" aria-hidden="true">&#9656;</span></button>
+            <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
         </div>
 
@@ -665,16 +427,11 @@ view!:
       <!-- Revoked and deleted intentionally share this one screen. The
            diagnostic reason remains in the console/worker status; rendering it
            here would reveal whether the space still exists. -->
-      <section class="edge-wall edge-wall--closed" aria-labelledby="edge-closed-title">
-        <div class="edge-statement" id="edge-closed-title">this share link is closed</div>
-        <div class="edge-field edge-field--settled">
-          <span class="edge-noun">share link</span>
-          <span class="edge-value">closed</span>
-        </div>
-        <div class="edge-narrator">this link no longer opens a space; ask its sender for a current share link</div>
+      <section class="edge-wall edge-wall--closed" role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
+        <h1 class="edge-statement" id="edge-closed-title">this share link expired</h1>
+        <div class="edge-narrator" id="edge-closed-guidance">ask the person who shared this space to send you a new link</div>
         <div class="edge-run">
-          <a class="ebtn quiet" href="/">start a new space</a>
-          <tonk-join-retry class="ebtn solid" kind={kind}>join this space</tonk-join-retry>
+          <a class="ebtn solid" href="/">go to home</a>
         </div>
       </section>
 
@@ -783,6 +540,38 @@ view!:
         <tonk-display model="space"></tonk-display>
       </div>
 
+# The /settings route — the account settings page, per the fabb wireframes:
+# the same hub chrome (logo, two-cell bar) with the settings section open
+# under it. `<ui-hub-account view="settings">` opens its settings page on
+# mount; its spaces cell navigates home rather than swapping in place,
+# because on this route there is no spaces stack behind it.
+route!: &route/settings
+  this: id:tonk:route/settings
+  path: "/settings"
+  concept: tonk:settings
+
+concept!: &settings-route
+  this: tonk:settings
+  description: The account settings page.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:settings
+  show:
+    ui: |
+      <div class="hub-page">
+        <tonk-title text="settings — Tonk"></tonk-title>
+        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
+        <main class="hubcol">
+          <ui-hub-account view="settings"></ui-hub-account>
+        </main>
+      </div>
+
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
 # nothing and the site rendered an empty `tonk:site` ("required attribute
@@ -839,7 +628,7 @@ view!:
               margin-top:43px; display:flex; flex-direction:column; gap:7px; }
             .edge-statement, .edge-field, .edge-narrator { min-height:36px;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
-            .edge-statement { padding:10px 14px; display:flex; align-items:flex-end;
+            .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
               font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
               line-height:1.55; text-wrap:balance; }
             .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;

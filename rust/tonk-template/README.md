@@ -19,12 +19,13 @@ construction.
   fields lowered to `PlanNode::Iteration`. This half is std-only and
   target-agnostic.
 - **[`resolve`]** — the wire-query builders (`phase1_query`, `name_query`,
-  `view_by_model_query`, `entity_query`, `instances_query`, `view_predicate`,
-  `directory_view_predicate`, `parse_source`) that drive the model → view →
-  entity resolution. They produce `tonk_schema::query::Query`.
+  `view_query`, `entity_query`, `instances_query`, `view_predicate`,
+  `parse_source`) that drive the model → view → entity resolution. They
+  produce `tonk_schema::query::Query`.
 - **[`fold`]** — `select_rows`, which groups flat query rows by `this` into one
   folded `Conclusion` per subject, collapsing cardinality-many fields to
-  `Ipld::List`.
+  `Ipld::List`, and `show_template`, which picks one facet's template out of a
+  folded `show` dictionary.
 
 ## Dependencies
 

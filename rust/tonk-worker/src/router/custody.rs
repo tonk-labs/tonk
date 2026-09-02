@@ -129,9 +129,10 @@ async fn await_key(
 /// material.
 ///
 /// The worker has no `window`, so the assertion happens on the page
-/// that asked for the enrollment. What comes back is two derivation
-/// handles, not key material, and this enrollment travels with the
-/// request so the handoff knows what it is for.
+/// that asked for the enrollment. What comes back is two transient PRF
+/// byte arrays, and this enrollment travels with the request so the
+/// handoff knows what it is for. The receiver imports worker-owned
+/// derivation handles before doing custody work.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) {
     let enrollment = tonk_worker_api::Enrollment { email };
@@ -148,8 +149,8 @@ pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) 
 
 /// Is this SW-global message a custody handoff?
 ///
-/// Read off the raw `JsValue`: the two handles it carries are
-/// `CryptoKey`s, which do not survive a trip through JSON.
+/// Read off the raw `JsValue`: the two PRF values are typed arrays and
+/// must never pass through JSON.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn is_custody_envelope(data: &wasm_bindgen::JsValue) -> bool {
     js_sys::Reflect::get(data, &wasm_bindgen::JsValue::from_str("type"))
@@ -186,11 +187,10 @@ fn split_refusal(error: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Take the page's derivation handles, do the work that needs them, and
-/// drop them.
+/// Take the page's transient PRF bytes, import derivation handles, do
+/// the work that needs them, and drop them.
 ///
-/// The page mediates WebAuthn and nothing else: it holds no bytes, and
-/// the handles it posts are non-extractable. This is the only place a
+/// The page mediates WebAuthn and nothing else. This is the only place a
 /// custodian exists, and it exists for the length of one request — the
 /// reply goes back over the transferred port, and the custodian is
 /// dropped when this returns.
@@ -203,7 +203,7 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
         return;
     };
 
-    let answer = match custodian_from(&data) {
+    let answer = match custodian_from(&data).await {
         Ok(custodian) => perform(state, &data, custodian).await,
         Err(error) => Err(error),
     };
@@ -237,7 +237,7 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
     }
 }
 
-/// Do what the handoff asked for, with the handles it carried.
+/// Do what the handoff asked for, with the handles just imported.
 ///
 /// What the page used to do and no longer can: generate the account
 /// secret, seal it under the passkey's KEK, mint the custody space's
@@ -279,6 +279,7 @@ async fn perform(
         tonk_worker_api::CustodyIntent::Login(link) => login(&state, &custodian, link).await,
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
             let holder = custodian_named(data, "holder")
+                .await?
                 .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
             add_passkey(&state, &custodian, &holder, addition).await
         }
@@ -355,7 +356,7 @@ async fn login(
         Err(error) => {
             // Waiting on the email is the one refusal this handler can
             // outlast ITSELF: the person already touched their passkey,
-            // so keep the assertion's derivation handles and finish the
+            // so keep the imported derivation handles and finish the
             // login here when the gate flips, rather than asking for a
             // second ceremony because an inbox was slow. Best effort —
             // a worker restart drops the handles, and the page's poll
@@ -799,22 +800,29 @@ async fn link_account(
         .map_err(|error| format!("the account link was not saved: {error}"))
 }
 
-/// Rebuild the custodian from the two posted handles.
+/// Rebuild the custodian from the two posted PRF byte arrays.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn custodian_from(
+async fn custodian_from(
     data: &wasm_bindgen::JsValue,
 ) -> Result<tonk_identity::custodian::Custodian, String> {
-    custodian_named(data, "").ok_or_else(|| "the handoff carried no derivation handles".to_string())
+    custodian_named(data, "")
+        .await?
+        .ok_or_else(|| "the handoff carried no primary custodian".to_string())
 }
 
-/// A custodian from one set of posted handles, by field prefix: `""`
-/// for the primary, `"holder"` for the second one an addition carries.
+/// A custodian from one posted byte pair, by field prefix: `""` for the
+/// primary, `"holder"` for the second one an addition carries.
+///
+/// Absence is valid only for an entirely absent optional holder. Any
+/// partial set is an error. Typed arrays are cleared immediately after
+/// copying into zeroizing Rust storage, including wrong-length arrays.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn custodian_named(
+async fn custodian_named(
     data: &wasm_bindgen::JsValue,
     prefix: &str,
-) -> Option<tonk_identity::custodian::Custodian> {
+) -> Result<Option<tonk_identity::custodian::Custodian>, String> {
     use wasm_bindgen::{JsCast, JsValue};
+    use zeroize::Zeroizing;
 
     // `key` / `kek` / `credentialId` for the primary set; `holderKey`
     // and friends for the second one an addition carries.
@@ -825,19 +833,72 @@ fn custodian_named(
             format!("{prefix}{}{}", &name[..1].to_uppercase(), &name[1..])
         }
     };
-    let handle = |name: &str| -> Option<web_sys::CryptoKey> {
-        js_sys::Reflect::get(data, &JsValue::from_str(&field(name)))
-            .ok()
-            .and_then(|value| value.dyn_into::<web_sys::CryptoKey>().ok())
-    };
-    let credential_id = js_sys::Reflect::get(data, &JsValue::from_str(&field("credentialId")))
-        .ok()
-        .and_then(|value| value.as_string())
-        .and_then(|value| hex::decode(&value).ok())?;
+    let credential_field = field("credentialId");
+    let key_field = field("key");
+    let kek_field = field("kek");
+    let fields = [&credential_field, &key_field, &kek_field];
+    let present = fields
+        .iter()
+        .map(|name| {
+            js_sys::Reflect::has(data, &JsValue::from_str(name))
+                .map_err(|_| format!("the handoff could not inspect {name}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !prefix.is_empty() && present.iter().all(|present| !present) {
+        return Ok(None);
+    }
 
-    Some(tonk_identity::custodian::Custodian::Passkey(
-        tonk_identity::webcrypto_kek::Custodian::new(credential_id, handle("key")?, handle("kek")?),
-    ))
+    let value = |name: &str, is_present: bool| -> Result<JsValue, String> {
+        if !is_present {
+            return Err(format!("the handoff carried no {name}"));
+        }
+        js_sys::Reflect::get(data, &JsValue::from_str(name))
+            .map_err(|_| format!("the handoff could not read {name}"))
+    };
+
+    let credential_id = value(&credential_field, present[0]).and_then(|value| {
+        let encoded = value
+            .as_string()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("the handoff carried an invalid {credential_field}"))?;
+        let decoded = hex::decode(encoded)
+            .map_err(|_| format!("the handoff carried an invalid {credential_field}"))?;
+        if decoded.is_empty() {
+            return Err(format!("the handoff carried an invalid {credential_field}"));
+        }
+        Ok(decoded)
+    });
+    let take_prf = |name: &str, is_present: bool| -> Result<Zeroizing<[u8; 32]>, String> {
+        let value = value(name, is_present)?;
+        let array = value
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("the handoff carried a non-Uint8Array {name}"))?;
+        let length = array.length();
+        if length != 32 {
+            array.fill(0, 0, length);
+            return Err(format!(
+                "the handoff carried a {name} with length {length}; expected 32"
+            ));
+        }
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        array.copy_to(bytes.as_mut());
+        array.fill(0, 0, length);
+        Ok(bytes)
+    };
+
+    // Evaluate both byte fields before returning any validation error so
+    // every typed array that reached the worker is cleared.
+    let key = take_prf(&key_field, present[1]);
+    let kek = take_prf(&kek_field, present[2]);
+    let credential_id = credential_id?;
+    let key = key?;
+    let kek = kek?;
+    let custodian = tonk_identity::webcrypto_kek::Custodian::adopt(credential_id, &key, &kek)
+        .await
+        .map_err(|_| "the worker could not import the custody derivation handles".to_string())?;
+    Ok(Some(tonk_identity::custodian::Custodian::Passkey(
+        custodian,
+    )))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -849,9 +910,8 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    /// The handoff is recognised before anything parses it, because
-    /// the handles it carries are `CryptoKey`s and reading the envelope
-    /// through `serde_wasm_bindgen` would drop them silently.
+    /// The handoff is recognised before anything parses it, because its
+    /// PRF values are typed arrays and must not pass through JSON.
     #[dialog_common::test]
     fn it_recognises_a_custody_handoff_on_the_raw_value() {
         use wasm_bindgen::JsValue;
@@ -867,38 +927,158 @@ mod tests {
         assert!(!is_custody_envelope(&JsValue::UNDEFINED));
     }
 
-    /// The two posted handles rebuild the custodian, and a handoff
-    /// missing either is refused rather than half-built.
+    /// The two posted PRF arrays rebuild the same custodian as direct
+    /// import and open the same byte-path envelope.
     #[dialog_common::test]
-    async fn it_rebuilds_the_custodian_from_the_posted_handles() {
-        let custodian =
+    async fn it_rebuilds_the_custodian_from_posted_prf_bytes() {
+        let reference =
             tonk_identity::webcrypto_kek::Custodian::adopt(vec![7], &[11u8; 32], &[22u8; 32])
                 .await
                 .expect("handles import");
-        let (key, kek) = custodian.handles();
 
         let envelope = js_sys::Object::new();
         js_sys::Reflect::set(&envelope, &"type".into(), &"custody".into()).unwrap();
         js_sys::Reflect::set(&envelope, &"credentialId".into(), &"07".into()).unwrap();
-        js_sys::Reflect::set(&envelope, &"key".into(), key).unwrap();
-        js_sys::Reflect::set(&envelope, &"kek".into(), kek).unwrap();
+        let key = js_sys::Uint8Array::from(&[11u8; 32][..]);
+        let kek = js_sys::Uint8Array::from(&[22u8; 32][..]);
+        js_sys::Reflect::set(&envelope, &"key".into(), &key).unwrap();
+        js_sys::Reflect::set(&envelope, &"kek".into(), &kek).unwrap();
         let envelope: wasm_bindgen::JsValue = envelope.into();
 
-        let rebuilt = custodian_from(&envelope).expect("the handoff rebuilds a custodian");
+        let rebuilt = custodian_from(&envelope)
+            .await
+            .expect("the handoff rebuilds a custodian");
         // The custody space it names is what a recovering device
         // resolves against, so a drift here strands the account.
         use dialog_varsig::Principal as _;
         assert_eq!(
             rebuilt.signer().await.unwrap().did(),
-            custodian.signer().await.unwrap().did(),
+            reference.signer().await.unwrap().did(),
         );
 
-        let partial = js_sys::Object::new();
-        js_sys::Reflect::set(&partial, &"credentialId".into(), &"07".into()).unwrap();
-        js_sys::Reflect::set(&partial, &"key".into(), key).unwrap();
+        let secret = zeroize::Zeroizing::new([42u8; 32]);
+        let sealed = tonk_identity::envelope::custody_kek(&[22u8; 32])
+            .seal_seed(&secret, tonk_identity::envelope::KekMethod::Passkey)
+            .expect("the byte path seals");
+        let opener = rebuilt.opener().await.expect("the opener derives");
+        let opened = tonk_identity::webcrypto_kek::open_seed(&opener, &sealed)
+            .await
+            .expect("the imported handle opens the byte-path envelope");
+        assert_eq!(&*opened, &*secret);
+        assert_eq!(key.to_vec(), [0u8; 32]);
+        assert_eq!(kek.to_vec(), [0u8; 32]);
+    }
+
+    /// Invalid and partial envelopes fail explicitly before custody work
+    /// can run, while every typed array they carried is cleared.
+    #[dialog_common::test]
+    async fn it_rejects_invalid_custody_byte_envelopes() {
+        fn base() -> js_sys::Object {
+            let envelope = js_sys::Object::new();
+            js_sys::Reflect::set(&envelope, &"credentialId".into(), &"07".into()).unwrap();
+            js_sys::Reflect::set(
+                &envelope,
+                &"key".into(),
+                &js_sys::Uint8Array::from(&[11u8; 32][..]),
+            )
+            .unwrap();
+            js_sys::Reflect::set(
+                &envelope,
+                &"kek".into(),
+                &js_sys::Uint8Array::from(&[22u8; 32][..]),
+            )
+            .unwrap();
+            envelope
+        }
+
+        let missing = js_sys::Object::new();
+        js_sys::Reflect::set(&missing, &"credentialId".into(), &"07".into()).unwrap();
+        js_sys::Reflect::set(
+            &missing,
+            &"key".into(),
+            &js_sys::Uint8Array::from(&[11u8; 32][..]),
+        )
+        .unwrap();
+        assert!(custodian_from(&missing.into()).await.is_err());
+
+        let non_array = base();
+        js_sys::Reflect::set(&non_array, &"key".into(), &"not bytes".into()).unwrap();
+        assert!(custodian_from(&non_array.into()).await.is_err());
+
+        for length in [31, 33] {
+            let wrong_length = base();
+            let key = js_sys::Uint8Array::new_with_length(length);
+            key.fill(9, 0, length);
+            js_sys::Reflect::set(&wrong_length, &"key".into(), &key).unwrap();
+            let error = custodian_from(&wrong_length.into())
+                .await
+                .err()
+                .expect("wrong-length PRF bytes must be refused");
+            assert!(error.contains("expected 32"), "{error}");
+            assert_eq!(key.to_vec(), vec![0; length as usize]);
+        }
+
+        let malformed_id = base();
+        js_sys::Reflect::set(&malformed_id, &"credentialId".into(), &"zz".into()).unwrap();
+        assert!(custodian_from(&malformed_id.into()).await.is_err());
+
+        let partial_holder = base();
+        js_sys::Reflect::set(
+            &partial_holder,
+            &"holderKey".into(),
+            &js_sys::Uint8Array::from(&[3u8; 32][..]),
+        )
+        .unwrap();
         assert!(
-            custodian_from(&partial.into()).is_err(),
-            "a handoff missing the KEK handle is refused"
+            custodian_named(&partial_holder.into(), "holder")
+                .await
+                .is_err()
+        );
+    }
+
+    /// Add-passkey carries a complete, independent holder byte pair.
+    #[dialog_common::test]
+    async fn it_rebuilds_distinct_added_and_holder_custodians() {
+        let envelope = js_sys::Object::new();
+        for (name, value) in [("credentialId", "07"), ("holderCredentialId", "08")] {
+            js_sys::Reflect::set(&envelope, &name.into(), &value.into()).unwrap();
+        }
+        for (name, byte) in [
+            ("key", 11),
+            ("kek", 22),
+            ("holderKey", 33),
+            ("holderKek", 44),
+        ] {
+            js_sys::Reflect::set(
+                &envelope,
+                &name.into(),
+                &js_sys::Uint8Array::from(&[byte; 32][..]),
+            )
+            .unwrap();
+        }
+        let envelope: wasm_bindgen::JsValue = envelope.into();
+        let added = custodian_from(&envelope).await.expect("added custodian");
+        let holder = custodian_named(&envelope, "holder")
+            .await
+            .expect("valid holder")
+            .expect("holder present");
+        use dialog_varsig::Principal as _;
+        let added_did = added.signer().await.unwrap().did();
+        let holder_did = holder.signer().await.unwrap().did();
+        assert_ne!(added_did, holder_did);
+        assert_eq!(
+            added_did,
+            tonk_identity::envelope::custody_signer(&[11u8; 32])
+                .await
+                .unwrap()
+                .did()
+        );
+        assert_eq!(
+            holder_did,
+            tonk_identity::envelope::custody_signer(&[33u8; 32])
+                .await
+                .unwrap()
+                .did()
         );
     }
 

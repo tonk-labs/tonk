@@ -70,7 +70,7 @@ impl CustomElement for TonkAccount {
         bind(this);
         load_status(this.clone());
         // The panel's state is a function of the URL — /settings,
-        // /settings?add=1, /settings/link — and of whether this browser
+        // /account?add=1, /account/link — and of whether this browser
         // has an account. Neither reaches it as a reload.
         //
         // Add account moves between those routes with a client-side
@@ -1907,7 +1907,7 @@ fn load_status(host: HtmlElement) {
 fn load_status_with(host: HtmlElement, after_ceremony: bool) {
     let handoff_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if handoff_route {
         match callback_request() {
             Some((audience, callback, name)) => {
@@ -2123,7 +2123,7 @@ fn apply_link_outcome(host: &HtmlElement, outcome: Option<&(String, Option<Strin
 fn pending_callback_request() -> Option<(String, String, String)> {
     let on_link_route = window()
         .and_then(|window| window.location().pathname().ok())
-        .is_some_and(|path| path == "/settings/link" || path.starts_with("/settings/link/"));
+        .is_some_and(|path| path == "/account/link" || path.starts_with("/account/link/"));
     if on_link_route {
         callback_request()
     } else {
@@ -2184,8 +2184,8 @@ fn load_callback_request(host: HtmlElement, audience: String, callback: String, 
 fn link_outcome_redirect() -> String {
     window()
         .and_then(|window| window.location().origin().ok())
-        .map(|origin| format!("{origin}/settings"))
-        .unwrap_or_else(|| "/settings".to_string())
+        .map(|origin| format!("{origin}/account"))
+        .unwrap_or_else(|| "/account".to_string())
 }
 
 /// Base64-encode an authorization payload for form delivery.
@@ -2216,9 +2216,9 @@ fn deliver_to_callback(callback: &str, fields: &[(&str, &str)]) -> Result<(), St
 /// `409 a different account is already signed in on this profile`,
 /// because saving a new root over an existing one is what creation does.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn run_login_ceremony(
+pub(crate) fn begin_login_ceremony(
     narrate: impl Fn(&str),
-) -> Result<(), crate::custody_relay::CeremonyError> {
+) -> Result<crate::custody_relay::Mediation, crate::custody_relay::CeremonyError> {
     use crate::custody_relay::CeremonyError;
 
     narrate("Waiting for your passkey…");
@@ -2227,7 +2227,7 @@ pub(crate) async fn run_login_ceremony(
     // the root and submits the link. The page holds no key material.
     let provider = proposed_remote().map_err(CeremonyError::said)?;
     narrate("Linking this browser…");
-    crate::custody_relay::mediate_now(
+    crate::custody_relay::begin(
         "usePasskey",
         tonk_worker_api::CustodyIntent::Login(tonk_worker_api::DeviceLink {
             device_name: crate::device_name::current(),
@@ -2235,8 +2235,6 @@ pub(crate) async fn run_login_ceremony(
             provider,
         }),
     )
-    .await?;
-    Ok(())
 }
 
 /// Run the account-creation ceremony, with no panel to report into.
@@ -2276,6 +2274,8 @@ pub(crate) async fn run_account_ceremony(
     )
     .await
     .map_err(|error| error.message)?;
+    crate::analytics::identify().await;
+    tonk_analytics::web::capture_account_created();
     Ok(())
 }
 
@@ -2593,6 +2593,8 @@ fn bind(host: &HtmlElement) {
                     ),
                 )
                 .await?;
+                crate::analytics::identify().await;
+                tonk_analytics::web::capture_account_created();
                 set_busy(&host, true, "Creating your account…");
                 Ok::<(), crate::custody_relay::CeremonyError>(())
             }
@@ -2919,7 +2921,7 @@ fn bind(host: &HtmlElement) {
             // account page. `on_click` already suppressed the navigation, so
             // do it explicitly.
             if let Some(window) = window() {
-                let _ = window.location().set_href("/settings");
+                let _ = window.location().set_href("/account");
             }
             return;
         };
@@ -3044,12 +3046,12 @@ fn bind(host: &HtmlElement) {
     // The result stands on a page that no longer describes the profile
     // under it: permanent deletion rotated the browser onto a fresh
     // profile, and a space deletion removed a listed space. A client-side
-    // route to the same path is a no-op, so load the settings document
+    // route to the same path is a no-op, so load the account document
     // afresh, dropping any `?delete-space` entry that would re-open the
     // flow for a space that is now gone.
     on_click(host, "#account-confirm-result-back", |_| {
         if let Some(window) = window() {
-            let _ = window.location().assign("/settings");
+            let _ = window.location().assign("/account");
         }
     });
 
@@ -3057,7 +3059,7 @@ fn bind(host: &HtmlElement) {
     // in submit prepares the fresh profile immediately before its ceremony.
     for selector in ["#account-add-profile", "#account-use-different-account"] {
         on_click(host, selector, |_| {
-            tonk_host::navigate_to("/settings?add=1");
+            tonk_host::navigate_to("/account?add=1");
         });
     }
 

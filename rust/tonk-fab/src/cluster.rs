@@ -61,7 +61,7 @@ mod element {
         }
 
         fn observed_attributes() -> &'static [&'static str] {
-            &["mode"]
+            &[]
         }
 
         fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -119,23 +119,7 @@ mod element {
                     }
                 }));
 
-            if let Ok(slots) = root.query_selector_all("slot") {
-                for index in 0..slots.length() {
-                    if let Some(slot) = slots.item(index)
-                        && let Ok(slot) = slot.dyn_into::<Element>()
-                    {
-                        let host = this.clone();
-                        self.listeners
-                            .push(shadow::bind(&slot, "slotchange", move |_| propagate(&host)));
-                    }
-                }
-            }
-
             self.listeners.push(shadow::install_visibility_pause(this));
-            if let Some(listener) = shadow::install_system_mode(this) {
-                self.listeners.push(listener);
-            }
-            propagate(this);
         }
 
         fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -144,15 +128,11 @@ mod element {
 
         fn attribute_changed_callback(
             &mut self,
-            this: &HtmlElement,
-            name: String,
-            old: Option<String>,
-            new: Option<String>,
+            _this: &HtmlElement,
+            _name: String,
+            _old: Option<String>,
+            _new: Option<String>,
         ) {
-            if name == "mode" && old != new {
-                shadow::apply_mode(this);
-                propagate(this);
-            }
         }
     }
 
@@ -209,19 +189,6 @@ mod element {
         } else if event.shift_key() && event_hit(event, first) {
             event.prevent_default();
             focus(&ghost);
-        }
-    }
-
-    fn propagate(this: &HtmlElement) {
-        let Ok(children) = this.query_selector_all("tonk-button,tonk-field") else {
-            return;
-        };
-        for index in 0..children.length() {
-            if let Some(child) = children.item(index)
-                && let Ok(child) = child.dyn_into::<Element>()
-            {
-                shadow::pass_mode(this, &child);
-            }
         }
     }
 

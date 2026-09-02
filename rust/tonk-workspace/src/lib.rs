@@ -34,6 +34,8 @@ mod sheet;
 // Declared on every target: the pure sync-state/preference logic is
 // unit-tested natively; the custom elements inside are wasm-gated.
 mod sync;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod ui_account_settings;
 /// `<ui-copy-link>` — a verb that copies a URL and answers in place.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_copy_link;
@@ -41,9 +43,6 @@ mod ui_copy_link;
 mod ui_dropdown;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_hub_account;
-/// `<ui-mode-switch>` — the light/dark cap.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_mode_switch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_space_remove;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -62,9 +61,9 @@ pub fn register() {
     sync::register();
     ui_sync_status::register();
     ui_dropdown::register();
-    ui_mode_switch::register();
     ui_copy_link::register();
     ui_hub_account::register();
+    ui_account_settings::register();
     ui_space_remove::register();
     default_remote::register();
     editable::register();

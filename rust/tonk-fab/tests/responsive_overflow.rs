@@ -145,7 +145,7 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
         .append_child(&parent)
         .expect("mount parent");
 
-    set_parent_width(&parent, &fab, 375, true, false).await;
+    set_parent_width(&parent, &fab, 375, true, true).await;
     for selector in ["[data-cell=space]", "[data-cell=share]", "[data-cell=more]"] {
         let trigger = shadow_element(&fab, selector);
         assert!(
@@ -174,16 +174,16 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
         assert_eq!(row.tag_name(), "BUTTON", "stack actions stay real buttons");
     }
     fab.set_attribute("up", "").expect("open upward");
-    shadow_element(&fab, "[data-cell=more]")
+    shadow_element(&fab, "[data-cell=space]")
         .unchecked_into::<HtmlElement>()
         .click();
 
-    let overflow = light_element(&fab, "tonk-menu[data-for=overflow]");
-    let share = menu_row(&light_element(&fab, "[data-overflow-share]"));
-    let mode = menu_row(&light_element(&fab, "[data-overflow-mode]"));
+    let space_menu = light_element(&fab, "tonk-menu[data-for=space]");
+    let new_row = menu_row(&light_element(&fab, "[data-mi-new]"));
+    let open_row = menu_row(&light_element(&fab, "[data-mi-open]"));
     let internal_gap =
-        mode.get_bounding_client_rect().top() - share.get_bounding_client_rect().bottom();
-    let menu_wrapper = overflow
+        open_row.get_bounding_client_rect().top() - new_row.get_bounding_client_rect().bottom();
+    let menu_wrapper = space_menu
         .shadow_root()
         .expect("menu shadow")
         .query_selector(".w")
@@ -211,7 +211,7 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
             .class_list()
             .contains("collapsed")
     );
-    assert!(overflow.has_attribute("hidden"));
+    assert!(space_menu.has_attribute("hidden"));
 
     parent.remove();
 }
@@ -247,19 +247,18 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
             .is_none()
     );
 
-    // 446 - 2*16 is the inclusive 414px exact fit. Repeating the same
+    // 428 - 2*16 is the inclusive 396px exact fit. Repeating the same
     // delivery must not flap back to compact.
-    set_parent_width(&parent, &fab, 446, false, true).await;
+    set_parent_width(&parent, &fab, 428, false, true).await;
     assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
-    set_parent_width(&parent, &fab, 446, false, true).await;
+    set_parent_width(&parent, &fab, 428, false, true).await;
     assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
 
     set_parent_width(&parent, &fab, 500, false, true).await;
     assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
     assert!(visible(&shadow_element(&fab, "[data-cell=share]")));
-    assert!(visible(&shadow_element(&fab, "[data-cell=toggle]")));
     assert!(!visible(&shadow_element(&fab, "[data-cell=more]")));
-    assert!((width(&shadow_element(&fab, ".bar")) - 414.0).abs() < 0.1);
+    assert!((width(&shadow_element(&fab, ".bar")) - 396.0).abs() < 0.1);
     let full_label = shadow_element(&fab, ".fab")
         .get_attribute("aria-label")
         .expect("full disc label");
@@ -284,60 +283,27 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
             .class_list()
             .contains("collapsed")
     );
-    wait_for_width(&shadow_element(&fab, ".bar"), 414.0).await;
-
-    shadow_element(&fab, "[data-cell=toggle]")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    assert!(fab.get_attribute("mode").is_some());
+    wait_for_width(&shadow_element(&fab, ".bar"), 396.0).await;
 
     set_parent_width(&parent, &fab, 390, true, true).await;
     assert!(shadow_element(&fab, ".w").class_list().contains("compact"));
     assert!(visible(&shadow_element(&fab, "[data-cell=share]")));
-    assert!(!visible(&shadow_element(&fab, "[data-cell=toggle]")));
-    assert!(visible(&shadow_element(&fab, "[data-cell=more]")));
+    assert!(
+        !visible(&shadow_element(&fab, "[data-cell=more]")),
+        "with share visible the overflow would open empty — the cell stays out"
+    );
     assert!((width(&shadow_element(&fab, ".bar")) - 358.0).abs() < 1.0);
     assert!((width(&shadow_element(&fab, ".fab")) - 44.0).abs() < 0.1);
     assert!((width(&shadow_element(&fab, ".disc")) - 14.0).abs() < 0.1);
 
-    // With share visible, compact overflow contains only appearance. The
-    // visible share cell opens the canonical stack with no back.
-    shadow_element(&fab, "[data-cell=more]")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    assert!(light_element(&fab, "[data-overflow-share]").has_attribute("hidden"));
-    assert!(!light_element(&fab, "[data-overflow-mode]").has_attribute("hidden"));
-    let mode_row = light_element(&fab, "[data-overflow-mode]")
-        .shadow_root()
-        .expect("mode row shadow")
-        .query_selector(".row")
-        .expect("row selector")
-        .expect("mode row");
-    assert!(
-        computed(&mode_row, "min-height")
-            .trim_end_matches("px")
-            .parse::<f64>()
-            .expect("row min height")
-            >= 44.0
-    );
-    assert_eq!(
-        light_element(&fab, "[data-overflow-mode]")
-            .get_attribute("role")
-            .as_deref(),
-        None
-    );
-    let mode_is_dark = (fab.get_attribute("mode").as_deref() == Some("dark")).to_string();
-    assert_eq!(
-        mode_row.get_attribute("aria-pressed").as_deref(),
-        Some(mode_is_dark.as_str())
-    );
+    // The visible share cell opens the canonical stack with no back.
     shadow_element(&fab, "[data-cell=share]")
         .unchecked_into::<HtmlElement>()
         .click();
     assert!(!light_element(&fab, "tonk-menu[data-for=share]").has_attribute("hidden"));
     assert!(light_element(&fab, "[data-mi-back]").has_attribute("hidden"));
 
-    set_parent_width(&parent, &fab, 375, true, false).await;
+    set_parent_width(&parent, &fab, 300, true, false).await;
     assert!(shadow_element(&fab, ".w").class_list().contains("compact"));
     assert!(!visible(&shadow_element(&fab, "[data-cell=share]")));
     assert!(visible(&shadow_element(&fab, "[data-cell=more]")));
@@ -380,22 +346,6 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
     assert!(!overflow.has_attribute("hidden"));
     assert!(light_element(&fab, "tonk-menu[data-for=share]").has_attribute("hidden"));
 
-    let mode_before = fab.get_attribute("mode");
-    click_item(&light_element(&fab, "[data-overflow-mode]"));
-    let mode_after = fab.get_attribute("mode");
-    assert_ne!(mode_after, mode_before);
-    assert!(
-        mode_after
-            .as_deref()
-            .is_some_and(|mode| mode == "dark" || mode == "light")
-    );
-    let mode_button = menu_row(&light_element(&fab, "[data-overflow-mode]"));
-    assert_eq!(
-        mode_button.get_attribute("aria-pressed"),
-        Some((mode_after.as_deref() == Some("dark")).to_string())
-    );
-    assert!(overflow.has_attribute("hidden"));
-
     more.click();
     document
         .dispatch_event(&escape_event())
@@ -435,7 +385,7 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
     set_parent_width(&parent, &fab, 500, false, true).await;
     assert!(!wrapper.class_list().contains("compact"));
     assert!(wrapper.class_list().contains("collapsed"));
-    set_parent_width(&parent, &fab, 375, true, false).await;
+    set_parent_width(&parent, &fab, 300, true, false).await;
     assert!(wrapper.class_list().contains("compact"));
     assert!(wrapper.class_list().contains("collapsed"));
 

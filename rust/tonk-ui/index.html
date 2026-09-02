@@ -10,35 +10,41 @@
         <meta name="title" content="Tonk" />
         <meta
             name="description"
-            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+            content="Tonk makes your small software live and ready to share right away."
         />
         <meta name="robots" content="index, follow" />
 
         <title>Tonk</title>
 
-        <meta property="og:title" content="Tonk is impossible software" />
+        <meta property="og:title" content="Small software travels well" />
         <meta
             property="og:description"
-            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+            content="Tonk makes your small software live and ready to share right away."
         />
         <meta property="og:url" content="https://tonk.xyz" />
         <meta property="og:site_name" content="Tonk" />
         <meta property="og:locale" content="en_US" />
-        <meta property="og:image" content="https://tonk.xyz/preview.png" />
+        <meta
+            property="og:image"
+            content="https://tonk.xyz/tonk-media-preview.png"
+        />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
-        <meta property="og:image:alt" content="Tonk is impossible software" />
+        <meta property="og:image:alt" content="Small software travels well" />
         <meta property="og:type" content="website" />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Tonk is impossible software" />
+        <meta name="twitter:title" content="Small software travels well" />
         <meta
             name="twitter:description"
-            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+            content="Tonk makes your small software live and ready to share right away."
         />
-        <meta name="twitter:image" content="https://tonk.xyz/preview.png" />
+        <meta
+            name="twitter:image"
+            content="https://tonk.xyz/tonk-media-preview.png"
+        />
 
-        <link rel="shortcut icon" href="/images/mark-white.svg" />
-        <link rel="apple-touch-icon" href="/images/mark-white.svg" />
+        <link rel="icon" type="image/png" href="/images/tonk-icon.png" />
+        <link rel="apple-touch-icon" href="/images/tonk-icon.png" />
 
         <!-- Boot-shell critical CSS, inlined so first paint needs ZERO
        external resources: both stylesheets below load async (media="print"
@@ -721,6 +727,11 @@
             data-target-path="__tonk"
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+        <link
+            data-trunk
+            rel="copy-file"
+            href="./assets/tonk-media-preview.png"
+        />
         <!-- Dev-only hot reload control. Copied to dist so it's
        available under `trunk serve`, but the loading `<script>` is
        injected only in debug builds by the UI shell (see ui.rs,

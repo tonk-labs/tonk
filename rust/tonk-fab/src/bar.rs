@@ -1,8 +1,8 @@
 //! The bar — one object.
 //!
-//! `[circle 36][space 216][share 144][mode 18]`, flush cells on a
+//! `[circle 36][space 216][share 144]`, flush cells on a
 //! single frost surface separated by 1px weighted lines. Anchored right the
-//! full run mirrors to `[mode][share][space][circle]`; compact mirrors to
+//! full run mirrors to `[share][space][circle]`; compact mirrors to
 //! `[more][share?][space][circle]`. The sync disc keeps the corner and every
 //! rung keeps its place relative to it. See
 //! [`apply_flip`] for why this mirrors rather than swapping bookends alone.
@@ -27,12 +27,10 @@
 //!   alerted rung washes. Never a colour (law 5).
 //! - `up` `flip` `responsive` `static`.
 //!
-//! The mode pill switches the whole app, not only this bar: it paints the
-//! bar's own tokens and then calls [`tonk_host::theme`], which relays the
-//! change down the frame tree to the space behind it. The override lasts the
-//! session — it cannot yet be remembered, because the bar renders inside a
-//! sealed guest (`sandbox="allow-scripts"`, an opaque origin) where
-//! `localStorage` throws. See `plan/fabb-conformance.md` for the fix.
+//! No mode pill and one twin — the bright one: the bar keeps the same
+//! bright frost over a dark space that it wears over a light page, so its
+//! `--fabb-*` values are the theme's LIGHT column and the page's dark swap
+//! never reaches it.
 //!
 //! ## Stacks
 //!
@@ -132,27 +130,25 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     let root = shadow::build(this, markup::BAR_CSS, markup::BAR_HTML);
     let mut listeners = Vec::new();
 
-    // The mode half pill — law 8's grammar for free: its fill is solid ink,
-    // which inverts with the tokens, so it is lit when dark and dark when
-    // light. It writes the attribute AND reports, so a host can persist the
-    // choice.
-    if let Ok(Some(toggle)) = root.query_selector("[data-cell=toggle]") {
-        let host = this.clone();
-        listeners.push(shadow::on_click(&toggle, move || {
-            toggle_mode(&host);
-        }));
-    }
-
     for (cell, panel) in [(Cell::Space, Panel::Space), (Cell::Share, Panel::Share)] {
         let Ok(Some(button)) = root.query_selector(cell.selector()) else {
             continue;
         };
         let host = this.clone();
         let shared = state.clone();
-        listeners.push(shadow::on_click(&button, move || {
+        listeners.push(shadow::bind(&button, "click", move |event| {
             // A click on the space cell mid-rename is aimed at the text:
-            // commit it, do not also open the stack over what was typed.
+            // commit it, do not also open the stack over what was typed. A
+            // Space typed into the nested contenteditable also makes the
+            // surrounding button synthesize a keyboard click (`detail ==
+            // 0`); that click belongs to the character, not to the cell.
             if cell == Cell::Space && shared.borrow().editing {
+                if event
+                    .dyn_ref::<web_sys::MouseEvent>()
+                    .is_some_and(|mouse| mouse.detail() == 0)
+                {
+                    return;
+                }
                 commit_edit(&host, &shared);
                 return;
             }
@@ -199,11 +195,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
             }
             if row.has_attribute("data-mi-back") {
                 open_panel(&host, &shared, Panel::Overflow, Cell::More, None);
-                return;
-            }
-            if row.has_attribute("data-overflow-mode") {
-                toggle_mode(&host);
-                close(&host, &shared);
                 return;
             }
             let has_sub = matches!(
@@ -262,9 +253,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     }
 
     listeners.push(shadow::install_visibility_pause(this));
-    if let Some(listener) = shadow::install_system_mode(this) {
-        listeners.push(listener);
-    }
 
     apply_flip(this);
     update(this);
@@ -310,26 +298,25 @@ fn wants_inplace() -> bool {
 /// The DOM is genuinely reordered rather than `flex-direction: row-reverse`d,
 /// so focus and screen-reader order match the eye.
 pub(crate) fn apply_flip(this: &HtmlElement) {
-    let (Some(bar), Some(run), Some(fab), Some(space), Some(share), Some(more), Some(toggle)) = (
+    let (Some(bar), Some(run), Some(fab), Some(space), Some(share), Some(more)) = (
         query(this, ".bar"),
         query(this, ".run"),
         query(this, ".fab"),
         query(this, ".space"),
         query(this, ".share"),
         query(this, ".more"),
-        query(this, "[data-cell=toggle]"),
     ) else {
         return;
     };
     let flipped = this.has_attribute("flip");
     // Appending a node that is already a child MOVES it, so laying the run
     // out in order is enough to reorder it — no removal pass needed.
-    let cells: [&Element; 4] = if flipped {
-        // [more] · mode · share · space | sync
-        [&more, &toggle, &share, &space]
+    let cells: [&Element; 3] = if flipped {
+        // [more] · share · space | sync
+        [&more, &share, &space]
     } else {
-        // sync | space · share · mode · [more]
-        [&space, &share, &toggle, &more]
+        // sync | space · share · [more]
+        [&space, &share, &more]
     };
     for cell in cells {
         let _ = run.append_child(cell);
@@ -431,7 +418,6 @@ pub(crate) fn open_panel(
             }
         }
     }
-    shadow::pass_mode(this, &stack);
 
     let (Some(rung), Some(bar), Some(menus)) = (
         query(this, anchor.selector()),
@@ -596,7 +582,6 @@ fn open_sub(this: &HtmlElement, state: &Shared, row: &Element) {
             .style()
             .set_property("--fabb-menu-w", &width);
     }
-    shadow::pass_mode(this, &sub);
     menu::recut_mask(sub.unchecked_ref());
     state.borrow_mut().hoisted = Some((sub, row.clone()));
 }
@@ -709,19 +694,6 @@ pub(crate) fn commit_edit(this: &HtmlElement, state: &Shared) {
     let _ = this;
 }
 
-fn toggle_mode(this: &HtmlElement) {
-    let dark = !shadow::is_dark(this);
-    let next = if dark { "dark" } else { "light" };
-    shadow::set_mode(this, Some(next));
-    shadow::apply_mode(this);
-    tonk_host::theme::set_mode(dark);
-    propagate(this);
-    update(this);
-    let detail = Object::new();
-    let _ = Reflect::set(&detail, &"mode".into(), &next.into());
-    shadow::emit(this, "fabb-mode", &detail);
-}
-
 /// Hand the resolved mode to every slotted stack.
 pub(crate) fn propagate(this: &HtmlElement) {
     let Ok(stacks) = this.query_selector_all("tonk-menu") else {
@@ -732,7 +704,6 @@ pub(crate) fn propagate(this: &HtmlElement) {
             continue;
         };
         if let Ok(element) = node.dyn_into::<Element>() {
-            shadow::pass_mode(this, &element);
             if wrapper(this).is_some_and(|wrapper| wrapper.class_list().contains("compact")) {
                 let _ = element.set_attribute("compact", "");
             } else {
@@ -805,19 +776,6 @@ pub(crate) fn update(this: &HtmlElement) {
             },
         );
     }
-    if let Ok(Some(toggle)) = root.query_selector("[data-cell=toggle]") {
-        let _ = toggle.set_attribute("aria-checked", &shadow::is_dark(this).to_string());
-    }
-    if let Ok(Some(label)) = this.query_selector("[data-mode-label]") {
-        label.set_text_content(Some(if shadow::is_dark(this) {
-            "light mode"
-        } else {
-            "dark mode"
-        }));
-    }
-    if let Ok(Some(mode)) = this.query_selector("[data-overflow-mode]") {
-        let _ = mode.set_attribute("pressed", &shadow::is_dark(this).to_string());
-    }
     update_more_glyph(this);
     update_sync_condition(this);
 }
@@ -838,7 +796,6 @@ fn update_sync_condition(this: &HtmlElement) {
         return;
     }
     if document.get_element_by_id(CONNECT_BANNER_ID).is_some() {
-        sync_condition_mode(this, &document);
         return;
     }
     let Ok(banner) = document.create_element("tonk-banner") else {
@@ -846,7 +803,6 @@ fn update_sync_condition(this: &HtmlElement) {
     };
     banner.set_id(CONNECT_BANNER_ID);
     banner.set_inner_html("connect this space<span slot=\"door\">connect</span>");
-    crate::shadow::set_mode(&banner, this.get_attribute("mode").as_deref());
     let on_open = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         crate::share::open_enable_sync_from_banner();
     });
@@ -854,15 +810,6 @@ fn update_sync_condition(this: &HtmlElement) {
     on_open.forget();
     if let Some(body) = document.body() {
         let _ = body.append_child(&banner);
-    }
-}
-
-fn sync_condition_mode(this: &HtmlElement, document: &web_sys::Document) {
-    for id in [CONNECT_BANNER_ID, "fabb-connect-cluster"] {
-        let Some(element) = document.get_element_by_id(id) else {
-            continue;
-        };
-        crate::shadow::set_mode(&element, this.get_attribute("mode").as_deref());
     }
 }
 
@@ -939,9 +886,6 @@ pub(crate) fn apply_responsive(this: &HtmlElement, usable_width_px: f64, state: 
     set_cell_visible(this, Cell::Space, true, collapsed);
     set_cell_visible(this, Cell::Share, layout.show_share, collapsed);
     set_cell_visible(this, Cell::More, layout.show_overflow, collapsed);
-    if let Some(mode) = query(this, "[data-cell=toggle]") {
-        set_element_visible(&mode, layout.show_mode, collapsed);
-    }
     if let Some(run) = query(this, ".run") {
         if collapsed {
             let _ = run.set_attribute("aria-hidden", "true");
@@ -984,6 +928,17 @@ fn set_element_visible(element: &Element, visible: bool, collapsed: bool) {
 pub(crate) fn collapse(this: &HtmlElement, state: &Shared) {
     commit_edit(this, state);
     close_internal(this, state, false);
+    seat_collapsed(this, state);
+    if let Some(sync) = query(this, Cell::Sync.selector()) {
+        let _ = sync.unchecked_ref::<HtmlElement>().focus();
+    }
+}
+
+/// Seat the bar collapsed without touching focus or open work: what
+/// [`collapse`] does to the DOM, minus the interaction. The restore
+/// path applies a stamp read back at boot, where there is nothing to
+/// commit and stealing focus would be rude.
+pub(crate) fn seat_collapsed(this: &HtmlElement, state: &Shared) {
     state.borrow_mut().collapsed = true;
     if let Some(wrapper) = wrapper(this) {
         let _ = wrapper.class_list().add_1("collapsed");
@@ -995,14 +950,10 @@ pub(crate) fn collapse(this: &HtmlElement, state: &Shared) {
         Cell::Space.selector(),
         Cell::Share.selector(),
         Cell::More.selector(),
-        "[data-cell=toggle]",
     ] {
         if let Some(element) = query(this, selector) {
             let _ = element.set_attribute("tabindex", "-1");
         }
-    }
-    if let Some(sync) = query(this, Cell::Sync.selector()) {
-        let _ = sync.unchecked_ref::<HtmlElement>().focus();
     }
     update(this);
 }
@@ -1022,9 +973,6 @@ pub(crate) fn expand(this: &HtmlElement, state: &Shared) {
         set_cell_visible(this, Cell::Space, true, false);
         set_cell_visible(this, Cell::Share, layout.show_share, false);
         set_cell_visible(this, Cell::More, layout.show_overflow, false);
-        if let Some(mode) = query(this, "[data-cell=toggle]") {
-            set_element_visible(&mode, layout.show_mode, false);
-        }
     }
     update(this);
 }

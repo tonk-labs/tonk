@@ -1,0 +1,43 @@
+<nav class="s-rail" aria-label="settings sections">
+  <button class="blk cur" type="button" data-pane="account">account</button>
+  <button class="blk" type="button" data-pane="devices">devices</button>
+</nav>
+<div class="s-body">
+  <div class="pane" data-pane="account">
+    <div class="srowd">
+      <span>display name</span>
+      <span class="sname-seat"
+        ><input
+          class="sname"
+          data-settings-name
+          aria-label="display name"
+      /></span>
+    </div>
+    <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
+    <div class="sect">passkeys</div>
+    <div class="srowd">
+      <b class="lft" data-settings-passkey-device>loading&hellip;</b>
+      <b data-settings-passkey-created></b>
+    </div>
+    <p class="expl">
+      Your passkey replaces a password and may be saved to a device, browser
+      profile, or password manager.
+    </p>
+    <div class="sect">delete data</div>
+    <div class="srowd">
+      <span>delete all data associated with this account</span>
+      <a class="cta" href="/account" data-settings-full>delete account (permanent)</a>
+    </div>
+    <div class="srowd">
+      <span>remove all data associated with this account from this device</span>
+      <a class="cta" href="/account" data-settings-full>remove this device</a>
+    </div>
+  </div>
+  <div class="pane" data-pane="devices" hidden>
+    <div data-settings-devices></div>
+    <p class="expl">
+      Devices holding this account. Removing access clears the account from
+      that device &mdash; spaces stay with their members.
+    </p>
+  </div>
+</div>

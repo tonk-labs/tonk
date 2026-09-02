@@ -11,7 +11,7 @@ The element is a `cdylib` WASM custom element. You place it in the page, point i
 <!-- every instance of the model, default directory view -->
 <tonk-display model="task"></tonk-display>
 
-<!-- a named or URI view concept -->
+<!-- an explicit show facet -->
 <tonk-display model="task" view="board"></tonk-display>
 ```
 
@@ -19,7 +19,7 @@ The element is a `cdylib` WASM custom element. You place it in the page, point i
 
 - `model`: names the subject's model concept, by bookmark name (`person`) or entity URI (anything containing `:`). Required.
 - `entity`: the URI of the single entity to render. Absent selects directory mode (every instance of the model).
-- `view`: names the *view concept* to resolve the template through (named or URI). Omitting it uses the built-in `view` concept in detail mode or the built-in `view/directory` concept in directory mode. `view="about:blank"` is reserved for a future carousel mode and currently errors.
+- `view`: names the *show facet* to render (`label`, `title`, or any key the model's `show` dictionary carries). Omitting it uses the mode default: `ui` in detail mode, `directory` in directory mode. A facet containing `:` is rejected as a descriptor error, since a facet is a plain key and not a concept URI. `view="about:blank"` is checked before that guard and stays reserved for a future carousel mode, which currently errors.
 
 A change to `model`, `entity`, or `view` restarts the resolve/subscribe flow. `data-active` (and other `dom.host/*` context attributes a parent view threads in) is propagated into the already-mounted view in place without restarting.
 
@@ -29,7 +29,7 @@ Resolving one display walks model -> view -> entities -> bind:
 
 1. **Model.** The `model` attribute is resolved to a concept descriptor. A bookmark name is first turned into its referent URI through the Name concept (`name_query`), then `phase1_query` reads the concept-of-concept row and pulls the descriptor JSON out of its `source` field. This is a *live* subscription: a concept seeded after the element mounts pushes a frame and the display recovers without a reload.
 
-2. **View.** With the model entity and a view-concept descriptor in hand, `view_by_model_query` finds the instance of that view concept whose `model` field equals the model entity and projects its `display` field, the template HTML. This too is a live subscription, so editing the template on the branch swaps the rendered DOM. The view concept is the query predicate and `model` is the constraint, so the `view` attribute names a *concept*, not one fixed entity. Detail mode reads `display` from `xyz.tonk.view/display`; directory mode reads it from `xyz.tonk.view/directory`, letting a model declare a detail view and a directory view independently.
+2. **View.** With the model entity in hand, `view_query` pins `this` to it and projects its whole `show` dictionary, one flat row per facet. This too is a live subscription, so editing a template on the branch swaps the rendered DOM. A view instance's `this` IS the model, so there is no `model` field to constrain and no separate view entity to find. `select_rows` folds the rows into one conclusion and `show_template` picks the facet: the `view` attribute names a *facet* (`label`, `title`, ...), not a concept. Detail mode defaults to the `ui` facet, directory mode to `directory`, letting a model declare both independently in the same dictionary.
 
 3. **Entities.** A third live subscription projects every field in the model descriptor's `with:` map. `entity_query` pins `this` to the `entity` URI (detail); `instances_query` leaves `this` unbound (directory), matching every instance. `?key=value` filters on the `model` attribute are applied as constants on those terms.
 
@@ -64,15 +64,15 @@ A nested `<tonk-display>` inside a template mounts exactly once: rows build deta
 
 The presence of the `entity` attribute selects the mode:
 
-- **Detail** (`entity` set): pins `this` to that URI, resolves the model's detail view (`xyz.tonk.view/display`), and renders a single entity. The entity subscription frame is size 0 (entity absent or removed) or 1.
-- **Directory** (`entity` absent): leaves `this` unbound, resolves the model's directory view (`xyz.tonk.view/directory`), and renders every instance. A directory view declared with `model: _:_` matches any model.
+- **Detail** (`entity` set): pins `this` to that URI, resolves the model's `ui` facet, and renders a single entity. The entity subscription frame is size 0 (entity absent or removed) or 1.
+- **Directory** (`entity` absent): leaves `this` unbound, resolves the model's `directory` facet, and renders every instance. A view declared with `this: tonk:_` supplies the facet for any model that lacks its own.
 
 In both modes the query engine emits one flat row per tuple, so cardinality-many fields and multiple subjects arrive as separate rows. [`select_rows`] (in `fold`) groups rows by `this` and folds each group into one conclusion per subject, collapsing multi-valued fields to a list in first-seen order (identical values stay a scalar). Detail mode is then just a one-conclusion frame and directory mode a many-conclusion frame, rendered by the same repeat machinery.
 
 ## Modules
 
 - [`element`](src/element.rs): the `<tonk-display>` orchestrator: lifecycle, the three subscriptions, mode selection, slide mounting (wasm only).
-- [`resolve`](src/resolve.rs): wire-query construction (`name_query`, `phase1_query`, `view_by_model_query`, `entity_query`, `instances_query`) and `source` parsing. Query builders are target-independent.
+- [`resolve`](src/resolve.rs): wire-query construction (`name_query`, `phase1_query`, `view_query`, `entity_query`, `instances_query`) and `source` parsing. Query builders are target-independent.
 - [`view`](src/view.rs): the `<tonk-view>` dumb renderer (wasm only).
 - [`template`](src/template.rs): segment parsing, the chrome/repeat binding plan, and DOM walking (planning is target-independent; DOM walking is wasm only).
 - [`render`](src/render.rs): the mounted-state DOM renderer for a `<tonk-view>` frame (wasm only).

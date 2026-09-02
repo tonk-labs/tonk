@@ -342,6 +342,21 @@ pub(crate) async fn mediate_now(
     run(method, intent).await
 }
 
+/// A page ceremony that has already been invoked and now only needs its
+/// asynchronous worker handoff to finish.
+pub(crate) struct Mediation {
+    promise: js_sys::Promise,
+}
+
+impl Mediation {
+    pub(crate) async fn finish(self) -> Result<(), CeremonyError> {
+        wasm_bindgen_futures::JsFuture::from(self.promise)
+            .await
+            .map(|_| ())
+            .map_err(|error| CeremonyError::thrown(&error))
+    }
+}
+
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
 /// the passkey is a decision, not a fault.
 fn report(error: &str) {
@@ -356,6 +371,18 @@ async fn run(
     method: &'static str,
     intent: tonk_worker_api::CustodyIntent,
 ) -> Result<(), CeremonyError> {
+    begin(method, intent)?.finish().await
+}
+
+/// Invoke the window ceremony now and return its in-flight promise.
+///
+/// Keeping invocation separate from completion lets a click handler cross the
+/// Rust/JavaScript bridge before returning, which is required for mobile
+/// WebAuthn's transient user activation.
+pub(crate) fn begin(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+) -> Result<Mediation, CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
 
     let identity = web_sys::window()
@@ -395,10 +422,7 @@ async fn run(
     let promise = answer.dyn_into::<js_sys::Promise>().map_err(|_| {
         CeremonyError::said(format!("tonkIdentity.{method} did not return a promise"))
     })?;
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map(|_| ())
-        .map_err(|error| CeremonyError::thrown(&error))
+    Ok(Mediation { promise })
 }
 
 /// A failure that never reached the service carries no reason from it.

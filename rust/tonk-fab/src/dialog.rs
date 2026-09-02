@@ -26,7 +26,7 @@ use crate::shadow::{self, Bound};
 const CSS: &str = r#"
 dialog{ background:transparent; border:0; padding:0; max-width:26rem; width:calc(100% - 40px); overflow:visible; }
 :host([wide]) dialog{ max-width:36rem; }
-dialog::backdrop{ background:rgba(16,16,12,.32); }
+dialog::backdrop{ background:var(--fabb-dim, rgba(56,24,42,.32)); }
 .stack{ display:flex; flex-direction:column; gap:7px; }
 .hrow{ display:flex; gap:7px; }
 .blk{ background:var(--_panel); box-shadow:var(--_ring); }
@@ -38,6 +38,7 @@ dialog::backdrop{ background:rgba(16,16,12,.32); }
   font-size:15px; color:var(--_ink); }
 .x:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_panel); }
 .x:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_panel); }
+.x:focus-visible{ background:linear-gradient(var(--_press),var(--_press)), var(--_panel); }
 .main{ display:flex; gap:7px; align-items:stretch; margin-right:43px; }
 .body{ flex:1; min-width:0; padding:14px 18px;
   font-size:13.5px; font-weight:400; line-height:1.55; color:var(--_soft);
@@ -80,7 +81,7 @@ impl CustomElement for TonkDialog {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode", "heading"]
+        &["heading"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -162,9 +163,6 @@ impl CustomElement for TonkDialog {
         }
 
         self.listeners.push(shadow::install_visibility_pause(this));
-        if let Some(listener) = shadow::install_system_mode(this) {
-            self.listeners.push(listener);
-        }
         sync_slots(this);
         sync_heading(this);
     }
@@ -185,10 +183,6 @@ impl CustomElement for TonkDialog {
             return;
         }
         match name.as_str() {
-            "mode" => {
-                shadow::apply_mode(this);
-                propagate(this);
-            }
             "heading" => sync_heading(this),
             _ => {}
         }
@@ -371,8 +365,6 @@ fn ordinary_focus_target(element: Element) -> Option<HtmlElement> {
 
 /// Open the cluster modally.
 pub(crate) fn show_dialog(this: &HtmlElement) {
-    shadow::apply_mode(this);
-    propagate(this);
     if let Some(dialog) = native_dialog(this) {
         let _ = dialog.show_modal();
         shadow::emit(this, "fabb-open", &JsValue::NULL);
@@ -409,22 +401,6 @@ fn sync_heading(this: &HtmlElement) {
     };
     if let Ok(Some(heading)) = root.query_selector(".t") {
         heading.set_text_content(Some(&this.get_attribute("heading").unwrap_or_default()));
-    }
-}
-
-/// Hand the resolved mode to the FABB children the cluster hosts.
-fn propagate(this: &HtmlElement) {
-    let Ok(children) = this.query_selector_all("tonk-button,tonk-toggle,tonk-menu,tonk-field")
-    else {
-        return;
-    };
-    for index in 0..children.length() {
-        let Some(node) = children.item(index) else {
-            continue;
-        };
-        if let Ok(element) = node.dyn_into::<Element>() {
-            shadow::pass_mode(this, &element);
-        }
     }
 }
 
