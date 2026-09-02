@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="32px" height="32px" viewBox="0 0 100 100" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-    <title>mark</title>
-    <rect width="100" height="100" fill="#ffffff"/>
-    <rect x="10" y="10" width="80" height="80" fill="#ffffff" stroke="none"/>
-    <g id="mark" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd" transform="translate(20, 20) scale(0.6)">
-        <path d="M100,0 L100,100 L50,100 C77.6142375,100 100,77.6142375 100,50 L0,50 C0,77.6142375 22.3857625,100 50,100 L0,100 L0,0 L100,0 Z M25,10 C16.7157288,10 10,16.7157288 10,25 C10,33.2842712 16.7157288,40 25,40 C33.2842712,40 40,33.2842712 40,25 C40,16.7157288 33.2842712,10 25,10 Z M75,10 C66.7157288,10 60,16.7157288 60,25 C60,33.2842712 66.7157288,40 75,40 C83.2842712,40 90,33.2842712 90,25 C90,16.7157288 83.2842712,10 75,10 Z" id="tonk" fill="#131313"></path>
-    </g>
-</svg>
