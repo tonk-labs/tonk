@@ -381,28 +381,112 @@ keyed on the host's `data-state`).
 
 Unknown tags degrade to `<el>`, not an error.
 
-### 6.3 The engine: three options
+### 6.3 The engine: how much of ratatui, and what solves layout
 
-- **(a) `taffy`** (`0.14.0`, updated 2026-08; used by Zed, Dioxus, Bevy).
-  Full flexbox + grid, `Position::Absolute`, min/max, flex-wrap, and a
-  **leaf measure-function hook** — the seam ink uses yoga for.
-- **(b) ratatui's own `Layout`.** Already integer and cell-native, and
-  closer to elm-ui than it first appears: `Constraint::Length` = `px`,
-  `Fill(n)` = `fillPortion n`, `Min`/`Max` = the modifiers,
-  `Layout::spacing` = `spacing`, `Flex::{Start,Center,SpaceBetween,…}` =
-  alignment.
-- **(c) hand-rolled.**
+"ratatui vs elm-ui" is a category error — they answer different
+questions. Since ratatui 0.30 the crate is modularized, which turns the
+question into four independent decisions:
 
-**Recommend (a).** Ratatui's `Layout` solves one axis of one split and
-does **no content-based sizing** — but `shrink` is elm-ui's *default* on
-`el`/`row`/`column`, so content sizing is the base case, not an edge case.
-Ratatui also gives no flex-wrap (`wrappedRow`), no absolute positioning
-(`inFront`/`behindContent`), and no width-dependent height (`paragraph`).
-taffy gives all four. (c) is re-deriving taffy badly.
+| Decision | Answer |
+| --- | --- |
+| Terminal I/O, cell buffer, damage tracking, style/text primitives | **`ratatui-core`.** No contest; hand-rolling this would be strictly worse. |
+| Layout | **Contested** — see below. |
+| Widget set (`ratatui-widgets`) | **Mostly no**, with one escape hatch. |
+| App architecture / event loop | ratatui has no opinion, so there is nothing to accept or reject. |
 
-The cost of (a) is a translation layer from elm-ui semantics to taffy
-style structs, and it is a real one — elm-ui's alignment-pushes-siblings
-behaviour in a `row` is not a plain `align-self`.
+#### The layout question
+
+The honest case **for** `ratatui::layout::Layout`:
+
+- It is a real cassowary solver (`kasuari`) with weighted strengths per
+  constraint kind, not naive division.
+- It is integer-native: `u16` cells, solved in `f64` at 100× precision and
+  rounded. No `f32`-to-cell impedance mismatch to manage.
+- It is **LRU-cached by `(Rect, Layout)`**, so repeated identical splits
+  across an immediate-mode redraw are free.
+- `Spacing::Overlap(n)` — negative spacing for shared borders — is a
+  genuinely terminal-native feature flexbox does not have.
+- It is battle-tested by every ratatui application in existence.
+- Its `Constraint`s map onto elm-ui more closely than they first appear:
+  `Length` = `px`, `Fill(n)` = `fillPortion n`, `Min`/`Max` = the
+  modifiers, `Layout::spacing` = `spacing`, `Flex::{Start,Center,
+  SpaceBetween,…}` = alignment.
+
+The case **against**, specifically for a template-driven renderer:
+
+- It solves **one axis of one split**. Nesting is the caller's job, done
+  imperatively in Rust. That is exactly right when a human writes the
+  layout; it is the entire problem when layout is declared in branch data
+  by an author who is not writing Rust and has no escape hatch.
+- **No content sizing.** `shrink` — elm-ui's *default* on `el`, `row` and
+  `column` — has no representation. Every "size this box to its text" case
+  must be measured by us and injected as `Length(n)`, which means writing
+  the measure pass and the recursive tree walk anyway. At that point ~60 %
+  of a layout engine exists and ratatui is solving the leaf split.
+- **Constraint priority is global and implicit** (`Min` > `Max` > `Length`
+  > `Percentage` > `Ratio` > `Fill`), so a `Length(20)` can silently lose
+  to a sibling's `Min`. For a Rust author with a debugger that is an
+  afternoon; for a template author with no devtools it is an
+  unexplainable layout.
+- **`Percentage`/`Ratio` are relative to the whole space, not the
+  remaining space** — surprising to anyone arriving from CSS, and more
+  surprising to a template author.
+- No flex-wrap (`wrappedRow`), no absolute positioning
+  (`inFront`/`behindContent`), no width-dependent height (`paragraph`).
+
+**The mismatch is the authoring model, not the quality.** The widely
+admired ratatui applications — gitui, bottom, atuin, yazi, television —
+are hand-authored Rust UIs with fixed chrome, which is ratatui's sweet
+spot exactly. Their success is strong evidence for ratatui as backend and
+**no evidence either way** about ratatui as a layout engine for
+data-defined trees.
+
+#### Prior art: this shape has been built several times
+
+- **`tuika`** (`0.11.1`, active): "flexbox layout, overlays, focus,
+  keymap, components, and safe ratatui interoperability". Its manifest
+  depends on `ratatui-core` only and states outright that it *"renders
+  none of ratatui's own widgets"*, dropping `ratatui-widgets` from the
+  build — plus `unicode-segmentation` and `unicode-width`. It arrived at
+  this section's architecture independently, which is the best available
+  evidence that it is right. It hand-rolls its flexbox rather than using
+  taffy.
+- **`plurimus_bui`** (active): "taffy layout at **one cell per pixel**,
+  rasterized to terminal cells" — §6.4's mapping, already built.
+- `rnk`, `tuiuiu`, and ratatui's own reserved-but-empty
+  **`ratatui-flexbox`** crate name all point the same way: the ratatui
+  project acknowledges the gap.
+
+Read `tuika`'s layout module and `plurimus_bui`'s taffy bridge before
+writing `tonk-layout`. **Do not depend on either**: tuika is a component
+framework for Rust authors (components, keymap, message loop) and we would
+use perhaps a third of it while fighting the rest, at v0.11 with one
+primary author, in the core of our renderer.
+
+#### Recommendation, and how it depends on scope
+
+**Prefer taffy 0.14**, because `shrink` is the base case rather than an
+edge case and flex-wrap / absolute positioning / width-dependent height
+are all needed. But this decision is **downstream of §13.1**: if the
+terminal is an inspection tool with fixed chrome rather than a peer
+surface for every space, ratatui's `Layout` is entirely adequate and taffy
+is over-engineering.
+
+A contained de-risking path, if §13.1 is not yet settled: build
+`tonk-layout` against ratatui's `Layout` plus our own measure pass, keep
+the engine behind that crate's boundary, and swap in taffy only if
+`shrink`, wrapping or overlays prove load-bearing. `tonk-layout` existing
+as a separate crate with no tonk dependencies is what makes that swap
+cheap.
+
+#### The widget escape hatch
+
+Steal `tuika`'s `Surface::render_ratatui` idea: **one element that hands
+its resolved rect to a real ratatui widget**. `<ratatui-widget
+kind=sparkline …>` lets `Sparkline`, `Chart`, `BarChart` and `Canvas` be
+used without the layout engine knowing anything about them, and without
+adopting `ratatui-widgets` for anything the template language should own
+itself (blocks, lists, tables, paragraphs).
 
 ### 6.4 Where a terminal diverges from both references
 
@@ -622,7 +706,11 @@ crate. `tonk-tui` depending on `tonk-render` and never calling
 `serialize_nodes` is fine until it isn't.
 
 `ratatui 0.29` is already a workspace dependency in the sibling
-`dialog-db` workspace (`dialog-diagnose`), so the stack has precedent.
+`dialog-db` workspace (`dialog-diagnose`), so the stack has precedent —
+though tonk wants `0.30+`, whose split into `ratatui-core` /
+`ratatui-widgets` / `ratatui-crossterm` is what makes §6.3's
+"buffer but not widgets" a clean dependency choice rather than an
+all-or-nothing one.
 
 ## 10. Immediate mode, and how much of ratatui to take
 
@@ -639,13 +727,13 @@ expensive to rebuild — a taffy tree over a cell buffer is not. If
 profiling later says otherwise, taffy supports partial relayout via dirty
 marking, so the escape hatch exists.
 
-**Take ratatui as backend and buffer, not as a widget set.** With
-`tonk-layout` owning geometry, ratatui's role is `Buffer`, `Rect`, `Span`
-styling and the crossterm backend. Its `Layout` is superseded by §6.3(a),
-and its `widgets` carry their own aesthetics and their own layout
-assumptions. Adopt individual widgets only where one already matches —
-`Paragraph`'s wrapping is the likely candidate, and only if its width
-scoring agrees with our measurer.
+**Take `ratatui-core` as backend and buffer, not `ratatui-widgets` as a
+widget set** (§6.3). With `tonk-layout` owning geometry, ratatui's role is
+`Buffer`, `Rect`, `Span` styling and the crossterm backend — the same
+split `tuika` makes. Its `widgets` carry their own aesthetics and their
+own layout assumptions, and reach the renderer only through the explicit
+escape hatch of §6.3, for the data widgets a template language should not
+reimplement (`Sparkline`, `Chart`, `BarChart`, `Canvas`).
 
 The cost of immediate mode is §5.2: no per-widget instance state. Real,
 and the reason §5.2 needs an answer before §6 gets interesting.
@@ -710,10 +798,11 @@ three-way, but only for the shared half — the planner.
 ## 13. Open questions
 
 1. **Is the terminal a peer surface for every space, or a TUI-first
-   authoring/inspection tool?** §8's answer changes completely. If a peer
-   surface, the `tonk:_` fallback is load-bearing and M2-critical. If an
-   inspection tool, a small hand-authored set of `tui` facets may be
-   enough and §8 shrinks to nothing.
+   authoring/inspection tool?** The most upstream question here: it
+   decides §8 (whether the `tonk:_` fallback is load-bearing and
+   M2-critical, or unnecessary) **and** §6.3 (whether a full flexbox
+   engine is warranted, or ratatui's own `Layout` under a measure pass is
+   plenty). Settle this before M0.
 2. **Non-square cells: does `pad=n` mean n cells, or n vertical and 2n
    horizontal?** (§6.4) A small decision with a large effect on whether
    authored layouts look deliberate. Worth deciding by building both and
