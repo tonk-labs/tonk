@@ -108,7 +108,6 @@ impl CustomElement for TonkFab {
 
     fn observed_attributes() -> &'static [&'static str] {
         &[
-            "mode",
             "space",
             "label",
             "state",
@@ -175,11 +174,6 @@ impl CustomElement for TonkFab {
             return;
         }
         match name.as_str() {
-            "mode" => {
-                crate::shadow::apply_mode(this);
-                bar::propagate(this);
-                bar::update(this);
-            }
             "flip" => bar::apply_flip(this),
             "data-sync-status" => bar::update(this),
             // The space is what every subscription is addressed to. The
@@ -239,7 +233,7 @@ fn restamp_space(this: &HtmlElement, space: &str) {
     for (selector, attribute, value) in [
         ("ui-space-name", "space", space.to_string()),
         ("ui-member-roster", "space", space.to_string()),
-        ("ui-space-switcher", "exclude", space.to_string()),
+        ("ui-space-switcher", "current", space.to_string()),
         ("ui-sync-status", "with", format!("main@{space}")),
     ] {
         if let Ok(Some(child)) = this.query_selector(selector) {
@@ -564,10 +558,12 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             return;
         };
 
-        // A space row: go there. The routing key is the suffix after the
-        // last `:` of the subject DID, which `/space/{did}` resolves.
+        // A space row: go there — unless it is the space you are on, where
+        // the pick has nothing to do but put the stack away.
         if let Some(subject) = row.get_attribute("data-space") {
-            navigate(&format!("/space/{subject}"));
+            if !row.has_attribute("current") {
+                navigate(&format!("/space/{subject}"));
+            }
             return;
         }
         if row.has_attribute("data-mi-home") {

@@ -61,7 +61,7 @@ mod element {
         }
 
         fn observed_attributes() -> &'static [&'static str] {
-            &["mode"]
+            &[]
         }
 
         fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -76,9 +76,6 @@ mod element {
                 }));
             }
             self.listeners.push(shadow::install_visibility_pause(this));
-            if let Some(listener) = shadow::install_system_mode(this) {
-                self.listeners.push(listener);
-            }
 
             let host = this.clone();
             let reveal = Closure::once_into_js(move || {
@@ -102,14 +99,11 @@ mod element {
 
         fn attribute_changed_callback(
             &mut self,
-            this: &HtmlElement,
-            name: String,
-            old: Option<String>,
-            new: Option<String>,
+            _this: &HtmlElement,
+            _name: String,
+            _old: Option<String>,
+            _new: Option<String>,
         ) {
-            if name == "mode" && old != new {
-                shadow::apply_mode(this);
-            }
         }
     }
 

@@ -40,8 +40,14 @@ const CSS: &str = r#"
    where scrolling cannot reach it at all. `mark_scrollable` sets `scrolls`.
    The scrollport is its own element so `.w` stays a plain block. */
 .port{ display:block; }
+/* The clip region of an overflow box is its PADDING box, and every row's
+   ring is a 1px box-shadow drawn just outside the row — flush rows put
+   those shadows exactly on the clip edge, and the stack loses its side
+   (and endmost) borders the moment it can scroll. One pixel of padding
+   keeps the rings inside the clip; the negative margin hands the space
+   back so the stack's geometry does not move. */
 :host([scrolls]) .port{ max-height:var(--fabb-menu-max-h, calc(100dvh - 60px));
-  overflow-y:auto; overscroll-behavior:contain; }
+  overflow-y:auto; overscroll-behavior:contain; padding:1px; margin:-1px; }
 .w{ position:relative; display:flex; flex-direction:column; gap:7px;
   width:100%; max-width:100%; }
 /* The underlay sits at z-index 0 and the rows are lifted above it, rather
@@ -74,7 +80,7 @@ impl CustomElement for TonkMenu {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode", "compact"]
+        &["compact"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -115,10 +121,7 @@ impl CustomElement for TonkMenu {
         }
 
         self.listeners.push(shadow::install_visibility_pause(this));
-        if let Some(listener) = shadow::install_system_mode(this) {
-            self.listeners.push(listener);
-        }
-        propagate(this);
+        recut_mask(this);
         recut_mask(this);
     }
 
@@ -141,10 +144,7 @@ impl CustomElement for TonkMenu {
         if old == new {
             return;
         }
-        if name == "mode" {
-            shadow::apply_mode(this);
-            propagate(this);
-        } else if name == "compact" {
+        if name == "compact" {
             recut_mask(this);
         }
     }
@@ -166,16 +166,6 @@ fn mark_scrollable(this: &HtmlElement) {
     } else {
         let _ = this.set_attribute("scrolls", "");
     }
-}
-
-/// Pass the resolved mode to every row, then re-cut — a mode change can
-/// change a row's height (nothing does today, but the mask is cheap and a
-/// stale mask is a visible seam).
-fn propagate(this: &HtmlElement) {
-    for row in rows(this) {
-        shadow::pass_mode(this, &row);
-    }
-    recut_mask(this);
 }
 
 /// The rows the mask cuts bands for: direct `tonk-mi` children that are not

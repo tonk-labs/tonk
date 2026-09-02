@@ -331,7 +331,7 @@ pub fn mirrored(center_x: f64, vw: f64) -> bool {
     center_x >= vw / 2.0
 }
 
-pub const FULL_BAR_WIDTH_PX: f64 = 414.0;
+pub const FULL_BAR_WIDTH_PX: f64 = 396.0;
 pub const COMPACT_CELL_PX: f64 = 44.0;
 pub const COMPACT_SPACE_MIN_PX: f64 = 120.0;
 pub const SPACE_CELL_PX: f64 = 216.0;
@@ -344,15 +344,17 @@ pub struct BarLayout {
     pub compact: bool,
     pub space_width_px: f64,
     pub show_share: bool,
-    pub show_mode: bool,
     pub show_overflow: bool,
 }
 
 /// Partition the canonical action run according to what fully fits.
 ///
-/// Exact fits stay in the wider layout. In compact mode the sync and overflow
-/// bookends never disappear; the space cell consumes the remaining room and
-/// may shrink to zero when even those bookends do not fit.
+/// Exact fits stay in the wider layout. The overflow bookend appears only
+/// when it holds something: with the mode row gone the overflow's one
+/// resident is the share route, so a compact bar that still shows share
+/// would open an EMPTY stack from it — and a dead cell is worse chrome than
+/// an honest one. The space cell consumes the remaining room and may shrink
+/// to zero when even the bookends do not fit.
 pub fn bar_layout(usable_width_px: f64) -> BarLayout {
     let usable = usable_width_px.max(0.0);
     if usable >= FULL_BAR_WIDTH_PX {
@@ -360,19 +362,22 @@ pub fn bar_layout(usable_width_px: f64) -> BarLayout {
             compact: false,
             space_width_px: SPACE_CELL_PX,
             show_share: true,
-            show_mode: true,
             show_overflow: false,
         };
     }
 
-    let show_share = usable >= COMPACT_CELL_PX * 2.0 + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
-    let reserved = COMPACT_CELL_PX * 2.0 + if show_share { SHARE_CELL_PX } else { 0.0 };
+    let show_share = usable >= COMPACT_CELL_PX + COMPACT_SPACE_MIN_PX + SHARE_CELL_PX;
+    let reserved = COMPACT_CELL_PX
+        + if show_share {
+            SHARE_CELL_PX
+        } else {
+            COMPACT_CELL_PX
+        };
     BarLayout {
         compact: true,
         space_width_px: (usable - reserved).clamp(0.0, SPACE_CELL_PX),
         show_share,
-        show_mode: false,
-        show_overflow: true,
+        show_overflow: !show_share,
     }
 }
 
@@ -602,42 +607,38 @@ mod compact {
     fn the_fit_policy_partitions_every_boundary_width() {
         for (width, expected) in [
             (
-                414.0,
+                396.0,
                 BarLayout {
                     compact: false,
                     space_width_px: 216.0,
                     show_share: true,
-                    show_mode: true,
                     show_overflow: false,
                 },
             ),
             (
-                413.9,
+                395.9,
                 BarLayout {
                     compact: true,
-                    space_width_px: 181.9,
+                    space_width_px: 207.9,
                     show_share: true,
-                    show_mode: false,
-                    show_overflow: true,
+                    show_overflow: false,
                 },
             ),
             (
-                352.0,
+                308.0,
                 BarLayout {
                     compact: true,
                     space_width_px: 120.0,
                     show_share: true,
-                    show_mode: false,
-                    show_overflow: true,
+                    show_overflow: false,
                 },
             ),
             (
-                351.9,
+                307.9,
                 BarLayout {
                     compact: true,
                     space_width_px: 216.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -647,7 +648,6 @@ mod compact {
                     compact: true,
                     space_width_px: 128.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -657,7 +657,6 @@ mod compact {
                     compact: true,
                     space_width_px: 0.0,
                     show_share: false,
-                    show_mode: false,
                     show_overflow: true,
                 },
             ),
@@ -668,7 +667,6 @@ mod compact {
                 actual.show_share, expected.show_share,
                 "usable width {width}"
             );
-            assert_eq!(actual.show_mode, expected.show_mode, "usable width {width}");
             assert_eq!(
                 actual.show_overflow, expected.show_overflow,
                 "usable width {width}"

@@ -15,11 +15,12 @@
 //! mirrored `name` is available even when this device has not replicated the
 //! target space, and the rename command keeps it current.
 //!
-//! Account directory entries contain real spaces only. The active space (this
-//! element's `exclude` attribute) is skipped, so the switcher never offers to
-//! navigate to the space you're already on. A surviving row stamps
-//! `data-status` from the directory status so existing CSS can dim a
-//! still-seeding space.
+//! Account directory entries contain real spaces only. The active space
+//! (this element's `current` attribute) is shown like the wireframe shows
+//! it — marked `current`, always making the cut — and picking it merely
+//! closes the stack (see `element.rs`): where you are is a fact, not a
+//! navigation. A row stamps `data-status` from the directory status so
+//! existing CSS can dim a still-seeding space.
 //!
 //! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
 //! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
@@ -75,7 +76,7 @@ impl CustomElement for UiSpaceSwitcherElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["exclude"]
+        &["current"]
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
@@ -92,7 +93,7 @@ impl CustomElement for UiSpaceSwitcherElement {
         old: Option<String>,
         new: Option<String>,
     ) {
-        if name != "exclude" || old == new {
+        if name != "current" || old == new {
             return;
         }
         // The profile subscription can settle before the outer bar's routed
@@ -207,17 +208,22 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
 /// what put a second, unstyled "+new" and "all spaces" inside the open menu.
 ///
 /// The list is capped at [`MAX_ROWS`]: up to seven spaces fly out, and `more
-/// ↖` — the stack's own last row — is the way to the rest. The active space
-/// is already filtered out by `exclude`, so it never spends one of the seven.
+/// ↖` — the stack's own last row — is the way to the rest. The current space
+/// always makes the cut, trading the seventh slot for it when it would fall
+/// past the cap.
 fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
     stack_rows::clear_rows(host, SUB_TAG);
-    let exclude = host.get_attribute("exclude").unwrap_or_default();
+    let current = host.get_attribute("current").unwrap_or_default();
 
-    for (_, row) in rows
-        .iter()
-        .filter(|(_, row)| row.subject != exclude)
-        .take(MAX_ROWS)
+    let mut cut: Vec<&(String, Row)> = rows.iter().take(MAX_ROWS).collect();
+    if !current.is_empty()
+        && !cut.iter().any(|(_, row)| row.subject == current)
+        && let Some(active) = rows.iter().find(|(_, row)| row.subject == current)
     {
+        cut.pop();
+        cut.push(active);
+    }
+    for (_, row) in cut {
         let Some(item) = stack_rows::new_row(SUB_TAG) else {
             continue;
         };
@@ -225,6 +231,9 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
         // is deliberately NOT `chrome`.
         let _ = item.set_attribute("data-space", &row.subject);
         let _ = item.set_attribute("data-status", &row.status);
+        if row.subject == current {
+            let _ = item.set_attribute("current", "");
+        }
         item.set_text_content(Some(row.name.as_deref().unwrap_or(UNTITLED)));
         stack_rows::insert_row(host, &item);
     }

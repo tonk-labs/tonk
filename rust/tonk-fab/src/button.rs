@@ -56,7 +56,7 @@ impl CustomElement for TonkButton {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["mode", "variant", "disabled", "solid"]
+        &["variant", "disabled", "solid"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -79,9 +79,6 @@ impl CustomElement for TonkButton {
         }
 
         self.listeners.push(shadow::install_visibility_pause(this));
-        if let Some(listener) = shadow::install_system_mode(this) {
-            self.listeners.push(listener);
-        }
         sync_disabled(this);
     }
 
@@ -99,9 +96,7 @@ impl CustomElement for TonkButton {
         if old == new {
             return;
         }
-        if name == "mode" {
-            shadow::apply_mode(this);
-        } else if name == "disabled" {
+        if name == "disabled" {
             sync_disabled(this);
         }
     }

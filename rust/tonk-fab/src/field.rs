@@ -87,7 +87,6 @@ mod element {
 
         fn observed_attributes() -> &'static [&'static str] {
             &[
-                "mode",
                 "noun",
                 "value",
                 "settled",
@@ -157,9 +156,6 @@ mod element {
             }
 
             self.listeners.push(shadow::install_visibility_pause(this));
-            if let Some(listener) = shadow::install_system_mode(this) {
-                self.listeners.push(listener);
-            }
             sync(this);
         }
 
@@ -191,7 +187,6 @@ mod element {
     }
 
     fn sync(this: &HtmlElement) {
-        shadow::apply_mode(this);
         let Some(root) = this.shadow_root() else {
             return;
         };

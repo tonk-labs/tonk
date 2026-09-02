@@ -1,8 +1,7 @@
 //! The shared FABB skin — chrome tokens and the frost recipe.
 //!
-//! One material: frost, in a light and a dark twin. Every component's shadow
-//! root opens with this block, so the whole family shares one set of tokens
-//! and one easing.
+//! One material: frost. Every component's shadow root opens with this block,
+//! so the whole family shares one set of tokens and one easing.
 //!
 //! ## Why the internal tokens are `--_`-prefixed
 //!
@@ -16,9 +15,12 @@
 //! ## Scope
 //!
 //! Every component wraps its content in `.w` and the tokens are declared on
-//! that wrapper, not `:host` — `.w.dark` is then a plain class toggle rather
-//! than a media query, which is what lets `mode="light|dark"` override the
-//! system preference per element.
+//! that wrapper, not `:host`, so a component can restate them locally without
+//! reaching for the host element.
+//!
+//! One scheme — the chrome is light (law 8). The dark twin and its
+//! `--fabb-*-dark` knobs left with the mode switch; `COLOR.md` in the design
+//! reference keeps the values against the day the twin comes back.
 
 /// The token block plus the primitives every component shares: the sync disc,
 /// the terminal block cursor, the blink keyframes, and the button reset.
@@ -35,8 +37,18 @@ pub const SKIN: &str = r#"
   --_hover: var(--fabb-hover, rgba(56,24,42,.06));
   --_press: var(--fabb-press, rgba(56,24,42,.12));
   --_bg:    var(--fabb-bg, rgba(253,252,252,.72));
+  /* the current role — a place you are in, split from the CTA register:
+     near-ink, one step toward the page, so a marked row never outshouts
+     an action (which keeps solid --_ink) */
+  --_cur:   var(--fabb-cur, #503444);
   --_panel: var(--fabb-panel, rgba(247,246,245,.92));
-  --_filter:blur(12px) saturate(1.5);
+  /* No blur. The FABB renders inside its own portal iframe, and a
+     backdrop-filter can only sample content INSIDE that frame — never the
+     space behind it — so the filter bought nothing over the page and
+     actively smeared sibling chrome (the bar's white cells, the round cap)
+     into any stack that opened near them. The wireframe's translucency is
+     the alpha tint of `--_bg`, which composites through the frame fine. */
+  --_filter:none;
   --_ring:  0 0 0 1px var(--fabb-ring, rgba(56,24,42,.85));
   --_ringc: var(--fabb-ring, rgba(56,24,42,.85));
   --_ease:  cubic-bezier(0.25,0.46,0.45,0.94);
@@ -50,19 +62,6 @@ pub const SKIN: &str = r#"
 }
 /* selection is chrome too — ink only, never the browser's blue */
 .w ::selection{ background:var(--_ink); color:var(--_on); }
-.w.dark{
-  --_ink:var(--fabb-ink-dark, #e2dfdd);
-  --_soft:var(--fabb-ink-soft-dark, #c8c3bf);
-  --_on:var(--fabb-on-ink-dark, #221c1d);
-  --_sep:var(--fabb-sep-dark, rgba(226,223,221,.28));
-  --_hover:var(--fabb-hover-dark, rgba(226,223,221,.09));
-  --_press:var(--fabb-press-dark, rgba(226,223,221,.15));
-  --_bg:var(--fabb-bg-dark, rgba(29,24,25,.78));
-  --_panel:var(--fabb-panel-dark, rgba(27,23,24,.88));
-  --_filter:blur(16px) saturate(1.5);
-  --_ring:0 0 0 1px var(--fabb-ring-dark, rgba(226,223,221,.55));
-  --_ringc:var(--fabb-ring-dark, rgba(226,223,221,.55));
-}
 /* the calm blink — alerts pulse, they never take a color */
 @keyframes fabb-blink{ 0%,100%{opacity:1} 50%{opacity:.55} }
 @keyframes fabb-wash{ 0%,100%{background:transparent} 50%{background:color-mix(in srgb, var(--_ink) 14%, transparent)} }
@@ -77,7 +76,6 @@ button{ font:inherit; letter-spacing:inherit; color:inherit; background:none; bo
 .cur{ display:inline-block; width:7px; height:13px; background:var(--_ink); flex:none;
   margin-left:-7px; mix-blend-mode:difference;
   animation:fabb-hardblink 1.05s steps(1,end) infinite; }
-.dark .cur, .w.dark .cur{ mix-blend-mode:exclusion; }
 .edit{ outline:none !important; caret-color:transparent; min-width:1ch; text-transform:none; user-select:text; }
 /* engines with a native block caret draw the terminal cursor themselves:
    the caret takes the block shape and the hard blink, follows mid-text
@@ -101,29 +99,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_declares_both_mode_twins() {
-        // The dark twin must re-state the whole set: a token defined only in
-        // the light block leaks the light value into dark mode.
-        for token in [
-            "--_ink",
-            "--_soft",
-            "--_on",
-            "--_sep",
-            "--_hover",
-            "--_press",
-            "--_bg",
-            "--_panel",
-            "--_filter",
-            "--_ring",
-            "--_ringc",
-        ] {
-            let dark_block = SKIN.split(".w.dark{").nth(1).expect("dark twin present");
-            let dark_block = dark_block.split('}').next().expect("dark twin closes");
-            assert!(
-                dark_block.contains(token),
-                "the dark twin must re-state {token}, or the light value leaks into dark mode",
-            );
-        }
+    fn it_carries_one_scheme() {
+        // Law 8: the chrome is light. The dark twin and its `--fabb-*-dark`
+        // knobs left with the mode switch; a returning twin must re-state the
+        // whole token set (see COLOR.md in the design reference).
+        assert!(!SKIN.contains(".w.dark"));
+        assert!(!SKIN.contains("-dark,"));
     }
 
     #[test]

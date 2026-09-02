@@ -52,7 +52,8 @@ const CSS: &str = r#"
 :host([cap]) .row:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_bg); }
 :host([chrome]) .row{ text-transform:lowercase; }
 :host([muted]) .row{ color:var(--_soft); }
-:host([current]) .row{ background:var(--_ink); color:var(--_on); font-weight:600; }
+/* current wears near-ink — the CTA register keeps solid ink */
+:host([current]) .row{ background:var(--_cur); color:var(--_on); font-weight:600; }
 :host([cap=left]) .row{ border-radius:18px 0 0 18px; }
 :host([cap=right]) .row{ border-radius:0 18px 18px 0; }
 :host([tall]) .row{ min-height:56px; flex-direction:column; align-items:flex-end;
@@ -106,9 +107,7 @@ impl CustomElement for TonkMi {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[
-            "mode", "muted", "chrome", "tall", "current", "cap", "pressed",
-        ]
+        &["muted", "chrome", "tall", "current", "cap", "pressed"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -159,9 +158,6 @@ impl CustomElement for TonkMi {
         }
 
         self.listeners.push(shadow::install_visibility_pause(this));
-        if let Some(listener) = shadow::install_system_mode(this) {
-            self.listeners.push(listener);
-        }
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -179,10 +175,7 @@ impl CustomElement for TonkMi {
         if old == new {
             return;
         }
-        if name == "mode" {
-            shadow::apply_mode(this);
-            propagate(this);
-        } else if name == "pressed" {
+        if name == "pressed" {
             sync_pressed(this);
         }
     }
@@ -208,10 +201,10 @@ fn sync_pressed(this: &HtmlElement) {
     }
 }
 
-/// Pass the resolved mode into a slotted sub-stack, and un-hide it: a stack
-/// is hidden while it is a menu the bar has closed, but as a `sub` it is
-/// governed by the flyout's own `display`.
-fn propagate(this: &HtmlElement) {
+/// Un-hide a slotted sub-stack: a stack is hidden while it is a menu the
+/// bar has closed, but as a `sub` it is governed by the flyout's own
+/// `display`.
+fn unhide_subs(this: &HtmlElement) {
     let Ok(subs) = this.query_selector_all("tonk-menu[slot=sub]") else {
         return;
     };
@@ -223,7 +216,6 @@ fn propagate(this: &HtmlElement) {
             continue;
         };
         let _ = element.remove_attribute("hidden");
-        shadow::pass_mode(this, &element);
     }
 }
 
@@ -279,6 +271,9 @@ fn sync_sub(this: &HtmlElement) {
     // sub-stack existing as a child, which is exactly this query.
     let assigned = matches!(this.query_selector("tonk-menu[slot=sub]"), Ok(Some(_)));
     let _ = fly.class_list().toggle_with_force("sub", assigned);
+    // The un-hide used to ride the mode stamp; with the mode plumbing gone
+    // this is its home — the same signals (connect, slotchange) cover it.
+    unhide_subs(this);
 }
 
 /// Choose the side the flyout opens toward.
