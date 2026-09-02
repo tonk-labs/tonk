@@ -32,6 +32,7 @@ pub(crate) fn connect_portal(
     inner: &RefCell<Option<Rc<RefCell<PortalState>>>>,
     with: Option<Location>,
     allow: Allow,
+    trusted_profile_controls: bool,
     apply_style: impl Fn(&HtmlIFrameElement),
 ) {
     let host: Element = this.clone().into();
@@ -77,7 +78,9 @@ pub(crate) fn connect_portal(
     // its attributes, `<tonk-fab-portal>` grants `*`, the generic
     // `<tonk-portal>` grants `self` — so a synced/untrusted content guest
     // can forward a route but the bridge denies anything un-listed.
-    state.borrow_mut().set_route(with, allow);
+    state
+        .borrow_mut()
+        .set_route(with, allow, trusted_profile_controls);
     bridge::register_portal(&iframe, &host, &state);
     install_method_delegates(&host, &state);
 

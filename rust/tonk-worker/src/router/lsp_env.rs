@@ -22,18 +22,20 @@ use tonk_schema::query_source::Source;
 
 use crate::reactor::BranchSession;
 use crate::router::AppState;
+use crate::router::lsp::LspScope;
 use crate::worker::{DefaultOperator, TonkState};
 
 /// The worker's [`EnvProvider`], built around the shared
 /// [`AppState`]. Each LSP request gets a fresh one.
 pub struct LspEnvProvider {
     state: AppState,
+    scope: LspScope,
 }
 
 impl LspEnvProvider {
     /// Wrap the worker's state handle as an [`EnvProvider`].
-    pub fn new(state: AppState) -> Self {
-        Self { state }
+    pub(super) fn new(state: AppState, scope: LspScope) -> Self {
+        Self { state, scope }
     }
 }
 
@@ -43,11 +45,25 @@ impl EnvProvider for LspEnvProvider {
     type Opened = LiveEnvironment;
 
     async fn open(&self, repo: &Repo, branch: &str) -> Option<Self::Opened> {
+        // The HTTP trust boundary validates every current message shape, and
+        // this adapter re-enforces the route authority at the last possible
+        // seam before opening live data. A future language-server operation
+        // cannot bypass containment merely by calling EnvProvider differently.
+        if !self.scope.matches(repo, branch) {
+            return None;
+        }
         // Hold a read guard for the request's lifetime — the
         // operator the resolution chain takes lives inside
         // `TonkState`, and resolution is read-only so concurrent
         // readers are fine.
         let guard = self.state.clone().read_owned().await;
+        if self
+            .scope
+            .profile_name()
+            .is_some_and(|expected| guard.profile_name != expected)
+        {
+            return None;
+        }
         // The profile lives outside the named-repo namespace, so it
         // needs its own handle; both yield the same chain surface
         // from `branch` on.

@@ -37,7 +37,7 @@ use web_sys::{FetchEvent, Request, Response};
 /// header triggers a browser preflight even when the target URL is Tonk's own
 /// origin. Keep this list in lockstep with every request-side header consumed
 /// by the worker routes and with the trusted context stamped by the portal.
-const ALLOWED_REQUEST_HEADERS: &str = "content-type, if-none-match, accept, x-tonk-site, x-tonk-path, x-tonk-hash, x-tonk-build, x-tonk-blob-name";
+const ALLOWED_REQUEST_HEADERS: &str = "content-type, if-none-match, accept, x-tonk-site, x-tonk-path, x-tonk-hash, x-tonk-build, x-tonk-blob-name, x-tonk-lsp-client";
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -492,7 +492,10 @@ mod cors_tests {
                 }
             }
         }
-        for name in [tonk_worker_api::PAGE_BUILD_HEADER] {
+        for name in [
+            tonk_worker_api::PAGE_BUILD_HEADER,
+            tonk_worker_api::LSP_CLIENT_HEADER,
+        ] {
             if !found.iter().any(|seen| seen == name) {
                 found.push(name.to_owned());
             }

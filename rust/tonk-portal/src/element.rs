@@ -70,7 +70,7 @@ impl CustomElement for TonkPortal {
         // guest-forwarded off-context route is denied.
         let with = portal_with(this);
         let allow = with.clone().map(Allow::only).unwrap_or_else(Allow::none);
-        connect_portal(this, &self.inner, with, allow, |iframe| {
+        connect_portal(this, &self.inner, with, allow, false, |iframe| {
             // The iframe always fills its container. `flex: 1` + `align-self:
             // stretch` make it fill a flex-column host (the display-route layout)
             // without needing a definite-height ancestor for `height: 100%`.

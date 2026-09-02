@@ -497,6 +497,12 @@ fn render_in_iframe(
     let _ = host.set_attribute("content", &content);
     let _ = host.set_attribute("runtime", "");
 
+    // Only the top document's built-in profile chrome retains the Hub's
+    // existing profile-roster calls. A nested `<tonk-site>` runs in the guest
+    // realm, where the private parent relay capability is present; authored
+    // attributes therefore cannot manufacture this authority.
+    let trusted_profile_controls = with.profile() && crate::bridge::trusted_relay_fetch().is_none();
+
     // The site's parsed `with`/`allow` become the bridge's routing context
     // and reach: un-routed guest operations are pinned to `with`, and a
     // forwarded route is honored only if `allow` permits it (typed denial
@@ -506,6 +512,7 @@ fn render_in_iframe(
         cell.as_ref(),
         Some(with),
         allow,
+        trusted_profile_controls,
         |iframe: &HtmlIFrameElement| {
             let style = iframe.style();
             // `<tonk-site>` itself is `display: contents` (a transparent routing

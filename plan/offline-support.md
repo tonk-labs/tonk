@@ -1,5 +1,15 @@
 # Offline support
 
+> Status: the cache/update/rollback mechanics below are superseded by
+> `plan/service-worker-lifecycle-consolidation.md`. The current runtime seals a
+> complete immutable generation during install, retains every adopted
+> generation needed by an older controller, and crosses generations only
+> through the page-directed claim/reload flow. It does not stale-revalidate or
+> lazy-fill a generation, delete older generation caches during ordinary
+> operation, or offer code rollback before the separate IndexedDB data
+> compatibility policy is settled. The offline goals and compatibility warning
+> remain applicable.
+
 A Service Worker layer that caches the app shell so it loads
 instantly and keeps working offline, with each release stored in
 its own named cache so users can opt into switching forward and

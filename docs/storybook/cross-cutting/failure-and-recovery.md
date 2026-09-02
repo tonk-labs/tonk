@@ -160,6 +160,31 @@ rotation, and response reporting.
 | Delete plan | Confirm delete. | Rename/delete/ownership change. | Stale plan rejected or exact subject preserved; scope never widens. |
 | Service worker | Load old build. | Update activates. | One coherent asset generation; recoverable reload. |
 
+### Service-worker generation recovery
+
+A browser release is one sealed generation: the outer worker policy, worker
+glue/Wasm, top document, lazy assets, sealed guests, guide, and Storybook share
+one stamped identity. Installation verifies the complete graph in private
+staging caches and publishes it only after every member succeeds. A failed or
+interrupted candidate therefore leaves the incumbent generation and unrelated
+browser storage intact.
+
+An older document can continue read-only work through its incumbent worker.
+Classified writes carrying a different valid page build are refused as a typed
+`409 stale-build`; malformed or duplicate build headers are refused as a typed
+`400 invalid-build-header`. The trusted top document presents the update
+action, including when the signal originated in a nested guest. Once a
+successor is installable, the retiring worker refuses new query or language
+server streams with `503 {"control":"update-pending"}` so reconnects cannot pin
+it indefinitely.
+
+Claim and reload are serialized through `tonk-update-safety-v1`. An absent hold
+is compatible with the pre-producer account flow, while malformed, unreadable,
+future, or live holds fail closed. Recovery never unregisters a worker, clears
+CacheStorage or IndexedDB, or resets credentials. Remote withdrawal likewise
+terminalizes the named generation and offers update/reload while preserving
+its caches and all local state.
+
 ## Recovery rules
 
 1. **Read before replay.** When a request may have committed, fetch status or

@@ -1245,7 +1245,7 @@ async fn open_for<P: EnvProvider>(uri: &Uri, env: &P) -> Option<P::Opened> {
 const PROFILE_PREFIX: &str = "profile:";
 
 /// Pull `(repo, branch)` out of a
-/// `tonk-buffer:///<repo>/<branch>/<cell-suffix>` URI — the shape
+/// `tonk-buffer:///<encoded-repo>/<encoded-branch>/<cell-suffix>` URI — the shape
 /// the editor's `<tonk-code source>` sets.
 ///
 /// A `profile:<name>` repo segment names the profile-as-repository
@@ -1255,18 +1255,15 @@ fn parse_repo_branch(uri: &Uri) -> Option<(Repo, String)> {
     let rest = uri.as_str().strip_prefix("tonk-buffer:///")?;
     // First segment is the repo, second the branch.
     let mut parts = rest.splitn(3, '/');
-    let repo = parts.next()?;
-    let branch = parts.next()?;
-    if repo.is_empty() || branch.is_empty() {
-        return None;
-    }
-    let repo = match repo.strip_prefix(PROFILE_PREFIX) {
+    let repo_segment = parts.next()?;
+    let branch = tonk_worker_api::decode_lsp_scope_segment(parts.next()?)?;
+    let repo = match repo_segment.strip_prefix(PROFILE_PREFIX) {
         // `profile:` with no name is malformed, not the profile.
         Some("") => return None,
-        Some(name) => Repo::Profile(name.to_owned()),
-        None => Repo::Named(repo.to_owned()),
+        Some(name) => Repo::Profile(tonk_worker_api::decode_lsp_scope_segment(name)?),
+        None => Repo::Named(tonk_worker_api::decode_lsp_scope_segment(repo_segment)?),
     };
-    Some((repo, branch.to_owned()))
+    Some((repo, branch))
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one
@@ -1391,26 +1388,46 @@ mod tests {
     /// completion on `/inspector` degraded to built-ins only.
     #[dialog_common::test]
     fn it_reads_a_profile_repo_segment_as_the_profile() {
-        let uri: Uri = "tonk-buffer:///profile:tonk/main/scratch-0"
+        let uri: Uri = "tonk-buffer:///profile:team%2Ftonk/feat%2Fartifact/scratch-0"
             .parse()
             .expect("uri parses");
         assert_eq!(
             parse_repo_branch(&uri),
-            Some((Repo::Profile("tonk".to_owned()), "main".to_owned()))
+            Some((
+                Repo::Profile("team/tonk".to_owned()),
+                "feat/artifact".to_owned(),
+            ))
         );
     }
 
-    /// Everything without the prefix is an ordinary named repo — the
-    /// `did:key` a space mounts with keeps its colons.
+    /// Everything without the prefix is an ordinary named repo. Reserved
+    /// bytes in the DID and branch stay inside their canonical segments.
     #[dialog_common::test]
-    fn it_reads_a_bare_repo_segment_as_a_named_repo() {
-        let uri: Uri = "tonk-buffer:///did:key:zAlice/main/scratch-0"
+    fn it_reads_encoded_repo_and_slash_branch_segments() {
+        let uri: Uri = "tonk-buffer:///did%3Akey%3AzAlice/feat%2Fartifact/scratch-0"
             .parse()
             .expect("uri parses");
         assert_eq!(
             parse_repo_branch(&uri),
-            Some((Repo::Named("did:key:zAlice".to_owned()), "main".to_owned()))
+            Some((
+                Repo::Named("did:key:zAlice".to_owned()),
+                "feat/artifact".to_owned(),
+            ))
         );
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_non_canonical_repo_and_branch_aliases() {
+        for raw in [
+            "tonk-buffer:///did:key:zAlice/main/scratch-0",
+            "tonk-buffer:///did%3akey%3azAlice/main/scratch-0",
+            "tonk-buffer:///did%3Akey%3AzAlice/feat%2fartifact/scratch-0",
+        ] {
+            let uri: Uri = raw
+                .parse()
+                .expect("URI syntax parses before scope decoding");
+            assert_eq!(parse_repo_branch(&uri), None, "accepted alias {raw}");
+        }
     }
 
     /// `profile:` with no name is malformed, not a request for the

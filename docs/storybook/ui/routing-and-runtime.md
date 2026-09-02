@@ -26,6 +26,12 @@ profile and account lifecycle. At `/activate?ucan=...`, it mounts
 or another content path, it mounts one `<tonk-site>` and the current profile's
 route table selects Hub or content.
 
+The Hub is itself sealed guest content. Its neutral **account** cell relays an
+ordinary navigation to trusted top-level `/settings`; it does not read the
+profile roster or expose switch/add controls inside the guest. Account creation
+therefore starts only after the person reaches Settings and invokes its trusted
+control.
+
 At a named space's `/inspector` route, the inspector starts with one compact,
 full-width diagnostics summary above the notebook. It identifies the current
 branch, revision, and whether the branch is local-only or has an upstream. The
@@ -141,7 +147,34 @@ performs one guarded reload so the mounted shell and active worker come from the
 same generation. Activation alone never claims an already-open older document;
 that page keeps its compatible controller until navigation. A failed update
 check keeps an existing active worker usable offline, and neither path clears
-IndexedDB or CacheStorage. The real-browser regressions in
+IndexedDB or CacheStorage. Activation deliberately retains every generation's
+shell and worker-Wasm caches because an older client or retained worker may
+still need its sole offline copy; no automatic generation purge runs. Each
+generation is complete and sealed at install. An `installing` candidate alone
+does not retire the incumbent: sync and language-server streams stay live until
+the candidate reaches `installed`, and a candidate that becomes `redundant`
+leaves the incumbent fully operational. The final Cloudflare browser tree is
+stamped after the guide and Storybook are overlaid. Its full-digest manifest
+covers the shell, UI, lazy, sealed-guest, and static-site resource graph;
+install uses `no-store` fetches and verifies that manifest, every listed asset,
+and worker Wasm before opening any incoming cache. It then populates unique nonce-named
+staging caches and records a durable `building` / `publishing` / `adopted`
+marker. After a crash, the same build may remove only the exact unadopted names
+proved by that marker; stable names without adoption provenance fail closed,
+and an adopted final generation is verified without mutation. Cached
+navigations and static assets are returned without network revalidation,
+overwrite, deletion, or backfill, including while a successor is waiting. The outgoing document
+crosses generations only through its explicit successor claim and guarded
+reload; its old controller never accepts the live stable-name shell. A
+shell/lazy eviction miss returns an actionable `503` online and offline. An
+evicted worker Wasm may be fetched only
+when its bytes still match the retained worker's stamp, and those recovery bytes
+are not written back. Only exact stamped top-level paths use the immutable
+cache. `/.well-known/tonk`, other live edge routes, and registered nested-client
+requests continue through Rust/network. Static-site `*/index.html` files also
+have exact trailing-slash aliases; `/guide` and `/storybook` receive a `307` to
+those aliases so their relative assets resolve correctly, while other content
+routes retain root-SPA fallback. The real-browser regressions in
 `rust/tonk-ui/src/service_worker_upgrade.rs` cover the online replacement and
 offline-return cases; full checklist execution still requires a compatible
 ChromeDriver. The real-source Node contract in
@@ -150,13 +183,130 @@ boundary: activation does not claim an older page, an explicit cold-start claim
 does take control, and an update-aware page claims its activated successor
 before exactly one guarded reload.
 
+Every automatic alignment, update, watchdog-recovery, development hot-swap
+reload, and global service-worker claim waits while account setup is critical.
+The root attribute `data-tonk-account-setup-critical` and exact-`true`
+`window.tonkAccountSetupMayReload()` predicate guard the current page. An
+origin-global IndexedDB hold in `tonk-update-safety-v1` independently survives
+tabs and reloads while an Arm may lack a durable Stage. Absence is the only safe
+value; malformed/unreadable storage or a missing Web Locks API fails closed.
+Both page and worker re-read under the same exclusive Web Lock, and claim plus
+reload initiation happens before the page releases it, so another tab cannot
+publish an Arm hold between the final check and handoff. The non-bubbling
+`tonk:account-setup-critical-change` event and same-named BroadcastChannel
+message are advisory wakeups that trigger a fresh authoritative check. The
+Armed/pre-Stage document therefore remains on its compatible worker until Stage
+or an authenticated Inspect has proved recovery durable.
+
+The load-time alignment also has a write barrier for the overlap window. The
+artifact build derives one lowercase build id from the outer service-worker
+policy, worker glue/Wasm, and canonical browser resource graph. It writes that
+identity into `index.html`, the service worker, `asset-manifest.json`, and
+`version.json`. A small document script publishes the HTML
+value before the Rust/Wasm loader can mount. The live `version.json` request is
+only update discovery: its result cannot replace the immutable provenance of
+the already-loaded document. The publisher prepares and validates every output
+before replacement, excludes overlapping stampers, and restores the complete
+prior set after a catchable publication failure. POSIX cannot atomically rename
+all four files or recover from process kill/power loss by itself, so deployment
+must still stage and promote the complete directory rather than publish these
+files independently.
+
+The manifest deliberately excludes mutable deployment controls such as
+`version.json` and `kill-switch.json`, as well as its own generated metadata.
+In production, authored `no-store`, `reload`, and `no-cache` flags cannot turn a
+same-origin static request into a live-network escape from the sealed resource
+graph; the exception exists only for the unstamped development worker.
+
+Every top-document `/api` request carries that page build through the same
+request context used by the host, including account, profile,
+site-registration, and background-sync mutations. Current sealed guests inherit
+the immutable build in their ready context. Their trusted portal relay removes
+any guest-supplied build value, browser-normalizes the target, and stamps the
+host value only on `/api` and `/api/...`; durable blob upload and language-server
+POSTs therefore have the same barrier, while provider and deployment-control
+requests cannot receive the worker-only header from the relay. The same
+normalized-path, method-aware allowlist denies account/profile roster controls,
+repository lifecycle, inspection, global site/sync, and undeclared routes by
+default before stamping or fetching.
+
+The language server is not worker-global. Authored portal code may keep using
+`/api/language-server`, but the trusted portal resolves that alias from its
+single `with` reach to an exact named/profile repository + branch endpoint,
+replaces any guest-supplied client header, and denies ambiguous or cross-reach
+targets before fetch. Repository/profile and branch identities share one strict
+canonical segment codec across that endpoint and `tonk-buffer` URIs; for
+example, `feat/artifact` is always `feat%2Fartifact`, and alias spellings fail
+closed. At the worker boundary, every accepted JSON-RPC message
+shape and nested URI/workspace field must remain beneath that route scope;
+unknown or ambiguous messages fail closed. Server state and SSE diagnostics are
+partitioned by both trusted scope and client, and outbound notifications are
+filtered before delivery, so two editors cannot observe or modify each other's
+documents even when they share one service-worker process.
+
+Nested portals extend one bounded canonical client chain with a fresh
+host-minted random segment at every authorized relay. An authored header cannot
+replace the authorized ancestor; malformed, duplicate, non-canonical, or
+over-depth spellings cannot replace an ancestor or select a sibling by alias.
+The sealed runtime captures the trusted relay before authored markup executes
+and passes that function directly into Wasm. Nested portal requests use the
+retained capability rather than authored `window.fetch`, so authored siblings
+cannot observe and replay a legitimate child's trusted principal. The worker
+validates the complete chain and keys same-scope nested siblings separately.
+The checked-in `tonk-code` production bundle is source-fingerprinted across its
+package/build inputs, TypeScript sources, and `tsconfig.json`; its executable
+artifact regression proves an `update-pending` response holds reconnection
+until `controllerchange` rather than pinning the outgoing worker again.
+
+A worker from another valid build keeps ordinary GET/HEAD requests, exact
+query/subscription POSTs, and an evaluate POST with one canonical
+`transact=false` parameter available, but refuses every other POST and every
+PUT/PATCH/DELETE with a typed `409 stale-build`. Both host and direct UI
+transports inspect the exact response header before any caller consumes the
+typed body, then dispatch the static shell's existing update-ready prompt.
+Nested sealed guests relay that exact signal through each host layer to the
+trusted top document; response status and body remain available to the caller.
+Reload is the next action and no local data is cleared. `GET
+/api/migrate/repo-vs-profile` is an explicit write exception because it commits
+a backfill. Some other GET handlers perform worker-owned, idempotent
+reconciliation such as a lazy mount or view binding; they remain
+overlap-compatible because they do not interpret stale page input. Future
+GET/HEAD routes whose page input authorizes a mutation must be declared in the
+same contract. Unknown non-read routes default to writes rather than relying on
+route suffixes.
+
+An actually missing build header remains compatible for a genuinely
+pre-protocol or development page. That is an explicit rollout exception, not a
+proof that builds match: an old page can still mutate through a newer worker by
+omitting the header, and a direct browser navigation to the committing migration
+cannot carry a custom header. The header is compatibility provenance, not
+authentication or a security boundary. Current generated documents and their
+sealed guests do stamp it. A present empty, malformed, non-text, or duplicate
+header on a write instead fails closed with typed `400 invalid-build-header`;
+it cannot masquerade as missing and does not raise an update prompt. Mismatched
+or malformed metadata never tears down reads or live subscriptions, so a stale
+page remains responsive enough to show the update and preserve local
+continuity. The exact route-effect inventory and header parser are covered at
+the worker boundary; artifact, request-construction, portal-relay, and response
+tests cover the individual transports. The real-browser two-generation matrix,
+including nested sealed guests and the deliberate pre-protocol exception, in
+`UI-03` remains an open verification item.
+
 An explicit readiness rejection is a terminal boot result, not an unobserved
 stall. Before returning without an application root, the UI asks the static
 shell to show “Tonk couldn’t start. Check your connection, then reload. Your
 local data is safe.” The first terminal result wins, clears the watchdog's
 per-tab retry counter, and disables later automatic recovery. It does not
 reload, delete CacheStorage, or unregister workers. Silent boots that stop
-making progress without an error retain the bounded watchdog ladder.
+making progress without an error receive at most one plain automatic reload;
+a second silent stall terminalizes with the same safe-state guidance and leaves
+every cache and registration intact. The explicit deployment-withdrawal kill
+switch is separate but equally non-destructive: it compares only with the
+immutable build embedded in the page, stops the matching worker's data plane,
+and offers update/reload recovery. It never uses mutable `version.json` to name
+the running generation, deletes a cache, or unregisters a worker. A repeated
+worker failure page likewise offers retry and registration update/reload only;
+it has no reset-storage path.
 
 ### Remain in flight
 
@@ -256,6 +406,8 @@ avoid recording credential/passkey inputs.
   already used, or returns non-JSON error.
 - Service worker is installed but does not yet control the first page.
 - New service worker activates while old Wasm or guest assets are loading.
+- An old page sends a matching, mismatched, missing, malformed, or duplicate
+  build header while reading, subscribing, dry-running, migrating, or writing.
 - Offline first visit versus offline returning visit with a coherent cache.
 - Deployment config names the wrong account/access origin or service DID.
 - Custom element connects twice or disconnects while an async task is pending.
@@ -275,8 +427,9 @@ avoid recording credential/passkey inputs.
 - Verify every top-document route family in real Chrome, including back/forward
   and exactly one mounted element.
 - Run explicit readiness rejection and silent-stall recovery in a real browser;
-  the source-level watchdog regression proves the former cannot fall through
-  into automatic cache deletion or worker unregistration.
+  the source-level watchdog regressions prove the former terminalizes
+  immediately and a second silent stall cannot delete any cache or unregister
+  any worker.
 - Verify actual interactive home routing after CLI `view add --home` and `space
   home`; headless `tonk render` is not sufficient.
 - Verify the inspector against a configured upstream in a real browser,

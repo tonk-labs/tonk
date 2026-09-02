@@ -448,10 +448,7 @@ impl NotebookCell {
     /// Build the cell's DOM (editor + result slot), detached from the document.
     fn build(notebook: &Notebook, id: u32, auto_focus: bool) -> NotebookCell {
         let document = window().unwrap().document().unwrap();
-        let source = format!(
-            "tonk-buffer:///{}/{}/scratch-{id}",
-            notebook.repo, notebook.branch
-        );
+        let source = lsp_buffer_uri(&notebook.repo, &notebook.branch, id);
         let placeholder = if id == 0 {
             "person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
         } else {
@@ -621,6 +618,23 @@ impl NotebookCell {
     }
 }
 
+/// Canonical document URI consumed by the scoped language-server route.
+///
+/// `profile:` is a URI namespace marker, not part of the profile identity. The
+/// identity after it and every named repository/branch use the shared segment
+/// codec, so reserved bytes cannot change URI structure.
+fn lsp_buffer_uri(repo: &str, branch: &str, id: u32) -> String {
+    let repo = match repo.strip_prefix("profile:") {
+        Some(profile) => format!(
+            "profile:{}",
+            tonk_worker_api::encode_lsp_scope_segment(profile)
+        ),
+        None => tonk_worker_api::encode_lsp_scope_segment(repo),
+    };
+    let branch = tonk_worker_api::encode_lsp_scope_segment(branch);
+    format!("tonk-buffer:///{repo}/{branch}/scratch-{id}")
+}
+
 /// Resolve `(repo, branch)` from this element's OWN `with="branch@repo"`
 /// attribute (forwarded onto it by the mounting `<tonk-display>`; routing
 /// is never inferred from DOM ancestors). `None` when absent or unstamped.
@@ -770,6 +784,18 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[test]
+    fn it_builds_canonical_lsp_uris_for_slash_branches() {
+        assert_eq!(
+            lsp_buffer_uri("did:key:zSpace", "feat/artifact", 7),
+            "tonk-buffer:///did%3Akey%3AzSpace/feat%2Fartifact/scratch-7",
+        );
+        assert_eq!(
+            lsp_buffer_uri("profile:tonk", "feat/artifact", 8),
+            "tonk-buffer:///profile:tonk/feat%2Fartifact/scratch-8",
+        );
+    }
 
     #[dialog_common::test]
     async fn it_mounts_branch_diagnostics_for_spaces_but_not_profiles() {

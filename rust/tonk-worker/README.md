@@ -46,8 +46,15 @@ submodule per route family in [`router/`](src/router):
 - **Inspect** (`inspect/`): read-only views of branch state, remote/remote-branch
   status, and archive index blocks for debugging.
 - **Host/guest bridge** (`host.rs`, `bridge.rs`): the iframe bridge (see below).
-- **LSP** (`lsp.rs`, `lsp_env.rs`): a language-server surface merged into the
-  router, carrying its own `LspHub` state and an SSE event stream.
+- **LSP** (`lsp.rs`, `lsp_env.rs`): exact
+  `/api/{repository/{repo}|profile/{profile}}/branch/{branch}/language-server`
+  endpoints. Each trusted route + client pair owns its server and SSE stream;
+  portal clients use a bounded canonical chain of host-minted relay segments,
+  and malformed or duplicate client headers are rejected before session lookup;
+  accepted JSON-RPC shapes and nested URI/workspace fields are scope-checked,
+  the environment adapter enforces the same reach before opening live data,
+  and outbound diagnostics are filtered back to that scope only. There is no
+  worker-global language-server route.
 - **Migration** (`migration.rs`): `GET /api/migrate/repo-vs-profile`.
 
 ## TonkState and dialog-reactor
@@ -116,8 +123,16 @@ A view is rendered in a sandboxed iframe. Routing policy lives entirely in
   transferred `MessagePort` (`onmessage` to `bridge::handle_message`), not over
   the data-plane routes.
 
-Everything else passes through to the network (or the shell cache, via
-stale-while-revalidate in [`cache.rs`](src/cache.rs)).
+Everything else passes through to the network only when it is explicitly
+non-cacheable, or reads this build's sealed shell cache via
+[`cache.rs`](src/cache.rs). Install is the only generation-cache writer and
+verifies the build-published shell/UI/lazy/guest graph before activation. A
+cached response is never revalidated or overwritten; an eviction miss returns
+an actionable `503` online and offline instead of accepting live stable-name
+bytes under an older controller. A stamped production worker ignores authored
+`no-store`, `reload`, and `no-cache` flags for same-origin static resources;
+only the unstamped development worker treats those flags as a live-network
+bypass for Trunk hot reload.
 
 ## Browser contracts
 

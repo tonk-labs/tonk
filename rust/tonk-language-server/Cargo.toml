@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 tonk-analyzer = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-worker-api = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }

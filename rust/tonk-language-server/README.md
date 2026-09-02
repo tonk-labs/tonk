@@ -38,7 +38,7 @@ Both are position-driven: the cursor's place in the line (column-zero head vs in
 
 ## The host seam
 
-The language server never knows how an environment is opened. It defines the port; the host implements it. Per request the server parses the document URI (`tonk-buffer:///<repo>/<branch>/…`) to `(repo, branch)` and calls [`EnvProvider::open`], which returns an [`Opened`] holding a [`Source`] (the branch or transaction overlay) and a `QueryEnv` for the request's lifetime. The LSP threads `opened.source()` into each resolution chain and `opened.env()` into its `.perform(env)`, matching the dialog command/perform idiom.
+The language server never knows how an environment is opened. It defines the port; the host implements it. Per request the server parses the document URI (`tonk-buffer:///<encoded-repo>/<encoded-branch>/…`) to `(repo, branch)` and calls [`EnvProvider::open`], which returns an [`Opened`] holding a [`Source`] (the branch or transaction overlay) and a `QueryEnv` for the request's lifetime. Repository/profile and branch identities use the shared canonical segment codec, so a legal branch such as `feat/artifact` is carried as `feat%2Fartifact` without changing URI or HTTP route structure; non-canonical aliases are rejected. The LSP threads `opened.source()` into each resolution chain and `opened.env()` into its `.perform(env)`, matching the dialog command/perform idiom.
 
 [`NoEnv`] is the no-host provider (`open` always returns `None`): tests and a standalone editor pass it, and the server then resolves only the document's own declarations.
 
