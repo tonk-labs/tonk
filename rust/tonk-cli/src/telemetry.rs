@@ -131,6 +131,16 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
 }
 
 impl Recorder {
+    /// Queue canonical account events into this invocation's existing batch.
+    pub fn account_events(
+        &mut self,
+        events: impl IntoIterator<Item = tonk_analytics::account::AccountEvent>,
+    ) {
+        for event in events {
+            let _ = self.client.capture_account(&event);
+        }
+    }
+
     /// Attach one extra content-free property (flags, buckets, counts).
     pub fn property(&mut self, key: &str, value: impl Into<Value>) {
         self.properties.insert(key.to_owned(), value.into());
@@ -199,5 +209,67 @@ mod tests {
         let path = dir.path().join("telemetry.json");
         std::fs::write(&path, "{ not json").expect("write");
         assert!(load_from(&path).enabled);
+    }
+
+    #[dialog_common::test]
+    fn account_and_generic_events_share_one_batch_without_mixing_schemas() {
+        use tonk_analytics::account::{
+            AccountAction, AccountEvent, AccountOutcome, AccountState, Journey, Stage, Surface,
+            Trigger,
+        };
+        let mut recorder = Recorder {
+            client: tonk_analytics::native::Client::new(
+                "http://localhost:1".to_owned(),
+                "key".to_owned(),
+                "tonk:anonymous".to_owned(),
+            ),
+            properties: Map::from_iter([
+                ("command".to_owned(), Value::from("account")),
+                ("subcommand".to_owned(), Value::from("login")),
+                ("environment".to_owned(), Value::from("cli")),
+            ]),
+        };
+        let start = AccountEvent::started(
+            Journey::Login,
+            AccountAction::Login,
+            Stage::CallbackBind,
+            Surface::NativeCli,
+            Trigger::User,
+            AccountState::None,
+            "opaque-attempt",
+        );
+        let finish = AccountEvent::finished(
+            Journey::Login,
+            AccountAction::Login,
+            Stage::Complete,
+            Surface::NativeCli,
+            Trigger::User,
+            AccountState::Ready,
+            "opaque-attempt",
+            10,
+            AccountOutcome::success(),
+        );
+        recorder.account_events([start, finish]);
+        recorder.client.capture(
+            tonk_analytics::event::CLI_COMMAND_RUN,
+            recorder.properties.clone(),
+        );
+        let payload = recorder.client.payload().unwrap();
+        let batch = payload["batch"].as_array().unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch[0]["event"], "account_event");
+        assert_eq!(batch[2]["event"], "cli_command_run");
+        assert!(batch[2]["properties"].get("stage").is_none());
+        assert!(batch[2]["properties"].get("failure_kind").is_none());
+        let wire = payload.to_string();
+        for sentinel in [
+            "person@example.com",
+            "did:key:zSensitive",
+            "http://127.0.0.1/callback",
+            "delegation-secret",
+            "/Users/person/private",
+        ] {
+            assert!(!wire.contains(sentinel));
+        }
     }
 }

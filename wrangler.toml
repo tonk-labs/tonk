@@ -2,8 +2,17 @@ name = "tonk-access-service"
 main = "./result/tonk-access-service/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
-
 routes = [{ pattern = "tonk.network", custom_domain = true }]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
 
 [build]
 command = "nix build .#tonk-cloudflare-artifacts"
@@ -98,6 +107,16 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = true
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
+
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
@@ -152,6 +171,16 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 [env.preview]
 workers_dev = true
 routes = []
+
+[env.preview.observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = true
+
+[env.preview.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"

@@ -19,6 +19,65 @@ use dialog_remote_s3::{Address, S3Error, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
+struct PresignFailure {
+    refusal: Refusal,
+    operation: crate::observability::AccessOperation,
+    failure_kind: crate::observability::AccessFailureKind,
+    retryable: bool,
+    site: crate::observability::AccessSite,
+}
+
+impl PresignFailure {
+    fn authorization(refusal: Refusal) -> Self {
+        let status = refusal.status();
+        Self {
+            refusal,
+            operation: crate::observability::AccessOperation::Authorization,
+            failure_kind: match status {
+                401 | 403 => crate::observability::AccessFailureKind::AccessDenied,
+                503 => crate::observability::AccessFailureKind::Unavailable,
+                500..=599 => crate::observability::AccessFailureKind::Internal,
+                _ => crate::observability::AccessFailureKind::Invalid,
+            },
+            retryable: status >= 500,
+            site: crate::observability::AccessSite::Ucan,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn provisioning(
+        refusal: Refusal,
+        failure_kind: crate::observability::AccessFailureKind,
+        retryable: bool,
+        site: crate::observability::AccessSite,
+    ) -> Self {
+        Self {
+            refusal,
+            operation: crate::observability::AccessOperation::Provisioning,
+            failure_kind,
+            retryable,
+            site,
+        }
+    }
+
+    fn emit(&self) {
+        let status = self.refusal.status();
+        crate::observability::AccessFailureLog::new(
+            self.operation,
+            if status >= 500 {
+                crate::observability::AccessOutcome::Unavailable
+            } else {
+                crate::observability::AccessOutcome::Refused
+            },
+            self.failure_kind,
+            status,
+            self.retryable,
+            self.site,
+        )
+        .emit();
+    }
+}
+
 /// Add CORS headers to a response for WASM compatibility.
 fn with_cors_headers(response: Response) -> Response {
     let headers = response.headers().clone();
@@ -138,7 +197,9 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
 
     let (response, metered) = match presign(&body_bytes, &env).await {
         Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
-        Err(refusal) => {
+        Err(failure) => {
+            failure.emit();
+            let refusal = failure.refusal;
             // Denials are recorded — a client retrying against a blocked
             // consumer still costs invocations — but only attributable
             // ones: infra failures and malformed containers are the
@@ -189,8 +250,11 @@ fn record_invocation(
 
 /// Authorize the container and answer the presigned request, together
 /// with the declared write bytes when the permit carries them.
-async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response, u64), Refusal> {
-    let authorizer = create_authorizer(env)?;
+async fn presign(
+    body_bytes: &[u8],
+    env: &Env,
+) -> std::result::Result<(Response, u64), PresignFailure> {
+    let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
 
     // Revocation is checked inside the chain walk rather than after it,
     // so every proof is measured against the principals entitled to
@@ -201,17 +265,17 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
     let authorizer = {
         use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
 
-        let store = env.kv("REVOCATIONS_KV").map_err(|err| {
-            console_error!("revocation check unavailable, no REVOCATIONS_KV binding: {err}");
-            unavailable()
-        })?;
+        let store = env
+            .kv("REVOCATIONS_KV")
+            .map_err(|_| PresignFailure::authorization(unavailable()))?;
         authorizer.with_revocations(IndexedRevocations(KvRevocationIndex::new(store)))
     };
 
     let authorized_request = authorizer
         .authorize(body_bytes)
         .await
-        .map_err(map_access_error)?;
+        .map_err(map_access_error)
+        .map_err(PresignFailure::authorization)?;
 
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
@@ -226,7 +290,8 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
         .unwrap_or(0);
 
     let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request)
-        .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))?;
+        .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))
+        .map_err(PresignFailure::authorization)?;
     Response::from_bytes(cbor_bytes)
         .map(|r| {
             let headers = Headers::new();
@@ -234,6 +299,7 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
+        .map_err(PresignFailure::authorization)
 }
 
 /// Screen the subject against the provisioning gate: a space is served
@@ -247,7 +313,10 @@ async fn presign(body_bytes: &[u8], env: &Env) -> std::result::Result<(Response,
 /// verdict back. D1 is the authority; the caches only remember its
 /// answers until their `not_after`.
 #[cfg(target_arch = "wasm32")]
-async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+async fn screen_provisioning(
+    body_bytes: &[u8],
+    env: &Env,
+) -> std::result::Result<(), PresignFailure> {
     use crate::provisioning::cache::{self, CachedVerdict};
     use crate::provisioning::container_subject;
 
@@ -255,13 +324,24 @@ async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Resul
         // The authorizer accepted these bytes, so a subject we cannot
         // read is shape drift between two parsers rather than a caller
         // error. There is nothing to screen against, so it cannot clear.
-        console_error!("provisioning screen unavailable, container has no readable subject");
-        return Err(provisioning_unavailable());
+        return Err(PresignFailure::provisioning(
+            provisioning_unavailable(),
+            crate::observability::AccessFailureKind::Internal,
+            false,
+            crate::observability::AccessSite::Provisioning,
+        ));
     };
     let now = Date::now().as_millis() / 1_000;
 
     if let Some(cached) = cache::isolate_lookup(&subject, now) {
-        return cached.verdict().map_err(Into::into);
+        return cached.verdict().map_err(|reason| {
+            PresignFailure::provisioning(
+                reason.into(),
+                crate::observability::AccessFailureKind::NotProvisioned,
+                false,
+                crate::observability::AccessSite::Provisioning,
+            )
+        });
     }
 
     let kv = servability_kv(env);
@@ -270,29 +350,47 @@ async fn screen_provisioning(body_bytes: &[u8], env: &Env) -> std::result::Resul
             Ok(Some(text)) => {
                 if let Some(cached) = CachedVerdict::decode(&text).filter(|c| c.fresh(now)) {
                     cache::isolate_store(&subject, cached.clone(), now);
-                    return cached.verdict().map_err(Into::into);
+                    return cached.verdict().map_err(|reason| {
+                        PresignFailure::provisioning(
+                            reason.into(),
+                            crate::observability::AccessFailureKind::NotProvisioned,
+                            false,
+                            crate::observability::AccessSite::Provisioning,
+                        )
+                    });
                 }
             }
             // A miss is not an answer — KV is eventually consistent —
             // so it falls through to authoritative D1.
             Ok(None) => {}
-            Err(err) => {
+            Err(_) => {
                 // A KV read error is served, per the plan: the gate
                 // exists for billing, and its cache being unreachable
                 // is the service's own trouble, not the caller's.
-                console_error!("servability cache unreadable, serving {subject} unscreened: {err}");
+                console_error!("servability cache unreadable; serving request unscreened");
                 return Ok(());
             }
         }
     }
 
-    let outcome = derive_verdict(&subject, now, env, kv.as_ref()).await?;
+    let outcome = derive_verdict(&subject, now, env, kv.as_ref())
+        .await
+        .map_err(|_| {
+            PresignFailure::provisioning(
+                provisioning_unavailable(),
+                crate::observability::AccessFailureKind::Unavailable,
+                true,
+                crate::observability::AccessSite::ControlStore,
+            )
+        })?;
     match outcome {
         Ok(()) => Ok(()),
-        Err(reason) => {
-            worker::console_log!("presign rejected: {subject} is not servable ({reason})");
-            Err(reason.into())
-        }
+        Err(reason) => Err(PresignFailure::provisioning(
+            reason.into(),
+            crate::observability::AccessFailureKind::NotProvisioned,
+            false,
+            crate::observability::AccessSite::Provisioning,
+        )),
     }
 }
 
@@ -304,11 +402,8 @@ pub(crate) fn servability_kv(env: &Env) -> Option<worker::kv::KvStore> {
 
     match env.kv(cache::BINDING) {
         Ok(kv) => Some(kv),
-        Err(err) => {
-            console_error!(
-                "servability cache absent, no {} binding: {err}",
-                cache::BINDING
-            );
+        Err(_) => {
+            console_error!("servability cache binding is absent");
             None
         }
     }
@@ -330,10 +425,7 @@ pub(crate) async fn derive_verdict(
     use crate::provisioning::screen;
     use crate::store::d1::D1Store;
 
-    let store = D1Store::new(env.d1("CONTROL").map_err(|err| {
-        console_error!("provisioning screen unavailable, no CONTROL binding: {err}");
-        provisioning_unavailable()
-    })?);
+    let store = D1Store::new(env.d1("CONTROL").map_err(|_| provisioning_unavailable())?);
     match screen(&store, subject, now).await {
         Ok(outcome) => {
             let cached = CachedVerdict::record(&outcome, subject, now);
@@ -346,16 +438,15 @@ pub(crate) async fn derive_verdict(
                     Ok(put) => put.execute().await.map_err(|err| err.to_string()),
                     Err(err) => Err(err.to_string()),
                 };
-                if let Err(err) = written {
-                    console_error!("servability verdict for {subject} not cached: {err}");
+                if written.is_err() {
+                    console_error!("servability verdict was not cached");
                 }
             }
             Ok(outcome)
         }
-        Err(err) => {
+        Err(_) => {
             // The gate fails closed, but a store failure is the
             // service's own unavailability, not a denial to bill.
-            console_error!("presign refused, control store unreachable: {err}");
             Err(provisioning_unavailable())
         }
     }

@@ -153,22 +153,58 @@ fn show_consent() {
     host.set_inner_html(CARD_HTML);
     let _ = body.append_child(&host);
 
-    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    on_click(&host, "#tonk-custody-dismiss", || {
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            AccountAction::FinishAccountBackup,
+            tonk_analytics::account::Surface::CustodyConsent,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::Ready,
+        );
+        attempt.finish(
+            tonk_analytics::account::Stage::PasskeyAssert,
+            tonk_analytics::account::AccountOutcome::cancelled(),
+        );
+        remove_card();
+    });
     on_click(&host, "#tonk-custody-continue", move || {
         set_card_text("Waiting for your passkey…");
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            AccountAction::FinishAccountBackup,
+            tonk_analytics::account::Surface::CustodyConsent,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::Ready,
+        );
         wasm_bindgen_futures::spawn_local(async move {
             match publish_encryption_key().await {
                 Ok(true) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::Complete,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
                     tonk_common::log!("custody: encryption key published for the worker");
                     set_card_text("Account key saved on this device.");
                 }
-                Ok(false) => set_card_text("Nothing was needed after all."),
+                Ok(false) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::Complete,
+                        tonk_analytics::account::AccountOutcome::success(),
+                    );
+                    set_card_text("Nothing was needed after all.")
+                }
                 Err(error) => {
                     tonk_common::log!("custody: encryption key not published: {error}");
                     set_card_text(&user_error::diagnostic(
                         AccountAction::FinishAccountBackup,
                         &error,
                     ));
+                    let problem = user_error::problem_from_diagnostic(
+                        AccountAction::FinishAccountBackup,
+                        &error,
+                    );
+                    attempt.finish(
+                        tonk_analytics::account::Stage::PasskeyAssert,
+                        problem.outcome,
+                    );
                 }
             }
             remove_card_after(4000);
@@ -287,6 +323,8 @@ pub(crate) struct CeremonyError {
     pub message: String,
     /// Why the access service refused, when it is what refused.
     pub denial: Option<tonk_identity::custody::CustodyDenial>,
+    /// Browser refusal, independently of a service denial.
+    pub refusal: Option<tonk_identity::passkey::CeremonyRefusal>,
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -376,6 +414,7 @@ impl CeremonyError {
         Self {
             message: message.into(),
             denial: None,
+            refusal: None,
         }
     }
 
@@ -395,9 +434,14 @@ impl CeremonyError {
                     .unwrap_or_default();
                 tonk_identity::custody::CustodyDenial::from_code(&code, &message)
             });
+        let refusal = js_sys::Reflect::get(error, &"name".into())
+            .ok()
+            .and_then(|name| name.as_string())
+            .map(|name| tonk_identity::passkey::CeremonyRefusal::from_name(&name));
         Self {
             message: describe(error),
             denial,
+            refusal,
         }
     }
 }
