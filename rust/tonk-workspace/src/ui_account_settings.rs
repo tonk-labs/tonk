@@ -69,19 +69,6 @@ impl CustomElement for UiAccountSettings {
                 set_pane(&host, &pane);
                 return;
             }
-            // The destructive ceremonies (typed confirm, hosted-space
-            // inventory) live on the full account page; the rows here are
-            // the wireframe's shape leading to them.
-            if target
-                .closest("[data-settings-full]")
-                .ok()
-                .flatten()
-                .is_some()
-            {
-                event.prevent_default();
-                tonk_host::navigate_to("/settings");
-                return;
-            }
             // Removing a device's access asks in place — the word answers:
             // the first press arms the verb, the second revokes.
             if let Some(verb) = target

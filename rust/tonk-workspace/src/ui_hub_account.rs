@@ -305,9 +305,11 @@ impl CustomElement for UiHubAccount {
             {
                 // Settings opens INSIDE the hub — the stack steps aside and
                 // the section hangs from the same bar, exactly like the
-                // account view (the wireframe's reading). The anchor keeps
-                // its `/settings` href only as the no-handler fallback.
-                event.prevent_default();
+                // account view (the wireframe's reading). A BUTTON, not an
+                // anchor: the sealed guest's link relay performs href
+                // navigations before a bubbling preventDefault can decline,
+                // so an `/settings` href here navigated away no matter what
+                // this handler did (found live; the harness has no relay).
                 open_settings_view(&host);
                 return;
             }
@@ -1001,10 +1003,13 @@ mod tests {
             assert!(host.query_selector(rejected).unwrap().is_none());
         }
         let settings = host
-            .query_selector("a[data-open-settings]")
+            .query_selector("button[data-open-settings]")
             .expect("valid selector")
             .expect("settings route");
-        assert_eq!(settings.get_attribute("href").as_deref(), Some("/settings"));
+        assert!(
+            settings.get_attribute("href").is_none(),
+            "a button, so the guest's link relay has nothing to navigate"
+        );
         host.remove();
     }
 
@@ -1065,7 +1070,7 @@ mod tests {
         );
         assert!(host.query_selector("[data-add-profile]").unwrap().is_some());
         assert!(
-            host.query_selector("[data-account-menu] a[data-open-settings]")
+            host.query_selector("[data-account-menu] button[data-open-settings]")
                 .unwrap()
                 .is_some(),
             "settings is the account view's first way onward"
@@ -1574,13 +1579,10 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        // Still an anchor: `/settings` is the no-handler fallback, but a
-        // handled click stays on this page and raises the dialog instead.
-        assert_eq!(settings_button.tag_name(), "A");
-        assert_eq!(
-            settings_button.get_attribute("href").as_deref(),
-            Some("/settings")
-        );
+        // A button, deliberately: an anchor's href is navigated by the
+        // guest's link relay before this element can decline it.
+        assert_eq!(settings_button.tag_name(), "BUTTON");
+        assert!(settings_button.get_attribute("href").is_none());
         assert!(
             host.query_selector("[data-settings-view]")
                 .unwrap()
