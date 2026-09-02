@@ -32,6 +32,8 @@ const CSS: &str = r#"
 :host([solid]) .b:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_panel); }
 :host([solid]) .b:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_panel); }
 :host([variant=primary]) .b{ background:var(--_ink); color:var(--_on); -webkit-backdrop-filter:none; backdrop-filter:none; }
+:host([variant=primary]) .b:focus-visible{
+  background:linear-gradient(var(--_wash-on),var(--_wash-on)), var(--_ink); }
 :host([variant=primary]) .b:hover{ filter:brightness(.92); }
 :host([variant=primary]) .b:active{ filter:brightness(.86); }
 :host([variant=quiet]) .b{ background:transparent; -webkit-backdrop-filter:none; backdrop-filter:none; box-shadow:none; }

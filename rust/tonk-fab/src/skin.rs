@@ -70,7 +70,12 @@ pub const SKIN: &str = r#"
 @keyframes fabb-wash{ 0%,100%{background:transparent} 50%{background:color-mix(in srgb, var(--_ink) 14%, transparent)} }
 @keyframes fabb-hardblink{ 0%,49%{opacity:1} 50%,100%{opacity:0} }
 button{ font:inherit; letter-spacing:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; text-align:inherit; }
-:is(button,[tabindex]):focus-visible{ outline:2px solid var(--_ink); outline-offset:-2px; }
+/* Focus never draws a ring in this chrome (owner's call — an outlined
+   cell mid-bar read as a broken border): the press wash carries the
+   affordance on glass surfaces, and solid surfaces wash with on-ink,
+   the same rule their hover follows. Subtler than an outline — noted. */
+:is(button,[tabindex]):focus-visible{ outline:none; background:var(--_press); }
+.w{ --_wash-on: color-mix(in srgb, var(--_on) 16%, transparent); }
 .disc{ width:14px; height:14px; border-radius:50%; background:var(--_ink); flex:none; }
 .disc.offline{ background:transparent; border:2px solid var(--_ink); }
 .disc.paused{ background:linear-gradient(135deg,var(--_ink) 0 50%,transparent 50% 100%); border:1.5px solid var(--_ink); }

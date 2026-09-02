@@ -50,10 +50,13 @@ const CSS: &str = r#"
   -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter); }
 :host([cap]) .row:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_bg); }
 :host([cap]) .row:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_bg); }
+:host([cap]) .row:focus-visible{ background:linear-gradient(var(--_press),var(--_press)), var(--_bg); }
 :host([chrome]) .row{ text-transform:lowercase; }
 :host([muted]) .row{ color:var(--_soft); }
 /* current wears near-ink — the CTA register keeps solid ink */
 :host([current]) .row{ background:var(--_cur); color:var(--_on); font-weight:600; }
+:host([current]) .row:focus-visible{
+  background:linear-gradient(var(--_wash-on),var(--_wash-on)), var(--_cur); }
 :host([cap=left]) .row{ border-radius:18px 0 0 18px; }
 :host([cap=right]) .row{ border-radius:0 18px 18px 0; }
 :host([tall]) .row{ min-height:56px; flex-direction:column; align-items:flex-end;

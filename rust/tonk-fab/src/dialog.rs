@@ -38,6 +38,7 @@ dialog::backdrop{ background:var(--fabb-dim, rgba(56,24,42,.32)); }
   font-size:15px; color:var(--_ink); }
 .x:hover{ background:linear-gradient(var(--_hover),var(--_hover)), var(--_panel); }
 .x:active{ background:linear-gradient(var(--_press),var(--_press)), var(--_panel); }
+.x:focus-visible{ background:linear-gradient(var(--_press),var(--_press)), var(--_panel); }
 .main{ display:flex; gap:7px; align-items:stretch; margin-right:43px; }
 .body{ flex:1; min-width:0; padding:14px 18px;
   font-size:13.5px; font-weight:400; line-height:1.55; color:var(--_soft);
