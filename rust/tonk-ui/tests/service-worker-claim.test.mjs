@@ -186,6 +186,27 @@ function lockHarness({ available = true } = {}) {
     };
 }
 
+function timerHarness() {
+    let next = 0;
+    const pending = new Map();
+    return {
+        setTimeout(callback) {
+            const id = ++next;
+            pending.set(id, callback);
+            return id;
+        },
+        clearTimeout(id) {
+            pending.delete(id);
+        },
+        async runPending() {
+            const callbacks = [...pending.values()];
+            pending.clear();
+            await Promise.all(callbacks.map((callback) => callback()));
+            await new Promise(setImmediate);
+        },
+    };
+}
+
 function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
     let claims = 0;
     let retirements = 0;
@@ -304,6 +325,7 @@ function runWarmUpdatePage({
         requests: [],
         held: () => false,
     };
+    const timers = timerHarness();
     const oldWorker = eventTarget({ state: "activated", postMessage() {} });
     let serviceWorkers;
     const incoming = eventTarget({
@@ -382,6 +404,8 @@ function runWarmUpdatePage({
         },
         console: { log() {}, warn() {}, error() {} },
         Event,
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
     };
     vm.runInNewContext(reloadSafetyBlock(), context, { filename: INDEX });
     vm.runInNewContext(activationBlock(), context, { filename: INDEX });
@@ -398,6 +422,9 @@ function runWarmUpdatePage({
                 detail: { critical: value, mayReload: !value },
             });
         },
+        setCriticalWithoutWake(value) {
+            critical = value;
+        },
         setPredicate(value) {
             self.tonkAccountSetupMayReload = value;
         },
@@ -407,6 +434,7 @@ function runWarmUpdatePage({
         lockRequests: lockState.requests,
         claimLockStates,
         reloadLockStates,
+        runPendingTimers: timers.runPending,
     };
 }
 
@@ -468,6 +496,8 @@ function runColdInstallPage() {
         location: { reload() {} },
         console: { log() {}, warn() {}, error() {} },
         Event,
+        setTimeout,
+        clearTimeout,
     };
     vm.runInNewContext(reloadSafetyBlock(), context, { filename: INDEX });
     vm.runInNewContext(activationBlock(), context, { filename: INDEX });
@@ -523,6 +553,32 @@ test("a successfully installed successor retires the incumbent exactly once", as
     await candidate.dispatch("statechange");
     await candidate.dispatch("statechange");
 
+    assert.equal(retirements(), 1, logs.join("\n"));
+});
+
+test("account setup keeps the incumbent live until its durable hold clears", async () => {
+    const indexedDB = new FakeIndexedDB({ hold: VALID_HOLD });
+    const { scope, retirements, logs } = loadServiceWorker({ indexedDB });
+    const candidate = eventTarget({ state: "installing" });
+    scope.registration.installing = candidate;
+
+    await scope.registration.dispatch("updatefound");
+    candidate.state = "installed";
+    scope.registration.waiting = candidate;
+    await candidate.dispatch("statechange");
+    assert.equal(
+        retirements(),
+        0,
+        "retiring the reactor would strand the incumbent's account attachment write",
+    );
+
+    indexedDB.values.delete("account-setup");
+    const pending = [];
+    scope.onmessage({
+        data: { type: "account-setup-hold-changed", version: 1 },
+        waitUntil: (promise) => pending.push(promise),
+    });
+    await Promise.all(pending);
     assert.equal(retirements(), 1, logs.join("\n"));
 });
 
@@ -658,6 +714,17 @@ test("alignment defers while account setup is critical and resumes after durabil
     assert.equal(result.reloads(), 1);
 });
 
+test("alignment retries the durable check when a cross-tab wake is missed", async () => {
+    const result = runWarmUpdatePage({ critical: true });
+    await new Promise(setImmediate);
+    assert.equal(result.messages.length, 0);
+
+    result.setCriticalWithoutWake(false);
+    await result.runPendingTimers();
+    assert.equal(result.messages[0]?.type, "claim");
+    assert.equal(result.reloads(), 1);
+});
+
 test("alignment remains held after a reload until the durable singleton clears", async () => {
     const indexedDB = new FakeIndexedDB({ hold: VALID_HOLD });
     const broadcast = broadcastHarness();
@@ -713,14 +780,21 @@ test("alignment fails closed when the UI reload predicate throws", async () => {
     assert.equal(result.reloads(), 1);
 });
 
-function runColdFirstInstallPage() {
+function runColdFirstInstallPage({ dropClaims = 0 } = {}) {
     const messages = [];
+    let droppedClaims = 0;
+    let resolveReady;
     let serviceWorkers;
+    const timers = timerHarness();
     const worker = eventTarget({
         state: "installing",
         postMessage(message) {
             messages.push({ ...message, atState: worker.state });
             if (message?.type === "claim" && worker.state === "activated") {
+                if (droppedClaims < dropClaims) {
+                    droppedClaims += 1;
+                    return;
+                }
                 serviceWorkers.controller = worker;
                 serviceWorkers.dispatch("controllerchange");
             }
@@ -736,45 +810,63 @@ function runColdFirstInstallPage() {
     });
     serviceWorkers = eventTarget({
         controller: null,
-        ready: Promise.resolve(registration),
+        ready: new Promise((resolve) => {
+            resolveReady = resolve;
+        }),
         async register() {
             return registration;
         },
+    });
+    worker.addEventListener("statechange", () => {
+        if (worker.state === "activated" && registration.active === worker) {
+            resolveReady(registration);
+        }
     });
     const storage = new Map();
     const self = eventTarget({ tonkBootLife() {} });
     const document = eventTarget({
         visibilityState: "visible",
+        documentElement: { hasAttribute: () => false },
         querySelector() {
             return { textContent: "" };
         },
     });
-    vm.runInNewContext(
-        activationBlock(),
-        {
-            self,
-            window: {},
-            document,
-            navigator: { serviceWorker: serviceWorkers },
-            sessionStorage: {
-                getItem(key) {
-                    return storage.get(key) ?? null;
-                },
-                setItem(key, value) {
-                    storage.set(key, String(value));
-                },
-                removeItem(key) {
-                    storage.delete(key);
-                },
-            },
-            location: {
-                reload() {},
-            },
-            console: { log() {}, warn() {}, error() {} },
+    const context = {
+        self,
+        window: self,
+        document,
+        navigator: {
+            serviceWorker: serviceWorkers,
+            locks: lockHarness().locks,
         },
-        { filename: INDEX },
-    );
-    return { messages, worker, registration, serviceWorkers };
+        indexedDB: new FakeIndexedDB(),
+        BroadcastChannel: broadcastHarness().BroadcastChannel,
+        sessionStorage: {
+            getItem(key) {
+                return storage.get(key) ?? null;
+            },
+            setItem(key, value) {
+                storage.set(key, String(value));
+            },
+            removeItem(key) {
+                storage.delete(key);
+            },
+        },
+        location: { reload() {} },
+        console: { log() {}, warn() {}, error() {} },
+        Event,
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+    };
+    vm.runInNewContext(reloadSafetyBlock(), context, { filename: INDEX });
+    vm.runInNewContext(activationBlock(), context, { filename: INDEX });
+    return {
+        messages,
+        worker,
+        registration,
+        serviceWorkers,
+        runPendingTimers: timers.runPending,
+    };
 }
 
 test("a cold first install claims once its worker activates", async () => {
@@ -806,4 +898,25 @@ test("a cold first install claims once its worker activates", async () => {
     );
     assert.ok(claims.length >= 1, "the page asks the activated worker to claim");
     assert.equal(result.serviceWorkers.controller, result.worker, "and control lands");
+});
+
+test("a cold first install retries a claim until control lands", async () => {
+    const result = runColdFirstInstallPage({ dropClaims: 1 });
+    result.worker.state = "installed";
+    result.worker.dispatch("statechange");
+    result.worker.state = "activating";
+    result.worker.dispatch("statechange");
+    result.registration.active = result.worker;
+    result.registration.installing = null;
+    result.worker.state = "activated";
+    result.worker.dispatch("statechange");
+    await new Promise(setImmediate);
+
+    assert.equal(result.serviceWorkers.controller, null, "the first claim was lost");
+    await result.runPendingTimers();
+    assert.equal(result.serviceWorkers.controller, result.worker, "a retry claimed the page");
+    assert.ok(
+        result.messages.filter((message) => message?.type === "claim").length >= 2,
+        "the page kept the claim waiter open until controllerchange",
+    );
 });

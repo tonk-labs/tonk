@@ -78,6 +78,8 @@ function bootHarness({ critical = false, retries = 1 } = {}) {
   const session = new Map();
   if (retries > 0) session.set("tonk:boot-retries", String(retries));
   const listeners = new Map();
+  const timeouts = new Map();
+  let nextTimeout = 0;
   const context = {
     Promise,
     caches: {
@@ -156,6 +158,14 @@ function bootHarness({ critical = false, retries = 1 } = {}) {
     },
     setInterval() {
       return 1;
+    },
+    setTimeout(callback) {
+      const id = ++nextTimeout;
+      timeouts.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      timeouts.delete(id);
     },
     addEventListener(type, listener) {
       const registered = listeners.get(type) ?? new Set();

@@ -284,35 +284,62 @@
                 globalThis.tonkWhenAccountSetupDurable = (callback) => {
                     let finished = false;
                     let check = 0;
+                    let retry = null;
+                    const scheduleRetry = () => {
+                        if (finished || retry !== null) return;
+                        retry = setTimeout(() => {
+                            retry = null;
+                            resume();
+                        }, 250);
+                    };
                     const resume = async () => {
+                        if (retry !== null) {
+                            clearTimeout(retry);
+                            retry = null;
+                        }
                         const current = ++check;
-                        if (finished || !accountSetupMayReload()) return;
+                        if (finished) return;
+                        if (!accountSetupMayReload()) {
+                            scheduleRetry();
+                            return;
+                        }
                         await runWithAccountSetupUpdateSafety(() => {
-                            if (
-                                finished ||
-                                current !== check ||
-                                !accountSetupMayReload()
-                            ) {
-                                return false;
-                            }
-                            // A claim callback returns false deliberately: if
-                            // the worker's authoritative re-read sees a hold
-                            // queued ahead of it, the later clear broadcast
-                            // must retry. Reload callbacks finish immediately.
-                            const complete = callback() !== false;
-                            if (complete) {
-                                finished = true;
-                                window.removeEventListener(
-                                    ACCOUNT_SETUP_CRITICAL_CHANGE,
-                                    resume,
-                                );
-                                window.removeEventListener(
-                                    ACCOUNT_SETUP_HOLD_CHANGE,
-                                    resume,
-                                );
-                            }
-                            return true;
-                        });
+                                if (
+                                    finished ||
+                                    current !== check ||
+                                    !accountSetupMayReload()
+                                ) {
+                                    return false;
+                                }
+                                // A claim callback returns false deliberately: if
+                                // the worker's authoritative re-read sees a hold
+                                // queued ahead of it, the later clear broadcast
+                                // must retry. Reload callbacks finish immediately.
+                                const complete = callback() !== false;
+                                if (complete) {
+                                    finished = true;
+                                    window.removeEventListener(
+                                        ACCOUNT_SETUP_CRITICAL_CHANGE,
+                                        resume,
+                                    );
+                                    window.removeEventListener(
+                                        ACCOUNT_SETUP_HOLD_CHANGE,
+                                        resume,
+                                    );
+                                    if (retry !== null) {
+                                        clearTimeout(retry);
+                                        retry = null;
+                                    }
+                                }
+                                return true;
+                            });
+                        // Broadcasts and DOM events are wakeups, not
+                        // authority. A callback may also deliberately remain
+                        // open after a safe attempt: worker claim has no reply,
+                        // so controllerchange is the only proof it landed.
+                        // Retry the same locked durable read until the callback
+                        // observes its terminal state.
+                        if (!finished) scheduleRetry();
                     };
                     window.addEventListener(
                         ACCOUNT_SETUP_CRITICAL_CHANGE,
@@ -325,6 +352,22 @@
                     // Register before the first predicate read so a durable
                     // transition cannot be lost between checking and waiting.
                     resume();
+                };
+                globalThis.tonkClaimWhenAccountSetupDurable = (
+                    worker,
+                    priorController,
+                ) => {
+                    globalThis.tonkWhenAccountSetupDurable(() => {
+                        const controller = navigator.serviceWorker.controller;
+                        if (
+                            worker.state === "redundant" ||
+                            (controller && controller !== priorController)
+                        ) {
+                            return true;
+                        }
+                        worker.postMessage({ type: "claim" });
+                        return false;
+                    });
                 };
                 globalThis.tonkReloadWhenAccountSetupDurable = (
                     beforeReload,
@@ -728,44 +771,23 @@
                 // document. Wait until `/api/*` is controlled, nudging an
                 // already-active worker whose activate event happened earlier.
                 // `register()` may resolve while a true first install is still
-                // verifying, when `registration.active` is null. Observe every
-                // registration slot so the claim is sent after activation.
+                // verifying, when `registration.active` is null. Wait for the
+                // registration to have an active worker before sending the one
+                // claim request; an optional send before that transition is
+                // lost and leaves this document waiting for control forever.
                 if (!priorController) {
                     if (!navigator.serviceWorker.controller) {
-                        // On a genuinely FIRST install the worker is still
-                        // `installing` when register() resolves, so
-                        // `registration.active` is null and a claim sent
-                        // now goes nowhere — and activation deliberately
-                        // does not claim by itself. Ask the moment the
-                        // worker reaches `activated`, whichever slot it is
-                        // in; a claim from any earlier state is refused by
-                        // the browser. Without this, a cleared-storage
-                        // first visit sat uncontrolled forever: the shell
-                        // reached "starting…", every /api/* fetch fell
-                        // through to the asset server, and only a manual
-                        // reload — a navigation under the by-then-active
-                        // registration — unwedged it.
-                        const requestClaim = (worker) =>
-                            globalThis.tonkWhenAccountSetupDurable(() =>
-                                (worker.postMessage({ type: "claim" }), false),
+                        const readyRegistration =
+                            await navigator.serviceWorker.ready;
+                        const firstWorker = readyRegistration.active;
+                        if (!firstWorker) {
+                            throw new Error(
+                                "Service worker became ready without an active worker",
                             );
-                        const claimWhenActivated = (worker) => {
-                            if (!worker) return;
-                            if (worker.state === "activated") {
-                                requestClaim(worker);
-                                return;
-                            }
-                            worker.addEventListener("statechange", () => {
-                                if (worker.state === "activated") {
-                                    requestClaim(worker);
-                                }
-                            });
-                        };
-                        claimWhenActivated(registration.active);
-                        claimWhenActivated(registration.waiting);
-                        claimWhenActivated(registration.installing);
-                        registration.addEventListener?.("updatefound", () =>
-                            claimWhenActivated(registration.installing),
+                        }
+                        globalThis.tonkClaimWhenAccountSetupDurable(
+                            firstWorker,
+                            priorController,
                         );
                         await controlled;
                     }
@@ -843,8 +865,9 @@
                     ) {
                         const successor = incoming;
                         claimRequested = successor;
-                        globalThis.tonkWhenAccountSetupDurable(() =>
-                            (successor.postMessage({ type: "claim" }), false),
+                        globalThis.tonkClaimWhenAccountSetupDurable(
+                            successor,
+                            priorController,
                         );
                     }
                     if (
@@ -1359,15 +1382,89 @@
                         "color:inherit",
                     ].join(";");
                     reload.addEventListener("click", () => {
-                        // Keep claim + reload on the same safe side of account
-                        // setup: claiming first would put an Armed/pre-Stage
-                        // old document behind the successor's stale-write
-                        // barrier before it could persist recovery.
-                        globalThis.tonkReloadWhenAccountSetupDurable(() =>
-                            registration.waiting?.postMessage({
-                                type: "activate",
-                            }),
-                        );
+                        const controllerBeforeClaim =
+                            navigator.serviceWorker.controller;
+                        // Activate without navigating, then ask that exact
+                        // successor to claim. `controllerchange` owns the one
+                        // alignment reload: reloading immediately after
+                        // `activate` can produce another A document behind an
+                        // already-active B, with no waiting worker left for it
+                        // to observe.
+                        globalThis.tonkWhenAccountSetupDurable(() => {
+                            const successor =
+                                registration.waiting ||
+                                registration.installing ||
+                                (registration.active !==
+                                navigator.serviceWorker.controller
+                                    ? registration.active
+                                    : null);
+                            if (!successor) {
+                                // Discovery can beat installation. Keep this
+                                // waiter open and nudge it when update() has a
+                                // candidate to expose.
+                                const wake = () =>
+                                    window.dispatchEvent(
+                                            new Event(
+                                                "tonk:account-setup-hold-change",
+                                            ),
+                                    );
+                                registration.update().then(wake, wake);
+                                return false;
+                            }
+
+                            let claimQueued = false;
+                            const claimWhenActive = () => {
+                                if (
+                                    claimQueued ||
+                                    successor.state !== "activated"
+                                ) {
+                                    return;
+                                }
+                                claimQueued = true;
+                                successor.removeEventListener(
+                                    "statechange",
+                                    claimWhenActive,
+                                );
+                                globalThis.tonkClaimWhenAccountSetupDurable(
+                                    successor,
+                                    controllerBeforeClaim,
+                                );
+                            };
+
+                            if (successor.state === "installed") {
+                                successor.addEventListener(
+                                    "statechange",
+                                    claimWhenActive,
+                                );
+                                successor.postMessage({ type: "activate" });
+                            } else if (successor.state === "installing") {
+                                const wakeWhenInstalled = () => {
+                                    if (
+                                        successor.state !== "installed" &&
+                                        successor.state !== "activated" &&
+                                        successor.state !== "redundant"
+                                    ) {
+                                        return;
+                                    }
+                                    successor.removeEventListener(
+                                        "statechange",
+                                        wakeWhenInstalled,
+                                    );
+                                    window.dispatchEvent(
+                                        new Event(
+                                            "tonk:account-setup-hold-change",
+                                        ),
+                                    );
+                                };
+                                successor.addEventListener(
+                                    "statechange",
+                                    wakeWhenInstalled,
+                                );
+                                return false;
+                            }
+                            claimWhenActive();
+                            return true;
+                        });
                     });
 
                     const dismiss = document.createElement("button");
