@@ -8,8 +8,10 @@
 //! the address is service-owned by design (the uniqueness key is never
 //! mirrored into the account repository) and the device list derives from
 //! delegation chains — a declarative view has nothing to subscribe to.
-//! The display name is the exception, and it commits declaratively through
-//! the seeded `profile/rename` command on the editable's `onchange`.
+//! The display name commits imperatively too — `POST
+//! /api/account/display-name`, the same worker route the /account page
+//! uses — because event-to-command delegation belongs to `tonk-display`
+//! templates, and this panel's markup is injected after preprocessing.
 
 use custom_elements::CustomElement;
 use wasm_bindgen::JsCast as _;
@@ -29,6 +31,7 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 #[derive(Default)]
 struct UiAccountSettings {
     click: Option<EventClosure>,
+    change: Option<EventClosure>,
     dialog_open: Option<EventClosure>,
 }
 
@@ -84,6 +87,33 @@ impl CustomElement for UiAccountSettings {
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
         self.click = Some(click);
 
+        // The display name saves on commit (change = Enter or blur). The
+        // roster subscription repaints the bar's account cell when the
+        // write lands, which is the visible receipt.
+        let host = this.clone();
+        let change: EventClosure = Closure::wrap(Box::new(move |event: Event| {
+            let Some(input) = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+                .filter(|input| input.has_attribute("data-settings-name"))
+            else {
+                return;
+            };
+            let name = input.value();
+            if name.trim().is_empty() {
+                prefill_name(&host);
+                return;
+            }
+            spawn_local(async move {
+                let body = serde_json::json!({ "name": name }).to_string();
+                if let Err(error) = tonk_host::post_json("/api/account/display-name", &body).await {
+                    tonk_common::log!("settings: display-name save failed: {error:?}");
+                }
+            });
+        }));
+        let _ = this.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
+        self.change = Some(change);
+
         // A `<tonk-dialog>` seat re-raises this panel long after connect;
         // the dialog's own `fabb-open` is the "fill it freshly" signal. The
         // event is composed and bubbles to the document, so one listener
@@ -113,6 +143,10 @@ impl CustomElement for UiAccountSettings {
         if let Some(click) = self.click.take() {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+        }
+        if let Some(change) = self.change.take() {
+            let _ =
+                this.remove_event_listener_with_callback("change", change.as_ref().unchecked_ref());
         }
         if let Some(dialog_open) = self.dialog_open.take()
             && let Some(document) = window().and_then(|window| window.document())
