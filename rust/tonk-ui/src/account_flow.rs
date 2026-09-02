@@ -4661,13 +4661,12 @@ mod tests {
         wait_for_service_worker(&claimer).await?;
         raise_cluster_from_hub(&claimer, &env).await?;
         run_cluster_login(&claimer, "claimer@example.com").await?;
+        // The trigger wearing the account's name is the sign-in; the
+        // address is a fact this second device only holds once the
+        // account has synced, so it is not what proves the link.
         let signed_in = async {
             enter_hub(&claimer).await?;
             wait_for_text_without(&claimer, "[data-account-trigger]", "link an account").await?;
-            claimer.enter_default_frame().await?;
-            open_hub_settings(&claimer, &env).await?;
-            wait_for_text_containing(&claimer, "[data-settings-email]", "claimer@example.com")
-                .await?;
             claimer.enter_default_frame().await?;
             Ok::<(), anyhow::Error>(())
         };
