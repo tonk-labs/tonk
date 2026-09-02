@@ -207,12 +207,24 @@ function timerHarness() {
     };
 }
 
-function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
+function loadServiceWorker({
+    indexedDB = new FakeIndexedDB(),
+    locks,
+    executingRole = "active",
+    waitingAtStartup = false,
+} = {}) {
     let claims = 0;
     let retirements = 0;
     let activationRequests = 0;
     const logs = [];
-    const registration = eventTarget({ installing: null, waiting: null });
+    const executingWorker = {};
+    const incumbentWorker = executingRole === "active" ? executingWorker : {};
+    const waitingWorker = executingRole === "waiting" ? executingWorker : {};
+    const registration = eventTarget({
+        active: incumbentWorker,
+        installing: null,
+        waiting: waitingAtStartup ? waitingWorker : null,
+    });
     const lockState = locks === undefined ? lockHarness() : { locks, requests: [] };
     const navigator = { onLine: true, locks: lockState.locks };
     const scope = eventTarget({
@@ -221,7 +233,7 @@ function loadServiceWorker({ indexedDB = new FakeIndexedDB(), locks } = {}) {
             origin: "https://tonk.test",
         },
         registration,
-        serviceWorker: {},
+        serviceWorker: executingWorker,
         navigator,
         async skipWaiting() {
             activationRequests += 1;
@@ -553,6 +565,36 @@ test("a successfully installed successor retires the incumbent exactly once", as
     await candidate.dispatch("statechange");
     await candidate.dispatch("statechange");
 
+    assert.equal(retirements(), 1, logs.join("\n"));
+});
+
+test("a restarted waiting worker does not retire itself", async () => {
+    const { scope, retirements, logs } = loadServiceWorker({
+        executingRole: "waiting",
+        waitingAtStartup: true,
+    });
+
+    await new Promise(setImmediate);
+    const pending = [];
+    scope.onfetch({
+        request: {
+            url: "https://tonk.test/api/health",
+            method: "GET",
+        },
+        waitUntil: (promise) => pending.push(promise),
+        respondWith() {},
+    });
+    await Promise.all(pending);
+    assert.equal(retirements(), 0, logs.join("\n"));
+});
+
+test("a restarted active incumbent retires once for its waiting successor", async () => {
+    const { retirements, logs } = loadServiceWorker({
+        executingRole: "active",
+        waitingAtStartup: true,
+    });
+
+    await new Promise(setImmediate);
     assert.equal(retirements(), 1, logs.join("\n"));
 });
 

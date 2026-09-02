@@ -42,6 +42,118 @@ function moduleBlockContaining(needle) {
   return matches[0];
 }
 
+function eventTarget(initial = {}) {
+  const listeners = new Map();
+  return Object.assign(initial, {
+    addEventListener(type, listener) {
+      const registered = listeners.get(type) ?? new Set();
+      registered.add(listener);
+      listeners.set(type, registered);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+    async dispatch(type, event = {}) {
+      await Promise.all(
+        [...(listeners.get(type) ?? [])].map((listener) => listener(event)),
+      );
+    },
+  });
+}
+
+function warmInstallProgressHarness() {
+  const channels = new Set();
+  class FakeBroadcastChannel extends EventTarget {
+    constructor(name) {
+      super();
+      this.name = name;
+      channels.add(this);
+    }
+    postMessage(data) {
+      for (const channel of channels) {
+        if (channel !== this && channel.name === this.name) {
+          channel.dispatchEvent(new MessageEvent("message", { data }));
+        }
+      }
+    }
+    close() {
+      channels.delete(this);
+    }
+  }
+
+  const incumbent = eventTarget({ state: "activated", postMessage() {} });
+  const successor = eventTarget({ state: "installing", postMessage() {} });
+  const registration = eventTarget({
+    active: incumbent,
+    installing: successor,
+    waiting: null,
+    async update() {},
+  });
+  const serviceWorkers = eventTarget({
+    controller: incumbent,
+    ready: Promise.resolve(registration),
+    async register() {
+      return registration;
+    },
+  });
+  let bootLife = 0;
+  const self = eventTarget({
+    tonkBootLife() {
+      bootLife += 1;
+    },
+    tonkWhenAccountSetupDurable(callback) {
+      callback();
+    },
+    tonkClaimWhenAccountSetupDurable() {},
+    tonkReloadWhenAccountSetupDurable() {},
+  });
+  const storage = new Map();
+  const context = {
+    self,
+    window: self,
+    tonkBuild: "aaaaaaaaaaaaaaaa",
+    document: eventTarget({
+      visibilityState: "visible",
+      querySelector() {
+        return { textContent: "" };
+      },
+    }),
+    navigator: { serviceWorker: serviceWorkers },
+    BroadcastChannel: FakeBroadcastChannel,
+    sessionStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, String(value));
+      },
+      removeItem(key) {
+        storage.delete(key);
+      },
+    },
+    fetch: async () => new Response("", { status: 404 }),
+    location: { reload() {} },
+    console: { log() {}, warn() {}, error() {} },
+    Event,
+    Response,
+    setTimeout,
+    clearTimeout,
+  };
+  runInNewContext(moduleBlockContaining("tonk-install-progress"), context, {
+    filename: INDEX,
+  });
+
+  return {
+    serviceWorkers,
+    bootLife: () => bootLife,
+    broadcast(message) {
+      const sender = new FakeBroadcastChannel("tonk-sw-install-progress-v1");
+      sender.postMessage(message);
+      sender.close();
+    },
+  };
+}
+
 /**
  * Bare identifiers a block CALLS as a plain function — `foo(...)`, not
  * `obj.foo(...)` — that it does not itself declare.
@@ -366,9 +478,31 @@ describe("boot script contract with the worker", () => {
     );
   });
 
-  test("a verified install's progress keeps the bootstrap watchdog alive", () => {
-    const registering = moduleBlockContaining("tonk-install-progress");
-    assert.match(registering, /message\?\.build === globalThis\.tonkBuild/);
-    assert.match(registering, /self\.tonkBootLife\?\.\(\)/);
+  test("a successor install keeps the A-document watchdog alive", async () => {
+    const harness = warmInstallProgressHarness();
+    await new Promise(setImmediate);
+    const baseline = harness.bootLife();
+    const progress = {
+      type: "tonk-install-progress",
+      build: "bbbbbbbbbbbbbbbb",
+      phase: "verify",
+      completed: 1,
+      total: 3,
+    };
+
+    await harness.serviceWorkers.dispatch("message", { data: progress });
+    assert.equal(harness.bootLife(), baseline + 1);
+
+    harness.broadcast(progress);
+    assert.equal(harness.bootLife(), baseline + 2);
+
+    await harness.serviceWorkers.dispatch("message", {
+      data: { ...progress, type: "unrelated" },
+    });
+    assert.equal(
+      harness.bootLife(),
+      baseline + 2,
+      "unrelated worker messages are not install liveness",
+    );
   });
 });

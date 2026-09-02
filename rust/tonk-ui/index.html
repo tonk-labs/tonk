@@ -682,12 +682,19 @@
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
             const INSTALL_PROGRESS_CHANNEL =
                 "tonk-sw-install-progress-v1";
+            let observingInstallLifecycle = false;
 
             const noteInstallProgress = (message) => {
-                if (
+                const wellFormed =
                     message?.type === "tonk-install-progress" &&
-                    message?.build === globalThis.tonkBuild
-                ) {
+                    typeof message.build === "string" &&
+                    message.build.length > 0 &&
+                    typeof message.phase === "string" &&
+                    Number.isSafeInteger(message.completed) &&
+                    message.completed >= 0 &&
+                    Number.isSafeInteger(message.total) &&
+                    message.total >= message.completed;
+                if (observingInstallLifecycle && wellFormed) {
                     self.tonkBootLife?.();
                 }
             };
@@ -766,6 +773,7 @@
                     );
                     throw error;
                 }
+                observingInstallLifecycle = Boolean(registration.installing);
 
                 // First install (or an active-but-unclaimed worker) keeps this
                 // document. Wait until `/api/*` is controlled, nudging an
@@ -798,6 +806,7 @@
                     try {
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
+                    observingInstallLifecycle = false;
                     await sendConnectivity();
                     return;
                 }
@@ -881,6 +890,7 @@
                     if (!worker || worker === incoming) return;
                     incoming?.removeEventListener("statechange", onWorkerState);
                     incoming = worker;
+                    observingInstallLifecycle = true;
                     incoming.addEventListener("statechange", onWorkerState);
                     const status = document.querySelector("[data-boot-status]");
                     if (status) status.textContent = "updating…";
@@ -898,6 +908,7 @@
                     }
                 };
                 const cleanup = () => {
+                    observingInstallLifecycle = false;
                     registration.removeEventListener(
                         "updatefound",
                         onUpdateFound,
