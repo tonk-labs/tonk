@@ -184,16 +184,17 @@ pub fn subscribe(
     subscribe_with_route(consumer, query_body, tag, None, None, false)
 }
 
-/// [`subscribe`], retrying while no host has claimed the event yet.
+/// [`subscribe`], retrying while the host handshake is not established yet.
 ///
 /// A subscription is installed by dispatching a DOM event some host's
 /// document-level listener must claim, and boots race: a guest coming
 /// up while its host installs — or while a service-worker swap restarts
-/// everything — dispatches into silence, and the one-shot failure left
-/// the view subscribed to NOTHING. That is the wedge a reload "fixed":
-/// the element sat on its loading state forever while a calmer boot
-/// subscribed fine. Bounded, so a genuinely hostless document still
-/// fails, loudly, after a few seconds.
+/// everything — can dispatch into silence or reach a host that claims
+/// the event before it writes the subscription handle. Either one-shot
+/// failure left the view subscribed to NOTHING. That is the wedge a
+/// reload "fixed": the element sat on its loading state forever while a
+/// calmer boot subscribed fine. Bounded, so a genuinely hostless or
+/// persistently incomplete host still fails, loudly, after a few seconds.
 pub async fn subscribe_claimed(
     consumer: &Element,
     query_body: &JsValue,
@@ -212,19 +213,26 @@ pub async fn subscribe_claimed_with_route(
     branch: Option<&str>,
     profile: bool,
 ) -> Result<Subscription, ErrorDetail> {
-    let mut unclaimed = None;
+    let mut establishment_error = None;
     for attempt in 0..12u32 {
         if attempt > 0 {
             crate::ops::wait_ms(250 * attempt.min(4) as i32).await;
         }
         match subscribe_with_route(consumer, query_body, tag, space, branch, profile) {
             Ok(subscription) => return Ok(subscription),
-            Err(error) if error.message.contains("no host claimed") => unclaimed = Some(error),
+            Err(error) if is_establishment_error(&error) => establishment_error = Some(error),
             Err(error) => return Err(error),
         }
     }
-    Err(unclaimed
+    Err(establishment_error
         .unwrap_or_else(|| ErrorDetail::new(ErrorKind::Network, "tonk-subscribe: never claimed")))
+}
+
+fn is_establishment_error(error: &ErrorDetail) -> bool {
+    error.message.contains("no host claimed")
+        || error
+            .message
+            .contains("host did not write detail.subscription")
 }
 
 /// Like [`subscribe`], but with an explicit cross-repo route (`space`/`branch`).
@@ -364,4 +372,94 @@ fn js_to_error(value: &JsValue) -> ErrorDetail {
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| format!("{value:?}"));
     ErrorDetail::new(ErrorKind::Network, message)
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_limits_subscription_establishment_retries_to_boot_races() {
+        assert!(is_establishment_error(&ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk-subscribe: no host claimed the event",
+        )));
+        assert!(is_establishment_error(&ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk-subscribe: host did not write detail.subscription",
+        )));
+        assert!(!is_establishment_error(&ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk-subscribe: rejected by repository authorization",
+        )));
+    }
+
+    /// A host can claim the event before it has written the subscription
+    /// handle. If that is a transient boot race, the claimed helper must make
+    /// another establishment attempt rather than leaving the consumer with no
+    /// live subscription.
+    #[dialog_common::test]
+    async fn it_retries_when_a_claimed_subscription_omits_its_handle_once() {
+        let document = window().expect("window").document().expect("document");
+        let container = document.create_element("div").expect("container");
+        let consumer = document
+            .create_element("tonk-test-consumer")
+            .expect("consumer");
+        container.append_child(&consumer).expect("append consumer");
+        document
+            .body()
+            .expect("body")
+            .append_child(&container)
+            .expect("attach container");
+
+        let attempts = Rc::new(Cell::new(0u32));
+        let cancels = Rc::new(Cell::new(0u32));
+        let cancel_slot = Rc::new(RefCell::new(None::<Closure<dyn FnMut()>>));
+
+        let attempts_for_listener = attempts.clone();
+        let cancels_for_listener = cancels.clone();
+        let cancel_slot_for_listener = cancel_slot.clone();
+        let listener = Closure::wrap(Box::new(move |event: CustomEvent| {
+            event.stop_propagation();
+            event.prevent_default();
+            let attempt = attempts_for_listener.get() + 1;
+            attempts_for_listener.set(attempt);
+
+            if attempt == 1 {
+                return;
+            }
+
+            let detail: Object = event.detail().dyn_into().expect("detail object");
+            let subscription = Object::new();
+            let cancels = cancels_for_listener.clone();
+            let cancel = Closure::wrap(Box::new(move || {
+                cancels.set(cancels.get() + 1);
+            }) as Box<dyn FnMut()>);
+            Reflect::set(&subscription, &"cancel".into(), cancel.as_ref()).expect("install cancel");
+            Reflect::set(&detail, &"subscription".into(), &subscription)
+                .expect("install subscription");
+            *cancel_slot_for_listener.borrow_mut() = Some(cancel);
+        }) as Box<dyn FnMut(CustomEvent)>);
+        container
+            .add_event_listener_with_callback(events::SUBSCRIBE, listener.as_ref().unchecked_ref())
+            .expect("listen");
+
+        let query = Object::new();
+        let subscription = subscribe_claimed(&consumer, query.as_ref(), None)
+            .await
+            .expect("the second establishment attempt should succeed");
+
+        assert_eq!(attempts.get(), 2, "one retry should establish the handle");
+        assert_eq!(cancels.get(), 0, "the live handle is not canceled early");
+        drop(subscription);
+        assert_eq!(cancels.get(), 1, "dropping the handle cancels it once");
+
+        container.remove();
+    }
 }

@@ -3365,6 +3365,10 @@ mod tests {
             /// live subscription now, not a one-shot. `None` makes the
             /// model subscription stay empty (the `no-model` state).
             model_frame: Option<JsValue>,
+            /// Number of claimed attempts that deliberately omit their
+            /// subscription handle, keyed by tag. This models the incomplete
+            /// host handshake seen during a racy space boot.
+            omit_handles: BTreeMap<String, u32>,
         }
 
         impl FakeHost {
@@ -3380,6 +3384,18 @@ mod tests {
                 query_responses: Vec<JsValue>,
                 model_frame: Option<JsValue>,
             ) -> FakeHost {
+                Self::install_with_model_and_omissions(
+                    query_responses,
+                    model_frame,
+                    BTreeMap::new(),
+                )
+            }
+
+            fn install_with_model_and_omissions(
+                query_responses: Vec<JsValue>,
+                model_frame: Option<JsValue>,
+                omit_handles: BTreeMap<String, u32>,
+            ) -> FakeHost {
                 let container = document().create_element("div").unwrap();
                 document().body().unwrap().append_child(&container).unwrap();
                 let state = Rc::new(RefCell::new(FakeState {
@@ -3388,6 +3404,7 @@ mod tests {
                     subs: BTreeMap::new(),
                     subscribe_tags: Vec::new(),
                     model_frame,
+                    omit_handles,
                 }));
                 let mut listeners = Vec::new();
 
@@ -3427,20 +3444,36 @@ mod tests {
                                 .and_then(|v| v.as_string())
                                 .unwrap_or_default();
                             let consumer: Element = ev.target().unwrap().dyn_into().unwrap();
-                            let model_frame = {
+                            let (omit_handle, model_frame) = {
                                 let mut s = state.borrow_mut();
                                 s.subscribe_tags.push(tag.clone());
-                                s.subs.insert(tag.clone(), consumer.clone());
-                                // Auto-push the model concept frame as
-                                // soon as the model subscription opens, so
-                                // the downstream flow starts the way a live
-                                // host would on the first revision.
-                                if tag == "model" {
-                                    s.model_frame.clone()
+                                let omit_handle =
+                                    s.omit_handles.get_mut(&tag).is_some_and(|remaining| {
+                                        if *remaining == 0 {
+                                            return false;
+                                        }
+                                        *remaining -= 1;
+                                        true
+                                    });
+                                if omit_handle {
+                                    (true, None)
                                 } else {
-                                    None
+                                    s.subs.insert(tag.clone(), consumer.clone());
+                                    // Auto-push the model concept frame as
+                                    // soon as the model subscription opens, so
+                                    // the downstream flow starts the way a live
+                                    // host would on the first revision.
+                                    let frame = if tag == "model" {
+                                        s.model_frame.clone()
+                                    } else {
+                                        None
+                                    };
+                                    (false, frame)
                                 }
                             };
+                            if omit_handle {
+                                return;
+                            }
                             let sub = Object::new();
                             let noop = Function::new_no_args("");
                             let _ = Reflect::set(&sub, &"cancel".into(), &noop);
@@ -3798,6 +3831,51 @@ mod tests {
                 display.get_attribute("data-state").as_deref(),
                 Some("unauthorized"),
                 "an HTTP 403 is `unauthorized`, not `offline`",
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_recovers_a_view_subscription_that_is_claimed_without_a_handle_once() {
+            let host = FakeHost::install_with_model_and_omissions(
+                resolve_responses(),
+                Some(model_concept_frame()),
+                BTreeMap::from([("view".to_owned(), 1)]),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+
+            for _ in 0..300 {
+                let tags = host.subscribe_tags();
+                if tags.iter().filter(|tag| tag.as_str() == "view").count() == 2
+                    && tags.contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p data-recovered>recovered</p>"));
+            let recovered = await_selector(&display, "[data-recovered]")
+                .await
+                .expect("the retried view subscription should mount its template");
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("ready") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(recovered.text_content().as_deref(), Some("recovered"));
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready"),
+                "the model-specific dictionary view should leave loading/default-view",
+            );
+            assert_eq!(
+                host.subscribe_tags()
+                    .iter()
+                    .filter(|tag| tag.as_str() == "view")
+                    .count(),
+                2,
+                "the claimed-without-handle view attempt is retried exactly once",
             );
         }
 
