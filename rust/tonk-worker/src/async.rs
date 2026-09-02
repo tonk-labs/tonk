@@ -15,22 +15,19 @@
 /// ```
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsError> {
-    use wasm_bindgen::JsCast;
-    use web_sys::ServiceWorkerGlobalScope;
+    use wasm_bindgen::{JsCast, JsValue};
 
-    let millis = duration.as_millis() as i32;
+    let global = js_sys::global();
+    let set_timeout = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+        .map_err(|error| wasm_bindgen::JsError::new(&format!("{error:?}")))?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| wasm_bindgen::JsError::new("global setTimeout is not a function"))?;
+    let millis = JsValue::from_f64(duration.as_millis() as f64);
 
-    let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        // let window = web_sys::window().expect("no global window exists");
-        let global = js_sys::global()
-            .dyn_into::<ServiceWorkerGlobalScope>()
-            .unwrap();
-
-        if let Err(error) =
-            global.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis)
-        {
-            let _ = reject.call0(&error);
-        };
+    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
+        if let Err(error) = set_timeout.call2(&global, &resolve, &millis) {
+            let _ = reject.call1(&JsValue::UNDEFINED, &error);
+        }
     });
 
     wasm_bindgen_futures::JsFuture::from(promise)

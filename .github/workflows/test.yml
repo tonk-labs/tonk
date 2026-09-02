@@ -75,6 +75,26 @@ jobs:
         run: |
           nix develop --accept-flake-config .#ci --command test:e2e
 
+  service-worker:
+    name: 'Service-worker lifecycle tests'
+    needs: ['lints']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Run service-worker lifecycle tests'
+        shell: bash
+        run: |
+          nix develop --accept-flake-config .#ci --command test:sw
+
   tests:
     name: 'Tests'
     needs: ['lints']
