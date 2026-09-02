@@ -1556,11 +1556,16 @@ pub(crate) fn run_signup_ceremony() {
     } else {
         tonk_analytics::account::Stage::PasskeyCreate
     });
+    // Open an existing-account assertion before this click returns. iOS
+    // passkey providers require the WebAuthn request to consume the tap's
+    // transient user activation synchronously; the worker handoff can finish
+    // later. Account creation still follows its separate preparation path.
+    let login = existing.then(|| crate::account::begin_login_ceremony(set_status));
     wasm_bindgen_futures::spawn_local(async move {
-        let outcome = if existing {
-            crate::account::run_login_ceremony(set_status).await
-        } else {
-            crate::account::run_account_ceremony(&email, set_status).await
+        let outcome = match login {
+            Some(Ok(mediation)) => mediation.finish().await,
+            Some(Err(error)) => Err(error),
+            None => crate::account::run_account_ceremony(&email, set_status).await,
         };
         match outcome {
             // The account exists and registered, but nobody has opened

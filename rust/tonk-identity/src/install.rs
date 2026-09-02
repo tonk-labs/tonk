@@ -94,23 +94,34 @@ async fn add_passkey(input: JsValue) -> Result<JsValue, JsValue> {
 /// One assertion against an existing passkey — a picker when no
 /// `credentialId` is given — then the same handoff [`create_passkey`]
 /// does.
-async fn use_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+fn use_passkey(input: JsValue) -> Promise {
+    // Parse and open WebAuthn before returning to the click handler. Wrapping
+    // this whole function in `future_to_promise` used to defer
+    // `credentials.get()` until a later microtask, after mobile browsers had
+    // cleared the tap's transient user activation.
     let credential_id = match optional_string_property(&input, "credentialId") {
-        Some(encoded) => Some(
-            hex::decode(&encoded)
-                .map_err(|error| JsValue::from_str(&format!("invalid credentialId: {error}")))?,
-        ),
+        Some(encoded) => match hex::decode(&encoded) {
+            Ok(decoded) => Some(decoded),
+            Err(error) => {
+                return Promise::reject(&JsValue::from_str(&format!(
+                    "invalid credentialId: {error}"
+                )));
+            }
+        },
         None => None,
     };
-    let custodian = match credential_id {
-        Some(id) => crate::webcrypto_kek::Custodian::load(id),
-        None => crate::webcrypto_kek::Custodian::choose(),
-    }
-    .perform(&crate::webcrypto_kek::Page)
-    .await
-    .map_err(js_error)?;
-    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    mediate(custodian, request).await
+    let assertion = match crate::passkey::begin_evaluate_custody_passkey(credential_id.as_deref()) {
+        Ok(assertion) => assertion,
+        Err(error) => return Promise::reject(&js_error(error)),
+    };
+    future_to_promise(async move {
+        let credential = assertion.finish().await.map_err(js_error)?;
+        let custodian = crate::webcrypto_kek::Custodian::from_credential(credential)
+            .await
+            .map_err(js_error)?;
+        let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+        mediate(custodian, request).await
+    })
 }
 
 /// Hand a custodian's two derivation handles to the service worker and
@@ -390,9 +401,7 @@ pub fn install() {
     );
     create_passkey.forget();
 
-    let use_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(use_passkey(input))
-    });
+    let use_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(use_passkey);
     let _ = Reflect::set(
         &identity,
         &"usePasskey".into(),

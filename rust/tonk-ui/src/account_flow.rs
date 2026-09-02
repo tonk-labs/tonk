@@ -3685,6 +3685,54 @@ mod tests {
         Ok(())
     }
 
+    /// Mobile WebAuthn providers require the assertion to begin in the turn
+    /// that handled the person's tap. Deferring `credentials.get()` through a
+    /// spawned Rust future leaves the dialog saying "waiting" while iOS never
+    /// raises its passkey sheet.
+    #[dialog_common::test]
+    async fn it_starts_login_passkey_before_the_activating_click_returns(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        let taken = "tap-bound@example.com";
+        sign_up(&owner, &env, taken).await?;
+        owner.quit().await?;
+
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        open_register_dialog_from_a_space(&driver, &env, "Tap Bound").await?;
+        type_into_register_dialog(&driver, taken).await?;
+        await_register_action(&driver, "log in with your passkey").await?;
+
+        let started_in_click = driver
+            .execute(
+                r##"let activatingClick = true;
+                   let observed = null;
+                   Object.defineProperty(navigator.credentials, "get", {
+                     configurable: true,
+                     value: () => {
+                       observed = activatingClick;
+                       return Promise.reject(new DOMException(
+                         "controlled passkey rejection", "NotAllowedError"
+                       ));
+                     }
+                   });
+                   document.querySelector("#tonk-register-action").click();
+                   activatingClick = false;
+                   return observed;"##,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            started_in_click.json(),
+            &serde_json::Value::Bool(true),
+            "credentials.get must start before the activating click returns"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// A late answer must not render as an answer about what is typed
     /// now.
     ///

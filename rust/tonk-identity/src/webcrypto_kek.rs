@@ -508,7 +508,7 @@ impl Custodian {
     /// credential without PRF outputs — so this asserts once more when
     /// it must, which is a second prompt on those platforms only.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn from_credential(
+    pub(crate) async fn from_credential(
         credential: crate::passkey::CustodyCredential,
     ) -> anyhow::Result<Self> {
         use anyhow::Context as _;
