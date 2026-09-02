@@ -354,6 +354,18 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
+    if req.method() == Method::GET && req.uri().path() == "/capabilities" {
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&crate::handlers::capabilities::response_body())
+                        .expect("capability marker serializes"),
+                )))
+                .unwrap(),
+        ));
+    }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
         // The configured origin's host, for the same reason the customer
         // documents use it: a proxy's `Host` header is not the name the

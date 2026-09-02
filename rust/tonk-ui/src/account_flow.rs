@@ -220,7 +220,33 @@ mod tests {
     /// touches the bar or a space page goes through here.
     async fn enter_guest(driver: &WebDriver) -> Result<()> {
         driver.enter_default_frame().await?;
-        let frame = element(driver, "tonk-site > iframe").await?;
+        let frame = match element(driver, "tonk-site > iframe").await {
+            Ok(frame) => frame,
+            Err(error) => {
+                let state = driver
+                    .execute(
+                        r##"const site = document.querySelector("tonk-site");
+                           return {
+                             url: String(location.href),
+                             ready: document.readyState,
+                             controlled: !!navigator.serviceWorker?.controller,
+                             bodyChildren: [...document.body.children].map(node => node.localName),
+                             root: document.querySelector("#tonk-root")?.outerHTML || null,
+                             site: site ? {
+                               attributes: Object.fromEntries([...site.attributes].map(attr => [attr.name, attr.value])),
+                               children: [...site.children].map(node => node.localName),
+                             } : null,
+                             errors: globalThis.__tonkTestErrors || [],
+                             installProgress: globalThis.__tonkTestInstallProgress || [],
+                           };"##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|result| result.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error).context(format!("top-document guest state: {state}"));
+            }
+        };
         frame.enter_frame().await?;
         Ok(())
     }
@@ -346,10 +372,30 @@ mod tests {
             if controlled == Some(true) {
                 return Ok(());
             }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the service worker never took control of the page"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                let state = driver
+                    .execute_async(
+                        r#"const done = arguments[arguments.length - 1];
+                           navigator.serviceWorker.getRegistration().then(registration => done({
+                             url: String(location.href),
+                             ready: document.readyState,
+                             build: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
+                             controller: navigator.serviceWorker.controller?.scriptURL || null,
+                             active: registration?.active?.state || null,
+                             waiting: registration?.waiting?.state || null,
+                             installing: registration?.installing?.state || null,
+                             errors: globalThis.__tonkTestErrors || [],
+                             progress: globalThis.__tonkTestInstallProgress || [],
+                           })).catch(error => done({ error: String(error) }));"#,
+                        vec![],
+                    )
+                    .await
+                    .map(|ret| ret.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(anyhow!(
+                    "the service worker never took control of the page: {state}"
+                ));
+            }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
@@ -402,38 +448,10 @@ mod tests {
         first: &WebDriver,
         first_authenticator: &str,
     ) -> Result<(WebDriver, String)> {
-        let source = ChromeDevTools::new(first.handle.clone());
-        let credentials = source
-            .execute_cdp_with_params(
-                "WebAuthn.getCredentials",
-                serde_json::json!({ "authenticatorId": first_authenticator }),
-            )
-            .await?;
-        let credentials = credentials["credentials"]
-            .as_array()
-            .cloned()
-            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))?;
-        if credentials.is_empty() {
-            return Err(anyhow!(
-                "the first device registered no passkey, so there is none to carry over"
-            ));
-        }
-
         let (second, authenticator) = driver_with_prf_authenticator(env).await?;
-        let devtools = ChromeDevTools::new(second.handle.clone());
-        for credential in credentials {
-            devtools
-                .execute_cdp_with_params(
-                    "WebAuthn.addCredential",
-                    serde_json::json!({
-                        "authenticatorId": authenticator,
-                        "credential": credential,
-                    }),
-                )
-                .await?;
-        }
+        copy_credentials(first, first_authenticator, &second, &authenticator).await?;
 
-        // What the copy above loses: the credential's PRF secret.
+        // What the credential copy loses: the credential's PRF secret.
         // `WebAuthn.getCredentials` exports the signing key but not the
         // hmac-secret, so the copied passkey signs fine and yields no
         // PRF outputs — and custody derives its keys from those, so a
@@ -1520,12 +1538,27 @@ mod tests {
         let row = match element(&second, "#tonk-register-confirm-row").await {
             Ok(row) => row,
             Err(error) => {
-                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
-                    let text = status.text().await.unwrap_or_default();
-                    eprintln!("PROBE register status: {text:?}");
-                }
+                let state = second
+                    .execute_async(
+                        r##"const done = arguments[arguments.length - 1];
+                           const action = document.querySelector('#tonk-register-action');
+                           fetch('/api/account').then(async response => done({
+                             status: document.querySelector('#tonk-register-status')?.textContent?.trim() || null,
+                             action: action?.textContent?.trim() || null,
+                             actionHidden: action?.hasAttribute('hidden') ?? null,
+                             rows: [...document.querySelectorAll('#tonk-register .orow')].map(row => row.textContent.trim()),
+                             accountStatus: response.status,
+                             account: await response.text(),
+                           })).catch(error => done({ diagnosticError: String(error) }));"##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|result| result.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
                 dump_browser_log(&second, &env).await;
-                return Err(error);
+                return Err(error).context(format!(
+                    "second-device confirmation row did not appear: {state}"
+                ));
             }
         };
         let text = row.text().await?;
@@ -2284,6 +2317,225 @@ mod tests {
         Ok(())
     }
 
+    /// The producer compares the immutable page and controlling-worker builds
+    /// under the shared lock before WebAuthn. A stale answer must leave both
+    /// the authenticator and durable hold untouched.
+    #[dialog_common::test]
+    async fn it_refuses_a_stale_worker_before_creating_a_passkey(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+        type_into_register_dialog(&driver, "stale-before-passkey@example.com").await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        driver
+            .execute(
+                r#"window.__tonkOriginalFetch = window.fetch;
+                   window.__stalePasskeyCalls = 0;
+                   window.fetch = (input, init) => {
+                     const url = new URL(
+                       typeof input === 'string' ? input : input.url,
+                       window.location.href,
+                     );
+                     if (url.pathname === '/api/health') {
+                       return Promise.resolve(new Response(JSON.stringify({
+                         build: 'ffffffffffffffff', worker: 'ok'
+                       }), { status: 200, headers: { 'content-type': 'application/json' } }));
+                     }
+                     return window.__tonkOriginalFetch(input, init);
+                   };
+                   Object.defineProperty(navigator.credentials, 'create', {
+                     configurable: true,
+                     value: () => {
+                       window.__stalePasskeyCalls += 1;
+                       return Promise.reject(new Error('WebAuthn must not run'));
+                     }
+                   });"#,
+                Vec::new(),
+            )
+            .await?;
+        click(&driver, "#tonk-register-action").await?;
+        await_narrator_containing(&driver, "Reload Tonk").await?;
+
+        let state = driver
+            .execute_async(
+                r#"const done = arguments[arguments.length - 1];
+                   (async () => {
+                     const database = await new Promise((resolve, reject) => {
+                       const request = indexedDB.open('tonk-update-safety-v1', 1);
+                       request.onsuccess = () => resolve(request.result);
+                       request.onerror = () => reject(request.error);
+                     });
+                     const hold = await new Promise((resolve, reject) => {
+                       const transaction = database.transaction('holds', 'readonly');
+                       const request = transaction.objectStore('holds').get('account-setup');
+                       let value;
+                       request.onsuccess = () => { value = request.result; };
+                       request.onerror = () => reject(request.error);
+                       transaction.oncomplete = () => resolve(value);
+                     });
+                     database.close();
+                     done({
+                       calls: window.__stalePasskeyCalls,
+                       holdAbsent: hold === undefined,
+                       critical: document.documentElement.hasAttribute(
+                         'data-tonk-account-setup-critical'
+                       ),
+                     });
+                   })().catch(error => done({ error: String(error) }));"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            state.json(),
+            &serde_json::json!({ "calls": 0, "holdAbsent": true, "critical": false }),
+            "a stale worker reached WebAuthn or left update safety armed"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The access service deploys independently of the immutable page and
+    /// worker. Every missing, unavailable, malformed, or drifted capability
+    /// answer must stop while the ceremony is still safe to repeat.
+    #[dialog_common::test]
+    async fn it_refuses_an_incompatible_account_provider_before_creating_a_passkey(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        element(&driver, "tonk-account[data-mode=\"choice\"]").await?;
+        click(&driver, "#account-choose-link").await?;
+        await_register_dialog(&driver).await?;
+        type_into_register_dialog(&driver, "provider-before-passkey@example.com").await?;
+        await_register_action(&driver, "create a passkey").await?;
+
+        driver
+            .execute(
+                r#"window.__tonkOriginalFetch = window.fetch;
+                   window.__capabilityMode = "missing";
+                   window.__capabilityFetches = 0;
+                   window.__providerPasskeyCalls = 0;
+                   window.fetch = (input, init) => {
+                     const url = new URL(
+                       typeof input === 'string' ? input : input.url,
+                       window.location.href,
+                     );
+                     if (url.pathname !== '/api/account/setup-capabilities') {
+                       return window.__tonkOriginalFetch(input, init);
+                     }
+                     window.__capabilityFetches += 1;
+                     const json = value => Promise.resolve(new Response(JSON.stringify(value), {
+                       status: 200,
+                       headers: { 'content-type': 'application/json' },
+                     }));
+                     switch (window.__capabilityMode) {
+                       case 'missing':
+                         return Promise.resolve(new Response('', { status: 404 }));
+                       case 'timeout':
+                         return Promise.resolve(new Response('', { status: 504 }));
+                       case 'malformed':
+                         return json({ service: 'tonk-access-service', capabilities: {} });
+                       case 'drifted':
+                         return json({
+                           service: 'tonk-access-service',
+                           capabilities: { accountSetupLifecycle: 2 },
+                         });
+                       default:
+                         return Promise.reject(new Error('unknown capability mode'));
+                     }
+                   };
+                   Object.defineProperty(navigator.credentials, 'create', {
+                     configurable: true,
+                     value: () => {
+                       window.__providerPasskeyCalls += 1;
+                       return Promise.reject(new Error('WebAuthn must not run'));
+                     }
+                   });"#,
+                Vec::new(),
+            )
+            .await?;
+
+        for (attempt, mode) in ["missing", "timeout", "malformed", "drifted"]
+            .into_iter()
+            .enumerate()
+        {
+            driver
+                .execute(
+                    "window.__capabilityMode = arguments[0];",
+                    vec![serde_json::json!(mode)],
+                )
+                .await?;
+            click(&driver, "#tonk-register-action").await?;
+            let observed = driver
+                .execute_async(
+                    r#"const expected = arguments[0];
+                       const done = arguments[arguments.length - 1];
+                       const deadline = Date.now() + 30000;
+                       const poll = () => {
+                         const action = document.querySelector('#tonk-register-action');
+                         if (window.__capabilityFetches >= expected && action && !action.disabled) {
+                           done({
+                             fetches: window.__capabilityFetches,
+                             passkeys: window.__providerPasskeyCalls,
+                             critical: document.documentElement.hasAttribute(
+                               'data-tonk-account-setup-critical'
+                             ),
+                           });
+                         } else if (Date.now() >= deadline) {
+                           done({ timeout: true, fetches: window.__capabilityFetches,
+                             passkeys: window.__providerPasskeyCalls });
+                         } else {
+                           setTimeout(poll, 50);
+                         }
+                       };
+                       poll();"#,
+                    vec![serde_json::json!(attempt + 1)],
+                )
+                .await?;
+            assert_eq!(
+                observed.json()["fetches"],
+                attempt + 1,
+                "{mode}: {observed:?}"
+            );
+            assert_eq!(observed.json()["passkeys"], 0, "{mode}: {observed:?}");
+            assert_eq!(observed.json()["critical"], false, "{mode}: {observed:?}");
+        }
+
+        let hold = driver
+            .execute_async(
+                r#"const done = arguments[arguments.length - 1];
+                   (async () => {
+                     const database = await new Promise((resolve, reject) => {
+                       const request = indexedDB.open('tonk-update-safety-v1', 1);
+                       request.onsuccess = () => resolve(request.result);
+                       request.onerror = () => reject(request.error);
+                     });
+                     const value = await new Promise((resolve, reject) => {
+                       const transaction = database.transaction('holds', 'readonly');
+                       const request = transaction.objectStore('holds').get('account-setup');
+                       request.onsuccess = () => resolve(request.result);
+                       request.onerror = () => reject(request.error);
+                     });
+                     database.close();
+                     done({ absent: value === undefined });
+                   })().catch(error => done({ error: String(error) }));"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(hold.json(), &serde_json::json!({ "absent": true }));
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_submits_activation_once_while_the_request_is_pending(
         env: TestEnvironment,
@@ -2674,7 +2926,6 @@ mod tests {
                 if outcome_line.trim_end() != "signed in" {
                     child.kill().await?;
                     let mut stderr_text = String::new();
-                    use tokio::io::AsyncReadExt as _;
                     let _ = tokio::time::timeout(
                         Duration::from_secs(5),
                         stderr.read_to_string(&mut stderr_text),
@@ -3825,7 +4076,28 @@ mod tests {
                 return Ok(last);
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("the {noun:?} row never settled"));
+                let state = driver
+                    .execute_async(
+                        r##"const done = arguments[arguments.length - 1];
+                           const host = document.querySelector('tonk-account');
+                           const action = document.querySelector('#tonk-register-action');
+                           fetch('/api/account').then(async response => done({
+                             mode: host?.getAttribute('data-mode') || null,
+                             status: document.querySelector('#tonk-register-status')?.textContent?.trim() || null,
+                             action: action?.textContent?.trim() || null,
+                             actionHidden: action?.hasAttribute('hidden') ?? null,
+                             rows: [...document.querySelectorAll('#tonk-register .orow')].map(row => row.textContent.trim()),
+                             accountStatus: response.status,
+                             account: await response.text(),
+                           })).catch(error => done({ diagnosticError: String(error) }));"##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|result| result.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(anyhow!(
+                    "the {noun:?} row never settled; ceremony state: {state}"
+                ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -4487,9 +4759,15 @@ mod tests {
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]'
+                )?.content;
                 fetch(arguments[0], {
                     method: "POST",
-                    headers: { "content-type": "application/json" },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-tonk-build": build,
+                    },
                     body: JSON.stringify(arguments[1]),
                 }).then(async response => {
                     // A body is not always JSON — an empty 200, or an
@@ -4519,9 +4797,15 @@ mod tests {
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
+                const build = document.querySelector(
+                    'meta[name="tonk-worker-build"]'
+                )?.content;
                 fetch(arguments[0], {
                     method: "POST",
-                    headers: { "content-type": "application/yaml" },
+                    headers: {
+                        "content-type": "application/yaml",
+                        "x-tonk-build": build,
+                    },
                     body: arguments[1],
                 }).then(async response => done({
                     status: response.status,
@@ -4636,11 +4920,18 @@ mod tests {
     }
 
     async fn wait_for_callback_device_rows(
+        driver: &WebDriver,
         profile: &TempDir,
         env: &TestEnvironment,
     ) -> Result<(CliOutput, Vec<CliDeviceRow>)> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
+            // Registration commits the browser and terminal rows locally,
+            // then publishes them through the ordinary account sync drain.
+            // Drive that drain explicitly: a quiet test page has no later
+            // user traffic to schedule one when the registration's initial
+            // best-effort push loses a concurrent pull/push race.
+            let _ = post_json(driver, "/api/sync", serde_json::json!({})).await;
             let output = devices(profile, env).await?;
             if !output.status.success() {
                 return Err(anyhow!("devices failed: {}", output.stderr));
@@ -5026,7 +5317,7 @@ mod tests {
             .to_string();
         creator.quit().await?;
 
-        let claimer = driver_with_prf(&env).await?;
+        let (claimer, claimer_authenticator) = driver_with_prf_authenticator(&env).await?;
         sign_up(&claimer, &env, "claimer@example.com").await?;
         let visited = post_json(
             &claimer,
@@ -5106,18 +5397,15 @@ mod tests {
              directory; last `account space` output was: {last_seen}"
         );
 
-        let devtools = ChromeDevTools::new(claimer.handle.clone());
-        devtools
-            .execute_cdp_with_params(
-                "Storage.clearDataForOrigin",
-                serde_json::json!({
-                    "origin": env.tonk_web.origin().ascii_serialization(),
-                    "storageTypes": "all",
-                }),
-            )
-            .await?;
-        goto(&claimer, env.tonk_web.as_str()).await?;
-        wait_for_service_worker(&claimer).await?;
+        // A second account device is a fresh browser with the synced
+        // passkey, not a live browser whose origin storage is erased from
+        // underneath its page and worker. The latter leaves Chrome in a CDP-
+        // synthetic lifecycle state and also bypasses the actual cross-device
+        // PRF boundary this journey is meant to cover.
+        let (second_device, _) =
+            second_device_with_same_passkey(&env, &claimer, &claimer_authenticator).await?;
+        claimer.quit().await?;
+        let claimer = second_device;
         goto(&claimer, env.tonk_web.join("account")?.as_str()).await?;
         element(&claimer, "tonk-account[data-mode=\"choice\"]").await?;
         run_cluster_login(&claimer, "claimer@example.com").await?;
@@ -5392,7 +5680,7 @@ mod tests {
             .as_array()
             .context("profile roster is not an array")?
             .len();
-        let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
+        let first_profile = active_profile_and_label(profiles_before_add)?.0;
 
         // The real Hub frame renders the first account's space.
         goto(&driver, env.tonk_web.as_str()).await?;
@@ -5550,8 +5838,8 @@ mod tests {
             .clone();
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_text_containing(&driver, "[data-account-menu]", &first_label).await?;
         let selector = format!("button[data-profile=\"{first_profile}\"]");
+        wait_for_displayed(&driver, &selector).await?;
         click(&driver, &selector).await?;
         driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -5614,7 +5902,8 @@ mod tests {
         // its terminal row can appear before the signing browser's remote
         // row. Each `devices` call pulls again: wait for BOTH sides rather
         // than exiting on that guaranteed local row.
-        let (devices, device_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
+        let (devices, device_rows) =
+            wait_for_callback_device_rows(&driver, &linked.profile, &env).await?;
         assert!(
             device_rows
                 .iter()
@@ -6106,7 +6395,8 @@ mod tests {
         // Cache the complete callback view before revocation. The CLI creates
         // its own row locally, so a terminal-only list does not prove it has
         // pulled the browser row that must remain visible in its stale cache.
-        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
+        let (_listed, listed_rows) =
+            wait_for_callback_device_rows(&driver, &linked.profile, &env).await?;
         let cli_did = did_for_device(&listed_rows, "e2e terminal")
             .context("CLI device was absent from the account device list")?
             .to_string();
@@ -6293,27 +6583,7 @@ mod tests {
         let created = post_json(
             &creator,
             "/api/profile/branch/main/transact",
-            serde_json::json!({
-                "claims": [{
-                    "op": "assert",
-                    "application": {
-                        "predicate": {
-                            "kind": "transient",
-                            "concept": {
-                                "description": "A request to create a new space from the wizard form.",
-                                "with": {
-                                    "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                                    "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" }
-                                }
-                            }
-                        },
-                        "parameters": {
-                            "name": "Custodied After Assertion",
-                            "remote": env.tonk_web.join("ucan/")?
-                        }
-                    }
-                }]
-            }),
+            tonk_worker_api::create_space_claim_json("Custodied After Assertion"),
         )
         .await?;
         successful_body("create space command", &created);

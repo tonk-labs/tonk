@@ -32,6 +32,12 @@ fn js_error(error: anyhow::Error) -> JsValue {
     if let Some(name) = name {
         value.set_name(name);
     }
+    if error
+        .downcast_ref::<crate::passkey::CredentialCreatedError>()
+        .is_some()
+    {
+        let _ = Reflect::set(&value, &"tonkPasskeyCreated".into(), &JsValue::TRUE);
+    }
     value.into()
 }
 
@@ -65,7 +71,13 @@ async fn create_passkey(input: JsValue) -> Result<JsValue, JsValue> {
         .await
         .map_err(js_error)?;
     let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    mediate(custodian, request).await
+    mediate(custodian, request).await.map_err(|error| {
+        // `credentials.create()` has already returned a credential. Preserve
+        // that boundary across the JS/Rust relay so account setup never treats
+        // a later worker failure like a safe pre-creation retry.
+        let _ = Reflect::set(&error, &"tonkPasskeyCreated".into(), &JsValue::TRUE);
+        error
+    })
 }
 
 /// `addPasskey({ name?, displayName?, request })` → `{ credentialId }`.
@@ -332,6 +344,33 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(output.into())
 }
 
+/// `unlockWithPasskey({ deviceDid, endpoint })` → the asserted local root.
+///
+/// This compatibility surface lets a legacy recovery test persist the exact
+/// pre-encryption-key record while keeping the derived recipient available to
+/// prove that the later page assertion restores it.
+async fn unlock_with_passkey(input: JsValue) -> Result<JsValue, JsValue> {
+    let device_did = string_property(&input, "deviceDid")?
+        .parse()
+        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
+    let endpoint = string_property(&input, "endpoint")?;
+    let unlock = crate::ceremony::unlock_account(device_did, &endpoint)
+        .await
+        .map_err(js_error)?;
+    let result = Object::new();
+    for (name, value) in [
+        ("rootDid", unlock.root_did),
+        ("credentialId", unlock.credential_id),
+        ("delegationHex", unlock.delegation_hex),
+    ] {
+        Reflect::set(&result, &name.into(), &value.into())?;
+    }
+    if let Some(encryption_key) = unlock.encryption_key {
+        Reflect::set(&result, &"encryptionKey".into(), &encryption_key.into())?;
+    }
+    Ok(result.into())
+}
+
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
 /// outside a window context.
 pub fn install() {
@@ -359,6 +398,16 @@ pub fn install() {
         authorize_device.as_ref().unchecked_ref(),
     );
     authorize_device.forget();
+
+    let unlock_with_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(unlock_with_passkey(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"unlockWithPasskey".into(),
+        unlock_with_passkey.as_ref().unchecked_ref(),
+    );
+    unlock_with_passkey.forget();
 
     let sign_revocation = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(sign_revocation(input))
@@ -429,6 +478,7 @@ mod tests {
             "createPasskey",
             "usePasskey",
             "addPasskey",
+            "unlockWithPasskey",
             "authorizeDevice",
             "signRevocation",
             "verifyPasskey",
@@ -436,5 +486,19 @@ mod tests {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
         }
+    }
+
+    #[dialog_common::test]
+    fn it_marks_failures_after_credentials_create_returns() {
+        let error = crate::passkey::after_credential_created(anyhow::anyhow!(
+            "the follow-up PRF assertion failed"
+        ));
+        let value = js_error(error);
+        assert_eq!(
+            Reflect::get(&value, &"tonkPasskeyCreated".into())
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
     }
 }

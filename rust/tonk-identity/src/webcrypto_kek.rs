@@ -597,7 +597,9 @@ impl dialog_capability::Provider<CreateCustodian> for Page {
             input.display_name.as_deref(),
         )
         .await?;
-        Custodian::from_credential(created).await
+        Custodian::from_credential(created)
+            .await
+            .map_err(crate::passkey::after_credential_created)
     }
 }
 

@@ -6,6 +6,9 @@
 /// Top-document account creation and self-link element.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod account;
+/// Account-creation producer for the shared service-worker update-safety hold.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod account_setup;
 /// Customer activation page reached from the activation email.
 pub mod activate;
 

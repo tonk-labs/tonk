@@ -145,6 +145,20 @@ test("the browser harness serves stamped directory aliases from their own index"
   );
 });
 
+test("the browser harness exposes account setup capability discovery", () => {
+  const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
+  const packageStart = flake.indexOf("tonk-ui-test-server =");
+  const server = flake.slice(packageStart);
+  const capability = server.indexOf("handle /capabilities {");
+  const fallback = server.indexOf("handle {", capability);
+
+  assert.ok(capability >= 0, "the provider capability route must be proxied");
+  assert.ok(
+    fallback > capability,
+    "capability discovery must reach the access service before the SPA fallback",
+  );
+});
+
 test("tonk-code source identity changes when its TypeScript configuration changes", () => {
   const root = mkdtempSync(join(tmpdir(), "tonk-code-fingerprint-"));
   try {

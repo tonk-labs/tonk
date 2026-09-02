@@ -59,6 +59,10 @@ mod tests {
                             count: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
                             roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
                             mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
+                            accountSetupCritical: document.documentElement.hasAttribute(
+                                "data-tonk-account-setup-critical",
+                            ),
+                            accountSetupMayReload: window.tonkAccountSetupMayReload?.(),
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
                         };
                         "##,
@@ -601,6 +605,228 @@ mod tests {
         Ok(())
     }
 
+    /// Start account creation through the real UI producer, pausing only the
+    /// browser's credential call so the identity bridge, worker ceremony, and
+    /// durable settlement remain production-real.
+    async fn begin_paused_account_setup(driver: &WebDriver, email: &str) -> Result<Value> {
+        let result = driver
+            .execute_async(
+                r##"
+                const email = arguments[0];
+                const done = arguments[arguments.length - 1];
+                const waitFor = async (read, description) => {
+                    const deadline = Date.now() + 30000;
+                    while (Date.now() < deadline) {
+                        const value = await read();
+                        if (value) return value;
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                    throw new Error(`timed out waiting for ${description}`);
+                };
+                const readHold = async () => {
+                    const database = await new Promise((resolve, reject) => {
+                        const request = indexedDB.open("tonk-update-safety-v1", 1);
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                        request.onblocked = () => reject(new Error("hold database blocked"));
+                    });
+                    try {
+                        return await new Promise((resolve, reject) => {
+                            const transaction = database.transaction("holds", "readonly");
+                            const request = transaction.objectStore("holds").get("account-setup");
+                            let value;
+                            request.onsuccess = () => { value = request.result; };
+                            request.onerror = () => reject(request.error);
+                            transaction.oncomplete = () => resolve(value);
+                            transaction.onerror = () => reject(transaction.error);
+                            transaction.onabort = () => reject(transaction.error);
+                        });
+                    } finally {
+                        database.close();
+                    }
+                };
+                (async () => {
+                    const choose = await waitFor(
+                        () => document.querySelector("#account-choose-link"),
+                        "the account chooser",
+                    );
+                    choose.click();
+                    const input = await waitFor(
+                        () => document.querySelector("#tonk-register-email"),
+                        "the account email input",
+                    );
+                    input.value = email;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                    const action = await waitFor(() => {
+                        const candidate = document.querySelector("#tonk-register-action");
+                        return candidate && !candidate.disabled &&
+                            candidate.textContent.trim() === "create a passkey" && candidate;
+                    }, "the create-passkey action");
+
+                    const createCredential = navigator.credentials.create.bind(
+                        navigator.credentials,
+                    );
+                    navigator.credentials.create = options => new Promise((resolve, reject) => {
+                        globalThis.__tonkSettlePausedAccountSetup = () => {
+                            createCredential(options).then(resolve, reject);
+                            return true;
+                        };
+                    });
+                    action.click();
+                    await waitFor(
+                        () => globalThis.__tonkSettlePausedAccountSetup,
+                        "the paused account ceremony",
+                    );
+                    const hold = await waitFor(async () => await readHold(), "the durable account hold");
+                    done({
+                        hold,
+                        critical: document.documentElement.hasAttribute(
+                            "data-tonk-account-setup-critical",
+                        ),
+                        mayReload: window.tonkAccountSetupMayReload?.(),
+                        documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
+                    });
+                })().catch(error => done({ error: String(error) }));
+                "##,
+                vec![email.into()],
+            )
+            .await?;
+        ensure!(
+            result.json()["hold"]["version"] == 1
+                && result.json()["hold"]["kind"] == "account-setup"
+                && result.json()["hold"]["operationId"]
+                    .as_str()
+                    .is_some_and(|value| value.len() == 64)
+                && result.json()["hold"]["leasedRevision"] == "0"
+                && result.json()["critical"] == true
+                && result.json()["mayReload"] == false,
+            "account producer did not publish its full reload-safety contract: {}",
+            result.json()
+        );
+        Ok(result.json().clone())
+    }
+
+    async fn release_paused_account_setup(driver: &WebDriver) -> Result<()> {
+        let result = driver
+            .execute(
+                "return globalThis.__tonkSettlePausedAccountSetup?.() === true;",
+                Vec::new(),
+            )
+            .await?;
+        ensure!(
+            result.json() == true,
+            "the paused account ceremony had no settlement callback"
+        );
+
+        // Keep the producer tab foregrounded until the WebAuthn continuation
+        // has reached its durable safe outcome. Switching to the sibling as
+        // soon as the callback is invoked can suspend the credential ceremony
+        // before the account hold is cleared, which tests tab scheduling
+        // rather than the origin-wide upgrade contract.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last = Value::Null;
+        loop {
+            if let Ok(state) = driver
+                .execute_async(
+                    r#"
+                    const done = arguments[arguments.length - 1];
+                    (async () => {
+                        const database = await new Promise((resolve, reject) => {
+                            const request = indexedDB.open("tonk-update-safety-v1", 1);
+                            request.onsuccess = () => resolve(request.result);
+                            request.onerror = () => reject(request.error);
+                        });
+                        const hold = await new Promise((resolve, reject) => {
+                            const transaction = database.transaction("holds", "readonly");
+                            const request = transaction.objectStore("holds").get("account-setup");
+                            let value;
+                            request.onsuccess = () => { value = request.result; };
+                            request.onerror = () => reject(request.error);
+                            transaction.oncomplete = () => resolve(value);
+                        });
+                        database.close();
+                        done({
+                            absent: hold === undefined,
+                            critical: document.documentElement.hasAttribute(
+                                "data-tonk-account-setup-critical",
+                            ),
+                            mayReload: window.tonkAccountSetupMayReload?.(),
+                        });
+                    })().catch(error => done({ error: String(error) }));
+                    "#,
+                    Vec::new(),
+                )
+                .await
+            {
+                last = state.json().clone();
+                if last["absent"] == true && last["critical"] == false && last["mayReload"] == true
+                {
+                    return Ok(());
+                }
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the account producer did not reach its durable safe outcome: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Ask the stale sibling's static update surface to adopt the successor.
+    /// The click must queue while the origin-global account hold is live.
+    async fn queue_waiting_update_reload(driver: &WebDriver) -> Result<Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const deadline = Date.now() + 30000;
+                    let registration;
+                    while (Date.now() < deadline) {
+                        registration = await navigator.serviceWorker.getRegistration();
+                        if (registration?.waiting?.state === "installed") break;
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                    if (registration?.waiting?.state !== "installed") {
+                        throw new Error("successor did not reach the waiting state");
+                    }
+                    document.dispatchEvent(new Event("visibilitychange"));
+                    let reload;
+                    while (Date.now() < deadline) {
+                        reload = [...document.querySelectorAll("button")].find(
+                            button => button.textContent.trim() === "Reload" &&
+                                button.closest('[role="status"]'),
+                        );
+                        if (reload) break;
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                    if (!reload) throw new Error("update-ready Reload action did not appear");
+                    reload.click();
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                    registration = await navigator.serviceWorker.getRegistration();
+                    done({
+                        waiting: registration?.waiting?.state || null,
+                        critical: document.documentElement.hasAttribute(
+                            "data-tonk-account-setup-critical",
+                        ),
+                        documentBuild: document.querySelector(
+                            'meta[name="tonk-worker-build"]',
+                        )?.content || null,
+                    });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        ensure!(
+            result.json()["waiting"] == "installed" && result.json()["critical"] == true,
+            "the sibling did not queue its update behind account setup: {}",
+            result.json()
+        );
+        Ok(result.json().clone())
+    }
+
     async fn tab_build_state(driver: &WebDriver) -> Result<Value> {
         let result = driver
             .execute_async(
@@ -616,6 +842,7 @@ mod tests {
                     installing: registration?.installing?.state || null,
                     waiting: registration?.waiting?.state || null,
                     mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
+                    documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
                 })).catch(error => done({ error: String(error) }));
                 "##,
                 vec![],
@@ -644,6 +871,10 @@ mod tests {
                             waiting: registration?.waiting?.state || null,
                             mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
+                            accountSetupCritical: document.documentElement.hasAttribute(
+                                "data-tonk-account-setup-critical",
+                            ),
+                            accountSetupMayReload: window.tonkAccountSetupMayReload?.(),
                             testErrors: globalThis.__tonkTestErrors || [],
                             testInstallProgress: (globalThis.__tonkTestInstallProgress || []).slice(-5),
                             documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
@@ -939,6 +1170,37 @@ mod tests {
         );
         fetched_asset_digests(&driver, &generation_b.probes).await?;
 
+        let pre_protocol_write = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch("/api/profile", { method: "POST" })
+                    .then(async response => done({
+                        status: response.status,
+                        kind: response.headers.get("x-tonk-error-kind"),
+                        body: await response.json(),
+                    }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            pre_protocol_write.json()["status"],
+            409,
+            "{pre_protocol_write:?}"
+        );
+        assert_eq!(
+            pre_protocol_write.json()["kind"],
+            "stale-build",
+            "{pre_protocol_write:?}"
+        );
+        assert_eq!(
+            pre_protocol_write.json()["body"]["error"]["page"],
+            "pre-protocol",
+            "{pre_protocol_write:?}"
+        );
+
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
         assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
@@ -1105,26 +1367,34 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
-        let driver = env.driver().await?;
+        let driver = crate::helpers::driver_with_prf(&env).await?;
         let primary = driver.window().await?;
         let build_a = generation_a.build;
         let build_b = generation_b.build;
         let initial = wait_for_mounted_build(&driver, &build_a).await?;
         assert_eq!(initial["health"]["build"], build_a, "{initial}");
         create_state_sentinels(&driver).await?;
-        set_update_hold(&driver, true).await?;
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_mounted_build(&driver, &build_a).await?;
+        let producer = begin_paused_account_setup(&driver, "upgrade-hold@example.com").await?;
+        let primary_documents = producer["documents"]
+            .as_u64()
+            .context("account producer omitted its document count")?;
 
         let sibling = driver.new_tab().await?;
         driver.switch_to_window(sibling.clone()).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let sibling_a = wait_for_mounted_build(&driver, &build_a).await?;
         assert_eq!(sibling_a["documentBuild"], build_a, "{sibling_a}");
+        let sibling_documents = sibling_a["documents"]
+            .as_u64()
+            .context("sibling omitted its document count")?;
 
-        driver.switch_to_window(primary.clone()).await?;
         promote_second_generation(&env)?;
         request_registration_update(&driver).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        queue_waiting_update_reload(&driver).await?;
 
+        driver.switch_to_window(primary.clone()).await?;
         let primary_held = tab_build_state(&driver).await?;
         assert_eq!(primary_held["health"]["build"], build_a, "{primary_held}");
         assert_eq!(primary_held["documentBuild"], build_a, "{primary_held}");
@@ -1134,13 +1404,60 @@ mod tests {
         assert_eq!(sibling_held["documentBuild"], build_a, "{sibling_held}");
 
         driver.switch_to_window(primary.clone()).await?;
-        set_update_hold(&driver, false).await?;
-        driver.refresh().await?;
-        let primary_b = wait_for_mounted_build(&driver, &build_b).await?;
-        assert_eq!(primary_b["health"]["build"], build_b, "{primary_b}");
-        driver.switch_to_window(sibling).await?;
+        release_paused_account_setup(&driver).await?;
+        driver.switch_to_window(sibling.clone()).await?;
         let sibling_b = wait_for_mounted_build(&driver, &build_b).await?;
         assert_eq!(sibling_b["health"]["build"], build_b, "{sibling_b}");
+        assert_eq!(
+            sibling_b["documents"].as_u64(),
+            Some(sibling_documents + 1),
+            "the queued update action must reload its sibling exactly once: {sibling_b}"
+        );
+        driver.switch_to_window(primary.clone()).await?;
+        let primary_b = wait_for_mounted_build(&driver, &build_b).await?;
+        assert_eq!(primary_b["health"]["build"], build_b, "{primary_b}");
+        assert_eq!(
+            primary_b["documents"].as_u64(),
+            Some(primary_documents + 1),
+            "the peer claim must reload the account producer exactly once: {primary_b}"
+        );
+
+        let settled = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const database = await new Promise((resolve, reject) => {
+                        const request = indexedDB.open("tonk-update-safety-v1", 1);
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    });
+                    const hold = await new Promise((resolve, reject) => {
+                        const transaction = database.transaction("holds", "readonly");
+                        const request = transaction.objectStore("holds").get("account-setup");
+                        let value;
+                        request.onsuccess = () => { value = request.result; };
+                        request.onerror = () => reject(request.error);
+                        transaction.oncomplete = () => resolve(value);
+                    });
+                    database.close();
+                    done({
+                        absent: hold === undefined,
+                        critical: document.documentElement.hasAttribute(
+                            "data-tonk-account-setup-critical",
+                        ),
+                        mayReload: window.tonkAccountSetupMayReload?.(),
+                    });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            settled.json(),
+            &serde_json::json!({ "absent": true, "critical": false, "mayReload": true }),
+            "the producer did not settle its durable and document contracts"
+        );
 
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
@@ -1153,10 +1470,14 @@ mod tests {
     async fn it_withdraws_a_generation_without_deleting_local_state(
         env: TestEnvironment,
     ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
-        let build = worker_build_id(&env.service_worker_script)?;
+        let build = generation_a.build;
         let initial = wait_for_mounted_build(&driver, &build).await?;
         assert_eq!(initial["health"]["build"], build, "{initial}");
+        let initial_documents = initial["documents"]
+            .as_u64()
+            .context("initial generation omitted its document count")?;
         create_state_sentinels(&driver).await?;
         let caches_before = driver
             .execute_async(
@@ -1194,6 +1515,27 @@ mod tests {
         };
         assert_eq!(withdrawn["body"]["build"], build, "{withdrawn}");
 
+        // The withdrawal can be observed by the health poll after the shell
+        // navigation has already completed. Navigate once more so the failed
+        // worker serves its recovery document and its update action.
+        driver.refresh().await?;
+        driver.find(By::Css("#update")).await?;
+        let failure_documents = driver
+            .execute(
+                r#"return Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0;"#,
+                Vec::new(),
+            )
+            .await?;
+        let failure_documents = failure_documents
+            .json()
+            .as_u64()
+            .context("failure page omitted its document count")?;
+        assert_eq!(
+            failure_documents,
+            initial_documents + 1,
+            "entering the failure page must be one navigation"
+        );
+
         let after = driver
             .execute_async(
                 r#"
@@ -1225,6 +1567,26 @@ mod tests {
             after.json()["refused"]["body"]["error"]["kind"],
             "worker-failed",
             "{after:?}"
+        );
+        let sentinels = state_sentinels(&driver).await?;
+        assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
+        assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
+
+        // The recovery button must not reload back into withdrawn A. Publish
+        // B after the failure page is visible, then require the button to
+        // install, activate, and claim B before its single reload.
+        promote_second_generation(&env)?;
+        driver.find(By::Css("#update")).await?.click().await?;
+        let recovered = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        assert_eq!(
+            recovered["health"]["build"], generation_b.build,
+            "{recovered}"
+        );
+        assert_eq!(recovered["controlled"], true, "{recovered}");
+        assert_eq!(
+            recovered["documents"].as_u64(),
+            Some(failure_documents + 1),
+            "withdrawal recovery must reload exactly once into B: {recovered}"
         );
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");

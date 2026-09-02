@@ -53,6 +53,7 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
+mod account_capabilities;
 mod account_deletion;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
@@ -428,6 +429,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(identity::get).post(identity::save),
         )
         .route("/api/account", get(account::get).delete(account::unlink))
+        .route(
+            "/api/account/setup-capabilities",
+            get(account_capabilities::get),
+        )
         .route("/api/account/deletion/plan", get(account_deletion::plan))
         .route("/api/account/delete", post(account_deletion::delete))
         .route(

@@ -1,5 +1,6 @@
 //! HTTP request handlers.
 
+pub mod capabilities;
 pub mod config;
 pub mod deletion;
 pub mod health;

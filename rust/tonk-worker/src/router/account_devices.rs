@@ -174,22 +174,20 @@ pub async fn register(
     Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
 }
 
-/// Prefer the portable account-space fact; fall back to what the provider
-/// recorded at account creation.
+/// Prefer the portable account-space fact; fall back to this device's local
+/// root creation metadata.
 ///
-/// The provider row is not a legacy-only path. Every account still writes it at
-/// creation, and it answers three live cases: an account created before the
-/// space fact existed, a device that never held the passkey and so cannot seed
-/// it, and a fresh account read in the window between account creation and the
-/// first sweep that seeds the space.
+/// The local root answers the fresh-account window before the first account
+/// sweep exposes the portable fact. It is only a fallback: another device's
+/// newer account-space fact must win over this device's creation record.
 fn merge_summary(
     email: Option<String>,
     space: Option<PasskeyMetadata>,
-    provider: Option<PasskeyMetadata>,
+    local: Option<PasskeyMetadata>,
 ) -> AccountSummary {
     AccountSummary {
         email,
-        passkey: space.or(provider),
+        passkey: space.or(local),
         display_name: None,
     }
 }
@@ -211,7 +209,11 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     // them was asking for a second copy of what this branch holds.
     let email = super::customer::account_registration(state).await.email;
     let passkey = super::account_state::passkey_facts(state).await;
-    let mut summary = merge_summary(email, passkey, None);
+    let local = super::identity::local_root(state)
+        .await
+        .ok()
+        .and_then(|root| root.passkey);
+    let mut summary = merge_summary(email, passkey, local);
     summary.display_name = account_display_name(state).await;
     Ok(summary)
 }
@@ -574,12 +576,12 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_prefers_the_account_space_passkey_fact_over_the_provider_row() {
+    fn it_prefers_the_account_space_passkey_fact_over_the_local_root() {
         let space = PasskeyMetadata {
             created_at: 1_754_380_800,
             created_on: "Chrome on macOS".to_string(),
         };
-        let provider = PasskeyMetadata {
+        let local = PasskeyMetadata {
             created_at: 1_600_000_000,
             created_on: "Safari on iOS".to_string(),
         };
@@ -587,19 +589,19 @@ mod tests {
         let merged = merge_summary(
             Some("person@example.com".to_string()),
             Some(space.clone()),
-            Some(provider.clone()),
+            Some(local.clone()),
         );
         assert_eq!(merged.passkey, Some(space.clone()));
 
         let fallback = merge_summary(
             Some("person@example.com".to_string()),
             None,
-            Some(provider.clone()),
+            Some(local.clone()),
         );
         assert_eq!(
             fallback.passkey,
-            Some(provider),
-            "an account created before the space fact existed still has the provider row"
+            Some(local),
+            "a fresh account renders its creation metadata before the first sweep"
         );
 
         let neither = merge_summary(Some("person@example.com".to_string()), None, None);

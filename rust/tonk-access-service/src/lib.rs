@@ -95,6 +95,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/", handlers::info::handle)
         // Health check
         .get_async("/health", handlers::health::handle)
+        // Privacy-neutral protocol marker checked before account WebAuthn.
+        .get_async("/capabilities", handlers::capabilities::handle)
+        .options_async("/capabilities", handlers::capabilities::handle_options)
         // UCAN authorization CORS preflight; POST is served above.
         .options_async("/ucan/", handlers::ucan::handle_options)
         // Shortcut service: permissionless same-origin link shortening

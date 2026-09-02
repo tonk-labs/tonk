@@ -42,6 +42,29 @@ pub struct CustodyCredential {
     pub evaluation: Option<CustodyEvaluation>,
 }
 
+/// A later ceremony step failed after `credentials.create()` returned.
+///
+/// Callers use this phase marker to distinguish an ordinary pre-creation
+/// refusal from an outcome where retrying could mint a second credential.
+#[derive(Debug)]
+pub struct CredentialCreatedError(anyhow::Error);
+
+impl std::fmt::Display for CredentialCreatedError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for CredentialCreatedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+pub(crate) fn after_credential_created(error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(CredentialCreatedError(error))
+}
+
 /// Why a passkey ceremony did not produce a credential.
 ///
 /// The browser answers with a `DOMException` whose `name` is the whole
@@ -295,7 +318,11 @@ pub async fn create_custody_passkey(
         .await
         .map_err(|e| ceremony_error("custody passkey creation failed", e))?
         .dyn_into()
-        .map_err(|_| anyhow!("credentials.create returned a non-public-key credential"))?;
+        .map_err(|_| {
+            after_credential_created(anyhow!(
+                "credentials.create returned a non-public-key credential"
+            ))
+        })?;
     let id = Uint8Array::new(&credential.raw_id()).to_vec();
     let evaluation = extract_custody(&credential);
     Ok(CustodyCredential { id, evaluation })

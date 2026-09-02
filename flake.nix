@@ -650,7 +650,7 @@
 
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
-          # to route /ucan/* to the access service
+          # to route the access-service surface behind the page origin
           tonk-ui-test-server =
             with pkgs;
             writeScriptBin "tonk-ui-test-server" ''
@@ -688,6 +688,9 @@
               https://tonk.network:$PORT, https://localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
+                  handle /capabilities {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle /ucan/* {

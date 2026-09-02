@@ -62,6 +62,10 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
+    // Take ownership of the account side of update safety before any account
+    // UI can run. Installation starts reload-closed until IndexedDB proves no
+    // durable account-setup hold exists.
+    tonk_ui::account_setup::install_reload_contract();
     // A guest asking to register raises the dialog here, in the only
     // document that can run the ceremony.
     tonk_portal::on_register(|reason, return_focus| {

@@ -325,6 +325,13 @@ pub(crate) struct CeremonyError {
     pub denial: Option<tonk_identity::custody::CustodyDenial>,
     /// Browser refusal, independently of a service denial.
     pub refusal: Option<tonk_identity::passkey::CeremonyRefusal>,
+    /// This is update-safety guidance, safe to present without replacing it
+    /// with a generic account-action diagnostic.
+    pub update_safety: bool,
+    /// Repeating account creation could mint a second credential.
+    pub retry_unsafe: bool,
+    /// `credentials.create()` returned before the later failure.
+    pub passkey_created: bool,
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -415,6 +422,21 @@ impl CeremonyError {
             message: message.into(),
             denial: None,
             refusal: None,
+            update_safety: false,
+            retry_unsafe: false,
+            passkey_created: false,
+        }
+    }
+
+    /// A failure at the account/service-worker composition boundary.
+    pub(crate) fn update_safety(message: impl Into<String>, retry_safe: bool) -> Self {
+        Self {
+            message: message.into(),
+            denial: None,
+            refusal: None,
+            update_safety: true,
+            retry_unsafe: !retry_safe,
+            passkey_created: false,
         }
     }
 
@@ -442,6 +464,12 @@ impl CeremonyError {
             message: describe(error),
             denial,
             refusal,
+            update_safety: false,
+            retry_unsafe: false,
+            passkey_created: js_sys::Reflect::get(error, &"tonkPasskeyCreated".into())
+                .ok()
+                .and_then(|value| value.as_bool())
+                == Some(true),
         }
     }
 }
