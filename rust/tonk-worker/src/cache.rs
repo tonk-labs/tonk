@@ -1,20 +1,19 @@
 //! App-shell cache (milestone 1 of `plan/offline-support.md`).
 //!
-//! Strategy: stale-while-revalidate for hashed shell assets,
-//! network-first with SPA fallback for document navigations.
+//! Strategy: immutable generation-cache reads for the complete installed
+//! resource graph; a later eviction miss fails closed.
 //!
-//! Owned by the Rust worker so the SW JS shim stays a thin
-//! dispatcher. The shim forwards every fetch to `onfetch`, and
-//! this module decides whether to serve from the shell cache or
-//! pass through. Caching policy lives here in one place rather
-//! than being split between JS and Rust.
+//! The JS shim normally serves top-level assets directly so static requests do
+//! not wait for Wasm boot. This mirror handles any cacheable request that does
+//! reach the Rust worker and uses `CacheStorage.match`, which cannot recreate
+//! an evicted generation cache.
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use js_sys::{Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Cache, Request, Response, ServiceWorkerGlobalScope};
+use web_sys::{CacheQueryOptions, Request, Response, ServiceWorkerGlobalScope};
 
 /// Prefixes for this worker's caches. The full name is the prefix
 /// plus the build id, so every build owns its own caches and two
@@ -28,11 +27,18 @@ const WORKER_PREFIX: &str = "TONK_WORKER_";
 /// names from one injected value instead of hand-syncing a literal
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();
+static ASSET_PATHS: OnceLock<HashSet<String>> = OnceLock::new();
 
 /// Record the build id for cache naming. Called once, from the
 /// worker binary's `activate` export, before any cache use.
 pub fn set_build_id(id: String) {
     let _ = BUILD_ID.set(id);
+}
+
+/// Record the exact immutable resource graph stamped into the JS shim.
+/// Called once beside [`set_build_id`] before any cache policy is evaluated.
+pub fn set_asset_paths(paths: Vec<String>) {
+    let _ = ASSET_PATHS.set(paths.into_iter().collect());
 }
 
 fn build_id() -> &'static str {
@@ -54,12 +60,12 @@ fn shell_cache() -> String {
 
 /// Should this request be served via the shell cache?
 ///
-/// Same-origin GETs that don't touch the data plane qualify.
-/// `/api/*` requests are excluded — those are the live data
-/// plane and must always go through the axum router. Document
-/// navigations (`mode: navigate`) are also excluded — the JS
-/// shim handles those directly so navigation TTFB doesn't wait
-/// on the Rust worker boot.
+/// In a stamped production build, only exact members of the publisher's
+/// immutable resource graph qualify. The unstamped development worker keeps
+/// the broader same-origin GET policy needed by Trunk. `/api/*` requests are
+/// excluded because they are the live data plane. Document navigations are
+/// also excluded because the JS shim handles top-level documents directly and
+/// sends nested-client navigations here for branch-aware routing.
 pub fn is_cacheable(request: &Request, path: &str) -> bool {
     let Some(origin) = worker_origin() else {
         return false;
@@ -74,6 +80,20 @@ pub fn is_cacheable(request: &Request, path: &str) -> bool {
 /// the browser test harness exercise the production decisions even when the
 /// harness runs in a `Window`.
 fn is_cacheable_on_origin(request: &Request, path: &str, origin: &str) -> bool {
+    is_cacheable_for_build(request, path, origin, build_id())
+}
+
+fn is_cacheable_for_build(request: &Request, path: &str, origin: &str, build: &str) -> bool {
+    is_cacheable_for_graph(request, path, origin, build, ASSET_PATHS.get())
+}
+
+fn is_cacheable_for_graph(
+    request: &Request,
+    path: &str,
+    origin: &str,
+    build: &str,
+    asset_paths: Option<&HashSet<String>>,
+) -> bool {
     if request.method() != "GET" {
         return false;
     }
@@ -90,47 +110,49 @@ fn is_cacheable_on_origin(request: &Request, path: &str, origin: &str) -> bool {
     if path.starts_with("/api/") {
         return false;
     }
-    // Honor a caller's explicit cache-bypass. A `fetch(url, { cache:
-    // "no-store" })` (or `"reload"` / `"no-cache"`) signals the caller
-    // needs fresh content, so don't serve stale-while-revalidate. The
-    // dev hot-reload client uses this to read the just-edited standard
-    // library rather than the previous cached copy (the "one version
-    // behind" reseed).
-    match request.cache() {
-        web_sys::RequestCache::NoStore
-        | web_sys::RequestCache::Reload
-        | web_sys::RequestCache::NoCache => return false,
-        _ => {}
+    if build != "dev" && !asset_paths.is_some_and(|paths| paths.contains(path)) {
+        return false;
+    }
+    // Only an unstamped development worker honors explicit cache bypasses;
+    // Trunk hot reload needs live edited bytes. A production generation is
+    // sealed: caller-controlled `no-store`/`reload`/`no-cache` must not turn an
+    // old controller into a stable-name network passthrough.
+    if build == "dev" {
+        match request.cache() {
+            web_sys::RequestCache::NoStore
+            | web_sys::RequestCache::Reload
+            | web_sys::RequestCache::NoCache => return false,
+            _ => {}
+        }
     }
     true
 }
 
-/// Stale-while-revalidate: serve from cache when present
-/// (instant), revalidate in the background so the next visit
-/// sees fresh content. On cache miss, hit the network and put
-/// the response in the cache. Network failures fall back to the
-/// cached entry if one exists; otherwise the error propagates.
-pub async fn stale_while_revalidate(request: &Request) -> Result<JsValue, JsValue> {
-    let cache = open_cache().await?;
-    let cached = cache_match(&cache, request).await?;
-    match cached {
-        Some(response) => {
-            // Background revalidation: spawn a task that hits
-            // the network and replaces the cache entry. We
-            // intentionally don't await it; the cache miss path
-            // serves the user immediately.
-            let cache_clone = cache.clone();
-            let request_clone = request.clone()?;
-            wasm_bindgen_futures::spawn_local(async move {
-                let _ = revalidate(&cache_clone, &request_clone).await;
-            });
-            Ok(JsValue::from(response))
-        }
-        None => {
-            let response = fetch_and_cache(&cache, request).await?;
-            Ok(JsValue::from(response))
-        }
+/// Read this worker's immutable generation cache, failing coherently on a miss.
+///
+/// Install verifies and writes the complete build-produced resource graph. An
+/// old controller can outlive a deployment, so accepting a live stable-name
+/// response here would mix current-deployment bytes into a retained generation
+/// even without storing them. A miss therefore reports an actionable 503 both
+/// online and offline.
+pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue> {
+    if let Some(response) = cache_match(request).await? {
+        return Ok(JsValue::from(response));
     }
+    let init = web_sys::ResponseInit::new();
+    init.set_status(503);
+    let response = Response::new_with_opt_str_and_init(
+        Some(
+            "A resource required by this retained Tonk version is unavailable. \
+             Reload to check for the current version.",
+        ),
+        &init,
+    )?;
+    response
+        .headers()
+        .set("content-type", "text/plain; charset=utf-8")?;
+    response.headers().set("cache-control", "no-store")?;
+    Ok(JsValue::from(response))
 }
 
 /// Drop every cache belonging to a build other than this one.
@@ -182,9 +204,8 @@ fn worker_origin() -> Option<String> {
 /// appear inside an origin — so `https://evil.test/` cannot match a
 /// base of `https://tonk.network`.
 ///
-/// Anything we can't confirm is treated as foreign: refusing to cache it costs
-/// a network fetch, whereas caching it wrongly puts another origin's bytes
-/// behind our own paths.
+/// Anything we can't confirm is treated as foreign: another origin's bytes do
+/// not belong behind this generation's own paths.
 fn is_same_origin(origin: &str, url: &str) -> bool {
     if origin.is_empty() {
         return false;
@@ -196,96 +217,19 @@ fn is_same_origin(origin: &str, url: &str) -> bool {
     }
 }
 
-async fn open_cache() -> Result<Cache, JsValue> {
-    let cache_value = JsFuture::from(caches()?.open(&shell_cache())).await?;
-    cache_value.dyn_into::<Cache>()
-}
-
 fn caches() -> Result<web_sys::CacheStorage, JsValue> {
     let global: ServiceWorkerGlobalScope = js_sys::global().dyn_into()?;
     global.caches()
 }
 
-async fn cache_match(cache: &Cache, request: &Request) -> Result<Option<Response>, JsValue> {
-    let value = JsFuture::from(cache.match_with_request(request)).await?;
+async fn cache_match(request: &Request) -> Result<Option<Response>, JsValue> {
+    let options = CacheQueryOptions::new();
+    options.set_cache_name(&shell_cache());
+    let value = JsFuture::from(caches()?.match_with_request_and_options(request, &options)).await?;
     if value.is_undefined() || value.is_null() {
         return Ok(None);
     }
     Ok(Some(value.dyn_into::<Response>()?))
-}
-
-/// Fetch the request from the network and put a clone in the
-/// cache. Returns the network response. Skips caching for
-/// non-OK and opaque responses since they round-trip oddly.
-async fn fetch_and_cache(cache: &Cache, request: &Request) -> Result<Response, JsValue> {
-    let response: Response = JsFuture::from(sw_fetch(request)).await?.dyn_into()?;
-    if response.ok() && !is_opaque(&response) && content_matches(request, &response) {
-        let clone = response.clone()?;
-        // Errors here are non-fatal: we still return the
-        // response to the caller, the cache just stays cold for
-        // this entry.
-        let _ = JsFuture::from(cache.put_with_request(request, &clone)).await;
-    }
-    Ok(response)
-}
-
-/// Background revalidation: fetch fresh, replace the cache
-/// entry on success. Errors are swallowed so a brief network
-/// blip doesn't poison subsequent reads.
-async fn revalidate(cache: &Cache, request: &Request) -> Result<(), JsValue> {
-    let response: Response = JsFuture::from(sw_fetch(request)).await?.dyn_into()?;
-    if response.ok() && !is_opaque(&response) && content_matches(request, &response) {
-        let _ = JsFuture::from(cache.put_with_request(request, &response)).await;
-    }
-    Ok(())
-}
-
-/// Whether `response` is plausible content for the request's path,
-/// rather than the SPA fallback wearing a 200.
-///
-/// A server asked for a hashed asset it does not hold (the window
-/// while a rebuild or deploy rewrites the dist) answers with
-/// `index.html`, status 200. Caching that under the asset URL poisons
-/// the entry: every later load serves HTML where the page expects JS
-/// or wasm, subresource integrity blocks it, and the boot shell spins
-/// until a background revalidation happens to heal the cache. An HTML
-/// answer for an asset path is a miss, not content — serve it if we
-/// must, but never remember it.
-fn content_matches(request: &Request, response: &Response) -> bool {
-    const ASSET_EXTENSIONS: [&str; 6] = [".js", ".mjs", ".wasm", ".css", ".woff2", ".map"];
-
-    let url = request.url();
-    let path = url.split(['#', '?']).next().unwrap_or(url.as_str());
-    if !ASSET_EXTENSIONS
-        .iter()
-        .any(|extension| path.ends_with(extension))
-    {
-        return true;
-    }
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    !content_type.starts_with("text/html")
-}
-
-/// `Response::type_` is exposed via web-sys as
-/// `ResponseType` which we'd need to import. Cheap to read via
-/// Reflect to avoid the extra binding noise.
-fn is_opaque(response: &Response) -> bool {
-    Reflect::get(response, &JsValue::from_str("type"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .map(|t| t == "opaque" || t == "opaqueredirect")
-        .unwrap_or(false)
-}
-
-#[wasm_bindgen::prelude::wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = fetch)]
-    fn sw_fetch(request: &Request) -> Promise;
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -298,6 +242,13 @@ mod tests {
     fn get(url: &str) -> Request {
         let init = RequestInit::new();
         init.set_method("GET");
+        Request::new_with_str_and_init(url, &init).expect("request")
+    }
+
+    fn no_store(url: &str) -> Request {
+        let init = RequestInit::new();
+        init.set_method("GET");
+        init.set_cache(web_sys::RequestCache::NoStore);
         Request::new_with_str_and_init(url, &init).expect("request")
     }
 
@@ -332,11 +283,59 @@ mod tests {
         );
     }
 
+    #[dialog_common::test]
+    async fn it_honors_cache_bypass_only_for_an_unstamped_development_worker() {
+        let url = format!("{ORIGIN}/tonk-prose/tonk-prose-editor.js");
+        let request = no_store(&url);
+        let assets = HashSet::from(["/tonk-prose/tonk-prose-editor.js".to_string()]);
+        assert!(
+            is_cacheable_for_graph(
+                &request,
+                "/tonk-prose/tonk-prose-editor.js",
+                ORIGIN,
+                "deadbeef",
+                Some(&assets),
+            ),
+            "a production caller cannot escape its sealed generation with a cache flag",
+        );
+        assert!(
+            !is_cacheable_for_graph(
+                &request,
+                "/tonk-prose/tonk-prose-editor.js",
+                ORIGIN,
+                "dev",
+                None,
+            ),
+            "Trunk development still needs explicit live asset reads",
+        );
+    }
+
     /// The data plane is never served from cache, same origin or not.
     #[dialog_common::test]
     async fn it_never_caches_the_data_plane() {
         let url = format!("{ORIGIN}/api/health");
         assert!(!is_cacheable_on_origin(&get(&url), "/api/health", ORIGIN));
+    }
+
+    #[dialog_common::test]
+    async fn it_caches_only_exact_members_of_a_stamped_graph() {
+        let assets = HashSet::from(["/ui-abc.js".to_string()]);
+        let asset = get(&format!("{ORIGIN}/ui-abc.js"));
+        let live = get(&format!("{ORIGIN}/.well-known/tonk"));
+        assert!(is_cacheable_for_graph(
+            &asset,
+            "/ui-abc.js",
+            ORIGIN,
+            "deadbeef",
+            Some(&assets),
+        ));
+        assert!(!is_cacheable_for_graph(
+            &live,
+            "/.well-known/tonk",
+            ORIGIN,
+            "deadbeef",
+            Some(&assets),
+        ));
     }
 
     /// Cache names carry the build id, so two builds cannot share a
@@ -348,7 +347,7 @@ mod tests {
         let name = shell_cache();
         assert!(
             name.starts_with(SHELL_PREFIX),
-            "shell cache keeps its prefix so purge can find it: {name}"
+            "shell cache keeps its stable diagnostic prefix: {name}"
         );
         assert!(
             name.ends_with(build_id()),

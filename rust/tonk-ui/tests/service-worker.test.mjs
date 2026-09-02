@@ -19,18 +19,22 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SW_PATH = join(HERE, "..", "assets", "service_worker.js");
+const WORKER_RS_PATH = join(HERE, "..", "..", "tonk-worker", "src", "worker.rs");
+const CACHE_RS_PATH = join(HERE, "..", "..", "tonk-worker", "src", "cache.rs");
 const source = readFileSync(SW_PATH, "utf8");
 
 /** A minimal Cache/CacheStorage good enough for the decisions here. */
 class FakeCache {
   #entries = new Map();
+  mutations = [];
   async match(request) {
     const key = typeof request === "string" ? request : request.url;
-    return this.#entries.get(key) ?? undefined;
+    return this.#entries.get(key)?.clone() ?? undefined;
   }
   async put(request, response) {
     const key = typeof request === "string" ? request : request.url;
-    this.#entries.set(key, response);
+    this.mutations.push({ type: "put", key });
+    this.#entries.set(key, response.clone());
   }
   async add(request) {
     const key = typeof request === "string" ? request : request.url;
@@ -41,7 +45,11 @@ class FakeCache {
   }
   async delete(request) {
     const key = typeof request === "string" ? request : request.url;
+    this.mutations.push({ type: "delete", key });
     return this.#entries.delete(key);
+  }
+  resetMutations() {
+    this.mutations.length = 0;
   }
 }
 
@@ -53,6 +61,10 @@ class FakeCacheStorage {
   }
   async keys() {
     return [...this.caches.keys()];
+  }
+  async match(request, options = {}) {
+    const cache = this.caches.get(options.cacheName);
+    return cache?.match(request);
   }
   async delete(name) {
     return this.caches.delete(name);
@@ -82,7 +94,7 @@ async function loadServiceWorker({ fetchImpl, registration } = {}) {
   // Expose the internals under test without altering the shipped file.
   const instrumented =
     body +
-    "\nexport { killSwitchEngaged, isShellCacheable, SHELL_CACHE, WORKER_CACHE, BUILD_ID, precacheWorkerWasm, digestOf };\n";
+    "\nexport { killSwitchEngaged, isShellCacheable, SHELL_CACHE, WORKER_CACHE, BUILD_ID, fetchVerifiedWorkerWasm, digestOf };\n";
 
   const module = await import(
     "data:text/javascript;base64," + Buffer.from(instrumented).toString("base64")
@@ -121,13 +133,28 @@ function withGlobals({ fetchImpl, registration } = {}) {
  * Load the shipped SW with a chosen build id + wasm hash and export the
  * named internals. Keeps each test's setup to one call.
  */
-async function loadWith({ buildId = "testbuild", wasmHash = "0000000000000000", exports = [] }) {
+async function loadWith({
+  buildId = "testbuild",
+  wasmHash = "0000000000000000",
+  assetManifestHash = "dev",
+  assetPaths = ["/", "/ui-abc.js"],
+  activateSource = "async () => ({})",
+  exports = [],
+}) {
   const body = source
     .replace(/^const BUILD_ID = .*$/m, `const BUILD_ID = "${buildId}";`)
     .replace(/^const WORKER_WASM_HASH = .*$/m, `const WORKER_WASM_HASH = "${wasmHash}";`)
     .replace(
+      /^const ASSET_MANIFEST_HASH = .*$/m,
+      `const ASSET_MANIFEST_HASH = "${assetManifestHash}";`,
+    )
+    .replace(
+      /^const ASSET_PATHS = .*$/m,
+      `const ASSET_PATHS = ${JSON.stringify(assetPaths)};`,
+    )
+    .replace(
       /^import init, \{ activate \} from "\.\/worker\.js";$/m,
-      "const init = async () => {}; const activate = async () => ({});",
+      `const init = async () => {}; const activate = ${activateSource};`,
     );
   const withExports = body + `\nexport { ${exports.join(", ")} };\n`;
   return import(
@@ -135,10 +162,51 @@ async function loadWith({ buildId = "testbuild", wasmHash = "0000000000000000", 
   );
 }
 
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const utf8 = (text) => new TextEncoder().encode(text);
+
+async function putGenerationMarker(
+  caches,
+  {
+    buildId,
+    manifest,
+    state = "adopted",
+    nonce = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  },
+) {
+  const metadata = `TONK_GENERATION_${buildId}`;
+  const markerUrl = `https://tonk.test/.tonk-generation-${buildId}`;
+  const shellStage = `TONK_SHELL_STAGE_${buildId}_${nonce}`;
+  const workerStage = `TONK_WORKER_STAGE_${buildId}_${nonce}`;
+  await (await caches.open(metadata)).put(
+    markerUrl,
+    new Response(JSON.stringify({
+      version: 1,
+      build: buildId,
+      manifest,
+      state,
+      nonce,
+      shellStage,
+      workerStage,
+    })),
+  );
+  return { metadata, markerUrl, shellStage, workerStage };
+}
+
+async function markGenerationAdopted(caches, options) {
+  return (await putGenerationMarker(caches, options)).metadata;
+}
+
 describe("kill switch", () => {
-  // The flag is a remote "unregister yourself" instruction, so every
-  // ambiguous answer must resolve to NOT firing. An accidental
-  // unregister across every browser is far worse than a missed one.
+  // The flag is a remote withdrawal instruction, so every ambiguous answer
+  // must resolve to NOT firing. Blocking a healthy build across every browser
+  // is far worse than missing a real withdrawal.
 
   test("does not fire when the host answers a missing flag with SPA HTML", async () => {
     // The real trap, hit during live verification: an SPA host answers
@@ -168,7 +236,7 @@ describe("kill switch", () => {
     assert.equal(
       await module.killSwitchEngaged(),
       false,
-      "a blip must never unregister a healthy worker",
+      "a blip must never withdraw a healthy worker",
     );
   });
 
@@ -239,11 +307,36 @@ describe("shell cache eligibility", () => {
 
   test("accepts our own hashed asset", async () => {
     withGlobals();
-    const { module } = await loadServiceWorker();
+    const module = await loadWith({ exports: ["isShellCacheable"] });
     assert.equal(
       module.isShellCacheable(req("https://tonk.test/ui-abc.js"), "/ui-abc.js"),
       true,
     );
+  });
+
+  test("accepts only exact members of the stamped immutable graph", async () => {
+    withGlobals();
+    const module = await loadWith({
+      assetPaths: ["/", "/guide/", "/guide/index.html", "/ui-abc.js"],
+      exports: ["isShellCacheable"],
+    });
+
+    assert.equal(
+      module.isShellCacheable(req("https://tonk.test/guide/index.html"), "/guide/index.html"),
+      true,
+    );
+    for (const path of [
+      "/.well-known/tonk",
+      "/customer/account",
+      "/ucan/delegate",
+      "/unpublished.js",
+    ]) {
+      assert.equal(
+        module.isShellCacheable(req(`https://tonk.test${path}`), path),
+        false,
+        `${path} must reach the live edge/Rust route instead of a retained shell cache`,
+      );
+    }
   });
 
   test("never caches the data plane", async () => {
@@ -268,6 +361,137 @@ describe("shell cache eligibility", () => {
   });
 });
 
+describe("exact fetch routing", () => {
+  function fetchEvent(request, clientId = "") {
+    let response;
+    return {
+      event: {
+        request,
+        clientId,
+        waitUntil() {},
+        respondWith(value) {
+          response = Promise.resolve(value);
+        },
+      },
+      response: () => response,
+    };
+  }
+
+  test("serves exact controlled static pages while app routes use the root shell", async () => {
+    const { self, caches } = withGlobals();
+    self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/guide/", "/guide/index.html"],
+      activateSource: 'async () => { throw new Error("static navigation booted Rust"); }',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("APP SHELL"));
+    await cache.put("/guide/", new Response("GUIDE"));
+
+    const guide = fetchEvent(
+      {
+        method: "GET",
+        mode: "navigate",
+        url: "https://tonk.test/guide/",
+      },
+      "controlled-top-level",
+    );
+    self.onfetch(guide.event);
+    assert.equal(await (await guide.response()).text(), "GUIDE");
+
+    const app = fetchEvent(
+      {
+        method: "GET",
+        mode: "navigate",
+        url: "https://tonk.test/spaces/local",
+      },
+      "controlled-top-level",
+    );
+    self.onfetch(app.event);
+    assert.equal(await (await app.response()).text(), "APP SHELL");
+  });
+
+  test("redirects slashless static-site navigations before relative assets resolve", async () => {
+    const { self } = withGlobals();
+    self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });
+    await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/guide/", "/guide/index.html", "/storybook/"],
+      activateSource: 'async () => { throw new Error("static navigation booted Rust"); }',
+    });
+
+    for (const path of ["/guide", "/storybook"]) {
+      const navigation = fetchEvent(
+        {
+          method: "GET",
+          mode: "navigate",
+          url: `https://tonk.test${path}?theme=dark`,
+        },
+        "controlled-top-level",
+      );
+      self.onfetch(navigation.event);
+      const response = await navigation.response();
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        `https://tonk.test${path}/?theme=dark`,
+      );
+    }
+  });
+
+  test("delegates live edge routes instead of turning them into retained-cache 503s", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0])),
+    });
+    await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/ui-abc.js"],
+      activateSource:
+        'async () => ({ onfetch: async () => new Response("RUST OR NETWORK") })',
+    });
+    const live = fetchEvent({
+      method: "GET",
+      mode: "cors",
+      cache: "default",
+      url: "https://tonk.test/.well-known/tonk",
+    });
+    self.onfetch(live.event);
+    assert.equal(await (await live.response()).text(), "RUST OR NETWORK");
+  });
+
+  test("delegates a nested client's exact-name subresource to Rust before shell lookup", async () => {
+    const { self, caches } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0])),
+    });
+    self.clients.get = async (clientId) => ({ clientId, frameType: "nested" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/ui-abc.js"],
+      activateSource:
+        'async () => ({ onfetch: async event => new Response(`RUST:${event.clientId}`) })',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    const request = {
+      method: "GET",
+      mode: "cors",
+      cache: "default",
+      url: "https://tonk.test/ui-abc.js",
+    };
+    await cache.put(request, new Response("TOP-LEVEL ASSET"));
+
+    const guest = fetchEvent(request, "guest-client");
+    self.onfetch(guest.event);
+    assert.equal(await (await guest.response()).text(), "RUST:guest-client");
+  });
+});
+
 describe("cache naming", () => {
   test("scopes both caches to the build", async () => {
     // Per-build names are what make an install atomic: the incoming
@@ -279,43 +503,477 @@ describe("cache naming", () => {
     assert.ok(module.WORKER_CACHE.endsWith(module.BUILD_ID));
     assert.notEqual(module.SHELL_CACHE, module.WORKER_CACHE);
   });
+
+  test("activation retains caches owned by older generations", () => {
+    const worker = readFileSync(WORKER_RS_PATH, "utf8");
+    const cache = readFileSync(CACHE_RS_PATH, "utf8");
+    assert.doesNotMatch(
+      worker,
+      /purge_old_caches/,
+      "a newly activated worker cannot know whether retained clients still need an older generation",
+    );
+    assert.doesNotMatch(
+      cache,
+      /caches\.delete|purge_old_caches/,
+      "automatic generation cleanup risks deleting the only offline copy an older worker can boot",
+    );
+  });
 });
 
-describe("worker wasm precache", () => {
+describe("immutable generation install", () => {
+  test("installs the complete verified UI and guest graph before going offline", async () => {
+    const buildId = "complete-build";
+    const wasm = new Uint8Array([9, 8, 7, 6]);
+    const wasmHash = (await sha256Hex(wasm)).slice(0, 16);
+    const resources = new Map([
+      ["/", "<html>complete shell</html>"],
+      ["/ui-a1b2c3.js", "complete ui"],
+      ["/guest/manifest.json", '{"js":"guest-a1b2c3.js"}'],
+      ["/guest/guest-a1b2c3.js", "complete guest glue"],
+      ["/guest/guest_bg-a1b2c3.wasm", "complete guest wasm"],
+      ["/tonk-prose/tonk-prose-editor.js", "complete lazy editor"],
+    ]);
+    const assets = Object.fromEntries(
+      await Promise.all(
+        [...resources].map(async ([path, body]) => [path, await sha256Hex(utf8(body))]),
+      ),
+    );
+    const manifestText = JSON.stringify({ version: 1, build: buildId, assets });
+    const manifestHash = await sha256Hex(utf8(manifestText));
+    const fetches = [];
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input, init) => {
+        const raw = typeof input === "string" ? input : input.url;
+        const url = new URL(raw, "https://tonk.test");
+        fetches.push({ path: url.pathname, cache: init?.cache });
+        if (url.pathname === "/asset-manifest.json") {
+          return new Response(manifestText, {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.pathname === "/worker_bg.wasm") {
+          return new Response(wasm, {
+            status: 200,
+            headers: { "content-type": "application/wasm" },
+          });
+        }
+        const body = resources.get(url.pathname);
+        return body === undefined
+          ? new Response("missing", { status: 404 })
+          : new Response(body, { status: 200 });
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      wasmHash,
+      assetManifestHash: manifestHash,
+      exports: [
+        "SHELL_CACHE",
+        "WORKER_CACHE",
+        "WORKER_WASM_URL",
+        "serveAsset",
+        "workerWasmModule",
+      ],
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    const shell = await caches.open(mod.SHELL_CACHE);
+    for (const [path, body] of resources) {
+      const key = path === "/" ? path : `https://tonk.test${path}`;
+      const cached = await shell.match(key);
+      assert.ok(cached, `${path} must be part of the installed generation`);
+      assert.equal(await cached.text(), body);
+    }
+    const worker = await caches.open(mod.WORKER_CACHE);
+    assert.deepEqual(
+      new Uint8Array(await (await worker.match(mod.WORKER_WASM_URL)).arrayBuffer()),
+      wasm,
+    );
+    assert.ok(fetches.length >= resources.size + 2);
+    assert.ok(
+      fetches.every(({ cache }) => cache === "no-store"),
+      "installation must not accept bytes from the incidental HTTP cache",
+    );
+
+    globalThis.fetch = async () => { throw new TypeError("offline"); };
+    assert.deepEqual(new Uint8Array(await mod.workerWasmModule()), wasm);
+    const guest = await mod.serveAsset({
+      request: { url: "https://tonk.test/guest/guest-a1b2c3.js" },
+    });
+    assert.equal(await guest.text(), "complete guest glue");
+  });
+
+  test("rejects a mismatched asset before opening any generation cache", async () => {
+    const buildId = "rejected-build";
+    const expectedShell = "expected shell";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(expectedShell)) },
+    });
+    const wasm = new Uint8Array([4, 3, 2, 1]);
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        switch (new URL(raw, "https://tonk.test").pathname) {
+          case "/asset-manifest.json":
+            return new Response(manifestText, { status: 200 });
+          case "/worker_bg.wasm":
+            return new Response(wasm, { status: 200 });
+          case "/":
+            return new Response("different live shell", { status: 200 });
+          default:
+            return new Response("missing", { status: 404 });
+        }
+      },
+    });
+    await loadWith({
+      buildId,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifestText)),
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+
+    await assert.rejects(install, /asset \/ hash mismatch/);
+    assert.equal(
+      caches.caches.size,
+      0,
+      "verification must finish before the incoming build mutates CacheStorage",
+    );
+  });
+
+  test("refuses an incomplete retained generation without repairing or deleting it", async () => {
+    const buildId = "retained-build";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": "0".repeat(64) },
+    });
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        if (new URL(raw, "https://tonk.test").pathname === "/asset-manifest.json") {
+          return new Response(manifestText, { status: 200 });
+        }
+        throw new Error("a retained generation must not fetch replacement assets");
+      },
+    });
+    const manifestHash = await sha256Hex(utf8(manifestText));
+    const mod = await loadWith({
+      buildId,
+      assetManifestHash: manifestHash,
+      exports: ["SHELL_CACHE", "WORKER_CACHE"],
+    });
+    const shell = await caches.open(mod.SHELL_CACHE);
+    const worker = await caches.open(mod.WORKER_CACHE);
+    await shell.put("/sentinel", new Response("retained"));
+    const metadata = await markGenerationAdopted(caches, {
+      buildId,
+      manifest: manifestHash,
+    });
+    shell.resetMutations();
+    worker.resetMutations();
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+
+    await assert.rejects(install, /retained generation cache is incomplete/);
+    assert.equal(await (await shell.match("/sentinel")).text(), "retained");
+    assert.deepEqual(shell.mutations, []);
+    assert.deepEqual(worker.mutations, []);
+    assert.deepEqual(new Set(await caches.keys()), new Set([
+      mod.SHELL_CACHE,
+      mod.WORKER_CACHE,
+      metadata,
+    ]));
+  });
+
+  test("never treats stable cache names without adoption provenance as incoming", async () => {
+    const buildId = "unknown-provenance-build";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": "0".repeat(64) },
+    });
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        if (new URL(raw, "https://tonk.test").pathname === "/asset-manifest.json") {
+          return new Response(manifestText, { status: 200 });
+        }
+        throw new Error("unknown retained state must not be repaired from live bytes");
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      assetManifestHash: await sha256Hex(utf8(manifestText)),
+      exports: ["SHELL_CACHE", "WORKER_CACHE"],
+    });
+    const shell = await caches.open(mod.SHELL_CACHE);
+    const worker = await caches.open(mod.WORKER_CACHE);
+    await shell.put("/sentinel", new Response("possibly retained"));
+    shell.resetMutations();
+    worker.resetMutations();
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await assert.rejects(install, /has no adoption provenance/);
+
+    assert.equal(await (await shell.match("/sentinel")).text(), "possibly retained");
+    assert.deepEqual(shell.mutations, []);
+    assert.deepEqual(worker.mutations, []);
+    assert.deepEqual(
+      new Set(await caches.keys()),
+      new Set([mod.SHELL_CACHE, mod.WORKER_CACHE]),
+    );
+  });
+
+  test("does not recreate retained cache names evicted during completeness verification", async () => {
+    const buildId = "evicted-retained-build";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": "0".repeat(64) },
+    });
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        if (new URL(raw, "https://tonk.test").pathname === "/asset-manifest.json") {
+          return new Response(manifestText, { status: 200 });
+        }
+        throw new Error("a retained generation must not fetch replacement assets");
+      },
+    });
+    const manifestHash = await sha256Hex(utf8(manifestText));
+    const mod = await loadWith({
+      buildId,
+      assetManifestHash: manifestHash,
+      exports: ["SHELL_CACHE", "WORKER_CACHE"],
+    });
+    await caches.open(mod.SHELL_CACHE);
+    await caches.open(mod.WORKER_CACHE);
+    await markGenerationAdopted(caches, { buildId, manifest: manifestHash });
+
+    // Model storage pressure between the inventory and the first cache read.
+    // Verification must observe the miss without reopening either old name.
+    const listKeys = caches.keys.bind(caches);
+    let evictAfterInventory = true;
+    caches.keys = async () => {
+      const names = await listKeys();
+      if (evictAfterInventory) {
+        evictAfterInventory = false;
+        caches.caches.clear();
+      }
+      return names;
+    };
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+
+    await assert.rejects(install, /retained generation cache is incomplete/);
+    assert.deepEqual(
+      await caches.keys(),
+      [],
+      "a read-only retained-generation check must not recreate an evicted cache name",
+    );
+  });
+
+  test("removes only a newly-created generation when publication cannot complete", async () => {
+    const buildId = "failed-incoming-build";
+    const shellBody = "complete before storage failure";
+    const wasm = new Uint8Array([1, 4, 1, 4]);
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(shellBody)) },
+    });
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        switch (new URL(raw, "https://tonk.test").pathname) {
+          case "/asset-manifest.json":
+            return new Response(manifestText, { status: 200 });
+          case "/worker_bg.wasm":
+            return new Response(wasm, { status: 200 });
+          case "/":
+            return new Response(shellBody, { status: 200 });
+          default:
+            return new Response("missing", { status: 404 });
+        }
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifestText)),
+      exports: ["WORKER_CACHE"],
+    });
+    const open = caches.open.bind(caches);
+    caches.open = async (name) => {
+      const cache = await open(name);
+      if (name === mod.WORKER_CACHE) {
+        cache.put = async () => { throw new Error("storage full"); };
+      }
+      return cache;
+    };
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+
+    await assert.rejects(install, /storage full/);
+    assert.deepEqual(
+      await caches.keys(),
+      [],
+      "a failed incoming install must not leave a partial generation installable",
+    );
+  });
+
+  test("recovers an interrupted unadopted publication of the same build", async () => {
+    const buildId = "interrupted-build";
+    const nonce = "0123456789abcdef0123456789abcdef";
+    const shellBody = "complete shell after retry";
+    const wasm = new Uint8Array([8, 6, 7, 5, 3, 0, 9]);
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(shellBody)) },
+    });
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        switch (new URL(raw, "https://tonk.test").pathname) {
+          case "/asset-manifest.json":
+            return new Response(manifestText, { status: 200 });
+          case "/worker_bg.wasm":
+            return new Response(wasm, { status: 200 });
+          case "/":
+            return new Response(shellBody, { status: 200 });
+          default:
+            return new Response("missing", { status: 404 });
+        }
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifestText)),
+      exports: ["SHELL_CACHE", "WORKER_CACHE"],
+    });
+    const { metadata, markerUrl, shellStage, workerStage } =
+      await putGenerationMarker(caches, {
+        buildId,
+        manifest: await sha256Hex(utf8(manifestText)),
+        state: "publishing",
+        nonce,
+      });
+    await (await caches.open(shellStage)).put("/interrupted", new Response("partial stage"));
+    await (await caches.open(workerStage)).put("/interrupted", new Response("partial stage"));
+    await (await caches.open(mod.SHELL_CACHE)).put("/interrupted", new Response("partial final"));
+    await caches.open(mod.WORKER_CACHE);
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.equal(await (await caches.match("/", { cacheName: mod.SHELL_CACHE })).text(), shellBody);
+    assert.deepEqual(
+      new Set(await caches.keys()),
+      new Set([metadata, mod.SHELL_CACHE, mod.WORKER_CACHE]),
+      "retry keeps only the adopted finals and durable generation metadata",
+    );
+    const marker = JSON.parse(
+      await (await caches.match(markerUrl, { cacheName: metadata })).text(),
+    );
+    assert.equal(marker.state, "adopted");
+  });
+
+  test("recovers an interrupted uniquely-staged build before publication", async () => {
+    const buildId = "interrupted-staging-build";
+    const nonce = "fedcba9876543210fedcba9876543210";
+    const shellBody = "complete shell after staging retry";
+    const wasm = new Uint8Array([2, 7, 1, 8, 2, 8]);
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(shellBody)) },
+    });
+    const manifestHash = await sha256Hex(utf8(manifestText));
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const raw = typeof input === "string" ? input : input.url;
+        switch (new URL(raw, "https://tonk.test").pathname) {
+          case "/asset-manifest.json":
+            return new Response(manifestText, { status: 200 });
+          case "/worker_bg.wasm":
+            return new Response(wasm, { status: 200 });
+          case "/":
+            return new Response(shellBody, { status: 200 });
+          default:
+            return new Response("missing", { status: 404 });
+        }
+      },
+    });
+    const mod = await loadWith({
+      buildId,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: manifestHash,
+      exports: ["SHELL_CACHE", "WORKER_CACHE"],
+    });
+    const { metadata, markerUrl, shellStage, workerStage } =
+      await putGenerationMarker(caches, {
+        buildId,
+        manifest: manifestHash,
+        state: "building",
+        nonce,
+      });
+    await (await caches.open(shellStage)).put("/interrupted", new Response("partial stage"));
+    await (await caches.open(workerStage)).put("/interrupted", new Response("partial stage"));
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.equal(await (await caches.match("/", { cacheName: mod.SHELL_CACHE })).text(), shellBody);
+    assert.deepEqual(
+      new Set(await caches.keys()),
+      new Set([metadata, mod.SHELL_CACHE, mod.WORKER_CACHE]),
+      "retry removes only the marker-owned stage names before adopting fresh finals",
+    );
+    const marker = JSON.parse(
+      await (await caches.match(markerUrl, { cacheName: metadata })).text(),
+    );
+    assert.equal(marker.state, "adopted");
+    assert.notEqual(marker.nonce, nonce, "the retry publishes through a fresh unique stage");
+  });
+});
+
+describe("worker wasm verification", () => {
   test("rejects wasm whose hash does not match the stamp", async () => {
     // The heart of the audit's finding 1. Glue and wasm are tightly
     // coupled, so installing a worker whose wasm is not the one built
     // alongside it is an init failure at best and silent miswiring at
     // worst. The install MUST fail so the old, internally consistent
     // worker keeps running.
-    const stampedSource = source
-      .replace(/^const BUILD_ID = .*$/m, 'const BUILD_ID = "testbuild";')
-      .replace(
-        /^const WORKER_WASM_HASH = .*$/m,
-        'const WORKER_WASM_HASH = "0000000000000000";',
-      );
-
-    withGlobals({
+    const { caches } = withGlobals({
       fetchImpl: async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
     });
-
-    const body = stampedSource.replace(
-      /^import init, \{ activate \} from "\.\/worker\.js";$/m,
-      "const init = async () => {}; const activate = async () => ({});",
-    );
-    const module = await import(
-      "data:text/javascript;base64," +
-        Buffer.from(body + "\nexport { precacheWorkerWasm };\n").toString("base64")
-    );
+    const module = await loadWith({ exports: ["fetchVerifiedWorkerWasm"] });
 
     await assert.rejects(
-      () => module.precacheWorkerWasm(),
+      () => module.fetchVerifiedWorkerWasm(),
       /hash mismatch/,
       "a mismatched pair must fail the install, not install anyway",
     );
+    assert.equal(caches.caches.size, 0);
   });
 
-  test("stores the wasm when the hash matches", async () => {
+  test("returns matching bytes without opening a cache", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     const hex = Array.from(new Uint8Array(digest))
@@ -323,130 +981,88 @@ describe("worker wasm precache", () => {
       .join("")
       .slice(0, 16);
 
-    const stampedSource = source
-      .replace(/^const BUILD_ID = .*$/m, 'const BUILD_ID = "testbuild";')
-      .replace(
-        /^const WORKER_WASM_HASH = .*$/m,
-        `const WORKER_WASM_HASH = "${hex}";`,
-      );
-
     const { caches } = withGlobals({
       fetchImpl: async () => new Response(bytes, { status: 200 }),
     });
+    const module = await loadWith({
+      wasmHash: hex,
+      exports: ["fetchVerifiedWorkerWasm"],
+    });
 
-    const body = stampedSource.replace(
-      /^import init, \{ activate \} from "\.\/worker\.js";$/m,
-      "const init = async () => {}; const activate = async () => ({});",
-    );
-    const module = await import(
-      "data:text/javascript;base64," +
-        Buffer.from(
-          body + "\nexport { precacheWorkerWasm, WORKER_CACHE };\n",
-        ).toString("base64")
-    );
-
-    await module.precacheWorkerWasm();
-    const cache = await caches.open(module.WORKER_CACHE);
-    const stored = await cache.match("https://tonk.test/worker_bg.wasm");
-    assert.ok(stored, "the verified wasm is cached for this build to boot from");
+    assert.deepEqual(new Uint8Array(await module.fetchVerifiedWorkerWasm()), bytes);
+    assert.equal(caches.caches.size, 0, "verification itself is a read-only operation");
   });
 
   test("fails the install when the wasm cannot be fetched", async () => {
-    const stampedSource = source
-      .replace(/^const BUILD_ID = .*$/m, 'const BUILD_ID = "testbuild";')
-      .replace(
-        /^const WORKER_WASM_HASH = .*$/m,
-        'const WORKER_WASM_HASH = "0000000000000000";',
-      );
     withGlobals({ fetchImpl: async () => new Response("", { status: 503 }) });
+    const module = await loadWith({ exports: ["fetchVerifiedWorkerWasm"] });
 
-    const body = stampedSource.replace(
-      /^import init, \{ activate \} from "\.\/worker\.js";$/m,
-      "const init = async () => {}; const activate = async () => ({});",
-    );
-    const module = await import(
-      "data:text/javascript;base64," +
-        Buffer.from(body + "\nexport { precacheWorkerWasm };\n").toString("base64")
-    );
-
-    await assert.rejects(() => module.precacheWorkerWasm(), /fetch failed/);
+    await assert.rejects(() => module.fetchVerifiedWorkerWasm(), /fetch failed/);
   });
 });
 
-describe("self-destruct", () => {
-  // Found in live testing: `selfDestruct` originally navigated every
-  // open client after unregistering. The reloaded page re-ran the
-  // registration script, reinstalled the SAME revoked build, which
-  // activated, re-read the flag, unregistered, and navigated again —
-  // an unbreakable reload loop, strictly worse than the bad worker it
-  // was meant to pull. Unregistering is enough on its own.
-  test("does not navigate clients", async () => {
+describe("withdrawn builds", () => {
+  test("never delete caches, unregister workers, or navigate clients", async () => {
     const swSource = readFileSync(SW_PATH, "utf8");
     const body = swSource.slice(
-      swSource.indexOf("async function selfDestruct"),
+      swSource.indexOf("function withdrawBuild"),
       swSource.indexOf("self.oninstall"),
     );
-    assert.ok(
-      !/client\.navigate/.test(body),
-      "selfDestruct must not reload clients: the fresh page reinstalls " +
-        "the revoked build and the cycle repeats forever",
-    );
-    assert.ok(
-      /registration\.unregister\(\)/.test(body),
-      "it must still unregister — that is the actual rollback",
+    assert.ok(body.startsWith("function withdrawBuild"));
+    assert.doesNotMatch(
+      body,
+      /caches\.delete|registration\.unregister|client\.navigate/,
+      "a remote flag may terminalize a build, but must preserve offline artifacts and registrations",
     );
   });
 
-  test("purges only this app's caches", async () => {
-    const swSource = readFileSync(SW_PATH, "utf8");
-    const body = swSource.slice(
-      swSource.indexOf("async function selfDestruct"),
-      swSource.indexOf("self.oninstall"),
+  test("offer the non-destructive update path immediately", async () => {
+    withGlobals();
+    const mod = await loadWith({
+      exports: ["withdrawBuild", "failurePage", "workerHealth"],
+    });
+
+    await mod.withdrawBuild();
+    const html = await mod.failurePage().text();
+
+    assert.match(html, /This Tonk version was withdrawn/);
+    assert.match(html, /Check for update/);
+    assert.doesNotMatch(
+      html,
+      /Reset and reload|unregister|caches\.delete|getRegistrations/,
     );
-    assert.ok(
-      /TONK_SHELL_|TONK_WORKER_/.test(body),
-      "a kill switch must not wipe caches belonging to anything else",
+  });
+
+  test("releases live streams and background sync before refusing new work", async () => {
+    withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
+    });
+    globalThis.__tonkWithdrawRetired = 0;
+    const mod = await loadWith({
+      wasmHash: "dev",
+      activateSource:
+        "async () => ({ onupdatefound: async () => { globalThis.__tonkWithdrawRetired += 1; } })",
+      exports: ["activateWorker", "withdrawBuild"],
+    });
+    await mod.activateWorker();
+
+    await mod.withdrawBuild();
+
+    assert.equal(
+      globalThis.__tonkWithdrawRetired,
+      1,
+      "withdrawal must stop already-running streams and sync without deleting their artifacts",
     );
+    await assert.rejects(() => mod.activateWorker(), /withdrawn/i);
+    delete globalThis.__tonkWithdrawRetired;
   });
 });
 
 describe("booting from the precached wasm", () => {
-  test("boots from cache without touching the network", async () => {
-    // The whole point of finding 1: once installed, this worker must
-    // never re-fetch its wasm, because the deployed bytes may belong to
-    // a newer build than this glue.
-    const bytes = new Uint8Array([9, 9, 9, 9]);
-    let fetches = 0;
-    const { caches, logs } = withGlobals({
-      fetchImpl: async () => {
-        fetches += 1;
-        return new Response(bytes, { status: 200 });
-      },
-    });
-    const mod = await loadWith({
-      exports: ["workerWasmModule", "WORKER_CACHE"],
-    });
-    // Seed the cache as a successful install would have.
-    const cache = await caches.open(mod.WORKER_CACHE);
-    await cache.put("https://tonk.test/worker_bg.wasm", new Response(bytes));
-
-    const buf = await mod.workerWasmModule();
-    assert.equal(buf.byteLength, 4);
-    assert.equal(fetches, 0, "a cache hit must not hit the network");
-    // `fetches === 0` alone is too weak: `precacheWorkerWasm` also
-    // early-returns on a cache hit, so the fallback path would satisfy
-    // it too. Assert the cache-first path was taken by its own log.
-    assert.ok(
-      !logs.some((line) => /missing from cache/.test(line)),
-      "a populated cache must be served directly, not routed through the " +
-        "eviction fallback",
-    );
-  });
-
-  test("refetches when the cache entry has been evicted", async () => {
-    // Storage pressure can evict the entry. Refetching is still correct
-    // (the install already proved the pair matched) and is the only
-    // alternative to a worker that can never boot again.
+  test("verifies an eviction recovery fetch without backfilling the retained cache", async () => {
+    // Storage pressure can evict the entry. The old worker may use live bytes
+    // only after proving they still match its stamped glue; it must not mutate
+    // a retained generation while doing so.
     const bytes = new Uint8Array([7, 7]);
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     const hex = Array.from(new Uint8Array(digest))
@@ -454,7 +1070,7 @@ describe("booting from the precached wasm", () => {
       .join("")
       .slice(0, 16);
     let fetches = 0;
-    withGlobals({
+    const { caches } = withGlobals({
       fetchImpl: async () => {
         fetches += 1;
         return new Response(bytes, { status: 200 });
@@ -462,16 +1078,22 @@ describe("booting from the precached wasm", () => {
     });
     const mod = await loadWith({
       wasmHash: hex,
-      exports: ["workerWasmModule"],
+      exports: ["workerWasmModule", "WORKER_CACHE"],
     });
+    assert.equal(caches.caches.has(mod.WORKER_CACHE), false);
     const buf = await mod.workerWasmModule();
     assert.equal(buf.byteLength, 2);
     assert.equal(fetches, 1, "an evicted entry is refetched exactly once");
+    assert.equal(
+      caches.caches.has(mod.WORKER_CACHE),
+      false,
+      "runtime recovery must not recreate or backfill a retained TONK_WORKER cache",
+    );
   });
 
   test("fails loudly when the wasm cannot be recovered", async () => {
-    // Better a visible failure (which the failure page surfaces, with
-    // the reset ladder) than a worker that half-boots.
+    // Better a visible failure with non-destructive retry/update guidance
+    // than a worker that half-boots.
     withGlobals({ fetchImpl: async () => new Response("", { status: 500 }) });
     const mod = await loadWith({ exports: ["workerWasmModule"] });
     await assert.rejects(() => mod.workerWasmModule());
@@ -479,25 +1101,34 @@ describe("booting from the precached wasm", () => {
 });
 
 describe("navigation while an update is waiting", () => {
-  const navEvent = () => ({ waitUntil: (p) => { void p?.catch?.(() => {}); } });
+  const navEvent = () => ({
+    url: "https://tonk.test/",
+    waitUntil: (p) => { void p?.catch?.(() => {}); },
+  });
 
-  test("goes network-first so one reload converges", async () => {
-    // Plain stale-while-revalidate leaves the page a build behind, so
-    // converging takes two reloads — wrong at the moment the user has
-    // just clicked "reload to update".
+  test("keeps serving the outgoing shell until the claim-and-reload handoff", async () => {
+    let fetches = 0;
     const { caches } = withGlobals({
       registration: { waiting: {}, installing: null, addEventListener() {} },
-      fetchImpl: async () => new Response("FRESH SHELL", { status: 200 }),
+      fetchImpl: async (input) => {
+        if (input === "/") fetches += 1;
+        return new Response("FRESH SHELL", { status: 200 });
+      },
     });
     const mod = await loadWith({ exports: ["serveNavigation", "SHELL_CACHE"] });
     const cache = await caches.open(mod.SHELL_CACHE);
     await cache.put("/", new Response("STALE SHELL"));
 
     const response = await mod.serveNavigation(navEvent());
-    assert.equal(await response.text(), "FRESH SHELL");
+    assert.equal(await response.text(), "STALE SHELL");
+    assert.equal(
+      fetches,
+      0,
+      "an outgoing controller must not accept the next deployment's stable-name shell",
+    );
   });
 
-  test("falls back to the cached shell when offline", async () => {
+  test("keeps the cached outgoing shell available while offline", async () => {
     // A navigation must never hard-fail on a shell we already hold.
     const { caches } = withGlobals({
       registration: { waiting: {}, installing: null, addEventListener() {} },
@@ -535,7 +1166,215 @@ describe("navigation while an update is waiting", () => {
     assert.equal(
       await response.text(),
       "STALE SHELL",
-      "the normal path serves from cache and revalidates behind it",
+      "the normal path serves its sealed generation",
+    );
+  });
+});
+
+describe("immutable generation caches", () => {
+  const navEvent = (pending) => ({
+    url: "https://tonk.test/",
+    waitUntil: (promise) => pending.push(Promise.resolve(promise)),
+  });
+
+  test("a waiting successor never reads or rewrites the outgoing generation shell from the network", async () => {
+    const pending = [];
+    let fetches = 0;
+    const { caches } = withGlobals({
+      registration: { waiting: {}, installing: null, addEventListener() {} },
+      fetchImpl: async (input) => {
+        if (input === "/") fetches += 1;
+        return new Response("NEW GENERATION", { status: 200 });
+      },
+    });
+    const mod = await loadWith({ exports: ["serveNavigation", "SHELL_CACHE"] });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("OLD GENERATION"));
+    cache.resetMutations();
+
+    const response = await mod.serveNavigation(navEvent(pending));
+    await Promise.all(pending);
+
+    assert.equal(await response.text(), "OLD GENERATION");
+    assert.equal(fetches, 0);
+    assert.deepEqual(
+      cache.mutations,
+      [],
+      "the outgoing worker must leave its sealed cache byte-for-byte unchanged",
+    );
+    assert.equal(await (await cache.match("/")).text(), "OLD GENERATION");
+  });
+
+  test("ordinary navigation never revalidates or prunes a retained generation", async () => {
+    const pending = [];
+    let fetches = 0;
+    const { caches } = withGlobals({
+      registration: { waiting: null, installing: null, addEventListener() {} },
+      fetchImpl: async () => {
+        fetches += 1;
+        return new Response("NEW GENERATION", { status: 200 });
+      },
+    });
+    const mod = await loadWith({ exports: ["serveNavigation", "SHELL_CACHE"] });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("OLD GENERATION"));
+    await cache.put("https://tonk.test/old-hash.js", new Response("old asset"));
+    cache.resetMutations();
+
+    const response = await mod.serveNavigation(navEvent(pending));
+    await Promise.all(pending);
+
+    assert.equal(await response.text(), "OLD GENERATION");
+    assert.equal(fetches, 0, "a sealed generation has nothing to revalidate");
+    assert.deepEqual(cache.mutations, [], "no old entry may be overwritten or deleted");
+  });
+
+  test("cached static assets stay byte-for-byte immutable online and offline", async () => {
+    for (const online of [true, false]) {
+      const pending = [];
+      let fetches = 0;
+      const { caches } = withGlobals({
+        fetchImpl: async () => {
+          fetches += 1;
+          if (!online) throw new TypeError("offline");
+          return new Response("new asset", { status: 200 });
+        },
+      });
+      const mod = await loadWith({ exports: ["serveAsset", "SHELL_CACHE"] });
+      const cache = await caches.open(mod.SHELL_CACHE);
+      const request = { url: "https://tonk.test/app-old.js" };
+      await cache.put(request, new Response("old asset"));
+      cache.resetMutations();
+
+      const response = await mod.serveAsset({
+        request,
+        waitUntil: (promise) => pending.push(Promise.resolve(promise)),
+      });
+      await Promise.all(pending);
+
+      assert.equal(await response.text(), "old asset");
+      assert.equal(fetches, 0, "a retained asset is never refreshed from the live deployment");
+      assert.deepEqual(cache.mutations, []);
+    }
+  });
+
+  test("production cache-bypass flags cannot escape the sealed generation", async () => {
+    const request = {
+      method: "GET",
+      mode: "cors",
+      cache: "no-store",
+      url: "https://tonk.test/tonk-prose/tonk-prose-editor.js",
+    };
+    withGlobals();
+    const retained = await loadWith({
+      buildId: "retained-production-build",
+      assetPaths: ["/", "/tonk-prose/tonk-prose-editor.js"],
+      exports: ["isShellCacheable"],
+    });
+    assert.equal(
+      retained.isShellCacheable(request, "/tonk-prose/tonk-prose-editor.js"),
+      true,
+      "a caller cannot force an old production controller to accept live stable-name bytes",
+    );
+
+    withGlobals();
+    const development = await loadWith({
+      buildId: "dev",
+      exports: ["isShellCacheable"],
+    });
+    assert.equal(
+      development.isShellCacheable(request, "/tonk-prose/tonk-prose-editor.js"),
+      false,
+      "the unstamped Trunk hot-reload client still needs explicit live reads",
+    );
+  });
+
+  test("a missing retained asset fails coherently without accepting live bytes", async () => {
+    for (const online of [true, false]) {
+      let fetches = 0;
+      const { caches } = withGlobals({
+        fetchImpl: async () => {
+          fetches += 1;
+          if (!online) throw new TypeError("offline");
+          return new Response(new Uint8Array([0]), { status: 200 });
+        },
+      });
+      const mod = await loadWith({
+        buildId: online ? "old-online" : "old-offline",
+        wasmHash: "dev",
+        activateSource:
+          'async () => ({ onfetch: async () => new Response("live deployment asset") })',
+        exports: ["serveAsset", "SHELL_CACHE", "WORKER_CACHE"],
+      });
+      const event = { request: { url: "https://tonk.test/missing-old.js" } };
+
+      const response = await mod.serveAsset(event);
+      assert.equal(response.status, 503);
+      assert.match(await response.text(), /retained Tonk version.*reload/i);
+      assert.equal(fetches, 0, "an old generation must not accept the live stable-name response");
+      assert.equal(
+        caches.caches.has(mod.SHELL_CACHE),
+        false,
+        "a runtime miss must not recreate or backfill the evicted shell cache",
+      );
+      assert.equal(
+        caches.caches.has(mod.WORKER_CACHE),
+        false,
+        "a static eviction miss must not boot the Rust worker or recreate its cache",
+      );
+    }
+  });
+
+  test("an evicted shell fails closed instead of loading a new generation under the old controller", async () => {
+    for (const waiting of [null, {}]) {
+      let fetches = 0;
+      withGlobals({
+        registration: { waiting, installing: null, addEventListener() {} },
+        fetchImpl: async () => {
+          fetches += 1;
+          return new Response("LIVE SHELL", { status: 200 });
+        },
+      });
+      const { caches } = globalThis;
+      const mod = await loadWith({ exports: ["serveNavigation", "SHELL_CACHE"] });
+
+      const response = await mod.serveNavigation({
+        url: "https://tonk.test/",
+        waitUntil() {},
+      });
+
+      assert.equal(response.status, 503);
+      assert.match(await response.text(), /retained Tonk version.*reload/i);
+      assert.equal(fetches, 0);
+      assert.equal(
+        caches.caches.has(mod.SHELL_CACHE),
+        false,
+        "an eviction miss must not recreate an empty retained shell cache",
+      );
+    }
+  });
+
+  test("the Rust miss path cannot populate or revalidate a generation cache", () => {
+    const cache = readFileSync(CACHE_RS_PATH, "utf8");
+    assert.doesNotMatch(
+      cache,
+      /open_cache|\.open\(/,
+      "a runtime read must not recreate an evicted TONK_SHELL cache",
+    );
+    assert.doesNotMatch(
+      cache,
+      /put_with_request|async fn revalidate|spawn_local/,
+      "old workers must never write current deployment bytes into their generation",
+    );
+    assert.doesNotMatch(
+      cache,
+      /sw_fetch|network request on a miss|may work online/,
+      "a complete retained generation must not accept live stable-name bytes on an eviction miss",
+    );
+    assert.match(
+      cache,
+      /set_status\(503\)/,
+      "the Rust-side miss must return the same coherent retained-generation failure",
     );
   });
 });
@@ -555,10 +1394,7 @@ describe("the failure page", () => {
     assert.ok(!/Reset and reload/.test(html), "no reset ladder yet");
   });
 
-  test("offers the reset ladder once failures persist", async () => {
-    // This is the escape hatch from finding 3: the failure page is not
-    // the boot shell, so the stall watchdog's clear-and-unregister
-    // never runs here. Without this the user reloads forever.
+  test("keeps repeated-failure recovery non-destructive", async () => {
     withGlobals();
     const mod = await loadWith({ exports: ["failurePage", "workerHealth"] });
     mod.workerHealth.state = "failed";
@@ -566,8 +1402,9 @@ describe("the failure page", () => {
     mod.workerHealth.attempts = 5;
 
     const html = await mod.failurePage().text();
-    assert.match(html, /Reset and reload/);
-    assert.match(html, /unregister/i, "it actually unregisters, not just reloads");
+    assert.match(html, /Try again/);
+    assert.match(html, /check for update|reload/i);
+    assert.doesNotMatch(html, /Reset and reload|unregister|caches\.delete|getRegistrations/);
   });
 
   test("escapes the error text", async () => {

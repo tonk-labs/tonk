@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INDEX = join(HERE, "..", "index.html");
+const HOT_SWAP = join(HERE, "..", "assets", "hot-swap.js");
 
 /** The `<script type="module">` bodies, in document order. */
 function moduleBlocks() {
@@ -179,6 +180,33 @@ describe("boot script contract with the worker", () => {
     assert.match(updateDiscovery, /visibilitychange/);
     assert.match(updateDiscovery, /"online"/);
     assert.match(updateDiscovery, /registration\.update\(\)/);
+  });
+
+  test("defers the successor claim together with an account-safe update reload", () => {
+    const updatePrompt = moduleBlockContaining("const announceUpdate");
+    const clickHandler = updatePrompt.slice(
+      updatePrompt.indexOf('reload.addEventListener("click"'),
+      updatePrompt.indexOf("const dismiss"),
+    );
+    assert.match(
+      clickHandler,
+      /tonkReloadWhenAccountSetupDurable\s*\(\s*\(\)\s*=>[\s\S]*registration\.waiting\?\.postMessage/,
+      "the successor must not claim an Armed/pre-Stage account page before the deferred reload is safe",
+    );
+  });
+
+  test("routes both development hot-swap reloads through account safety", () => {
+    const source = readFileSync(HOT_SWAP, "utf8");
+    assert.equal(
+      [...source.matchAll(/tonkReloadWhenAccountSetupDurable\s*\(/g)].length,
+      2,
+      "re-enabling a held reload and an immediate code reload both cross the durability gate",
+    );
+    assert.doesNotMatch(
+      source,
+      /(?:window\.)?location\.reload\s*\(/,
+      "development hot swap must not retain a direct automatic reload path",
+    );
   });
 
   test("decides staleness by comparing builds, not by listening for events", () => {

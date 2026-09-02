@@ -23,6 +23,9 @@
 /worker_bg.wasm
   Cache-Control: no-store
 
+/asset-manifest.json
+  Cache-Control: no-store
+
 # The update probe and the kill switch are only useful if they are never
 # answered from a cache.
 /version.json
@@ -34,8 +37,8 @@
 # ---- Entry points: always revalidated -------------------------------
 #
 # The shell names content-hashed assets, so it must not be served stale by
-# an intermediary; the service worker layers its own stale-while-revalidate
-# on top of this.
+# an intermediary. A service worker verifies and seals the shell into one
+# immutable build generation at install; retained workers never revalidate it.
 /
   Cache-Control: no-cache
 

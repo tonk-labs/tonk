@@ -17,7 +17,10 @@ pub struct TestEnvironment {
     /// mints its own CA, so a single `SSL_CERT_FILE` would leave
     /// concurrent runs trusting whichever one started last.
     pub ca_certificate: Option<std::path::PathBuf>,
-    /// Writable per-harness copy of the otherwise immutable service-worker script.
+    /// Writable per-harness A/B deployment fixture. `current` is the atomic
+    /// symlink Caddy serves; generation directories contain complete artifacts.
+    pub deployment_root: std::path::PathBuf,
+    /// Writable service worker in the initial complete generation.
     pub service_worker_script: std::path::PathBuf,
 }
 
@@ -288,9 +291,11 @@ mod native {
             // Newly added test source must be staged, just as it must be for
             // the committed CI revision that ultimately runs this harness.
             let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
-            let service_worker_root = caddy_data.join("service-worker");
-            std::fs::create_dir_all(&service_worker_root)?;
-            let service_worker_script = service_worker_root.join("service_worker.js");
+            let deployment_root = caddy_data.join("deployments");
+            std::fs::create_dir_all(&deployment_root)?;
+            let service_worker_script = deployment_root
+                .join("generation-a")
+                .join("service_worker.js");
             let mut web_server = ManagedChild::new(
                 std::process::Command::new("nix")
                     .args([
@@ -299,7 +304,7 @@ mod native {
                         "--",
                         &format!("{web_port}"),
                         &format!("{access_service_port}"),
-                        service_worker_root
+                        deployment_root
                             .to_str()
                             .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
                     ])
@@ -420,6 +425,7 @@ mod native {
                     chromedriver: Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     access_service: Url::parse(&access_service_address.access_service_url)?,
                     ca_certificate,
+                    deployment_root,
                     service_worker_script,
                 },
             ))

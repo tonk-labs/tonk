@@ -18,8 +18,14 @@ mod main {
     /// drift waiting to happen, and the drift is silent (one side
     /// purges caches the other is still writing).
     #[wasm_bindgen]
-    pub async fn activate(build_id: String) -> Result<TonkServiceWorker, JsError> {
+    pub async fn activate(
+        build_id: String,
+        asset_paths: JsValue,
+    ) -> Result<TonkServiceWorker, JsError> {
+        let asset_paths: Vec<String> = serde_wasm_bindgen::from_value(asset_paths)
+            .map_err(|error| JsError::new(&format!("invalid stamped asset paths: {error}")))?;
         tonk_worker::set_build_id(build_id);
+        tonk_worker::set_asset_paths(asset_paths);
         TonkServiceWorker::new().await
     }
 }

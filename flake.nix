@@ -630,6 +630,11 @@
               # from the deployed Tonk asset origin.
               mkdir -p ./build/tonk-ui/storybook
               cp -r ${tonk-storybook}/* ./build/tonk-ui/storybook/
+              # The deployed browser tree is complete only after both static
+              # sites are overlaid. Restamp that final tree so BUILD_ID, the
+              # install manifest, and exact request routing cover every byte
+              # Cloudflare can serve under this worker's scope.
+              ${./rust/tonk-ui/scripts/stamp-service-worker.sh} ./build/tonk-ui
             '';
             installPhase = ''
               mkdir -p $out
@@ -646,23 +651,20 @@
               #!${bash}/bin/bash
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
-              SERVICE_WORKER_ROOT=''${3:-}
+              DEPLOYMENT_FIXTURE_ROOT=''${3:-}
 
-              if [ -n "$SERVICE_WORKER_ROOT" ]; then
-                  mkdir -p "$SERVICE_WORKER_ROOT"
-                  cp ${self.packages.${system}.tonk-ui}/service_worker.js \
-                      "$SERVICE_WORKER_ROOT/service_worker.js"
-                  # The package lives in the read-only Nix store and `cp`
-                  # preserves that mode. Only this per-harness fixture is
-                  # mutable: the upgrade regression rewrites its build stamp
-                  # to make the browser discover a successor worker.
-                  chmod u+w "$SERVICE_WORKER_ROOT/service_worker.js"
-                  SERVICE_WORKER_HANDLE="handle /service_worker.js {
-                      root * \"$SERVICE_WORKER_ROOT\"
-                      file_server
-                  }"
+              if [ -n "$DEPLOYMENT_FIXTURE_ROOT" ]; then
+                  GENERATION_A="$DEPLOYMENT_FIXTURE_ROOT/generation-a"
+                  mkdir -p "$GENERATION_A"
+                  cp -r ${self.packages.${system}.tonk-ui}/. "$GENERATION_A/"
+                  # Integration tests publish a separately stamped generation
+                  # and atomically repoint this symlink. The browser profile,
+                  # registration, caches, and IndexedDB all survive the swap.
+                  chmod -R u+w "$GENERATION_A"
+                  ln -s generation-a "$DEPLOYMENT_FIXTURE_ROOT/current"
+                  TONK_UI_ROOT="$DEPLOYMENT_FIXTURE_ROOT/current"
               else
-                  SERVICE_WORKER_HANDLE=""
+                  TONK_UI_ROOT=${self.packages.${system}.tonk-ui}
               fi
 
               echo "Test server live at https://tonk.network:$PORT"
@@ -688,9 +690,8 @@
                   handle /customer/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
-                  $SERVICE_WORKER_HANDLE
                   handle {
-                      root * ${self.packages.${system}.tonk-ui}
+                      root * "$TONK_UI_ROOT"
                       try_files {path} /index.html
                       file_server
                   }

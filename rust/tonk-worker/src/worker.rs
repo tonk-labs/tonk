@@ -306,10 +306,11 @@ fn reject_404() -> Result<JsValue, JsValue> {
 
 /// Pass the request through to the network or the shell cache.
 ///
-/// Cacheable GETs go through stale-while-revalidate against the
-/// shell cache — repeat loads serve from memory instead of
-/// re-downloading Webawesome's chunk graph, Trunk-hashed JS/Wasm,
-/// or the self-hosted font set.
+/// Cacheable GETs read this worker generation's immutable shell cache — repeat
+/// loads serve from memory instead of re-downloading Webawesome's chunk graph,
+/// Trunk-hashed JS/Wasm, or the self-hosted font set. Because install verifies
+/// that complete resource graph, a later miss fails closed rather than using
+/// live stable-name bytes from another deployment.
 ///
 /// Document navigations don't reach this function: the JS shim
 /// serves them directly from the SW cache so navigation TTFB
@@ -317,9 +318,12 @@ fn reject_404() -> Result<JsValue, JsValue> {
 /// the data plane (`/api/*`) on the Rust side without paying
 /// the worker boot cost for the HTML shell.
 ///
-/// Non-cacheable requests (non-GETs, opaque/cross-origin) fall
-/// through to `self.fetch(request)` to hit the network directly.
-/// Such fetches bypass the SW's own `onfetch` handler per spec.
+/// Genuinely non-cacheable requests (non-GETs, data-plane,
+/// opaque/cross-origin, or an unstamped development cache bypass) fall through
+/// to `self.fetch(request)` to hit the network directly. A stamped production
+/// generation never turns a same-origin static request into a live stable-name
+/// fetch merely because authored code supplied a cache-bypass flag. Such
+/// network fetches bypass the SW's own `onfetch` handler per spec.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn passthrough(request: Request, _is_navigation: bool) -> Result<JsValue, JsValue> {
     let path = url::Url::parse(&request.url())
@@ -327,7 +331,7 @@ async fn passthrough(request: Request, _is_navigation: bool) -> Result<JsValue, 
         .unwrap_or_default();
 
     if crate::cache::is_cacheable(&request, &path) {
-        return crate::cache::stale_while_revalidate(&request).await;
+        return crate::cache::immutable_cache_first(&request).await;
     }
 
     let response: Response = JsFuture::from(sw_fetch(&request)).await?.dyn_into()?;
@@ -1951,11 +1955,11 @@ impl TonkServiceWorker {
 
     /// Handles incoming fetch events from the browser.
     ///
-    /// Called from the JS shim's `self.onfetch` listener for *every*
-    /// request the service worker sees. The Rust side decides
-    /// whether to handle the request itself (via the axum router)
-    /// or pass it through to the network. The shim never
-    /// inspects the URL — all routing policy lives here.
+    /// Called from the JS shim for data-plane/live requests and for every
+    /// request whose initiating client may be a registered guest. Exact
+    /// top-level stamped documents/assets stay in the JS fast path; the Rust
+    /// side decides whether each delegated request belongs in the axum router
+    /// or must pass through to the network.
     ///
     /// Decision rule (see [`route_for`]):
     /// - If the request's path starts with `/api/`, route through
