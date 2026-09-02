@@ -140,36 +140,7 @@ pub fn context_headers() -> Vec<(&'static str, String)> {
     if let Some(hash) = hash {
         headers.push(("x-tonk-hash", hash));
     }
-    // The build this page was loaded from. `skipWaiting` + `claim` swap
-    // the worker underneath a running page, so the page can end up
-    // talking to a worker from a different build than its own wasm. The
-    // storage layer tolerates that by design, but the HTTP surface is
-    // not versioned — a renamed route or a changed DTO would surface as
-    // a confusing 404 or parse error in a page with no idea it is
-    // stale. Sending the build lets the worker answer a structured 409
-    // instead, which the host turns into "reload to update".
-    if let Some(build) = build_id() {
-        headers.push(("x-tonk-build", build));
-    }
     headers
-}
-
-/// This document's build id, published by the boot script as
-/// `window.tonkBuild` from the same `version.json` the worker is
-/// stamped with. `None` in a context with no stamp (a sealed guest,
-/// which never sets it), where the handshake does not apply.
-///
-/// Deliberately NOT `window.tonk.build`. That object is the sealed
-/// guest's bridge, and [`crate::page_effect::forward`] tests for its
-/// presence to decide whether it is running inside a guest — so
-/// creating it on the top page makes the host believe it is a guest
-/// and silently swallows every navigation.
-pub fn build_id() -> Option<String> {
-    let win = window()?;
-    Reflect::get(&win, &JsValue::from_str("tonkBuild"))
-        .ok()?
-        .as_string()
-        .filter(|s| !s.is_empty())
 }
 
 /// GET a host-relative path and return its body text. One transport
