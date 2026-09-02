@@ -402,7 +402,11 @@ mod tests {
     }
 
     fn stamp_generation(root: &Path) -> Result<()> {
-        let stamp = Path::new(env!("CARGO_MANIFEST_DIR"))
+        // Runtime remapping wins for binaries from the `tests-e2e` archive:
+        // their compile-time manifest path names the discarded Nix sandbox.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+        let stamp = Path::new(&manifest_dir)
             .join("scripts")
             .join("stamp-service-worker.sh");
         let output = Command::new(&stamp)
