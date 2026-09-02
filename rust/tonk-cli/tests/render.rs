@@ -11,9 +11,9 @@ use tonk_cli::render::{self, RenderRoute};
 
 use crate::common::TestSite;
 
-// Site init seeds the standard library (`tonk:view`,
-// `tonk:view/directory`, etc.), so these tests rely on the built-in
-// view concepts being present rather than seeding them by hand.
+// Site init seeds the standard library (the `tonk:view` concept and
+// the `tonk:_` default dictionary), so these tests rely on the
+// built-in view concept being present rather than seeding it by hand.
 
 const PERSON_CONCEPT: &str = r#"attribute!: &person-name
   description: "person name"
@@ -34,9 +34,10 @@ async fn seeded() -> Result<TestSite> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline(
-        r#"view!: &person-card
-  model: person
-  display: "<article><h2>{name}</h2></article>"
+        r#"view!:
+  this: person
+  show:
+    ui: "<article><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -75,122 +76,15 @@ async fn it_renders_one_entity_through_its_view() -> Result<()> {
 }
 
 #[dialog_common::test]
-async fn it_renders_every_matching_view_in_view_entity_order() -> Result<()> {
-    let test = TestSite::new().await?;
-    test.eval_inline(PERSON_CONCEPT).await?;
-    // Insert in reverse entity order so the result cannot accidentally follow
-    // commit or query-row order.
-    test.eval_inline(
-        r#"view!: &z-person-card
-  this: id:z-person-card
-  model: person
-  display: "<article data-view=\"z\">Z {name}</article>"
-"#,
-    )
-    .await?;
-    test.eval_inline(
-        r#"view!: &a-person-card
-  this: id:a-person-card
-  model: person
-  display: "<article data-view=\"a\">A {name}</article>"
-"#,
-    )
-    .await?;
-    test.eval_inline("person!: &alice\n  name: Alice\n").await?;
-
-    let route = RenderRoute::parse("alice@person")?;
-    let html = render::render(&test.site, &route).await?;
-
-    assert_eq!(html.matches("data-view=\"a\"").count(), 1, "{html}");
-    assert_eq!(html.matches("data-view=\"z\"").count(), 1, "{html}");
-    let a = html.find("data-view=\"a\"").expect("a view rendered");
-    let z = html.find("data-view=\"z\"").expect("z view rendered");
-    assert!(a < z, "views must render in ascending entity order: {html}");
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn any_portal_view_makes_every_matching_view_a_portal_sibling() -> Result<()> {
-    let test = TestSite::new().await?;
-    test.eval_inline(PERSON_CONCEPT).await?;
-    test.eval_inline(
-        r#"attribute!: &portal-view-model
-  description: "model rendered by this view"
-  the: xyz.tonk.portal-view/model
-  as: entity
-  cardinality: one
-
-attribute!: &portal-view-display
-  description: "view document"
-  the: xyz.tonk.portal-view/display
-  as: text
-  cardinality: one
-
-attribute!: &portal-view-type
-  description: "view media type"
-  the: xyz.tonk.portal-view/type
-  as: text
-  cardinality: one
-
-concept!: &portal-view
-  description: "a portal-capable view"
-  with:
-    model: portal-view-model
-    display: portal-view-display
-    type: portal-view-type
-"#,
-    )
-    .await?;
-    test.eval_inline(
-        r#"portal-view!: &a-inline
-  this: id:a-inline
-  model: person
-  display: "<p data-view=\"inline\">{name}</p>"
-  type: "text/plain"
-"#,
-    )
-    .await?;
-    test.eval_inline(
-        r#"portal-view!: &z-portal
-  this: id:z-portal
-  model: person
-  display: "<!doctype html><p data-view=\"portal\">{name}</p>"
-  type: "text/html"
-"#,
-    )
-    .await?;
-    test.eval_inline("person!: &alice\n  name: Alice\n").await?;
-
-    let route = RenderRoute::parse("alice@person!portal-view")?;
-    let html = render::render(&test.site, &route).await?;
-
-    assert_eq!(html.matches("<iframe").count(), 2, "{html}");
-    assert!(
-        !html.contains("Alice"),
-        "portal documents are not interpolated: {html}"
-    );
-    let inline = html
-        .find("data-view=&quot;inline&quot;")
-        .expect("inline document portalized");
-    let portal = html
-        .find("data-view=&quot;portal&quot;")
-        .expect("portal document rendered");
-    assert!(
-        inline < portal,
-        "portal siblings follow view entity order: {html}"
-    );
-    Ok(())
-}
-
-#[dialog_common::test]
 async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view that reads {dom.host/model} into an attribute.
     test.eval_inline(
-        r#"view!: &person-card
-  model: person
-  display: "<article data-model=\"{dom.host/model}\"><h2>{name}</h2></article>"
+        r#"view!:
+  this: person
+  show:
+    ui: "<article data-model=\"{dom.host/model}\"><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -210,13 +104,13 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
 async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A person-specific directory view (the built-in `view/directory`
-    // concept, keyed to `model: person`). Overrides the stdlib's
+    // A person-specific `directory` facet. Overrides the stdlib's
     // `tonk:_` default carousel so the test asserts this exact template.
     test.eval_inline(
-        r#"view/directory!: &people
-  model: person
-  display: "<ul><li data-id=\"{this}\">{name}</li></ul>"
+        r#"view!:
+  this: person
+  show:
+    directory: "<ul><li data-id=\"{this}\">{name}</li></ul>"
 "#,
     )
     .await?;
@@ -262,9 +156,10 @@ async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view keyed to the `tonk:_` default model rather than `person`.
     test.eval_inline(
-        r#"view!: &fallback
-  model: tonk:_
-  display: "<div class=\"default\">{name}</div>"
+        r#"view!:
+  this: tonk:_
+  show:
+    ui: "<div class=\"default\">{name}</div>"
 "#,
     )
     .await?;

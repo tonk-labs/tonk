@@ -95,6 +95,17 @@ mod native {
                 caps.set_binary(&chrome_binary)?;
             }
 
+            // Diagnostic tap, off unless asked for: makes chromedriver
+            // retain every console message (page and service worker
+            // alike) for the classic /se/log endpoint, so a wedged async
+            // flow can be read from the test log instead of guessed at.
+            if std::env::var("TONK_E2E_CHROME_LOG").is_ok() {
+                caps.insert_base_capability(
+                    "goog:loggingPrefs".to_string(),
+                    serde_json::json!({ "browser": "ALL" }),
+                );
+            }
+
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
             // Bound each navigation well under the suite's patience. The
             // default page-load allowance is five minutes, so one wedged
@@ -271,7 +282,12 @@ mod native {
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
-            let test_server = format!("path:{}#tonk-ui-test-server", workspace.display());
+            // Use the Git worktree view so ignored build products (`target`,
+            // linked worktrees, benchmark runs) are not copied into the Nix
+            // store every time an integration test starts its web server.
+            // Newly added test source must be staged, just as it must be for
+            // the committed CI revision that ultimately runs this harness.
+            let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
             let service_worker_root = caddy_data.join("service-worker");
             std::fs::create_dir_all(&service_worker_root)?;
             let service_worker_script = service_worker_root.join("service_worker.js");

@@ -190,7 +190,11 @@ semantics. CLI device JSON and exit codes must not depend on TTY rendering.
 
 **Privacy and telemetry.** Verified email is used for arming but must not enter
 telemetry. Passkey, deletion authorization, device grants, and owned-space plans
-are sensitive.
+are sensitive. Destructive actions emit only their closed action, stage, result,
+and failure classification. A response lost after dispatch is
+`unknown_commit`; no target ID, inventory count, plan, response body, or raw
+diagnostic accompanies it. Access Worker failure logs likewise contain no
+subject or profile identity.
 
 ## Edge cases
 

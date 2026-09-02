@@ -1,5 +1,18 @@
 use thiserror::Error;
 
+/// Closed transport boundary for account API failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountTransportKind {
+    /// Request did not receive an HTTP response.
+    Network,
+    /// HTTP response reported a failure.
+    Http,
+    /// Response body did not match the expected wire shape.
+    Decode,
+    /// Browser-local state could not satisfy the operation.
+    Local,
+}
+
 /// Errors that can occur in the Tonk UI application.
 #[derive(Error, Debug, Clone)]
 pub enum TonkUiError {
@@ -12,6 +25,19 @@ pub enum TonkUiError {
     /// someone needs to read beneath transport details.
     #[error("{0}")]
     Account(String),
+
+    /// Structured account boundary evidence plus a local-only diagnostic.
+    #[error("{diagnostic}")]
+    AccountApi {
+        /// Which boundary failed.
+        transport_kind: AccountTransportKind,
+        /// Numeric HTTP status, when a response was received.
+        status: Option<u16>,
+        /// Stable service code. It is normalized again by analytics before use.
+        service_code: Option<String>,
+        /// Exact local diagnostic; never included in account analytics.
+        diagnostic: String,
+    },
 
     /// Structured synchronization failure returned by the worker.
     #[error("{message}")]

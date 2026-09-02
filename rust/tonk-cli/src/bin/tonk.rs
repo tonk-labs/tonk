@@ -248,10 +248,11 @@ enum Command {
     /// Render a view to HTML, headlessly
     ///
     /// Route grammar: `{model}` (directory), `{entity}@{model}`
-    /// (one entity), `{entity}@{model}!{view}` (explicit view).
-    /// Writes HTML to stdout unless `--out <file>` is given.
+    /// (one entity), `{entity}@{model}!{view}` (explicit `show`
+    /// facet, e.g. `label`). Writes HTML to stdout unless
+    /// `--out <file>` is given.
     #[command(
-        after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!card --out alice.html"
+        after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!label --out alice.html"
     )]
     Render {
         /// The render route (e.g. `alice@person!card`).
@@ -904,7 +905,7 @@ enum ViewCommand {
     /// A first detail or directory view is auto-surfaced when the home is
     /// blank. --home explicitly replaces an existing home.
     #[command(
-        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --template-file card.html --anchor habit-card\n  tonk view add habit --kind directory --template-file habit.html --home"
+        after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --kind directory --template-file habit.html --home"
     )]
     Add {
         /// The concept this view renders.
@@ -921,10 +922,7 @@ enum ViewCommand {
         /// Read the template from a file instead.
         #[arg(long, value_name = "PATH")]
         template_file: Option<PathBuf>,
-        /// Stable anchor used to derive the view entity id:<ANCHOR> (default depends on --kind).
-        #[arg(long, value_name = "ANCHOR")]
-        anchor: Option<String>,
-        /// Which standard view concept to author.
+        /// Which `show` facet to author (ui, directory, label, title).
         #[arg(long, value_enum, default_value_t = ViewKindArg::Detail)]
         kind: ViewKindArg,
         /// Atomically replace the current home with this concept's directory.
@@ -1149,6 +1147,33 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
     }
 }
 
+fn account_command_kind(
+    command: &Command,
+) -> Option<tonk_cli::account_observability::AccountCommandKind> {
+    use tonk_cli::account_observability::AccountCommandKind as Kind;
+    let Command::Account { command, .. } = command else {
+        return None;
+    };
+    Some(match command {
+        None | Some(AccountCommand::Status { .. }) => Kind::Status,
+        Some(AccountCommand::Login { .. }) => Kind::Login,
+        Some(AccountCommand::Logout) => Kind::Logout,
+        Some(AccountCommand::Delete { .. }) => Kind::Delete,
+        Some(AccountCommand::Space { command: None, .. }) => Kind::SpaceList,
+        Some(AccountCommand::Space {
+            command: Some(AccountSpaceCommand::Pull { .. }),
+            ..
+        }) => Kind::SpacePull,
+        Some(AccountCommand::Space {
+            command: Some(AccountSpaceCommand::Delete { .. }),
+            ..
+        }) => Kind::SpaceDelete,
+        Some(AccountCommand::Sync) => Kind::Sync,
+        Some(AccountCommand::Devices { .. }) => Kind::Devices,
+        Some(AccountCommand::Revoke { .. }) => Kind::Revoke,
+    })
+}
+
 /// Whether a command opens the active space and should name it again
 /// if the operation fails.
 fn uses_active_space(command: &Command) -> bool {
@@ -1239,6 +1264,13 @@ async fn main() {
     }
 
     let started = std::time::Instant::now();
+    let account_kind = account_command_kind(&command);
+    let mut account_attempt = account_kind.map(|kind| {
+        tonk_cli::account_observability::CliAccountAttempt::start(
+            kind,
+            tonk_analytics::account::AccountState::Unknown,
+        )
+    });
     // `command` is moved by the dispatch below, so ask now.
     let is_update = matches!(&command, Command::Update { .. });
     let report_active_space = uses_active_space(&command);
@@ -1247,7 +1279,9 @@ async fn main() {
         Command::Help { all, guides, name } => print_help(all, guides, name.as_deref()),
         Command::Space { command, json } => space_op(command, json, space.as_deref()).await,
         Command::Identity { reset } => identity(reset).await,
-        Command::Account { command, json } => account_op(command, json).await,
+        Command::Account { command, json } => {
+            account_op(command, json, account_attempt.as_mut()).await
+        }
         Command::Eval(args) => eval(args, space.as_deref()).await,
         Command::Show {
             name,
@@ -1312,6 +1346,18 @@ async fn main() {
 
     let duration = started.elapsed();
 
+    if let Some(attempt) = account_attempt.as_mut()
+        && !attempt.is_finished()
+    {
+        use tonk_analytics::account::{AccountOutcome, FailureKind, Stage};
+        let outcome = if exit == ExitCode::Success {
+            attempt.success_outcome()
+        } else {
+            AccountOutcome::terminal_failure(FailureKind::Unknown)
+        };
+        attempt.finish(Stage::Complete, outcome);
+    }
+
     // `tonk update` speaks for itself: a nag mid-update contradicts
     // the command that just ran, and the toggle must stay silent.
     // Run the check alongside the telemetry flush rather than in
@@ -1323,7 +1369,10 @@ async fn main() {
         }
     };
     match recorder {
-        Some(recorder) => {
+        Some(mut recorder) => {
+            if let Some(attempt) = account_attempt {
+                recorder.account_events(attempt.into_events());
+            }
             tokio::join!(recorder.finish(exit, duration), check);
         }
         None => check.await,
@@ -1651,6 +1700,7 @@ async fn link_account(
     service_url: String,
     no_open: bool,
     via: Option<String>,
+    mut observer: Option<&mut tonk_cli::account_observability::CliAccountAttempt>,
 ) -> ExitCode {
     let signed_in = match store.account() {
         Ok(account) => account,
@@ -1662,6 +1712,14 @@ async fn link_account(
             Ok(tonk_cli::account::SignInPhase::Active)
         )
     {
+        if let Some(observer) = observer.as_deref_mut() {
+            observer.finish(
+                tonk_analytics::account::Stage::LocalPreflight,
+                tonk_analytics::account::AccountOutcome::blocked(
+                    tonk_analytics::account::FailureKind::Conflict,
+                ),
+            );
+        }
         return print_error(format!(
             "already signed in as {}\nrun `tonk account logout` first to sign in as another account",
             account.root
@@ -1674,23 +1732,25 @@ async fn link_account(
     let ceremony_page = via
         .clone()
         .unwrap_or_else(|| account::DEFAULT_LINK_PAGE.to_owned());
-    match account::link_in(
-        &profile,
-        store,
-        &account::LinkOptions {
-            service_url: service_url.clone(),
-            device_name: name.unwrap_or_else(account::default_device_name),
-            open_browser: !no_open,
-            via,
-            announce: None,
-            store: Some(store.clone()),
-        },
-    )
-    .await
-    {
+    let options = account::LinkOptions {
+        service_url: service_url.clone(),
+        device_name: name.unwrap_or_else(account::default_device_name),
+        open_browser: !no_open,
+        via,
+        announce: None,
+        store: Some(store.clone()),
+    };
+    let linked = match observer.as_deref_mut() {
+        Some(observer) => account::link_in_observed(&profile, store, &options, observer).await,
+        None => account::link_in(&profile, store, &options).await,
+    };
+    match linked {
         Ok(outcome) => {
             // The deployment that served the ceremony page is the one
             // whose endpoints this account uses.
+            if let Some(observer) = observer.as_deref_mut() {
+                observer.checkpoint(tonk_analytics::account::Stage::ContentDiscovery);
+            }
             let discovery = tonk_cli::deployment::discover(&ceremony_page).await;
             let record = tonk_cli::deployment::account_record(
                 &outcome.root_did,
@@ -1698,6 +1758,14 @@ async fn link_account(
                 discovery.as_ref().ok(),
             );
             if let Err(error) = store.set_account(Some(record)) {
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.finish(
+                        tonk_analytics::account::Stage::ActivationStage,
+                        tonk_analytics::account::AccountOutcome::unknown_commit(
+                            tonk_analytics::account::FailureKind::LocalState,
+                        ),
+                    );
+                }
                 return print_failure(error);
             }
             println!(
@@ -1713,6 +1781,9 @@ async fn link_account(
             // what restores it, rather than reporting a failure for a link
             // the account service has already granted.
             if let Err(error) = discovery {
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.degraded(tonk_analytics::account::DegradationKind::ContentDiscovery);
+                }
                 eprintln!(
                     "warning: {ceremony_page} did not answer with its content endpoints: {error:#}"
                 );
@@ -1725,18 +1796,43 @@ async fn link_account(
             // authority and sealed seed onto the account. Hosting does not
             // move — `tonk space link` remains the boundary that provisions
             // and attaches a remote.
+            if let Some(observer) = observer.as_deref_mut() {
+                observer.checkpoint(tonk_analytics::account::Stage::CustodyRotation);
+            }
             match site::default_config() {
                 Ok(config) => {
                     match tonk_cli::custody::rotate_from_onboarding(store, &config).await {
                         Ok(failures) => {
+                            if !failures.is_empty()
+                                && let Some(observer) = observer.as_deref_mut()
+                            {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::CustodyRotation,
+                                );
+                            }
                             for (subject, reason) in failures {
                                 eprintln!("rotation: {subject} not rotated: {reason}");
                             }
                         }
-                        Err(error) => eprintln!("warning: account rotation did not run: {error:#}"),
+                        Err(error) => {
+                            if let Some(observer) = observer.as_deref_mut() {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::CustodyRotation,
+                                );
+                            }
+                            eprintln!("warning: account rotation did not run: {error:#}")
+                        }
                     }
                     match tonk_cli::custody::rotate_local_spaces(store, &config).await {
                         Ok(outcomes) => {
+                            if outcomes.iter().any(|(_, outcome)| {
+                                matches!(outcome, tonk_cli::custody::SpaceRotation::Skipped(_))
+                            }) && let Some(observer) = observer.as_deref_mut()
+                            {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::SpaceRotation,
+                                );
+                            }
                             for (name, outcome) in outcomes {
                                 match outcome {
                                     tonk_cli::custody::SpaceRotation::Moved => {
@@ -1749,19 +1845,107 @@ async fn link_account(
                                 }
                             }
                         }
-                        Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
+                        Err(error) => {
+                            if let Some(observer) = observer.as_deref_mut() {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::SpaceRotation,
+                                );
+                            }
+                            eprintln!("warning: space custody did not move: {error:#}")
+                        }
                     }
                 }
-                Err(error) => eprintln!("warning: space custody did not move: {error:#}"),
+                Err(error) => {
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.degraded(tonk_analytics::account::DegradationKind::SpaceRotation);
+                    }
+                    eprintln!("warning: space custody did not move: {error:#}")
+                }
             }
             print_customer_line(&profile, store).await;
             ExitCode::Success
         }
-        Err(error) => print_failure(error),
+        Err(error) => {
+            if let Some(observer) = observer {
+                let classified = error
+                    .downcast_ref::<tonk_cli::callback::CallbackFailure>()
+                    .map(|callback| {
+                        use tonk_cli::callback::CallbackFailureKind;
+                        match callback.kind() {
+                            CallbackFailureKind::Bind => (
+                                tonk_analytics::account::Stage::CallbackBind,
+                                tonk_analytics::account::AccountOutcome::retryable(
+                                    tonk_analytics::account::FailureKind::Callback,
+                                ),
+                            ),
+                            CallbackFailureKind::Timeout => (
+                                tonk_analytics::account::Stage::CallbackWait,
+                                tonk_analytics::account::AccountOutcome::retryable(
+                                    tonk_analytics::account::FailureKind::Timeout,
+                                ),
+                            ),
+                            CallbackFailureKind::Closed | CallbackFailureKind::Server => (
+                                tonk_analytics::account::Stage::CallbackWait,
+                                tonk_analytics::account::AccountOutcome::retryable(
+                                    tonk_analytics::account::FailureKind::Callback,
+                                ),
+                            ),
+                        }
+                    })
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<tonk_cli::account::BrowserAuthorizationDenied>()
+                            .map(|_| {
+                                (
+                                    tonk_analytics::account::Stage::CallbackWait,
+                                    tonk_analytics::account::AccountOutcome::blocked(
+                                        tonk_analytics::account::FailureKind::AccessDenied,
+                                    ),
+                                )
+                            })
+                    })
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<tonk_cli::account::LinkCancelled>()
+                            .map(|_| {
+                                (
+                                    tonk_analytics::account::Stage::CallbackWait,
+                                    tonk_analytics::account::AccountOutcome::cancelled(),
+                                )
+                            })
+                    });
+                let (stage, outcome) = classified.unwrap_or_else(|| {
+                    let stage = observer.last_stage();
+                    let outcome = match stage {
+                        tonk_analytics::account::Stage::DelegationValidate => {
+                            tonk_analytics::account::AccountOutcome::terminal_failure(
+                                tonk_analytics::account::FailureKind::InvalidResponse,
+                            )
+                        }
+                        tonk_analytics::account::Stage::ActivationStage
+                        | tonk_analytics::account::Stage::AccountSync => {
+                            tonk_analytics::account::AccountOutcome::unknown_commit(
+                                tonk_analytics::account::FailureKind::LocalState,
+                            )
+                        }
+                        _ => tonk_analytics::account::AccountOutcome::terminal_failure(
+                            tonk_analytics::account::FailureKind::LocalState,
+                        ),
+                    };
+                    (stage, outcome)
+                });
+                observer.finish(stage, outcome);
+            }
+            print_failure(error)
+        }
     }
 }
 
-async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
+async fn account_op(
+    command: Option<AccountCommand>,
+    json: bool,
+    mut observer: Option<&mut tonk_cli::account_observability::CliAccountAttempt>,
+) -> ExitCode {
     let command = command.unwrap_or(AccountCommand::Status { json });
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
@@ -1774,7 +1958,15 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
         via,
     } = command
     {
-        return link_account(&store, name, service_url, no_open, via).await;
+        return link_account(
+            &store,
+            name,
+            service_url,
+            no_open,
+            via,
+            observer.as_deref_mut(),
+        )
+        .await;
     }
     if matches!(command, AccountCommand::Space { .. }) && matches!(store.account(), Ok(None)) {
         return print_error("no account is signed in; run `tonk account login`".to_owned());
@@ -1813,14 +2005,33 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
                     {
                         Ok(Ok(outcome)) => {
                             if let Some(warning) = outcome.warning {
+                                if let Some(observer) = observer.as_deref_mut() {
+                                    observer.degraded(
+                                        tonk_analytics::account::DegradationKind::AccountSync,
+                                    );
+                                }
                                 eprintln!("warning: account sync attempt: {warning}");
                             }
                             if let Ok(fresh) = account::status_in(&profile, &store).await {
                                 status = fresh;
                             }
                         }
-                        Ok(Err(error)) => eprintln!("warning: account sync attempt: {error:#}"),
-                        Err(_) => eprintln!("warning: account sync attempt timed out"),
+                        Ok(Err(error)) => {
+                            if let Some(observer) = observer.as_deref_mut() {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::AccountSync,
+                                );
+                            }
+                            eprintln!("warning: account sync attempt: {error:#}")
+                        }
+                        Err(_) => {
+                            if let Some(observer) = observer.as_deref_mut() {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::AccountSync,
+                                );
+                            }
+                            eprintln!("warning: account sync attempt timed out")
+                        }
                     }
                 }
                 if json {
@@ -1835,19 +2046,35 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
             }
             Err(error) => print_failure(error),
         },
-        AccountCommand::Logout => match account::logout_in(&profile, &store).await {
-            Ok(()) => {
-                // The spaces themselves keep their account tag: logging out
-                // is not disowning them, and this device stays able to work
-                // on every replica it already holds.
-                if let Err(error) = store.set_account(None) {
-                    return print_failure(error);
+        AccountCommand::Logout => {
+            let mut noop = tonk_cli::account_observability::NoopAccountObserver;
+            let observed: &mut dyn tonk_cli::account_observability::CliAccountObserver =
+                match observer.as_deref_mut() {
+                    Some(observer) => observer,
+                    None => &mut noop,
+                };
+            match account::logout_in_observed(&profile, &store, observed).await {
+                Ok(()) => {
+                    // The spaces themselves keep their account tag: logging out
+                    // is not disowning them, and this device stays able to work
+                    // on every replica it already holds.
+                    if let Err(error) = store.set_account(None) {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer.finish(
+                                tonk_analytics::account::Stage::LocalCommit,
+                                tonk_analytics::account::AccountOutcome::unknown_commit(
+                                    tonk_analytics::account::FailureKind::LocalState,
+                                ),
+                            );
+                        }
+                        return print_failure(error);
+                    }
+                    println!("signed out\ndevice: {}", profile.did());
+                    ExitCode::Success
                 }
-                println!("signed out\ndevice: {}", profile.did());
-                ExitCode::Success
+                Err(error) => print_failure(error),
             }
-            Err(error) => print_failure(error),
-        },
+        }
         AccountCommand::Delete {
             account_url,
             no_open,
@@ -1903,6 +2130,11 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
                             println!("site: {}", outcome.site.display());
                         }
                         if let Some(warning) = outcome.warning {
+                            if let Some(observer) = observer.as_deref_mut() {
+                                observer.degraded(
+                                    tonk_analytics::account::DegradationKind::AccountSync,
+                                );
+                            }
                             eprintln!("warning: {warning}");
                         }
                         ExitCode::Success
@@ -1964,6 +2196,9 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
         AccountCommand::Sync => match account::sync(&profile).await {
             Ok(outcome) => {
                 if let Some(warning) = outcome.warning {
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.degraded(tonk_analytics::account::DegradationKind::AccountSync);
+                    }
                     eprintln!("warning: {warning}");
                 }
                 println!("account: {:?}", outcome.status);
@@ -1973,16 +2208,49 @@ async fn account_op(command: Option<AccountCommand>, json: bool) -> ExitCode {
         },
         AccountCommand::Revoke { did, service_url } => {
             let options = account::RevokeOptions { service_url };
-            match account::revoke_in(&profile, &store, &options, &did).await {
+            let mut noop = tonk_cli::account_observability::NoopAccountObserver;
+            let observed: &mut dyn tonk_cli::account_observability::CliAccountObserver =
+                match observer.as_deref_mut() {
+                    Some(observer) => observer,
+                    None => &mut noop,
+                };
+            match account::revoke_in_observed(&profile, &store, &options, &did, observed).await {
                 Ok(account::RevokeOutcome::Revoked) => {
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.finish(
+                            tonk_analytics::account::Stage::RemoteCommit,
+                            tonk_analytics::account::AccountOutcome::success(),
+                        );
+                    }
                     println!("revoked\ndevice: {did}");
                     ExitCode::Success
                 }
                 Ok(account::RevokeOutcome::AlreadyRevoked) => {
+                    if let Some(observer) = observer.as_deref_mut() {
+                        observer.finish(
+                            tonk_analytics::account::Stage::LocalPreflight,
+                            tonk_analytics::account::AccountOutcome::success(),
+                        );
+                    }
                     println!("already revoked\ndevice: {did}");
                     ExitCode::Success
                 }
-                Err(error) => print_failure(error),
+                Err(error) => {
+                    if let Some(observer) = observer {
+                        let stage = observer.last_stage();
+                        let outcome = if stage == tonk_analytics::account::Stage::RemoteCommit {
+                            tonk_analytics::account::AccountOutcome::unknown_commit(
+                                tonk_analytics::account::FailureKind::Unknown,
+                            )
+                        } else {
+                            tonk_analytics::account::AccountOutcome::terminal_failure(
+                                tonk_analytics::account::FailureKind::Unknown,
+                            )
+                        };
+                        observer.finish(stage, outcome);
+                    }
+                    print_failure(error)
+                }
             }
         }
     }
@@ -3742,7 +4010,6 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
             model,
             template,
             template_file,
-            anchor,
             kind,
             home,
             notation,
@@ -3769,7 +4036,6 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
                 &site,
                 &model,
                 kind.into(),
-                anchor.as_deref(),
                 &template,
                 home,
                 write.options(notation),
@@ -4283,8 +4549,6 @@ mod account_spaces_parser_tests {
                 "view",
                 "add",
                 "note",
-                "--anchor",
-                "note-card",
                 "--template",
                 "<p>{title}</p>",
             ],
@@ -4292,7 +4556,7 @@ mod account_spaces_parser_tests {
             &["tonk", "space", "new", "scratch", "--site", "./scratch"],
             &["tonk", "space", "use", "scratch"],
             &["tonk", "space", "unbind"],
-            &["tonk", "render", "alice@person!tonk:view/label"],
+            &["tonk", "render", "alice@person!label"],
             &[
                 "tonk",
                 "remote",
@@ -4385,26 +4649,21 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn view_add_uses_anchor_instead_of_name() {
-        let cli = Cli::try_parse_from([
-            "tonk",
-            "view",
-            "add",
-            "note",
-            "--anchor",
-            "note-card",
-            "--template",
-            "<p>{title}</p>",
-        ])
-        .expect("view anchor parses");
-        let Some(Command::View {
-            command: Some(ViewCommand::Add { anchor, .. }),
-            ..
-        }) = cli.command
-        else {
-            panic!("expected view add command");
-        };
-        assert_eq!(anchor.as_deref(), Some("note-card"));
+    fn view_add_rejects_the_removed_name_and_anchor_spellings() {
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "view",
+                "add",
+                "note",
+                "--anchor",
+                "note-card",
+                "--template",
+                "<p>{title}</p>",
+            ])
+            .is_err(),
+            "a view has no entity of its own to anchor"
+        );
 
         assert!(
             Cli::try_parse_from([
@@ -4432,26 +4691,6 @@ mod account_spaces_parser_tests {
             .is_ok(),
             "unrelated --name flags remain available"
         );
-    }
-
-    #[test]
-    fn view_add_help_keeps_anchor_guidance_concise() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("view")
-            .expect("view command")
-            .find_subcommand_mut("add")
-            .expect("view add command")
-            .render_long_help()
-            .to_string();
-
-        assert!(help.contains("--anchor <ANCHOR>"), "{help}");
-        assert!(
-            help.contains("derive the view entity id:<ANCHOR>"),
-            "{help}"
-        );
-        assert!(!help.contains("arbitrary entity"), "{help}");
-        assert!(!help.contains("tonk assert"), "{help}");
     }
 
     #[test]

@@ -79,7 +79,11 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
             // A limiter that cannot answer must not take the endpoint
             // down with it; the lookup discloses nothing a caller could
             // not reach through the registration probe anyway.
-            Err(err) => worker::console_error!("lookup rate limit unavailable: {err}"),
+            // This endpoint deliberately fails open when the limiter is
+            // unavailable. Do not emit a failed-request record for a request
+            // that can still succeed; the response seam below owns the one
+            // terminal record if the lookup itself fails.
+            Err(_) => {}
         }
     }
 
@@ -116,8 +120,16 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         None => {
             let store = match ctx.env.d1("CONTROL") {
                 Ok(database) => D1Store::new(database),
-                Err(err) => {
-                    worker::console_error!("email lookup unavailable, no CONTROL binding: {err}");
+                Err(_) => {
+                    crate::observability::AccessFailureLog::new(
+                        crate::observability::AccessOperation::Lookup,
+                        crate::observability::AccessOutcome::Unavailable,
+                        crate::observability::AccessFailureKind::Unavailable,
+                        500,
+                        true,
+                        crate::observability::AccessSite::ControlStore,
+                    )
+                    .emit();
                     return with_cors(Response::error("Customer registry is not configured", 500));
                 }
             };
@@ -129,8 +141,16 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
                     }
                     row
                 }
-                Err(err) => {
-                    worker::console_error!("email lookup failed: {err}");
+                Err(_) => {
+                    crate::observability::AccessFailureLog::new(
+                        crate::observability::AccessOperation::Lookup,
+                        crate::observability::AccessOutcome::Unavailable,
+                        crate::observability::AccessFailureKind::Unavailable,
+                        500,
+                        true,
+                        crate::observability::AccessSite::ControlStore,
+                    )
+                    .emit();
                     return with_cors(Response::error("Customer registry is unavailable", 500));
                 }
             }

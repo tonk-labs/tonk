@@ -34,6 +34,7 @@
 
 pub mod account;
 mod account_authority;
+pub mod account_observability;
 mod account_session;
 pub mod account_spaces;
 pub mod account_state;

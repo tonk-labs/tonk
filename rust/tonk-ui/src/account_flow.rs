@@ -20,6 +20,65 @@ mod tests {
 
     const EMAIL: &str = "person@example.com";
 
+    async fn install_account_capture_fixture(driver: &WebDriver) -> Result<()> {
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({
+                    "source": r#"
+                        (() => {
+                            const read = () => {
+                                try { return JSON.parse(sessionStorage.getItem("tonk:test:account-events") || "[]"); }
+                                catch { return []; }
+                            };
+                            let config = null;
+                            let superProperties = {};
+                            const fixture = {
+                                init(_key, next) { config = next; },
+                                register(next) { superProperties = { ...superProperties, ...next }; },
+                                identify() {},
+                                capture(event, properties = {}) {
+                                    let payload = {
+                                        event,
+                                        properties: {
+                                            ...superProperties,
+                                            ...properties,
+                                            $current_url: location.href,
+                                            $pathname: location.pathname,
+                                            $referrer: document.referrer
+                                        }
+                                    };
+                                    if (config && config.before_send) payload = config.before_send(payload);
+                                    if (!payload) return;
+                                    const events = read();
+                                    events.push({ ...payload, captured_at: Date.now() });
+                                    sessionStorage.setItem("tonk:test:account-events", JSON.stringify(events));
+                                }
+                            };
+                            Object.defineProperty(window, "posthog", {
+                                configurable: false,
+                                get: () => fixture,
+                                set: () => {}
+                            });
+                        })();
+                    "#
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn captured_account_events(driver: &WebDriver) -> Result<Vec<serde_json::Value>> {
+        let value = driver
+            .execute(
+                r#"return JSON.parse(sessionStorage.getItem("tonk:test:account-events") || "[]")
+                    .filter(event => event.event === "account_event");"#,
+                Vec::new(),
+            )
+            .await?;
+        Ok(serde_json::from_value(value.json().clone())?)
+    }
+
     async fn element(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -373,7 +432,118 @@ mod tests {
                 )
                 .await?;
         }
+
+        // What the copy above loses: the credential's PRF secret.
+        // `WebAuthn.getCredentials` exports the signing key but not the
+        // hmac-secret, so the copied passkey signs fine and yields no
+        // PRF outputs — and custody derives its keys from those, so a
+        // login on the second device dies at "this platform cannot
+        // unlock custody". A real synced passkey carries the secret
+        // with it. Model that: evaluate the custody salts once on the
+        // device that holds the secret, and graft the outputs into the
+        // second device's assertions.
+        let (key_output, kek_output) = custody_prf_outputs(first).await?;
+        graft_prf_outputs(&second, &key_output, &kek_output).await?;
         Ok((second, authenticator))
+    }
+
+    /// The PRF outputs this driver's authenticator derives for the two
+    /// custody salts — the values a platform keychain syncs with the
+    /// passkey and CDP cannot export. One silent assertion; the page
+    /// must be on the passkey's relying-party origin.
+    async fn custody_prf_outputs(driver: &WebDriver) -> Result<(String, String)> {
+        let outcome = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                const [keyContext, kekContext] = [arguments[0], arguments[1]];
+                navigator.credentials.get({ publicKey: {
+                    challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    userVerification: "required",
+                    extensions: { prf: { eval: {
+                        first: new TextEncoder().encode(keyContext),
+                        second: new TextEncoder().encode(kekContext),
+                    }}},
+                }}).then(credential => {
+                    const prf = (credential.getClientExtensionResults() || {}).prf;
+                    if (!prf || !prf.results || !prf.results.first || !prf.results.second) {
+                        return done({ error: "the source authenticator returned no PRF outputs" });
+                    }
+                    const b64 = buffer => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                    done({ first: b64(prf.results.first), second: b64(prf.results.second) });
+                }).catch(error => done({ error: String(error) }));
+                "#,
+                vec![
+                    serde_json::json!(std::str::from_utf8(
+                        tonk_identity::envelope::CUSTODY_KEY_CONTEXT
+                    )?),
+                    serde_json::json!(std::str::from_utf8(
+                        tonk_identity::envelope::CUSTODY_KEK_CONTEXT
+                    )?),
+                ],
+            )
+            .await?;
+        let outcome = outcome.json().clone();
+        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
+            return Err(anyhow!("could not read the custody PRF outputs: {error}"));
+        }
+        let field = |name: &str| -> Result<String> {
+            outcome[name]
+                .as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("PRF read returned no {name} output"))
+        };
+        Ok((field("first")?, field("second")?))
+    }
+
+    /// Make every future document on `driver` answer custody assertions
+    /// with `key_output`/`kek_output` (base64) as its PRF results.
+    ///
+    /// The assertion itself still runs against the local authenticator —
+    /// the signature is real — only the extension outputs are replaced,
+    /// which is the one thing the credential copy cannot carry.
+    async fn graft_prf_outputs(
+        driver: &WebDriver,
+        key_output: &str,
+        kek_output: &str,
+    ) -> Result<()> {
+        let script = format!(
+            r#"
+            (() => {{
+                const outputs = {{ first: "{key_output}", second: "{kek_output}" }};
+                const unb64 = text =>
+                    Uint8Array.from(atob(text), letter => letter.charCodeAt(0)).buffer;
+                const real = navigator.credentials.get.bind(navigator.credentials);
+                navigator.credentials.get = async options => {{
+                    const credential = await real(options);
+                    const asked = options && options.publicKey
+                        && options.publicKey.extensions && options.publicKey.extensions.prf;
+                    if (asked) {{
+                        const results = credential.getClientExtensionResults.bind(credential);
+                        Object.defineProperty(credential, "getClientExtensionResults", {{
+                            value: () => {{
+                                const r = results();
+                                r.prf = Object.assign({{}}, r.prf, {{ results: {{
+                                    first: unb64(outputs.first),
+                                    second: unb64(outputs.second),
+                                }}}});
+                                return r;
+                            }},
+                        }});
+                    }}
+                    return credential;
+                }};
+            }})();
+            "#
+        );
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({ "source": script }),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn credential_count(driver: &WebDriver, authenticator_id: &str) -> Result<usize> {
@@ -446,6 +616,28 @@ mod tests {
         // link is the next step, and the cluster says so — so there is
         // no dashboard to land on yet. `activate` is what finishes it.
         Ok(())
+    }
+
+    /// Print the browser console (page and service worker alike) via
+    /// chromedriver's classic log endpoint. Diagnostic only; requires
+    /// the driver to have been created with TONK_E2E_CHROME_LOG set.
+    async fn dump_browser_log(driver: &WebDriver, env: &TestEnvironment) {
+        let path = format!("session/{}/se/log", driver.session_id());
+        let Ok(url) = env.chromedriver.join(&path) else {
+            return;
+        };
+        match reqwest::Client::new()
+            .post(url)
+            .json(&serde_json::json!({ "type": "browser" }))
+            .send()
+            .await
+        {
+            Ok(response) => eprintln!(
+                "BROWSER LOG DUMP: {}",
+                response.text().await.unwrap_or_default()
+            ),
+            Err(error) => eprintln!("BROWSER LOG DUMP failed: {error}"),
+        }
     }
 
     /// Take the cluster down the way its own control does.
@@ -654,9 +846,15 @@ mod tests {
         let (device_a, authenticator_a) = driver_with_prf_authenticator(&env).await?;
         enroll_only(&device_a, &env, email).await?;
 
-        // Device B: a separate browser holding the same passkey.
+        // Device B: a separate browser holding the same passkey. The
+        // credential copy carries the signing key but not the PRF
+        // secret custody derives its keys from, so the second half of
+        // what a platform keychain syncs is grafted alongside it — see
+        // `second_device_with_same_passkey`.
         let (device_b, authenticator_b) = driver_with_prf_authenticator(&env).await?;
         copy_credentials(&device_a, &authenticator_a, &device_b, &authenticator_b).await?;
+        let (key_output, kek_output) = custody_prf_outputs(&device_a).await?;
+        graft_prf_outputs(&device_b, &key_output, &kek_output).await?;
         goto(&device_b, env.tonk_web.join("account")?.as_str()).await?;
         element(&device_b, "tonk-account[data-mode=\"choice\"]").await?;
         element(&device_b, "#account-choose-link")
@@ -743,15 +941,114 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_captures_the_ordered_signup_account_journey(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        install_account_capture_fixture(&driver).await?;
+        sign_up(&driver, &env, "observability-signup@example.com").await?;
+
+        let events = captured_account_events(&driver).await?;
+        let wire = serde_json::to_string(&events)?;
+        for sentinel in [
+            "observability-signup@example.com",
+            "did:key:",
+            "credentialId",
+            "activation?ucan=",
+            "/api/account",
+            "127.0.0.1",
+        ] {
+            anyhow::ensure!(
+                !wire.contains(sentinel),
+                "captured account payload exposed privacy sentinel {sentinel:?}: {wire}"
+            );
+        }
+
+        let expected = [
+            (
+                "open_registration",
+                "finished",
+                "input",
+                Some("success"),
+                None,
+            ),
+            ("create_account", "started", "input", None, None),
+            ("create_account", "checkpoint", "email_lookup", None, None),
+            ("create_account", "checkpoint", "passkey_create", None, None),
+            (
+                "create_account",
+                "finished",
+                "activation_wait",
+                Some("blocked"),
+                Some("awaiting_activation"),
+            ),
+            ("activate_account", "started", "input", None, None),
+            (
+                "activate_account",
+                "finished",
+                "complete",
+                Some("success"),
+                None,
+            ),
+            ("settle_account", "started", "account_sync", None, None),
+            (
+                "settle_account",
+                "finished",
+                "complete",
+                Some("success"),
+                None,
+            ),
+        ];
+        let mut cursor = 0;
+        for (action, phase, stage, result, failure) in expected {
+            let Some(offset) = events[cursor..].iter().position(|event| {
+                let properties = &event["properties"];
+                properties["action"] == action
+                    && properties["phase"] == phase
+                    && properties["stage"] == stage
+                    && result.is_none_or(|value| properties["result"] == value)
+                    && failure.is_none_or(|value| properties["failure_kind"] == value)
+            }) else {
+                anyhow::bail!(
+                    "signup account_event sequence missed {action}/{phase}/{stage}: {events:?}"
+                );
+            };
+            cursor += offset + 1;
+        }
+
+        let mut terminals = std::collections::HashMap::<String, usize>::new();
+        for event in &events {
+            if event["properties"]["phase"] == "finished"
+                && let Some(attempt_id) = event["properties"]["attempt_id"].as_str()
+            {
+                *terminals.entry(attempt_id.to_owned()).or_default() += 1;
+            }
+        }
+        anyhow::ensure!(
+            terminals.values().all(|count| *count == 1),
+            "an account attempt emitted more than one terminal event: {events:?}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
+        install_account_capture_fixture(&driver).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
         wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
         // Creation mints the first custody passkey in the same ceremony
         // that generates and seals the secret, so the dashboard
         // describes it immediately.
-        wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "#account-passkey-device-value", "Chrome on ").await
+        {
+            let summary = get_json(&driver, "/api/account/summary").await;
+            eprintln!("PROBE /api/account/summary: {summary:?}");
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
         // The device list lives on the Devices tab, whose pane is
         // hidden until selected — and hidden text reads as empty.
         click(&driver, "#account-tab-devices").await?;
@@ -837,6 +1134,126 @@ mod tests {
         let settings = driver.current_url().await?;
         goto(&driver, settings.as_str()).await?;
         wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+
+        let events = captured_account_events(&driver).await?;
+        anyhow::ensure!(
+            !events.is_empty(),
+            "signup emitted no account_event payloads"
+        );
+        let wire = serde_json::to_string(&events)?;
+        for sentinel in [
+            EMAIL,
+            "did:key:",
+            "credentialId",
+            "activation?ucan=",
+            "/api/account",
+            "127.0.0.1",
+        ] {
+            anyhow::ensure!(
+                !wire.contains(sentinel),
+                "captured account payload exposed privacy sentinel {sentinel:?}: {wire}"
+            );
+        }
+        let mut terminals = std::collections::HashMap::<String, usize>::new();
+        for event in &events {
+            let properties = &event["properties"];
+            if properties["phase"] == "finished"
+                && let Some(attempt_id) = properties["attempt_id"].as_str()
+            {
+                *terminals.entry(attempt_id.to_owned()).or_default() += 1;
+            }
+        }
+        anyhow::ensure!(
+            terminals.values().all(|count| *count == 1),
+            "an account attempt emitted more than one terminal event: {events:?}"
+        );
+
+        let event_position = |action: &str,
+                              phase: &str,
+                              stage: Option<&str>,
+                              result: Option<&str>,
+                              failure: Option<&str>| {
+            events.iter().position(|event| {
+                let properties = &event["properties"];
+                properties["action"] == action
+                    && properties["phase"] == phase
+                    && stage.is_none_or(|value| properties["stage"] == value)
+                    && result.is_none_or(|value| properties["result"] == value)
+                    && failure.is_none_or(|value| properties["failure_kind"] == value)
+            })
+        };
+        let registration = event_position(
+            "open_registration",
+            "finished",
+            Some("input"),
+            Some("success"),
+            None,
+        );
+        let create_start = event_position("create_account", "started", None, None, None);
+        let email_lookup = event_position(
+            "create_account",
+            "checkpoint",
+            Some("email_lookup"),
+            None,
+            None,
+        );
+        let passkey_create = event_position(
+            "create_account",
+            "checkpoint",
+            Some("passkey_create"),
+            None,
+            None,
+        );
+        let create_wait = event_position(
+            "create_account",
+            "finished",
+            Some("activation_wait"),
+            Some("blocked"),
+            Some("awaiting_activation"),
+        );
+        let activation_start = event_position("activate_account", "started", None, None, None);
+        let activation_success = event_position(
+            "activate_account",
+            "finished",
+            Some("complete"),
+            Some("success"),
+            None,
+        );
+        let settle_start = event_position("settle_account", "started", None, None, None);
+        let settle_success = event_position(
+            "settle_account",
+            "finished",
+            Some("complete"),
+            Some("success"),
+            None,
+        );
+        let sequence = [
+            registration,
+            create_start,
+            email_lookup,
+            passkey_create,
+            create_wait,
+            activation_start,
+            activation_success,
+            settle_start,
+            settle_success,
+        ];
+        anyhow::ensure!(
+            sequence.iter().all(Option::is_some),
+            "signup account_event sequence was incomplete: {events:?}"
+        );
+        let positions = sequence.into_iter().flatten().collect::<Vec<_>>();
+        anyhow::ensure!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "signup account_event sequence was out of order: {events:?}"
+        );
+        anyhow::ensure!(
+            events.windows(2).all(|pair| {
+                pair[0]["captured_at"].as_u64().unwrap_or_default()
+                    <= pair[1]["captured_at"].as_u64().unwrap_or_default()
+            }),
+            "signup account_event timestamps were out of order: {events:?}"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -1090,7 +1507,17 @@ mod tests {
         // What this test exists for: a row naming the outstanding step,
         // not a failure. The ceremony stays up, because the thing it
         // waits on has not happened yet.
-        let row = element(&second, "#tonk-register-confirm-row").await?;
+        let row = match element(&second, "#tonk-register-confirm-row").await {
+            Ok(row) => row,
+            Err(error) => {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    let text = status.text().await.unwrap_or_default();
+                    eprintln!("PROBE register status: {text:?}");
+                }
+                dump_browser_log(&second, &env).await;
+                return Err(error);
+            }
+        };
         let text = row.text().await?;
         assert!(
             text.contains("awaiting confirmation"),
@@ -1624,6 +2051,25 @@ mod tests {
             let host = element(&driver, "tonk-account").await?;
             let mode = host.attr("data-mode").await?.unwrap_or_default();
             let error = element(&driver, "#account-error").await?.text().await?;
+            // Whether the worker still answers at all separates a state
+            // bug from a wedged worker.
+            let health = driver
+                .execute_async(
+                    r#"const done = arguments[arguments.length - 1];
+                       const timer = setTimeout(() => done({ timedOut: true }), 3000);
+                       fetch("/api/health")
+                           .then(async r => { clearTimeout(timer); done({ status: r.status, body: await r.text() }); })
+                           .catch(e => { clearTimeout(timer); done({ error: String(e) }); });"#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone());
+            eprintln!("PROBE /api/health: {health:?}");
+            for path in ["/api/account", "/api/account/summary"] {
+                let answer = get_json(&driver, path).await;
+                eprintln!("PROBE {path}: {answer:?}");
+            }
+            dump_browser_log(&driver, &env).await;
             return Err(wait_error).context(format!(
                 "same-account re-login stopped in mode {mode:?}: {error:?}"
             ));
@@ -2211,7 +2657,24 @@ mod tests {
         {
             Ok(result) => {
                 result?;
-                assert_eq!(outcome_line.trim_end(), "signed in");
+                // A mismatch here is usually the CLI exiting instead of
+                // finishing (EOF reads as an empty line); its stderr says
+                // why, so bring it into the failure instead of asserting
+                // on the bare line.
+                if outcome_line.trim_end() != "signed in" {
+                    child.kill().await?;
+                    let mut stderr_text = String::new();
+                    use tokio::io::AsyncReadExt as _;
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        stderr.read_to_string(&mut stderr_text),
+                    )
+                    .await;
+                    return Err(anyhow!(
+                        "the CLI never reported \"signed in\" (got {outcome_line:?}); \
+                         its stderr: {stderr_text}"
+                    ));
+                }
             }
             Err(_) => {
                 child.kill().await?;
@@ -2243,8 +2706,12 @@ mod tests {
                 .args([
                     "account",
                     "devices",
+                    // The flag is a consistency guard against the account's
+                    // RECORDED provider, which the approving page named:
+                    // the page-origin endpoint, not the direct address the
+                    // harness spawned the service on.
                     "--service-url",
-                    env.access_service.as_str(),
+                    env.tonk_web.join("ucan")?.as_str(),
                     "--json",
                 ])
                 .env("TONK_TRACE", "1")
@@ -2865,18 +3332,26 @@ mod tests {
         // is already settled at `awaiting confirmation` while the link
         // is out, so asking only "has it settled" answers yes before
         // activation has reached this tab at all.
-        await_row_value(&driver, "email", "verified").await?;
+        let staged: Result<()> = async {
+            await_row_value(&driver, "email", "verified").await?;
 
-        // 19. Then the name, typed and committed.
-        type_into_settled_row(&driver, "display name", "Alice").await?;
-        assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
+            // 19. Then the name, typed and committed.
+            type_into_settled_row(&driver, "display name", "Alice").await?;
+            assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
 
-        // 20–22. The closing action is the thing the share was for.
-        await_register_action(&driver, "copy share link").await?;
-        watch_clipboard(&driver).await?;
-        click_register_action(&driver).await?;
-        await_register_action(&driver, "copying link…").await?;
-        await_narrator_containing(&driver, "invite someone into a space").await?;
+            // 20–22. The closing action is the thing the share was for.
+            await_register_action(&driver, "copy share link").await?;
+            watch_clipboard(&driver).await?;
+            click_register_action(&driver).await?;
+            await_register_action(&driver, "copying link…").await?;
+            await_narrator_containing(&driver, "invite someone into a space").await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = staged {
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
 
         // 23. And it really is an invite.
         //
@@ -3348,32 +3823,45 @@ mod tests {
 
     /// Type into the row named `noun` and commit it with Enter.
     async fn type_into_settled_row(driver: &WebDriver, noun: &str, value: &str) -> Result<()> {
-        let outcome = driver
-            .execute_async(
-                r##"
-                const done = arguments[arguments.length - 1];
-                const [noun, value] = [arguments[0], arguments[1]];
-                for (const row of document.querySelectorAll("#tonk-register .orow")) {
-                    const k = row.querySelector(".k");
-                    if (!k || k.textContent.trim() !== noun) continue;
-                    const input = row.querySelector("input");
-                    if (!input) return done({ error: noun + " row takes no input" });
-                    input.focus();
-                    input.value = value;
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
-                    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-                    return done({ ok: true });
+        // The row unfolds a beat after the step before it settles — the
+        // ceremony reads the account summary between "email · verified"
+        // and asking for a name — so an absent row is waited out rather
+        // than failed on the first look.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let outcome = driver
+                .execute_async(
+                    r##"
+                    const done = arguments[arguments.length - 1];
+                    const [noun, value] = [arguments[0], arguments[1]];
+                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                        const k = row.querySelector(".k");
+                        if (!k || k.textContent.trim() !== noun) continue;
+                        const input = row.querySelector("input");
+                        if (!input) return done({ error: noun + " row takes no input" });
+                        input.focus();
+                        input.value = value;
+                        input.dispatchEvent(new Event("input", { bubbles: true }));
+                        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+                        return done({ ok: true });
+                    }
+                    done({ error: "no row named " + noun });
+                    "##,
+                    vec![serde_json::json!(noun), serde_json::json!(value)],
+                )
+                .await?;
+            let outcome = outcome.json().clone();
+            match outcome.get("error").and_then(|error| error.as_str()) {
+                None => return Ok(()),
+                Some(error) if error.starts_with("no row named") => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                done({ error: "no row named " + noun });
-                "##,
-                vec![serde_json::json!(noun), serde_json::json!(value)],
-            )
-            .await?;
-        let outcome = outcome.json().clone();
-        if let Some(error) = outcome.get("error").and_then(|error| error.as_str()) {
-            return Err(anyhow!("could not fill the {noun:?} row: {error}"));
+                Some(error) => return Err(anyhow!("could not fill the {noun:?} row: {error}")),
+            }
         }
-        Ok(())
     }
 
     /// Wait for the narrator to say something containing `fragment`.
@@ -4416,8 +4904,22 @@ mod tests {
         // the emailed link is opened below — before and after on one
         // surface.
         dismiss_register_dialog(&driver).await?;
-        wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
-            .await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "#account-activation-notice", "activation pending")
+                .await
+        {
+            for path in ["/api/account", "/api/customer", "/api/identity/root"] {
+                let answer = get_json(&driver, path).await;
+                eprintln!("PROBE {path}: {answer:?}");
+            }
+            let mode = element(&driver, "tonk-account")
+                .await?
+                .attr("data-mode")
+                .await?;
+            eprintln!("PROBE panel mode: {mode:?}");
+            dump_browser_log(&driver, &env).await;
+            return Err(error);
+        }
 
         let key = create_space(&driver, "Opted In").await?;
 
@@ -5106,7 +5608,11 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.access_service);
+        // The approving page names the service its deployment uses, and
+        // the CLI records that answer over its own `--service-url` guess
+        // — so the record is the page-origin endpoint Caddy proxies, not
+        // the direct address the harness spawned the service on.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
@@ -5193,7 +5699,9 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        assert_eq!(url::Url::parse(provider)?, env.access_service);
+        // Same page-named record as the flagged variant above: the
+        // deployment's own endpoint, not the harness's direct address.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
 
         // The endpoints are what `space new` and `space link` need; the
         // registry is where they are read from, and status does not print
@@ -5648,59 +6156,76 @@ mod tests {
     }
 
     /// Link a second browser to an existing account the way a page from
-    /// before the encryption key existed did: the same unlock ceremony and
-    /// the same two saves, but the root is stored WITHOUT the key. The
+    /// before the encryption key existed did: the account passkey signs
+    /// this device in, and the root is stored WITHOUT the key. The
     /// account's virtual authenticator must already hold the passkey.
-    async fn legacy_link(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
+    ///
+    /// Built on today's ceremony surface: `authorizeDevice` unlocks the
+    /// account and mints the `account → device` grant (the ceremony
+    /// `unlockWithPasskey` became), and the two worker saves replay what
+    /// a legacy page persisted — the root save deliberately omitting the
+    /// `encryptionKey` the modern path would carry. The credential id is
+    /// read from the virtual authenticator over CDP: it is the value a
+    /// legacy page had stored, and the custody relay later asserts
+    /// against exactly that credential.
+    async fn legacy_link(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+        authenticator_id: &str,
+    ) -> Result<()> {
         let identify = get_json(driver, "/api/identify").await?;
         let device_did = successful_body("identify", &identify)["did"]
             .as_str()
             .context("identify omitted the device DID")?
             .to_string();
+
+        use base64::Engine as _;
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        let held = devtools
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": authenticator_id }),
+            )
+            .await?;
+        let credential_id = held["credentials"]
+            .get(0)
+            .and_then(|credential| credential["credentialId"].as_str())
+            .context("the virtual authenticator holds no credential to link with")?;
+        let credential_id = hex::encode(
+            base64::engine::general_purpose::STANDARD
+                .decode(credential_id)
+                .context("CDP credential id is not base64")?,
+        );
+
         let ceremony = driver
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                const [deviceDid, service] = arguments;
-                window.tonkIdentity.unlockWithPasskey({
+                const [deviceDid] = arguments;
+                window.tonkIdentity.authorizeDevice({
                     deviceDid,
-                    deviceName: "Legacy Chrome",
+                    remote: `${window.location.origin}/ucan/`,
                     endpoint: `${window.location.origin}/ucan/`,
-                }).then(async ceremony => {
-                    const bytes = Uint8Array.from(
-                        ceremony.invocationHex.match(/../g).map(pair => parseInt(pair, 16)),
-                    );
-                    const response = await fetch(`${service}devices/link`, {
-                        method: "POST",
-                        headers: { "content-type": "application/cbor" },
-                        body: bytes,
-                    });
-                    const linked = await response.json();
-                    done({ status: response.status, ceremony, linked });
-                }).catch(error => done({ error: String(error) }));
+                }).then(authorized => done({ authorized }))
+                    .catch(error => done({ error: String(error) }));
                 "#,
-                vec![
-                    serde_json::json!(device_did),
-                    serde_json::json!(env.access_service.as_str()),
-                ],
+                vec![serde_json::json!(device_did)],
             )
             .await?
             .json()
             .clone();
         anyhow::ensure!(
-            ceremony.get("error").is_none() && ceremony["status"] == 200,
+            ceremony.get("error").is_none(),
             "legacy link ceremony failed: {ceremony}"
         );
-        anyhow::ensure!(
-            ceremony["ceremony"]["encryptionKey"].is_string(),
-            "the unlock ceremony derives the key; the legacy page just never saved it: {ceremony}"
-        );
+        let authorized = &ceremony["authorized"];
+
         let saved = post_json(
             driver,
             "/api/identity/root",
             serde_json::json!({
-                "credentialId": ceremony["ceremony"]["credentialId"],
-                "delegationHex": ceremony["ceremony"]["delegationHex"],
+                "credentialId": credential_id,
+                "delegationHex": authorized["delegationHex"],
             }),
         )
         .await?;
@@ -5709,11 +6234,11 @@ mod tests {
             driver,
             "/api/account/attach",
             serde_json::json!({
-                "provider": env.access_service.as_str(),
-                "rootDid": ceremony["ceremony"]["rootDid"],
-                "credentialId": ceremony["ceremony"]["credentialId"],
-                "delegationHex": ceremony["ceremony"]["delegationHex"],
-                "descriptorHex": ceremony["linked"]["descriptorHex"],
+                "provider": env.tonk_web.join("ucan/")?,
+                "rootDid": authorized["rootDid"],
+                "credentialId": credential_id,
+                "delegationHex": authorized["delegationHex"],
+                "remote": env.tonk_web.join("ucan/")?,
                 "initializeName": false,
             }),
         )
@@ -5751,7 +6276,7 @@ mod tests {
     async fn it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key(
         env: TestEnvironment,
     ) -> Result<()> {
-        let creator = driver_with_prf(&env).await?;
+        let (creator, authenticator) = driver_with_prf_authenticator(&env).await?;
         sign_up(&creator, &env, EMAIL).await?;
         // A second device on the same account, in the same session so the
         // virtual authenticator still holds the passkey: "Add account"
@@ -5760,7 +6285,7 @@ mod tests {
         let added = post_json(&creator, "/api/profiles/add", serde_json::json!({})).await?;
         successful_body("add profile", &added);
         goto(&creator, env.tonk_web.as_str()).await?;
-        legacy_link(&creator, &env).await?;
+        legacy_link(&creator, &env, &authenticator).await?;
 
         let root = get_json(&creator, "/api/identity/root").await?;
         let root = successful_body("root status", &root);
@@ -5837,39 +6362,63 @@ mod tests {
         };
 
         // Whichever path ran, the new space's seed ends up sealed to the
-        // account's X25519 recipient. The custody fact follows the seal,
-        // so poll for it rather than assert on the first read.
+        // account's X25519 recipient — a `SecretPrincipal` row naming the
+        // space, whose `seed` points at the `SecretMessage` carrying the
+        // sealed bytes, whose `to` is the recipient. The facts follow the
+        // seal, so poll for them rather than assert on the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let recipient = loop {
-            let rows = post_json(
+            let principals = post_json(
                 &creator,
                 "/api/profile/branch/main/query",
                 serde_json::json!({
                     "terms": {
                         "this": { "?": { "name": "this" } },
-                        "subject": { "?": { "name": "subject" } },
-                        "recipient": { "?": { "name": "recipient" } }
+                        "seed": { "?": { "name": "seed" } }
                     },
                     "predicate": {
                         "with": {
-                            "subject": { "the": "xyz.tonk.custody/subject", "cardinality": "one", "as": "Entity" },
-                            "recipient": { "the": "xyz.tonk.custody/recipient", "cardinality": "one", "as": "Entity" }
+                            "seed": { "the": "xyz.tonk.secret/seed", "cardinality": "one", "as": "Entity" }
                         }
                     }
                 }),
             )
             .await?;
-            let rows = rows["body"].as_array().cloned().unwrap_or_default();
-            if let Some(sealed_to) = rows.iter().find_map(|row| {
-                let subject = row["fields"]["subject"].as_str().unwrap_or_default();
-                let sealed_to = row["fields"]["recipient"].as_str().unwrap_or_default();
-                (subject.ends_with(&key) && !sealed_to.is_empty()).then(|| sealed_to.to_string())
-            }) {
-                break sealed_to;
+            let principals = principals["body"].as_array().cloned().unwrap_or_default();
+            let seed = principals.iter().find_map(|row| {
+                let subject = row["fields"]["this"].as_str().unwrap_or_default();
+                let seed = row["fields"]["seed"].as_str().unwrap_or_default();
+                (subject.ends_with(&key) && !seed.is_empty()).then(|| seed.to_string())
+            });
+            if let Some(seed) = seed {
+                let messages = post_json(
+                    &creator,
+                    "/api/profile/branch/main/query",
+                    serde_json::json!({
+                        "terms": {
+                            "this": { "?": { "name": "this" } },
+                            "to": { "?": { "name": "to" } }
+                        },
+                        "predicate": {
+                            "with": {
+                                "to": { "the": "xyz.tonk.secret/to", "cardinality": "one", "as": "Entity" }
+                            }
+                        }
+                    }),
+                )
+                .await?;
+                let messages = messages["body"].as_array().cloned().unwrap_or_default();
+                if let Some(sealed_to) = messages.iter().find_map(|row| {
+                    let envelope = row["fields"]["this"].as_str().unwrap_or_default();
+                    let sealed_to = row["fields"]["to"].as_str().unwrap_or_default();
+                    (envelope == seed && !sealed_to.is_empty()).then(|| sealed_to.to_string())
+                }) {
+                    break sealed_to;
+                }
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the new space's seed was never custodied: {rows:?}"
+                "the new space's seed was never custodied: {principals:?}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };

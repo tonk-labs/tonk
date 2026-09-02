@@ -924,8 +924,15 @@ async fn read_passkeys(
 /// `None` that is not simply "no fact" is logged, so an unreadable branch is
 /// visible rather than silent.
 pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
-    let ready = require_ready_account_state(tonk).await.ok()?;
-    match read_passkeys(tonk, &ready).await {
+    // No readiness gate: these are display facts the enrolling device
+    // itself wrote on profile main, so they are answerable the moment
+    // the account exists — which is exactly the window the dashboard
+    // first renders in. The gate guards authoritative edits, and a
+    // summary read is not one.
+    let subject = super::identity::local_root(tonk).await.ok()?.root_did;
+    let key = subject.repo_key().to_owned();
+    let branch = ReadyAccountBranch { key, subject };
+    match read_passkeys(tonk, &branch).await {
         Ok(passkeys) => {
             passkeys
                 .into_iter()
@@ -2073,6 +2080,81 @@ mod tests {
             registered[0].provider(),
             "http://localhost:8080/ucan/",
             "the registration names where to sync"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// The account db's record of a provisioned space, round-tripped:
+    /// recording a provider makes the `SpaceProvider` fact present —
+    /// what lets a share skip `/provider/add` — and retraction (what
+    /// the sync engine does when the gate stops serving the subject)
+    /// returns the space to local-only. Both write the ACCOUNT's did as
+    /// the value, so every replica asserts the identical fact.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_records_and_retracts_the_space_provider() {
+        use tonk_schema::SpaceProvider;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let account = super::super::identity::root_did(&state).await.unwrap();
+        let space: dialog_varsig::Did = "did:key:z6MknYwGXCDLuJnBUR4bbWFPiD2Saos16CHQQ2ex6U1Ti2t"
+            .parse()
+            .unwrap();
+
+        async fn recorded(
+            state: &crate::worker::TonkState,
+            space: &dialog_varsig::Did,
+        ) -> Vec<SpaceProvider> {
+            let branch = state
+                .reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .acquire(&state.operator)
+                .await
+                .unwrap();
+            branch
+                .handle()
+                .query()
+                .select(Query::<SpaceProvider> {
+                    this: Term::from(space.this()),
+                    provider: Term::var("provider"),
+                })
+                .perform(&state.operator)
+                .try_vec()
+                .await
+                .unwrap()
+        }
+
+        assert!(
+            recorded(&state, &space).await.is_empty(),
+            "a fresh space records no provider"
+        );
+
+        super::super::customer::record_space_provider(&state, &space).await;
+        let rows = recorded(&state, &space).await;
+        assert_eq!(rows.len(), 1, "provisioning records the provider");
+        assert_eq!(
+            rows[0].provider.0,
+            account.this(),
+            "the value is the providing account"
+        );
+
+        // Re-recording converges rather than accumulating: the value is
+        // the account did, identical from every writer.
+        super::super::customer::record_space_provider(&state, &space).await;
+        assert_eq!(recorded(&state, &space).await.len(), 1);
+
+        super::super::customer::retract_space_provider(&state, &space).await;
+        assert!(
+            recorded(&state, &space).await.is_empty(),
+            "retraction returns the space to local-only"
         );
 
         service.stop().await.unwrap();

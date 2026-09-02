@@ -84,6 +84,19 @@ pub enum CeremonyRefusal {
 }
 
 impl CeremonyRefusal {
+    /// Classify a DOM exception name without depending on its human-readable
+    /// message. Unknown names deliberately collapse to [`Self::Other`].
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "NotAllowedError" => Self::NotAllowed,
+            "InvalidStateError" => Self::InvalidState,
+            "NotSupportedError" => Self::NotSupported,
+            "SecurityError" => Self::Security,
+            "NoPrfError" => Self::NoPrf,
+            _ => Self::Other,
+        }
+    }
+
     /// The `DOMException` name this refusal came back as, for handing
     /// across the JS boundary.
     pub fn as_str(self) -> &'static str {
@@ -116,13 +129,10 @@ fn ceremony_error(context: &str, value: JsValue) -> anyhow::Error {
         }
     };
     let detail: String = detail.chars().take(512).collect();
-    let reason = match property("name").as_deref() {
-        Some("NotAllowedError") => CeremonyRefusal::NotAllowed,
-        Some("InvalidStateError") => CeremonyRefusal::InvalidState,
-        Some("NotSupportedError") => CeremonyRefusal::NotSupported,
-        Some("SecurityError") => CeremonyRefusal::Security,
-        _ => CeremonyRefusal::Other,
-    };
+    let reason = property("name")
+        .as_deref()
+        .map(CeremonyRefusal::from_name)
+        .unwrap_or(CeremonyRefusal::Other);
     CeremonyError {
         context: context.to_string(),
         reason,
@@ -391,6 +401,16 @@ mod tests {
     /// dismissed prompt from a real failure without reading prose.
     #[dialog_common::test]
     fn it_names_the_reason_a_ceremony_was_refused() {
+        for (name, expected) in [
+            ("NotAllowedError", CeremonyRefusal::NotAllowed),
+            ("InvalidStateError", CeremonyRefusal::InvalidState),
+            ("NotSupportedError", CeremonyRefusal::NotSupported),
+            ("SecurityError", CeremonyRefusal::Security),
+            ("NoPrfError", CeremonyRefusal::NoPrf),
+            ("FutureError", CeremonyRefusal::Other),
+        ] {
+            assert_eq!(CeremonyRefusal::from_name(name), expected);
+        }
         let refusal = |name: &str| {
             let error = js_sys::Error::new("the operation was refused");
             error.set_name(name);

@@ -414,12 +414,12 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
 #[test]
 fn it_renders_join_refusals_as_neutral_edge_walls() {
     let failure = PROFILE_LIBRARY
-        .split("view!: &join/failure-view")
+        .split("view!:\n  this: tonk:join/failure")
         .nth(1)
         .and_then(|tail| tail.split("# ROUTING (profile branch)").next())
         .expect("join failure view");
     let route = PROFILE_LIBRARY
-        .split("view!: &join/route-view")
+        .split("view!:\n  this: tonk:join/route")
         .nth(1)
         .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
         .expect("join route view");
@@ -447,7 +447,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
 #[test]
 fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
-        .split("view!: &join/route-view")
+        .split("view!:\n  this: tonk:join/route")
         .nth(1)
         .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
         .expect("join route view");

@@ -66,6 +66,23 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
+/// Create a notebook from the index's heading switcher, and drop the
+/// author into it.
+///
+/// The handler does both halves: it writes the notebook and then posts a
+/// `navigate` to the originating client. The navigation cannot happen in
+/// the page, because the notebook's entity is derived when the fact is
+/// written — the element that fired the command never learns it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateNotebook {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The title typed into the heading.
+    pub title: crate::domain::command::notebook::CreatedTitle,
+    /// The draft's document, blocks and all.
+    pub body: crate::domain::command::notebook::CreatedBody,
+}
+
 /// Ask whether an address is already registered, so the form can route
 /// before anyone runs a ceremony.
 ///

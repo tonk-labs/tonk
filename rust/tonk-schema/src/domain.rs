@@ -82,6 +82,18 @@ pub mod space {
     #[cardinality(one)]
     pub struct Local(pub bool);
 
+    /// The account providing this space with the access service. Its
+    /// PRESENCE is the record that the space is provisioned; the sync
+    /// engine retracts it when the service answers that the subject is
+    /// no longer served, returning the row to local-only. The value is
+    /// the providing account's DID entity — stable across replicas, so
+    /// every device asserts the identical fact and the record converges
+    /// (a timestamp here would give each writer its own value).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Provider(pub Entity);
+
     /// The space's display name, mirrored into the account directory
     /// (the content-branch copy stays the editable source of truth) so
     /// every device can label a space it has not replicated yet.
@@ -343,6 +355,32 @@ pub mod command {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
+
+    /// The notebook title typed into the index's heading switcher.
+    ///
+    /// Its own attribute (`…detail/created-title`), NOT the
+    /// `detail/title` a retitle carries: decode does not consider concept
+    /// identity, so two transients of the same shape both decode from one
+    /// event — every rename would also create a notebook.
+    pub mod notebook {
+        use super::Attribute;
+
+        /// The title a create carries.
+        ///
+        /// The event detail key is `createdTitle`: every path segment is
+        /// kebab→camel-cased at read time, so the hyphen here becomes a
+        /// capital there. A detail key written `created-title` never
+        /// matches, and the command silently fails to decode.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct CreatedTitle(pub String);
+
+        /// The draft's whole document, so the notebook that gets created
+        /// keeps what the author already wrote under the heading.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct CreatedBody(pub String);
+    }
 
     /// The address read from the registration form's submit event:
     /// `event.currentTarget.elements.email.value` (the `<wa-input

@@ -48,6 +48,7 @@ mod error;
 mod handlers;
 pub mod lookup;
 pub mod metering;
+pub mod observability;
 pub mod provisioning;
 pub mod registration;
 pub mod revocation;

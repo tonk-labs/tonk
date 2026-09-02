@@ -4,7 +4,7 @@
 
 use crate::authoring::{
     AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
-    lint_view_template, parse_attr_spec, validate_view_anchor,
+    lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -597,10 +597,11 @@ pub async fn home(
     ))
 }
 
-/// Author a declarative view for `concept`: an anchored `view!:`
-/// (anchor defaults to `<model>-view`, so re-authoring supersedes
-/// rather than duplicates) rendering `template`. When the space home
-/// is unset (a fresh repo still showing `tonk:blank`, or nothing
+/// Author a declarative view for `concept`: a `view!:` writing
+/// `template` under the kind's facet of the model's `show`
+/// dictionary (cardinality one per entry, so re-authoring the same
+/// facet supersedes rather than duplicates). When the space home is
+/// unset (a fresh repo still showing `tonk:blank`, or nothing
 /// published at all), the concept is auto-surfaced onto the home via
 /// [`home`] so an agent's first view build actually lands somewhere
 /// visible; an explicitly-set home is left alone.
@@ -608,7 +609,6 @@ pub async fn view_add(
     site: &TonkSite,
     model: &str,
     kind: ViewKind,
-    anchor: Option<&str>,
     template: &str,
     set_home: bool,
     write: WriteOptions,
@@ -624,13 +624,9 @@ pub async fn view_add(
         .map(|(field, _)| field.to_string())
         .collect();
     let lint = lint_view_template(template, &fields);
-    let anchor = anchor
-        .map(str::to_string)
-        .unwrap_or_else(|| kind.default_anchor(model));
-    validate_view_anchor(&anchor)?;
     let auto_surface = !set_home && kind.can_auto_surface() && home_is_unset(site).await?;
     let surface_home = set_home || auto_surface;
-    let mut doc = build_view_decl(kind, &anchor, model, template);
+    let mut doc = build_view_decl(kind, model, template);
     if surface_home {
         doc.push('\n');
         doc.push_str(&build_home_recipe(&[model.to_string()]));
@@ -641,8 +637,11 @@ pub async fn view_add(
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let mut out = format!(
-        "{}\nanchor: {anchor}\nentity: id:{anchor}\n",
-        write.summarize("asserted view")
+        "{}\n",
+        write.summarize(format_args!(
+            "asserted the {} view of {model}",
+            kind.facet()
+        ))
     );
     for warning in &lint {
         out.push_str(&format!("warning: {warning}\n"));

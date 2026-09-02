@@ -104,6 +104,7 @@ features = [
     "MessageEvent",
     "Navigator",
     "Node",
+    "Performance",
     "ServiceWorkerContainer",
     "Storage",
     "VisibilityState",
