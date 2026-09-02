@@ -382,12 +382,12 @@ fn credential_id_property(input: &JsValue) -> Result<Option<Vec<u8>>, JsValue> {
 }
 
 /// `authorizeDevice({ deviceDid, remote, endpoint })` → `{ rootDid,
-/// deviceDid, delegationHex, descriptorHex }`.
+/// deviceDid, delegationHex }`.
 ///
 /// The callback authorization: unlock the account through a custody
-/// assertion, mint the `account → device` powerline, and hand it back
-/// with the account repository descriptor. Nothing is sent anywhere —
-/// the caller delivers it.
+/// assertion and mint the `account → device` powerline, whose signed
+/// `meta` names the sync endpoint. Nothing is sent anywhere — the
+/// caller delivers it.
 async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
     let device_did = string_property(&input, "deviceDid")?
         .parse()
@@ -406,7 +406,6 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
         ("rootDid", authorized.root_did),
         ("deviceDid", authorized.device_did),
         ("delegationHex", authorized.delegation_hex),
-        ("descriptorHex", authorized.descriptor_hex),
     ] {
         Reflect::set(&output, &key.into(), &value.into())?;
     }

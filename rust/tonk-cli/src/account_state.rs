@@ -121,7 +121,7 @@ async fn account_remote_in(
 ) -> Result<Option<String>> {
     Ok(crate::account::stored_provider_in(profile, operator, store)
         .await?
-        .and_then(|provider| provider.remote().map(ToOwned::to_owned)))
+        .map(|provider| provider.address().to_owned()))
 }
 
 /// Read durable native account-state status without contacting the remote.
@@ -845,6 +845,22 @@ pub async fn ensure_with_operator(
     ensure_with_operator_and_store(profile, operator, store).await
 }
 
+/// Human-readable progress on stderr for `tonk account sync --verbose`:
+/// what the sync is doing right now, naming the endpoint it talks to, so
+/// a slow or wedged sync says where it is instead of sitting silent.
+static PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn on step-by-step sync progress on stderr.
+pub fn enable_progress() {
+    PROGRESS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn progress(step: std::fmt::Arguments<'_>) {
+    if PROGRESS.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{step}");
+    }
+}
+
 /// Breadcrumb for `TONK_TRACE=1`: one stderr line per step of the sync
 /// and mount paths, so a command that stalls names the await it stalled
 /// in rather than the timeout that eventually gave up on it.
@@ -872,7 +888,9 @@ pub async fn ensure_with_operator_and_store(
     store: crate::space::SpaceStore,
 ) -> Result<EnsureOutcome> {
     trace("ensure: start");
+    progress(format_args!("Reading the linked account…"));
     let Some(subject) = linked_account_in(profile, &operator, &store).await? else {
+        progress(format_args!("No account is linked; nothing to sync."));
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Unconfigured,
             warning: None,
@@ -882,6 +900,8 @@ pub async fn ensure_with_operator_and_store(
     let remote = account_remote_in(profile, &operator, &store)
         .await?
         .context("the linked account names no remote")?;
+    progress(format_args!("Account {subject} syncs with {remote}"));
+    progress(format_args!("Connecting to the remote…"));
     let repository = mount(profile, &operator, &subject, &remote).await?;
     trace("ensure: mounted");
     let operator =
@@ -900,11 +920,13 @@ pub async fn ensure_with_operator_and_store(
     let mut warnings = Vec::new();
     let (status, may_push) = if already_ready {
         trace("ensure: marker matches, pulling");
+        progress(format_args!("Pulling what other devices changed…"));
         // Ready remains ready offline. A best-effort normal sync catches up
         // without clearing the durable trust marker on failure.
         let may_push = match branch.pull().download().perform(&operator).await {
             Ok(_) => {
                 trace("ensure: pulled");
+                progress(format_args!("Pulled."));
                 true
             }
             Err(error) => {
@@ -915,6 +937,9 @@ pub async fn ensure_with_operator_and_store(
         (AccountStateStatus::Ready, may_push)
     } else {
         trace("ensure: first hydration starting");
+        progress(format_args!(
+            "First sync on this device: downloading the account…"
+        ));
         match hydrate(&repository, &branch, &operator).await {
             Ok(()) => {
                 trace("ensure: first hydration finished");
@@ -935,6 +960,7 @@ pub async fn ensure_with_operator_and_store(
     // branch, not the account's. It remains best-effort so durable Ready
     // state survives an offline retry.
     trace("ensure: account-access adoption starting");
+    progress(format_args!("Adopting the account's access authority…"));
     if let Err(error) = adopt_account_access_in(profile, operator.local(), &store).await {
         warnings.push(format!("account access adoption failed: {error}"));
     }
@@ -946,12 +972,16 @@ pub async fn ensure_with_operator_and_store(
 
     if may_push {
         trace("ensure: final push starting");
+        progress(format_args!("Pushing local changes…"));
         if let Err(error) = branch.push().perform(&operator).await {
             warnings.push(format!("account push failed: {error}"));
         }
         trace("ensure: final push finished");
     } else {
         trace("ensure: final push skipped after remote failure");
+        progress(format_args!(
+            "Skipping the push: the remote did not answer cleanly."
+        ));
     }
 
     Ok(EnsureOutcome {
@@ -1071,9 +1101,7 @@ mod tests {
             remote: &str,
             at: u64,
         ) {
-            let attachment =
-                tonk_account::AccountProviderRecord::attach("https://accounts.example", remote, at)
-                    .unwrap();
+            let attachment = tonk_account::AccountProviderRecord::attach(remote, at).unwrap();
             let operator = account_operator(profile, store, profile_name, profile_dir).await;
             profile
                 .credential()
@@ -1251,9 +1279,7 @@ mod tests {
             .perform(&account_operator)
             .await
             .unwrap();
-        let attachment =
-            tonk_account::AccountProviderRecord::attach("https://accounts.example", &remote, 1)
-                .unwrap();
+        let attachment = tonk_account::AccountProviderRecord::attach(&remote, 1).unwrap();
         profile
             .credential()
             .site(crate::account::ACCOUNT_LINK_SITE)

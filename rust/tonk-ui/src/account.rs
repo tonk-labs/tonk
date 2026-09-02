@@ -2301,6 +2301,24 @@ async fn deployment_service_did() -> Option<String> {
         .and_then(|config| config.service_did)
 }
 
+/// The sync endpoint a linked device should use: the provider the account
+/// registered with, read from the fact on profile main. Only a deployment
+/// that enrolls nobody (no published service identity) falls back to this
+/// origin's own `/ucan/` endpoint — there, the origin IS the service.
+async fn linked_device_remote() -> Result<String, String> {
+    if !wants_enrollment().await {
+        return proposed_remote();
+    }
+    let state = crate::api::customer_state()
+        .await
+        .map_err(|error| format!("failed to read the account's provider: {error}"))?;
+    state["provider"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "the account has not registered with a sync provider yet".to_string())
+}
+
 /// The account repository remote this browser proposes: its own origin's
 /// `/ucan/` endpoint. Only a ceremony ever signs one; the stored descriptor is
 /// always the service-selected winner.
@@ -2827,14 +2845,17 @@ fn bind(host: &HtmlElement) {
                         }
                     }
                     set_busy(&host, true, "Waiting for your passkey…");
-                    // The descriptor must name the same sync remote signup
-                    // established — the page's own `/ucan/` endpoint — or the
-                    // linked device mounts an account it can never reach.
+                    // The grant's signed meta names where the account syncs.
+                    // That address is the provider the registration receipt
+                    // recorded — the fact on profile main — so every attach
+                    // path hands out the one address, not each page's own
+                    // origin.
+                    let remote = linked_device_remote().await?;
                     let authorized = crate::identity_bridge::authorize_device(
                         crate::identity_bridge::AuthorizeDeviceInput {
                             device_did: audience.clone(),
-                            remote: proposed_remote()?,
-                            endpoint: proposed_remote()?,
+                            remote: remote.clone(),
+                            endpoint: remote.clone(),
                         },
                     )
                     .await
@@ -2856,25 +2877,15 @@ fn bind(host: &HtmlElement) {
                         .get("attachmentId")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default();
-                    // The delegation alone would leave the device authorized
-                    // but unable to find the account repository, so the
-                    // descriptor rides along.
-                    // The page knows which account service this deployment
-                    // uses; the CLI records it rather than guessing from a
-                    // flag default.
                     let payload = serde_json::json!({
                         "delegationHex": authorized.delegation_hex,
-                        // The CLI records the account repository under this
-                        // remote — the same one the grant above was minted
-                        // for. Its schema requires the field, so omitting it
-                        // fails the whole handoff as "payload is not
-                        // readable"; the descriptor stays alongside for CLIs
-                        // from before the remote rode the callback.
-                        "remote": proposed_remote()?,
-                        "descriptorHex": authorized.descriptor_hex,
+                        // The grant's signed meta is the authoritative
+                        // address; this field is the carrier for CLIs from
+                        // before the meta rode the delegation, whose schema
+                        // requires it.
+                        "remote": remote,
                         "credentialId": authorized.root_did,
                         "attachmentId": attachment_id,
-                        "serviceUrl": service(&host).await.unwrap_or_default(),
                     })
                     .to_string();
                     let encoded = crate::account::encode_authorization(&payload);

@@ -1122,12 +1122,12 @@ async fn run_invite(
         }
     }
 
-    // A ready-to-append URL query suffix (`&remote=<percent-encoded-url>`).
-    // The share view appends it verbatim between `?access=…` and the `#seed`.
-    let encoded_access: String =
-        url::form_urlencoded::byte_serialize(remote_execution.access_url.as_str().as_bytes())
-            .collect();
-    let remote = format!("&remote={encoded_access}");
+    // The endpoint rides inside the signed chain (`home.address` meta), so
+    // the URL carries no `&remote=` suffix any more. The suffix slot stays
+    // empty rather than removed: `tonk:authorization.remote` is a required
+    // field of the seeded concept, and the URL assembler treats an empty
+    // suffix as absent.
+    let remote = String::new();
 
     // Mint a fresh membership keypair. Its private seed becomes the invite
     // URL's `#` fragment; its public DID is the audience the repo access is
@@ -1136,20 +1136,23 @@ async fn run_invite(
     let membership_did = signer.did();
     let seed = bs58::encode(seed_bytes).into_string();
 
+    // The leaf is signed with the space's upstream in its `home.address`
+    // meta, so the endpoint rides inside the signed grant.
     let delegation: dialog_ucan::UcanDelegation = tonk
         .profile
         .access()
         .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(membership_did)
+        .meta(tonk_invite::home_address_meta(&remote_execution.access_url))
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
+    let chain = delegation.into_chain();
 
     // Derive the invitation record from the chain as minted — before it's
     // serialized away — so the meta-branch roster carries this invite. The
     // claim side self-heals a missing record, but the mint should write its
     // own. Guaranteed `Some`: the delegation is scoped to the repo subject.
-    let chain = delegation.into_chain();
     let invitation =
         Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
     let execution = InvitationExecution::new(&invitation, "open");
@@ -3584,6 +3587,17 @@ pub(crate) async fn record_space_mount(
             transaction = transaction
                 .assert(remote_branch.clone())
                 .assert(TrackingBranch::new(&local, &remote_branch));
+        }
+        // The queryable twin of the `home.address` the space's grants
+        // carry in signed meta: the UCAN endpoint the content branch
+        // syncs through, on the directory entity.
+        if branch_name == "main"
+            && let Some(upstream) = &settings.upstream
+            && let Some(remote_config) = configuration.remote.get(&upstream.remote)
+            && let SiteAddress::Ucan(ucan) = &remote_config.address
+        {
+            transaction =
+                transaction.assert(tonk_schema::SpaceHomeAddress::new(subject, ucan.endpoint()));
         }
     }
     if let Err(error) = transaction.commit().perform(&tonk.operator).await {

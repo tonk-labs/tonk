@@ -126,7 +126,8 @@ pub(crate) async fn publish_encryption_key(
 pub(crate) struct AuthorizeDeviceInput {
     /// The device the account should delegate to.
     pub device_did: String,
-    /// The account repository's remote, so the descriptor names it.
+    /// The account repository's remote, embedded in the grant's signed
+    /// `meta` so the linked device knows where the account syncs.
     pub remote: String,
     /// The access service's `/ucan/` endpoint the custody cell
     /// resolves through.
@@ -139,10 +140,9 @@ pub(crate) struct AuthorizeDeviceInput {
 pub(crate) struct AuthorizedDevice {
     /// The account root that issued the grant.
     pub root_did: String,
-    /// Hex-encoded `account → device` delegation chain.
+    /// Hex-encoded `account → device` delegation chain. Its signed
+    /// `meta` names the account repository's sync endpoint.
     pub delegation_hex: String,
-    /// Exact signed account repository descriptor.
-    pub descriptor_hex: String,
 }
 
 pub(crate) async fn authorize_device(
