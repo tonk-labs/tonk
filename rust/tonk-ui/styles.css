@@ -19,6 +19,12 @@
  * than a grey border token, which is what gives every block its edge.
  */
 :root {
+    /* Both schemes are real: the UA (and every nested guest) must know it.
+       A sealed guest is an opaque-origin iframe, and a cross-origin frame's
+       `prefers-color-scheme` comes from its EMBEDDER'S used color-scheme —
+       without this declaration the OS preference dies at the first frame
+       boundary and everything below it wakes up light. */
+    color-scheme: light dark;
     --page: var(--wa-color-surface-default, #e8e6e4);
     --ink: var(--wa-color-text-normal, #38182a);
     --on-ink: var(--wa-color-neutral-on-loud, #f7f6f5);
@@ -32,10 +38,37 @@
     --wash-p: color-mix(in srgb, var(--on-ink) 16%, transparent);
     --card: var(--wa-color-surface-raised, #fcfbfb);
     --dim: color-mix(in srgb, var(--ink) 32%, transparent);
+    /* the current role — a place you are in, split from the CTA register:
+       near-ink, one step toward the page, so a tab never outshouts an
+       action. Derived, so the dark twin follows for free. */
+    --cur: color-mix(in srgb, var(--ink) 86%, var(--page));
+    /* real glass for genuinely overlaying surfaces; everything on the flat
+       page wears --frost-solid pre-composited instead */
+    --frost: color-mix(in srgb, var(--frost-solid) 75%, transparent);
+    --card-hover: color-mix(in srgb, var(--ink) 6%, var(--card));
+    --canvas: color-mix(in srgb, var(--ink) 2%, var(--page));
+    --veil: color-mix(in srgb, var(--page) 90%, transparent);
+    --track: color-mix(in srgb, var(--ink) 22%, transparent);
+    --stub-ink: #9f968e;
     --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
     --sans: "IBM Plex Sans", Helvetica, Arial, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
     --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+    /* The FABB's public skin API. One scheme — the chrome is light (law 8):
+       these are the stone·ink LIGHT values, pinned literals on purpose so
+       the bar never follows the page's dark twin. Recoloring the product is
+       still this one file: the chrome and the page share the same ink. */
+    --fabb-ink: #38182a;
+    --fabb-cur: #503444; /* = ink 86% toward the stone page — matches --cur */
+    --fabb-ink-soft: #5b4953;
+    --fabb-on-ink: #f7f6f5;
+    --fabb-sep: rgb(56 24 42 / 28%);
+    --fabb-hover: rgb(56 24 42 / 6%);
+    --fabb-press: rgb(56 24 42 / 12%);
+    --fabb-bg: rgb(253 252 252 / 72%);
+    --fabb-panel: rgb(247 246 245 / 92%);
+    --fabb-ring: rgb(56 24 42 / 85%);
 }
 
 /* Only the ratios that differ in the dark theme; the colors themselves
@@ -47,6 +80,11 @@
     --wash-2: color-mix(in srgb, var(--ink) 15%, transparent);
     --wash-p: color-mix(in srgb, var(--on-ink) 14%, transparent);
     --dim: rgb(0 0 0 / 45%);
+    /* in the dark the veil is the page itself — translucency ghosts false
+       edges into the seams, so the layers behind step back fully */
+    --veil: var(--page);
+    --track: color-mix(in srgb, var(--ink) 25%, transparent);
+    --stub-ink: #736265;
 }
 
 /* `hidden` has to keep hiding things. Web Awesome skins native form
@@ -2807,6 +2845,16 @@ tonk-code:focus-within {
   }
   #tonk-register[open] { display: block; }
   #tonk-register::backdrop { background: var(--dim); }
+  /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
+     ARE that tab's page, seated in the column one gap under the bar, so
+     there is no veil and no head row (the tab is the head). */
+  #tonk-register[data-anchored]::backdrop { background: transparent; }
+  #tonk-register[data-anchored] .ocol {
+    position: absolute; margin: 0;
+    left: var(--anchor-left, 0); top: var(--anchor-top, 0);
+    width: var(--anchor-width, 432px);
+  }
+  #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything

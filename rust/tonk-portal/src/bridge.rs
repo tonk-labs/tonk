@@ -607,8 +607,14 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       })();
       // Base layout: the guest fills the iframe and lays out as a column so
       // the injected view (a `.display-route` chain) can flex to full height.
+      // `color-scheme:light dark` is load-bearing, not cosmetic: a NESTED
+      // guest is a cross-origin frame, and its `prefers-color-scheme` comes
+      // from THIS document's used color-scheme — leave it undeclared and the
+      // OS dark preference dies here, waking every deeper frame up light.
+      // (The app stylesheet declares it too; this covers the beat before it
+      // lands, and any guest injected without it.)
       var base=document.createElement("style");
-      base.textContent="html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
+      base.textContent="html{color-scheme:light dark}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
       document.head.appendChild(base);
       if (d.css) {
         var style=document.createElement("style");
