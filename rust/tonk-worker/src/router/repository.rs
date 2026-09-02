@@ -594,6 +594,11 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
                 }
             };
 
+            crate::router::navigate::notify_analytics(
+                env.client(),
+                tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
+            );
+
             // 2. The space is created and seeded — drop the creator into
             //    it. Same page-capability channel as the join redirect: a
             //    `{ type: "navigate", href }` posted to the originating
@@ -1246,6 +1251,12 @@ async fn run_invite(
 
     super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
 
+    crate::router::navigate::notify_analytics(
+        env.client(),
+        tonk_worker_api::AnalyticsEvent::SpaceShared {
+            space: repo_name.to_owned(),
+        },
+    );
     log!("Minted invitation for repo '{}'", repo_name);
     Ok(RunInvite::Settled)
 }

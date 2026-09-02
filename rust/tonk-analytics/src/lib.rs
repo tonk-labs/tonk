@@ -14,6 +14,7 @@
 use sha2_0_10::{Digest, Sha256};
 
 pub mod account;
+pub mod launch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -38,6 +39,14 @@ pub mod event {
     pub const SHEET_ACTIVATED: &str = "sheet_activated";
     /// A wasm panic reached the panic hook.
     pub const PANIC: &str = "panic";
+    /// A new browser analytics session entered Tonk.
+    pub const VISIT: &str = "visit";
+    /// Account creation completed, including enrollment when configured.
+    pub const ACCOUNT_CREATED: &str = "account_created";
+    /// A space was successfully created or joined.
+    pub const SPACE_CONVERSION: &str = "space_conversion";
+    /// An invite was successfully minted for a space.
+    pub const SPACE_SHARED: &str = "space_shared";
 }
 
 /// Default PostHog ingestion host (EU cloud).
