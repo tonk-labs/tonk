@@ -188,6 +188,9 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, DISMISS, return_to_space);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     on_click(&host, DISMISS, close);
     let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         event.prevent_default();
@@ -1328,7 +1331,7 @@ fn submit() {
         .unwrap_or_default();
     match label.trim() {
         COPY_LINK => copy_the_share_link(),
-        RETURN_TO_SPACE => close(),
+        RETURN_TO_SPACE => return_to_space(),
         "" => finish_action(),
         _ => run_signup_ceremony(),
     }
@@ -2362,10 +2365,16 @@ pub fn stash_share(space: &str) {
     if space.is_empty() {
         return;
     }
-    if let Some(storage) =
-        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
-    {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if let Some(storage) = window.session_storage().ok().flatten() {
         let _ = storage.set_item(SHARE_STASH, space);
+        // Where the share left from — "return to space" is a navigation
+        // now, not a close, because the linking screen replaced the page.
+        if let Ok(path) = window.location().pathname() {
+            let _ = storage.set_item(SHARE_RETURN, &path);
+        }
     }
 }
 
@@ -2382,6 +2391,42 @@ pub fn adopt_stashed_share() {
     };
     let _ = storage.remove_item(SHARE_STASH);
     remember_space(&space);
+    if let (Ok(Some(path)), Some(host)) = (
+        storage.get_item(SHARE_RETURN),
+        web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DIALOG_ID)),
+    ) {
+        let _ = storage.remove_item(SHARE_RETURN);
+        let _ = host.set_attribute(RETURN_PATH, &path);
+    }
+}
+
+/// The sessionStorage key carrying the space PAGE the blocked share left,
+/// so "return to space" can actually return there.
+const SHARE_RETURN: &str = "tonk-share-return";
+
+/// Where the finished ceremony returns to — stamped on the dialog host by
+/// [`adopt_stashed_share`] when the linking screen replaced the space page.
+const RETURN_PATH: &str = "data-return-path";
+
+/// Go back to the space the blocked share left, when the ceremony stands
+/// on the linking screen instead of over the space; just close otherwise.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn return_to_space() {
+    let path = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.get_attribute(RETURN_PATH))
+        .filter(|path| !path.is_empty());
+    match path {
+        Some(path) => {
+            if let Some(location) = web_sys::window().map(|window| window.location()) {
+                let _ = location.assign(&path);
+            }
+        }
+        None => close(),
+    }
 }
 
 /// Re-word the dialog for the refusal that raised it, and remember what
