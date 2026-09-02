@@ -2238,6 +2238,9 @@ ui-account-settings .sname {
     font-family: var(--cond); font-weight: 600; font-size: 13.5px;
     color: var(--ink); text-align: right;
     flex: 1; min-width: 6ch; }
+/* the caret is the focus affordance here, like the ceremony's email
+   field — the hub's inset focus ring would box the bare input */
+ui-account-settings .sname:focus-visible { box-shadow: none; }
 /* the block cursor blinks on the tail at rest — the cursor is the
    affordance; while editing, the input's own caret takes over */
 ui-account-settings .sname-seat .cur {
