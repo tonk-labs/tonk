@@ -856,9 +856,26 @@ pub fn enable_progress() {
 }
 
 pub(crate) fn progress(step: std::fmt::Arguments<'_>) {
+    let line = step.to_string();
     if PROGRESS.load(std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("{step}");
+        eprintln!("{line}");
     }
+    *LAST_STEP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(line);
+}
+
+/// The most recent sync step, recorded whether or not progress printing
+/// is on, so a timeout can say where the sync actually hung instead of
+/// only that it did.
+static LAST_STEP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The most recent sync step, for a deadline that gave up on it.
+pub fn last_progress() -> Option<String> {
+    LAST_STEP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Breadcrumb for `TONK_TRACE=1`: one stderr line per step of the sync

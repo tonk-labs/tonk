@@ -1211,15 +1211,19 @@ async fn main() {
         }
     }
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
-    // `TONK_TRACE=1` turns on the tracing subscriber, filtered by
-    // `RUST_LOG`, on stderr. This is the diagnostic for "the remote did
-    // not answer": hyper, reqwest, and dialog's remote layer all emit
-    // at debug, so a stalled command explains itself in a log rather
-    // than in a bounded timeout.
+    // `TONK_TRACE=1` turns on the tracing subscriber on stderr. This is
+    // the diagnostic for "the remote did not answer": hyper and reqwest
+    // emit request-level events, so a stalled command explains itself in
+    // a log rather than in a bounded timeout. `RUST_LOG` overrides the
+    // filter; without it everything logs at debug — a trace that needs a
+    // second variable to say anything is a trap.
     if std::env::var_os("TONK_TRACE").is_some_and(|value| !value.is_empty() && value != "0") {
         let _ = tracing_log::LogTracer::init();
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+            )
             .with_writer(std::io::stderr)
             .with_target(true)
             .try_init();

@@ -953,12 +953,21 @@ pub async fn sync_in(
     store: &crate::space::SpaceStore,
 ) -> Result<crate::account_state::EnsureOutcome> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    // Ten minutes, not the background freshen's tight bound: an explicit
+    // sync may be forwarding a large diverged subtree one block roundtrip
+    // at a time, and a bound it can never finish inside turns real
+    // progress into a guaranteed error. Interrupting early is Ctrl-C.
     tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_secs(600),
         crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone()),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("the account remote did not answer in time"))?
+    .map_err(|_| match crate::account_state::last_progress() {
+        Some(step) => anyhow::anyhow!(
+            "the account remote did not answer in time; last step: {step} (rerun with TONK_TRACE=1 for wire-level detail)"
+        ),
+        None => anyhow::anyhow!("the account remote did not answer in time"),
+    })?
 }
 
 /// Sync the account best-effort, under the same hard deadline the link
