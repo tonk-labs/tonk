@@ -924,8 +924,15 @@ async fn read_passkeys(
 /// `None` that is not simply "no fact" is logged, so an unreadable branch is
 /// visible rather than silent.
 pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
-    let ready = require_ready_account_state(tonk).await.ok()?;
-    match read_passkeys(tonk, &ready).await {
+    // No readiness gate: these are display facts the enrolling device
+    // itself wrote on profile main, so they are answerable the moment
+    // the account exists — which is exactly the window the dashboard
+    // first renders in. The gate guards authoritative edits, and a
+    // summary read is not one.
+    let subject = super::identity::local_root(tonk).await.ok()?.root_did;
+    let key = subject.repo_key().to_owned();
+    let branch = ReadyAccountBranch { key, subject };
+    match read_passkeys(tonk, &branch).await {
         Ok(passkeys) => {
             passkeys
                 .into_iter()

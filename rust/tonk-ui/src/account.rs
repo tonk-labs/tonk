@@ -727,6 +727,12 @@ async fn finish_account_readiness(host: &HtmlElement) {
             }) => {
                 let _ = host.remove_attribute(ACCOUNT_NOT_READY);
                 clear_account_guidance(host);
+                // The whole dashboard read while unhydrated, not only
+                // these two: the summary's passkey facts answer None
+                // until the account state is Ready, so the row it
+                // rendered is a blank that never heals unless it is
+                // re-read here with the rest.
+                load_summary(host.clone());
                 load_profiles(host.clone());
                 load_devices(host.clone());
                 return;

@@ -26,6 +26,5 @@ default-filter = """
 not (
     test(=account_flow::tests::it_adds_a_second_account_and_switches_between_disjoint_space_lists)
   | test(=account_flow::tests::it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key)
-  | test(=account_flow::tests::it_signs_up_through_the_account_panels)
 )
 """
