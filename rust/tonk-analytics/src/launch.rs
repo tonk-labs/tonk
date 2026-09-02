@@ -88,7 +88,7 @@ impl Attribution {
             .and_then(|value| Url::parse(value).ok())
             .is_some_and(|source| source.origin() != landing.origin());
         let inferred = inferred_channel(entry_type);
-        let (channel, attribution_source) = explicit.or(utm).unwrap_or_else(|| {
+        let (channel, attribution_source) = explicit.or(utm).unwrap_or({
             (
                 inferred,
                 if external_referrer {
