@@ -45,6 +45,7 @@ struct UiAccountSettings {
     click: Option<EventClosure>,
     change: Option<EventClosure>,
     keydown: Option<EventClosure>,
+    input: Option<EventClosure>,
     dialog_open: Option<EventClosure>,
     /// The live ceremony-status subscription, held while connected.
     subscription: Rc<RefCell<Option<Subscription>>>,
@@ -151,6 +152,7 @@ impl CustomElement for UiAccountSettings {
         // A plain text input does not commit on Enter by itself. End the edit
         // so the browser emits the same `change` event as a pointer blur and
         // the one save path above handles both gestures.
+        let host_enter = this.clone();
         let keydown: EventClosure = Closure::wrap(Box::new(move |event: Event| {
             let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
                 return;
@@ -158,9 +160,22 @@ impl CustomElement for UiAccountSettings {
             if key.key() != "Enter" {
                 return;
             }
-            let Some(input) = event
+            let Some(target) = event
                 .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+                .and_then(|target| target.dyn_into::<HtmlElement>().ok())
+            else {
+                return;
+            };
+            // Enter in the arming field submits when armed, and never
+            // breaks the line.
+            if target.has_attribute("data-delete-email") {
+                key.prevent_default();
+                submit_delete(&host_enter);
+                return;
+            }
+            let Some(input) = target
+                .dyn_into::<HtmlInputElement>()
+                .ok()
                 .filter(|input| input.has_attribute("data-settings-name"))
             else {
                 return;
@@ -170,6 +185,19 @@ impl CustomElement for UiAccountSettings {
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
         self.keydown = Some(keydown);
+        // Every keystroke in the arming field re-judges the verb.
+        let host = this.clone();
+        let input: EventClosure = Closure::wrap(Box::new(move |event: Event| {
+            let in_field = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|target| target.has_attribute("data-delete-email"));
+            if in_field {
+                arm_delete(&host);
+            }
+        }));
+        let _ = this.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
+        self.input = Some(input);
 
         // A `<tonk-dialog>` seat re-raises this panel long after connect;
         // the dialog's own `fabb-open` is the "fill it freshly" signal. The
@@ -225,6 +253,10 @@ impl CustomElement for UiAccountSettings {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        }
+        if let Some(input) = self.input.take() {
+            let _ =
+                this.remove_event_listener_with_callback("input", input.as_ref().unchecked_ref());
         }
         if let Some(dialog_open) = self.dialog_open.take()
             && let Some(document) = window().and_then(|window| window.document())
@@ -409,21 +441,30 @@ fn close_dialog(this: &HtmlElement, selector: &str) {
     }
 }
 
-fn input_value(this: &HtmlElement, selector: &str) -> String {
-    this.query_selector(selector)
+/// What the arming field holds: a `contenteditable` span, so its text.
+fn typed_address(this: &HtmlElement) -> String {
+    this.query_selector("[data-delete-email]")
         .ok()
         .flatten()
-        .and_then(|field| field.dyn_into::<HtmlInputElement>().ok())
-        .map(|field| field.value())
+        .and_then(|field| field.text_content())
         .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
-fn input_checked(this: &HtmlElement, selector: &str) -> bool {
-    this.query_selector(selector)
-        .ok()
-        .flatten()
-        .and_then(|field| field.dyn_into::<HtmlInputElement>().ok())
-        .is_some_and(|field| field.checked())
+/// Arm the solid verb only while the typed address is the account's.
+fn arm_delete(this: &HtmlElement) {
+    let expected = this
+        .get_attribute("data-delete-email-expected")
+        .unwrap_or_default();
+    let armed = !expected.is_empty() && typed_address(this) == expected;
+    if let Ok(Some(verb)) = this.query_selector("[data-delete-account-submit]") {
+        if armed {
+            let _ = verb.remove_attribute("disabled");
+        } else {
+            let _ = verb.set_attribute("disabled", "");
+        }
+    }
 }
 
 fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
@@ -439,16 +480,20 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 /// The plan is read from the account db by the worker: which listed
 /// spaces this account provides, and how many it merely joined.
 fn open_delete_dialog(this: &HtmlElement) {
-    set_hidden(this, "[data-delete-error]", true);
     set_text(
         this,
         "[data-delete-scope]",
-        "Loading what this deletes\u{2026}",
+        "loading what this deletes\u{2026}",
     );
-    if let Ok(Some(list)) = this.query_selector("[data-delete-spaces]") {
-        list.set_inner_html("");
-    }
+    set_text(this, "[data-delete-email]", "");
+    let _ = this.remove_attribute("data-delete-email-expected");
+    arm_delete(this);
     show_dialog(this, "[data-delete-account-dialog]");
+    if let Ok(Some(field)) = this.query_selector("[data-delete-email]")
+        && let Ok(field) = field.dyn_into::<HtmlElement>()
+    {
+        let _ = field.focus();
+    }
     let host = this.clone();
     spawn_local(async move {
         let plan: Option<tonk_worker_api::AccountDeletionPlan> =
@@ -492,43 +537,40 @@ fn open_delete_dialog(this: &HtmlElement) {
             &host,
             "[data-delete-submit-label]",
             if requested.is_some() {
-                "delete selected owned space"
+                "delete this space"
             } else {
-                "delete owned spaces and account"
+                "delete account"
             },
         );
         let owned = spaces.len();
+        let names: Vec<&str> = spaces
+            .iter()
+            .map(|space| space.name.as_deref().unwrap_or(&space.subject))
+            .collect();
+        let listed = if names.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", names.join(", "))
+        };
         set_text(
             &host,
             "[data-delete-scope]",
             &if requested.is_some() {
                 format!(
-                    "This deletes the selected owned space's hosted content from Tonk services. Your account and every other space remain. {} joined space{} will be left intact.",
-                    plan.joined_spaces,
-                    if plan.joined_spaces == 1 { "" } else { "s" },
+                    "this deletes the selected owned space{listed} from tonk services. your account and every other space remain."
                 )
             } else {
                 format!(
-                    "{owned} owned hosted space{} will be deleted. {} joined space{} will be left intact.",
+                    "{owned} owned hosted space{} will be deleted{listed}. {} joined space{} will be left intact.",
                     if owned == 1 { "" } else { "s" },
                     plan.joined_spaces,
                     if plan.joined_spaces == 1 { "" } else { "s" },
                 )
             },
         );
-        let (Ok(Some(list)), Some(document)) = (
-            host.query_selector("[data-delete-spaces]"),
-            window().and_then(|win| win.document()),
-        ) else {
-            return;
-        };
-        for space in spaces {
-            if let Ok(item) = document.create_element("li") {
-                item.set_text_content(Some(space.name.as_deref().unwrap_or(&space.subject)));
-                let _ = list.append_child(&item);
-            }
-        }
+        set_text(&host, "[data-delete-email-expected-label]", &plan.email);
         let _ = host.set_attribute("data-delete-email-expected", &plan.email);
+        arm_delete(&host);
     });
 }
 
@@ -536,23 +578,16 @@ fn open_delete_dialog(this: &HtmlElement) {
 /// the account, asks the page for the passkey, and reports through the
 /// ceremony row this panel watches.
 fn submit_delete(this: &HtmlElement) {
-    let email = input_value(this, "[data-delete-email]");
+    let email = typed_address(this);
     let expected = this
         .get_attribute("data-delete-email-expected")
         .unwrap_or_default();
-    let error = if email.trim().is_empty() || (!expected.is_empty() && email.trim() != expected) {
-        Some("The confirmation email does not match this account.")
-    } else if !input_checked(this, "[data-delete-understood]") {
-        Some("Confirm that you understand the permanent consequences.")
-    } else {
-        None
-    };
-    if let Some(error) = error {
-        set_text(this, "[data-delete-error]", error);
-        set_hidden(this, "[data-delete-error]", false);
+    // The verb is off until the address matches; a submit that arrives
+    // anyway (keyboard, script) is answered the same way.
+    if expected.is_empty() || email != expected {
+        arm_delete(this);
         return;
     }
-    set_hidden(this, "[data-delete-error]", true);
     close_dialog(this, "[data-delete-account-dialog]");
     if let Some(subject) = this
         .get_attribute("data-delete-space")
@@ -584,7 +619,7 @@ fn submit_delete(this: &HtmlElement) {
         serde_json::json!({
             "email": { "the": "xyz.tonk.delete-account/email", "as": "Text" }
         }),
-        serde_json::json!({ "email": email.trim() }),
+        serde_json::json!({ "email": email }),
     ));
 }
 
@@ -1160,10 +1195,10 @@ mod tests {
         clear_context();
     }
 
-    /// The deletion review refuses to go on without the retyped address
-    /// and the acknowledgement, in that order.
+    /// The deletion verb stays off until the account's address is typed
+    /// into the arming field, and comes on the moment it is.
     #[wasm_bindgen_test]
-    fn it_arms_the_deletion_only_with_the_address_and_the_acknowledgement() {
+    fn it_arms_the_deletion_only_once_the_address_is_typed() {
         clear_context();
         let host = mount();
         host.query_selector("[data-delete-account-open]")
@@ -1187,44 +1222,43 @@ mod tests {
             .dyn_into()
             .unwrap();
         assert!(native.open(), "the row raises the review");
-        let submit: HtmlElement = host
+        let verb: HtmlElement = host
             .query_selector("[data-delete-account-submit]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
-        let error: HtmlElement = host
-            .query_selector("[data-delete-error]")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-
-        submit.click();
-        assert!(!error.hidden(), "an empty address refuses");
         assert!(
-            error
-                .text_content()
-                .unwrap_or_default()
-                .contains("does not match")
+            verb.has_attribute("disabled"),
+            "nothing typed, nothing armed"
         );
 
-        let email: HtmlInputElement = host
+        // The plan names the address; the field must match it.
+        host.set_attribute("data-delete-email-expected", "goner@example.com")
+            .unwrap();
+        let field: HtmlElement = host
             .query_selector("[data-delete-email]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
-        email.set_value("goner@example.com");
-        submit.click();
+        let typed = |text: &str| {
+            field.set_text_content(Some(text));
+            let init = web_sys::EventInit::new();
+            init.set_bubbles(true);
+            let event = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
+            field.dispatch_event(&event).unwrap();
+        };
+        typed("someone-else@example.com");
+        assert!(verb.has_attribute("disabled"), "a wrong address stays off");
+        typed("goner@example.com");
+        assert!(!verb.has_attribute("disabled"), "the right address arms it");
+        typed("goner@example.co");
         assert!(
-            error
-                .text_content()
-                .unwrap_or_default()
-                .contains("understand"),
-            "an unchecked acknowledgement refuses next"
+            verb.has_attribute("disabled"),
+            "and editing it away disarms"
         );
-        assert!(native.open(), "a refused submit keeps the review up");
+        assert!(native.open(), "arming never closes the review");
         host.remove();
     }
 

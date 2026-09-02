@@ -4725,25 +4725,36 @@ mod tests {
         click(&driver, "[data-delete-account-open]").await?;
         wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
 
-        // A mistyped confirmation email refuses before anything is
-        // asked of the worker.
-        element(&driver, "[data-delete-email]")
-            .await?
-            .send_keys("someone-else@example.com")
-            .await?;
-        element(&driver, "[data-delete-understood]")
-            .await?
-            .click()
-            .await?;
-        click(&driver, "[data-delete-account-submit]").await?;
-        wait_for_text_containing(&driver, "[data-delete-error]", "does not match").await?;
-
-        // The real thing: the typed address, the acknowledgement already
-        // given, and the passkey gesture the virtual authenticator
-        // answers on the consent card the worker's ask raises.
+        // The typed address is the gate: a mistyped one leaves the solid
+        // verb off, and nothing is asked of the worker.
         let address = element(&driver, "[data-delete-email]").await?;
-        address.clear().await?;
+        address.send_keys("someone-else@example.com").await?;
+        let verb = element(&driver, "[data-delete-account-submit]").await?;
+        assert!(
+            verb.attr("disabled").await?.is_some(),
+            "a wrong address must not arm the deletion"
+        );
+
+        // The real thing: the account's own address arms the verb, and
+        // the passkey gesture the virtual authenticator answers on the
+        // consent card the worker's ask raises finishes it.
+        driver
+            .execute(
+                r#"const field = document.querySelector("[data-delete-email]");
+                   field.textContent = "";"#,
+                Vec::new(),
+            )
+            .await
+            .ok();
         address.send_keys(email).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while verb.attr("disabled").await?.is_some() {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the right address must arm the deletion"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         click(&driver, "[data-delete-account-submit]").await?;
         use_passkey_consent(&driver).await?;
 
