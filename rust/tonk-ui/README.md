@@ -79,6 +79,12 @@ The load lifecycle has four cases:
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
 
+The incumbent does not retire merely because `updatefound` reports an
+`installing` candidate. It keeps sync and language-server streams operational
+until that candidate reaches `installed`, or until a durable waiting successor
+is found after restart. A candidate that becomes `redundant` during install
+therefore leaves the incumbent fully usable.
+
 Activation alone does not claim already-open documents. Pages cached before
 this update protocol therefore remain on their compatible existing controller
 until navigation; an update-aware page opts into the new controller only when
@@ -86,6 +92,55 @@ it can perform the guarded alignment reload. Activation also retains every
 generation-named shell and worker-Wasm cache: an older page or retained worker
 may hold the only live reference to an offline generation, so storage pressure
 is the only automatic eviction policy until reference-safe cleanup exists.
+Each generation cache is sealed after install. A retained controller serves a
+cached shell or static asset without revalidation, deletion, or overwrite; a
+missing asset returns an actionable `503` online and offline. The build
+publisher emits a full-SHA-256 `asset-manifest.json` for the shell, UI, lazy,
+and sealed-guest resource graph, excluding mutable deployment controls such as
+`version.json` and `kill-switch.json`. Install fetches every response with
+`cache: "no-store"`, verifies the manifest, every listed asset, and worker Wasm,
+then publishes through nonce-named staging caches. A durable generation marker
+records `building`, `publishing`, and finally `adopted`; a same-build retry may
+remove only the exact unadopted names recorded by that marker. Stable caches
+with no valid adoption provenance fail closed, while adopted final caches are
+verified read-only and never replaced. No runtime path backfills or repairs a
+retained cache. If storage evicts worker Wasm, the old
+worker may boot from a fresh response only when it still matches its stamped
+digest, and it does not write those recovered bytes back. In production,
+authored `no-store`, `reload`, and `no-cache` request flags cannot bypass the
+sealed generation; only the unstamped `dev` worker honors them for hot reload.
+
+The deployed Cloudflare tree is stamped again after the guide and Storybook
+are overlaid, so the build identity and manifest describe the bytes actually
+served. Each static site's physical `*/index.html` and directory URL are exact
+members. A slashless `/guide` or `/storybook` navigation receives a `307` to
+the stamped trailing-slash route so relative assets resolve inside that site;
+ordinary application routes continue to use the root SPA document. Only exact
+stamped top-level paths are eligible for the immutable shell cache.
+`/.well-known/tonk`, other unmanifested live edge routes, and requests from a
+registered nested client go through Rust/network instead. Client lookup failure
+also delegates conservatively rather than cross-serving a top-level asset into
+a guest.
+
+Every automatic alignment, update, watchdog-recovery, and development hot-swap
+reload also waits for both page-local and origin-global account-setup safety.
+`document.documentElement[data-tonk-account-setup-critical]` and the optional
+`window.tonkAccountSetupMayReload()` predicate guard the current document; the
+predicate must return exactly `true`, and failure defers. Separately, IndexedDB
+`tonk-update-safety-v1`, store `holds`, key `account-setup`, contains the
+minimal durable hold `{version: 1, kind: "account-setup", operationId,
+leasedRevision}` while an Arm may have committed without a durable Stage.
+Absence is the only globally safe result. A malformed value, storage error, or
+missing Web Locks API fails closed.
+
+Both page handoff and service-worker `clients.claim()` take the exclusive Web
+Lock `tonk-update-safety-v1` and re-read the hold before acting. The page invokes
+the irreversible claim/reload callback before releasing that lock, closing the
+cross-tab check-to-action gap. The `tonk:account-setup-critical-change` DOM
+event and `account-setup-hold-changed` message on the same-named
+`BroadcastChannel` are advisory wakeups; every retry rechecks authoritative
+state. This leaves an Armed/pre-Stage document on its compatible worker until
+Stage or an authenticated Inspect has proved recovery durable.
 
 An explicit readiness rejection is not treated as a silent boot stall. Before
 returning with the application root unmounted, the UI terminalizes the static
@@ -105,9 +160,10 @@ scope. Ambiguous, missing, or malformed flags leave the running build alone.
 
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. There is one rollout boundary: a shell cached before this
-bootstrap ships cannot run code it does not contain. Its existing worker can
-refresh `/` in the background, and the next ordinary navigation runs the new
-load-time update path. Later deployments are detected on the first warm load.
+bootstrap ships cannot run code it does not contain. Its existing worker and
+ordinary browser/deployment update path remain responsible for adoption; this
+protocol never mutates a retained generation in place. Later deployments are
+detected on the first warm load by update-aware documents.
 
 The service worker is the local backend: the UI talks to it over HTTP and
 listens for change notifications on a `BroadcastChannel`.

@@ -51,6 +51,7 @@ web-sys = { workspace = true, features = [
     "RequestCache",
     "Response",
     "ResponseInit",
+    "Url",
     "Window",
 ] }
 

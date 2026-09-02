@@ -40,6 +40,44 @@ window.tonk = {
 
 The parent is a pure port relay. After the handshake it binds the transferred port and posts `ready { context }` back, then translates each inbound envelope into the existing `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events on the `<tonk-portal>` element, which bubble to the installed host on the document. Subscription frames arrive back through the portal's `reset` / `error` methods (the same seam `<tonk-display>` uses) and are posted to the iframe as `subscribe-event` / `subscribe-error`. A `query()` / `subscribe()` call with no argument builds the scoped-entity query from the model descriptor and `entity` (see [`query`](src/query.rs)), matching what `<tonk-display>` would read.
 
+Host-relative `window.fetch` calls cross the same isolation boundary. The parent
+browser-normalizes the path once, then applies a method-aware default-deny
+allowlist before it constructs or sends a request. Sealed content may read the
+public guest asset namespaces and deployment discovery and call
+repository/profile data-plane routes inside the portal's `with` / `allow`
+reach. `/api/language-server` is an author-facing alias, not a worker-global
+endpoint: a portal with one trusted `with` reach resolves it to that exact
+repository/profile + branch route and stamps a portal client identity so server
+state and diagnostics cannot cross clients. An ambiguous portal without `with`,
+or an explicit scoped LSP path outside the allowed reach, is denied before
+fetch. Account, profile roster, repository lifecycle, global site/sync,
+inspection, and undeclared worker routes are likewise not reachable through
+this relay.
+
+Guest-supplied `X-Tonk-Site`, `X-Tonk-Path`, `X-Tonk-Hash`, `X-Tonk-Build`, and
+`X-Tonk-Lsp-Client` values are discarded as direct authority. Authorized
+worker requests receive trusted host context, while each LSP relay prepends its
+host-minted random segment to a bounded canonical descendant chain. A caller
+cannot replace an authorized ancestor, and same-scope nested siblings remain in
+distinct worker sessions. Malformed, ambiguous, non-canonical, and over-depth
+values fail closed or collapse only to the current relay's own principal.
+Public asset/discovery requests receive none of those internal headers.
+
+The sealed runtime captures its host relay function synchronously before any
+authored markup or script runs, then passes that function directly into guest
+Wasm through a Rust-only setter. Nested portals call the retained capability
+instead of the mutable authored `window.fetch`. Trusted descendant-principal
+headers therefore never cross an authored fetch wrapper, so same-scope sibling
+code cannot learn and replay a legitimate child's principal even though both
+guests execute inside the same sealed realm.
+
+This deliberately means the sealed Hub does not load or mutate the browser
+profile roster. Its neutral **account** cell forwards an ordinary navigation to
+the trusted top-level `/settings` route; listing, switching, and adding accounts
+happen there until equivalent account chrome exists outside the guest realm.
+The portal still relays the exact typed stale-build signal through every nested
+host layer so the trusted top document can show its existing update prompt.
+
 ## Modules
 
 - [`element`](src/element.rs): the `<tonk-portal>` custom element: lifecycle, iframe ownership, `srcdoc` painting, and the `reset` / `error` prototype shims.

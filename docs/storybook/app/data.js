@@ -2153,8 +2153,8 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Service-worker update never mixes asset generations (Cross a boundary).",
-      "device": "two-actor",
+      "claim": "Service-worker update never mixes asset generations or accepts a classified stale write (Cross a boundary).",
+      "device": "two-actor + fault",
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-03",
       "priority": "P1",

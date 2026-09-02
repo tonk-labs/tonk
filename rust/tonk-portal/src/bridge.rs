@@ -93,6 +93,16 @@ pub(crate) struct PortalState {
     /// synced/untrusted content guest's forwarded route is denied with a
     /// typed error. See `forwarded_route`.
     allow: Allow,
+    /// Host-minted random segment for this portal's scoped LSP session. Each
+    /// authorized relay namespaces a canonical descendant chain below its own
+    /// segment, so nested opaque guests remain distinct without allowing an
+    /// authored header to replace an ancestor principal.
+    lsp_client: String,
+    /// Whether this portal is the top document's built-in profile chrome. The
+    /// Hub account switcher historically owns two narrow profile-control calls
+    /// from its sealed frame. This authority is supplied by the trusted host
+    /// realm, never inferred from authored `with`/`allow` attributes.
+    trusted_profile_controls: bool,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -118,12 +128,21 @@ impl PortalState {
             _dispatcher: None,
             with: None,
             allow: Allow::none(),
+            lsp_client: mint_lsp_client(),
+            trusted_profile_controls: false,
         }
     }
 
     /// Set this portal's routing context and reach. Called once, host-side,
     /// by the trusted portal element during `connect_portal`.
-    pub(crate) fn set_route(&mut self, with: Option<Location>, allow: Allow) {
+    pub(crate) fn set_route(
+        &mut self,
+        with: Option<Location>,
+        allow: Allow,
+        trusted_profile_controls: bool,
+    ) {
+        self.trusted_profile_controls =
+            trusted_profile_controls && with.as_ref().is_some_and(Location::profile);
         self.with = with;
         self.allow = allow;
     }
@@ -173,6 +192,42 @@ impl PortalState {
     }
 }
 
+fn mint_lsp_client() -> String {
+    // In the secure context required by a service worker, randomUUID provides
+    // an unguessable per-portal segment. Keeping the wire segment to lowercase
+    // hex makes the complete multi-hop chain canonical across Rust and JS.
+    if let Some(segment) = (|| {
+        let window = window()?;
+        let crypto = Reflect::get(window.as_ref(), &JsValue::from_str("crypto")).ok()?;
+        let function = Reflect::get(&crypto, &JsValue::from_str("randomUUID"))
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?;
+        let uuid = function.call0(&crypto).ok()?.as_string()?;
+        let compact = uuid.replace('-', "").to_ascii_lowercase();
+        let segment = format!("p-{compact}");
+        tonk_worker_api::compose_lsp_client_chain(&segment, None)
+            .ok()
+            .map(|_| segment)
+    })() {
+        return segment;
+    }
+
+    // Native tests and obsolete non-secure browsers have no randomUUID. The
+    // timestamp/random/counter tuple still avoids collisions within a realm;
+    // production secure contexts take the cryptographic path above.
+    thread_local! {
+        static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    }
+    NEXT.with(|next| {
+        let id = next.get();
+        next.set(id.wrapping_add(1));
+        let time = js_sys::Date::now() as u64;
+        let random = (js_sys::Math::random() * u64::MAX as f64) as u64;
+        format!("p-{time:016x}{:016x}", random ^ id)
+    })
+}
+
 /// The bootstrap script prepended into the iframe's `srcdoc`. It defines
 /// `window.tonk` synchronously, opens a `MessageChannel`, and hands one
 /// port to the parent via `parent.postMessage(hello, "*", [port2])`.
@@ -191,21 +246,6 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   function withRoute(extra,ctx){
     if(ctx&&ctx.with){ extra.with=ctx.with; }
     return extra;
-  }
-  // The request-context headers every relayed /api fetch carries, so the SW can
-  // tie the request to this tab's SITE and route/contain it. Site, path, and hash
-  // come from the injected context (the host's site id + the host's location;
-  // the guest's own location is about:srcdoc). They are explicit headers because
-  // a service worker reads request.headers, which never includes Referer (the
-  // browser exposes it only as request.referrer, not as a header). Returns
-  // [[name,value]] pairs prepended to any per-request headers.
-  function contextHeaders(){
-    var c=(window.tonk&&window.tonk.context)||{};
-    var headers=[];
-    if(c.site){ headers.push(["x-tonk-site",c.site]); }
-    if(c.path){ headers.push(["x-tonk-path",c.path]); }
-    if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
-    return headers;
   }
   function call(type,extra){
     return ready.then(function(){
@@ -259,6 +299,13 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // and subscription owned by the previous profile must be rebuilt.
     reload:function(){
       ready.then(function(){port.postMessage({v:1,type:"reload"});});
+    },
+    // Relay a typed stale-build response toward the trusted top document,
+    // where the existing update prompt lives. This is intentionally
+    // fire-and-forget and carries no data or privilege: authored code can at
+    // worst ask the host to show the same harmless reload affordance.
+    updateAvailable:function(){
+      ready.then(function(){port.postMessage({v:1,type:"update-available"});});
     },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tonk-title>` posts its text here and the
@@ -464,7 +511,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   // overrides Request fields. Body is read to text (our /api bodies are JSON
   // strings); a Request body is consumed via .text() so we return a Promise.
   function relayRequest(url,input,init){
-    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
+    // Request context is trusted host provenance, not author data. The host
+    // strips any guest-supplied internal values and stamps its own after it has
+    // normalized and authorized the destination.
+    var method="GET", headers=[], bodyP=Promise.resolve(undefined);
     var reqLike=(typeof input==="object"&&input)?input:null;
     if(reqLike){ method=reqLike.method||method; }
     if(init&&init.method){ method=init.method; }
@@ -524,6 +574,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  // BOOTSTRAP_JS ran immediately before this script and installed the sealed
+  // guest's host relay. Capture that capability synchronously, before any
+  // authored markup/script is parsed. It stays in this closure and is handed
+  // directly to Wasm; replacing window.fetch later cannot observe the trusted
+  // descendant-principal header stamped by a nested portal bridge.
+  var trustedRelayFetch=window.fetch.bind(window);
   // Surface guest errors to the parent log: an opaque (null) origin sanitizes
   // `Uncaught (in promise)` / error details in the parent console to a bare
   // message, so a sealed-guest failure is otherwise undebuggable. Forwarding the
@@ -645,7 +701,7 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
       var mod=await import(glueUrl);
       await mod.default({ module_or_path: d.wasm });
-      mod.start();
+      mod.start(trustedRelayFetch);
       // Code-split editor bundles load sibling chunks via RELATIVE imports,
       // dead at this opaque origin. Mint a blob per file in DEPENDENCY ORDER
       // so each file's relative imports rewrite to the FINAL blob URLs of
@@ -897,14 +953,12 @@ struct GuestManifest {
 async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     use wasm_bindgen::JsValue;
 
-    // The manifest names the current build's hashed assets. It rides the
-    // SW's stale-while-revalidate cache like everything else, so a sealed
-    // `/space` works OFFLINE — never `no-store`, which the SW refuses to
-    // cache (an offline guest could then never resolve its assets). Serving
-    // a stale manifest is safe: it points at the PREVIOUS build's hashed
-    // assets, which are still cached (immutable, never evicted within a cache
-    // version), so the guest loads fully; SWR refreshes the manifest in the
-    // background and the next load picks up the new build.
+    // The manifest and every asset it names belong to the outer service
+    // worker's build-produced, full-digest resource graph. Install verifies
+    // and stores that graph as one generation, so this stable manifest path is
+    // byte-consistent with the retained guest bundle and works offline. A
+    // later eviction miss fails closed instead of loading another deployment's
+    // manifest or stable-name bytes under the old controller.
     let manifest: GuestManifest = {
         let text = fetch_text("/guest/manifest.json").await?;
         serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
@@ -1312,19 +1366,12 @@ async fn fetch_bundle_graph(base: &str, entries: &[&str]) -> Vec<(String, String
         if files.iter().any(|(n, _)| n == &name) {
             continue;
         }
-        // Cache-first, like every other guest-boot asset. This used to
-        // `reload` (force a network fetch, bypassing the cache) because the
-        // entry points have STABLE names and a rebuilt editor must reach
-        // the guest. But forcing the network made a cached load on a slow
-        // connection pay the full download every time — the tonk-code graph
-        // is ~3 MB, so a 3G reload took seconds to fetch bytes it already had
-        // cached, while an offline reload (which can't reach the network) was
-        // instant. The SW's stale-while-revalidate serves the cached copy
-        // immediately and refreshes in the background, so a content change
-        // reaches the guest on the NEXT load — acceptable: the chunks are
-        // content-hashed (immutable), only the entry points can change,
-        // and dev hot-reload already does a full page reload on a real code
-        // change.
+        // Default cache mode deliberately keeps this request inside the outer
+        // worker's sealed generation. Install has already verified stable
+        // entry points and content-hashed chunks together, so a slow/offline
+        // guest gets the exact graph for its controlling build. An eviction
+        // miss fails instead of reaching a newer deployment under an old
+        // controller; dev hot-reload still performs a full-page reload.
         let src = match fetch_text(&format!("{base}/{name}")).await {
             Ok(src) => src,
             Err(e) => {
@@ -1433,12 +1480,10 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    // Default cache mode (no override): these URLs are content-hashed (named
-    // by the guest manifest), so the SW's stale-while-revalidate shell cache
-    // can hold them immutably — a sealed `/space` works OFFLINE (populated on
-    // the first online load, served from cache after) and a content change
-    // is a NEW URL (cache miss → fresh), never a stale hit. The manifest rides
-    // the same SWR cache so an offline guest can still resolve its assets.
+    // Default cache mode (no override): the outer worker installed and
+    // verified these URLs together with the guest manifest. A sealed `/space`
+    // therefore works offline from one immutable generation, while an eviction
+    // miss fails closed instead of accepting another deployment's bytes.
     let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;
@@ -1627,6 +1672,7 @@ fn make_dispatcher(
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
             "reload" => tonk_host::reload_page(),
+            "update-available" => tonk_host::announce_update(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "register" => handle_register(&state, &port, &data),
@@ -2149,30 +2195,42 @@ fn open_href(data: &JsValue) -> Option<String> {
 /// from those, so its overridden `window.fetch` is faithful (`.text()`,
 /// `.blob()`, `.arrayBuffer()`, `.body` all work) and binary-safe.
 ///
-/// Branch data-plane paths are gated by this portal's `with`/`allow`
-/// before the fetch runs — with the guest's IO riding plain `fetch`,
-/// this relay IS the reach chokepoint, for the elements' requests and
-/// for raw guest `fetch()` calls alike.
+/// Only explicitly listed public assets, the language server, and repository
+/// data-plane routes may cross this boundary. Repository routes are gated by
+/// this portal's `with`/`allow` before the fetch runs — with the guest's IO
+/// riding plain `fetch`, this relay IS the reach chokepoint, for the elements'
+/// requests and for raw guest `fetch()` calls alike.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
     let Some(id) = get_str(data, "id") else {
         return;
     };
-    let Some(path) = get_str(data, "path") else {
+    let Some(raw_path) = get_str(data, "path") else {
         return post_error(port, "fetch-error", &id, "missing path");
     };
-    if !path.starts_with('/') || path.starts_with("//") {
-        return post_error(port, "fetch-error", &id, "path must be host-relative");
+    let path = match normalize_relay_path(&raw_path) {
+        Ok(path) => path,
+        Err(error) => return post_error(port, "fetch-error", &id, &error),
     };
-    if let Some(requested) = data_plane_location(&path, state) {
+    let method = get_str(data, "method")
+        .unwrap_or_else(|| "GET".to_owned())
+        .to_ascii_uppercase();
+    let Some(target) = guest_relay_target(&method, &path.pathname, state) else {
+        let error = format!(
+            "denied: sealed guest may not fetch {method} {}",
+            path.pathname
+        );
+        tonk_common::log!("portal fetch {error}");
+        return post_error(port, "fetch-error", &id, &error);
+    };
+    if let Some(requested) = target.location() {
         let s = state.borrow();
-        let permitted = s
-            .with
-            .as_ref()
-            .is_some_and(|own| own.same_reach(&requested))
-            || s.allow.permits(&requested);
+        let permitted = s.with.as_ref().is_some_and(|own| own.same_reach(requested))
+            || s.allow.permits(requested);
         if !permitted {
-            let denied = Refused::Denied { requested };
+            let denied = Refused::Denied {
+                requested: requested.clone(),
+            };
             tonk_common::log!("portal fetch {}", denied.message());
             return post_error(port, "fetch-error", &id, &denied.message());
         }
@@ -2185,10 +2243,15 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
     // make the path a cross-origin absolute URL its OWN `window.fetch` override
     // can't relay (origin `null` → CORS). The string path lets each level's
     // override catch the host-relative `/…` and relay up to its parent.
-    let init = match build_relayed_request(data) {
-        Ok(init) => init,
-        Err(e) => return post_error(port, "fetch-error", &id, &e),
-    };
+    let lsp_client = target
+        .is_language_server()
+        .then(|| state.borrow().lsp_client.clone());
+    let init =
+        match build_relayed_request(&method, target.is_worker_api(), lsp_client.as_deref(), data) {
+            Ok(init) => init,
+            Err(e) => return post_error(port, "fetch-error", &id, &e),
+        };
+    let authorized_path = target.fetch_path(&path);
     // Every relay is abortable and tracked on the portal: teardown aborts
     // the lot, so a torn-down guest's streams (transferred response bodies
     // included) are cancelled instead of piping into a destroyed realm.
@@ -2198,26 +2261,203 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
     }
     let port = port.clone();
     spawn_local(async move {
-        match fetch_path(&path, &init).await {
+        match fetch_path(&authorized_path, &init).await {
             Ok(resp) => post_fetch_response(&port, &id, &resp).await,
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
 }
 
+/// One canonical host-relative URL used for both authorization and fetching.
+/// The browser URL parser resolves literal and percent-encoded dot segments;
+/// retaining only `pathname + search` also drops fragments, which HTTP never
+/// sends. Requiring the synthetic base origin prevents backslashes or another
+/// network-path spelling from escaping to a different host.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct NormalizedRelayPath {
+    pathname: String,
+    search: String,
+    fetch_path: String,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn normalize_relay_path(path: &str) -> Result<NormalizedRelayPath, String> {
+    if !path.starts_with('/') || path.starts_with("//") {
+        return Err("path must be host-relative".to_owned());
+    }
+    let url = web_sys::Url::new_with_base(path, "https://tonk.invalid/")
+        .map_err(|_| "path must be a valid host-relative URL".to_owned())?;
+    if url.origin() != "https://tonk.invalid" {
+        return Err("path must stay on the host origin".to_owned());
+    }
+    let pathname = url.pathname();
+    let search = url.search();
+    let fetch_path = format!("{pathname}{search}");
+    Ok(NormalizedRelayPath {
+        pathname,
+        search,
+        fetch_path,
+    })
+}
+
+/// The only destination classes an opaque author guest may ask its trusted
+/// host to fetch. Anything not classified here is denied before request
+/// construction, build stamping, or `window.fetch`.
+enum GuestRelayTarget {
+    /// Public, non-worker assets needed by the sealed guest runtime.
+    PublicAsset,
+    /// A language-server channel pinned to the trusted portal reach.
+    LanguageServer(Location),
+    /// A worker data-plane request that must remain inside this portal's reach.
+    Repository(Location),
+    /// One of the built-in Hub's exact profile-roster operations.
+    ProfileControl,
+}
+
+impl GuestRelayTarget {
+    fn is_worker_api(&self) -> bool {
+        matches!(
+            self,
+            Self::LanguageServer(_) | Self::Repository(_) | Self::ProfileControl
+        )
+    }
+
+    fn is_language_server(&self) -> bool {
+        matches!(self, Self::LanguageServer(_))
+    }
+
+    fn location(&self) -> Option<&Location> {
+        match self {
+            Self::LanguageServer(location) | Self::Repository(location) => Some(location),
+            Self::PublicAsset | Self::ProfileControl => None,
+        }
+    }
+
+    fn fetch_path(&self, path: &NormalizedRelayPath) -> String {
+        match self {
+            Self::LanguageServer(location) => {
+                format!("{}{}", language_server_path(location), path.search)
+            }
+            Self::PublicAsset | Self::Repository(_) | Self::ProfileControl => {
+                path.fetch_path.clone()
+            }
+        }
+    }
+}
+
+fn guest_relay_target(
+    method: &str,
+    pathname: &str,
+    state: &Rc<RefCell<PortalState>>,
+) -> Option<GuestRelayTarget> {
+    if is_public_guest_asset(method, pathname) {
+        return Some(GuestRelayTarget::PublicAsset);
+    }
+    if state.borrow().trusted_profile_controls
+        && matches!(
+            (method, pathname),
+            ("GET", "/api/profiles") | ("POST", "/api/profiles/activate")
+        )
+    {
+        return Some(GuestRelayTarget::ProfileControl);
+    }
+    if matches!(method, "GET" | "POST") {
+        if pathname == "/api/language-server" {
+            return state
+                .borrow()
+                .with
+                .clone()
+                .map(GuestRelayTarget::LanguageServer);
+        }
+        if let Some(location) = language_server_location(pathname) {
+            return Some(GuestRelayTarget::LanguageServer(location));
+        }
+    }
+    data_plane_location(method, pathname, state).map(GuestRelayTarget::Repository)
+}
+
+fn language_server_location(path: &str) -> Option<Location> {
+    use tonk_host::location::Repo;
+    if let Some(rest) = path.strip_prefix("/api/repository/") {
+        let segments: Vec<&str> = rest.split('/').collect();
+        if let [repo, "branch", branch, "language-server"] = segments.as_slice() {
+            return Some(Location {
+                repo: Repo::Named(tonk_worker_api::decode_lsp_scope_segment(repo)?),
+                branch: Some(tonk_worker_api::decode_lsp_scope_segment(branch)?),
+            });
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/api/profile/") {
+        let segments: Vec<&str> = rest.split('/').collect();
+        if let [profile, "branch", branch, "language-server"] = segments.as_slice() {
+            return Some(Location {
+                repo: Repo::Profile(tonk_worker_api::decode_lsp_scope_segment(profile)?),
+                branch: Some(tonk_worker_api::decode_lsp_scope_segment(branch)?),
+            });
+        }
+    }
+    None
+}
+
+fn language_server_path(location: &Location) -> String {
+    use tonk_host::location::Repo;
+    let branch = tonk_worker_api::encode_lsp_scope_segment(location.effective_branch());
+    match &location.repo {
+        Repo::Named(repo) => format!(
+            "/api/repository/{}/branch/{branch}/language-server",
+            tonk_worker_api::encode_lsp_scope_segment(repo),
+        ),
+        Repo::Profile(profile) => format!(
+            "/api/profile/{}/branch/{branch}/language-server",
+            tonk_worker_api::encode_lsp_scope_segment(profile),
+        ),
+    }
+}
+
+/// Static resources intentionally visible to opaque guest code. Only reads are
+/// relayed; service-worker/deployment files and arbitrary host paths remain
+/// unreachable by default.
+fn is_public_guest_asset(method: &str, pathname: &str) -> bool {
+    if !is_read_method(method) {
+        return false;
+    }
+    if matches!(pathname, "/.well-known/tonk" | "/sigils.svg") {
+        return true;
+    }
+    [
+        "/fonts/",
+        "/guest/",
+        "/images/",
+        "/tonk-code/",
+        "/tonk-prose/",
+        "/tonk-table/",
+        "/webawesome/",
+    ]
+    .iter()
+    .any(|prefix| pathname.starts_with(prefix) && pathname.len() > prefix.len())
+}
+
+fn is_read_method(method: &str) -> bool {
+    matches!(method, "GET" | "HEAD")
+}
+
 /// The repository reach a relayed path targets, if any:
 /// `/api/repository/{repo}`, `/api/profile/repository`,
 /// `/api/repository/{repo}/branch/{branch}/…`, or
-/// `/api/profile/branch/{branch}/…`. Non-data-plane paths (assets, the
-/// guest bundle, `/api/sync`, and repository control routes) return `None`.
+/// `/api/profile/branch/{branch}/…`. Each route must also use the method its
+/// worker handler accepts. Non-data-plane paths and repository controls return
+/// `None`, making the caller's policy default-deny.
 ///
 /// The profile endpoint is singular and its URL carries no name, so a
 /// profile path canonicalizes to the portal's own profile name when the
 /// portal is profile-pinned, else the worker's default (`tonk`).
-fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<Location> {
+fn data_plane_location(
+    method: &str,
+    path: &str,
+    state: &Rc<RefCell<PortalState>>,
+) -> Option<Location> {
     use tonk_host::location::Repo;
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if path == "/api/profile/repository" {
+    if path == "/api/profile/repository" && is_read_method(method) {
         let name = state
             .borrow()
             .with
@@ -2233,26 +2473,34 @@ fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<L
         });
     }
     if let Some(rest) = path.strip_prefix("/api/repository/") {
-        let mut segments = rest.split('/');
-        let repo = segments.next().filter(|s| !s.is_empty())?;
-        match segments.next() {
-            None => {
+        let segments: Vec<&str> = rest.split('/').collect();
+        let repo = segments.first().copied().filter(|s| !s.is_empty())?;
+        match segments.as_slice() {
+            [_] if is_read_method(method) => {
                 return Some(Location {
                     repo: Repo::Named(repo.to_owned()),
                     branch: Some("main".to_owned()),
                 });
             }
-            Some("branch") => {}
-            _ => return None,
+            [_, "branch", branch, route @ ..]
+                if !branch.is_empty() && named_branch_route(method, route) =>
+            {
+                return Some(Location {
+                    repo: Repo::Named(repo.to_owned()),
+                    branch: Some((*branch).to_owned()),
+                });
+            }
+            _ => {}
         }
-        let branch = segments.next().filter(|s| !s.is_empty())?;
-        return Some(Location {
-            repo: Repo::Named(repo.to_owned()),
-            branch: Some(branch.to_owned()),
-        });
     }
     if let Some(rest) = path.strip_prefix("/api/profile/branch/") {
-        let branch = rest.split('/').next().filter(|s| !s.is_empty())?;
+        let segments: Vec<&str> = rest.split('/').collect();
+        let [branch, route @ ..] = segments.as_slice() else {
+            return None;
+        };
+        if branch.is_empty() || !profile_branch_route(method, route) {
+            return None;
+        }
         let name = state
             .borrow()
             .with
@@ -2264,22 +2512,53 @@ fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<L
             .unwrap_or_else(|| "tonk".to_owned());
         return Some(Location {
             repo: Repo::Profile(name),
-            branch: Some(branch.to_owned()),
+            branch: Some((*branch).to_owned()),
         });
     }
     None
+}
+
+fn profile_branch_route(method: &str, route: &[&str]) -> bool {
+    method == "POST" && matches!(route, ["evaluate" | "query" | "site" | "transact"])
+}
+
+fn named_branch_route(method: &str, route: &[&str]) -> bool {
+    match route {
+        ["query" | "evaluate" | "transact" | "site" | "import"] => method == "POST",
+        ["export"] => is_read_method(method),
+        ["blob"] => method == "POST",
+        ["blob", entity] => !entity.is_empty() && is_read_method(method),
+        ["host", host, entity] => !host.is_empty() && !entity.is_empty() && is_read_method(method),
+        ["claim", "select"] => is_read_method(method),
+        ["claim", "assert" | "retract", entity, namespace, name] => {
+            method == "POST"
+                && [entity, namespace, name]
+                    .iter()
+                    .all(|segment| !segment.is_empty())
+        }
+        ["sync"] => method == "POST",
+        ["sync", "pull" | "push"] => method == "POST",
+        ["sync", "status"] => is_read_method(method),
+        _ => false,
+    }
 }
 
 /// Build a `Request` for a relayed guest fetch from the envelope's
 /// `method`/`headers`/`body`. `headers` is an array of `[name, value]` pairs;
 /// `body` is a string (our `/api` bodies are JSON) or absent.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String> {
+fn build_relayed_request(
+    method: &str,
+    stamp_worker_context: bool,
+    lsp_client: Option<&str>,
+    data: &JsValue,
+) -> Result<web_sys::RequestInit, String> {
     let init = web_sys::RequestInit::new();
-    let method = get_str(data, "method").unwrap_or_else(|| "GET".to_owned());
-    init.set_method(&method);
+    init.set_method(method);
 
     let headers = web_sys::Headers::new().map_err(|e| format!("Headers: {e:?}"))?;
+    let mut forwarded_lsp_client = None;
+    let mut ambiguous_lsp_client = false;
     if let Ok(pairs) = Reflect::get(data, &"headers".into())
         && let Ok(pairs) = pairs.dyn_into::<js_sys::Array>()
     {
@@ -2289,9 +2568,39 @@ fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String>
                 Err(_) => continue,
             };
             if let (Some(name), Some(value)) = (pair.get(0).as_string(), pair.get(1).as_string()) {
+                if is_trusted_relay_header(&name) {
+                    if name.eq_ignore_ascii_case(tonk_worker_api::LSP_CLIENT_HEADER) {
+                        if forwarded_lsp_client.replace(value).is_some() {
+                            ambiguous_lsp_client = true;
+                        }
+                    }
+                    continue;
+                }
                 let _ = headers.append(&name, &value);
             }
         }
+    }
+    // Site/path/hash/build belong to the trusted host document, never guest
+    // content. Stamp them only after the normalized target is authorized as a
+    // worker endpoint. Public discovery/assets receive none of these internal
+    // values. At each nested portal layer the next host repeats this rule, so
+    // the top document's real context is the value the service worker sees.
+    if stamp_worker_context {
+        for (name, value) in tonk_host::bridge::context_headers() {
+            headers
+                .set(name, &value)
+                .map_err(|e| format!("{name}: {e:?}"))?;
+        }
+    }
+    if let Some(client) = lsp_client {
+        let forwarded = (!ambiguous_lsp_client)
+            .then_some(forwarded_lsp_client.as_deref())
+            .flatten();
+        let client =
+            tonk_worker_api::compose_lsp_client_chain(client, forwarded).map_err(str::to_owned)?;
+        headers
+            .set(tonk_worker_api::LSP_CLIENT_HEADER, &client)
+            .map_err(|e| format!("{}: {e:?}", tonk_worker_api::LSP_CLIENT_HEADER))?;
     }
     init.set_headers(&headers);
 
@@ -2305,6 +2614,14 @@ fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String>
     Ok(init)
 }
 
+fn is_trusted_relay_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-tonk-site")
+        || name.eq_ignore_ascii_case("x-tonk-path")
+        || name.eq_ignore_ascii_case("x-tonk-hash")
+        || name.eq_ignore_ascii_case(tonk_worker_api::PAGE_BUILD_HEADER)
+        || name.eq_ignore_ascii_case(tonk_worker_api::LSP_CLIENT_HEADER)
+}
+
 /// Perform a host-side `fetch(path, init)` and return the `Response`. The path is
 /// passed as a STRING (not a `Request`) so a nested-guest host's overridden
 /// `window.fetch` catches the host-relative `/…` and relays it up — see
@@ -2312,12 +2629,46 @@ fn build_relayed_request(data: &JsValue) -> Result<web_sys::RequestInit, String>
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_path(path: &str, init: &web_sys::RequestInit) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(path, init))
+    // In a sealed guest this is the bridge capability captured before authored
+    // code ran. Top-level shell portals have no captured capability and safely
+    // use their own Window fetch (untrusted content lives only in the iframe).
+    let fetch = trusted_relay_fetch()
+        .or_else(|| {
+            Reflect::get(win.as_ref(), &"fetch".into())
+                .ok()?
+                .dyn_into::<js_sys::Function>()
+                .ok()
+        })
+        .ok_or("fetch: no trusted relay")?;
+    let promise = fetch
+        .call2(win.as_ref(), &JsValue::from_str(path), init.as_ref())
+        .map_err(|e| format!("fetch: {e:?}"))?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| "fetch: relay did not return a Promise".to_string())?;
+    let resp_value = wasm_bindgen_futures::JsFuture::from(promise)
         .await
         .map_err(|e| format!("fetch: {e:?}"))?;
     resp_value
         .dyn_into::<web_sys::Response>()
         .map_err(|_| "fetch: not a Response".to_string())
+}
+
+thread_local! {
+    // Set only by the sealed guest's Wasm entry point. There is deliberately no
+    // wasm-bindgen export or Window property through which authored code could
+    // retrieve, replace, or replay this capability.
+    static TRUSTED_RELAY_FETCH: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// Retain the bootstrap-captured host relay for nested portal requests.
+///
+/// This is a Rust-to-Rust seam used by `tonk-guest`; it is not exported to JS.
+pub fn set_trusted_relay_fetch(fetch: js_sys::Function) {
+    TRUSTED_RELAY_FETCH.with(|slot| *slot.borrow_mut() = Some(fetch));
+}
+
+pub(crate) fn trusted_relay_fetch() -> Option<js_sys::Function> {
+    TRUSTED_RELAY_FETCH.with(|slot| slot.borrow().clone())
 }
 
 /// Post a `fetch-result` envelope carrying the response status + headers and
@@ -2659,7 +3010,7 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model, origin, repo, branch }`) the
+/// Build the `context` object (`{ this, model, origin, build, repo, branch }`) the
 /// iframe receives in its `ready` envelope. `this`/`model` come from the
 /// host's attributes; `origin` is the host page's real origin (the opaque
 /// guest's is `"null"`); `repo`/`branch` come from the portal's `with`
@@ -2720,6 +3071,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // routing indirection binds `entity` to this so it resolves the facts the SW
     // actually stamped.
     let site = tonk_host::bridge::site_id();
+    let build = tonk_host::bridge::build_id().unwrap_or_default();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
@@ -2741,6 +3093,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // fallback route for consumers with no `with` of their own.
     let _ = Reflect::set(&context, &"with".into(), &JsValue::from_str(&with));
     let _ = Reflect::set(&context, &"site".into(), &JsValue::from_str(&site));
+    let _ = Reflect::set(&context, &"build".into(), &JsValue::from_str(&build));
     context
 }
 
@@ -2927,6 +3280,8 @@ mod runtime_bootstrap_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use js_sys::{Array, Function, Promise};
     use wasm_bindgen_futures::JsFuture;
@@ -3019,6 +3374,17 @@ mod tests {
         state.borrow_mut().set_route(
             with.map(|w| w.parse().expect("with parses")),
             allow.parse().expect("allow parses"),
+            false,
+        );
+        state
+    }
+
+    fn trusted_hub_state() -> Rc<RefCell<PortalState>> {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        state.borrow_mut().set_route(
+            Some("main@profile:tonk".parse().expect("profile with parses")),
+            "main@profile:tonk".parse().expect("profile allow parses"),
+            true,
         );
         state
     }
@@ -3032,32 +3398,328 @@ mod tests {
         data.into()
     }
 
+    /// Drive a raw guest fetch through the actual host-side port handler and
+    /// return its first response envelope. A denied request answers with
+    /// `fetch-error` before touching `window.fetch`; an allowed request answers
+    /// with `fetch-result` even when the harness server returns an HTTP 404.
+    async fn relay_fetch(state: &Rc<RefCell<PortalState>>, method: &str, path: &str) -> JsValue {
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let data = Object::new();
+        let _ = Reflect::set(&data, &"id".into(), &"raw-fetch".into());
+        let _ = Reflect::set(&data, &"path".into(), &path.into());
+        let _ = Reflect::set(&data, &"method".into(), &method.into());
+        handle_host_fetch(state, &channel.port1(), &data.into());
+        listener.wait_for_any().await
+    }
+
     #[dialog_common::test]
     fn it_classifies_repository_metadata_under_the_portal_reach() {
         let named = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
         assert_eq!(
-            data_plane_location("/api/repository/did:key:zSpace", &named),
+            data_plane_location("GET", "/api/repository/did:key:zSpace", &named),
             Some("main@did:key:zSpace".parse().unwrap()),
         );
 
         let profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
         assert_eq!(
-            data_plane_location("/api/profile/repository", &profile),
+            data_plane_location("GET", "/api/profile/repository", &profile),
             Some("main@profile:tonk".parse().unwrap()),
         );
+    }
+
+    #[dialog_common::test]
+    fn it_allowlists_every_existing_same_reach_data_plane_route() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        let expected: Location = "main@did:key:zSpace".parse().unwrap();
+        for (method, path) in [
+            ("GET", "/api/repository/did:key:zSpace"),
+            ("POST", "/api/repository/did:key:zSpace/branch/main/query"),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/evaluate",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/transact",
+            ),
+            ("POST", "/api/repository/did:key:zSpace/branch/main/site"),
+            ("POST", "/api/repository/did:key:zSpace/branch/main/blob"),
+            (
+                "GET",
+                "/api/repository/did:key:zSpace/branch/main/blob/blob:zContent",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/claim/assert/id:entity/example/name",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/claim/retract/id:entity/example/name",
+            ),
+            (
+                "GET",
+                "/api/repository/did:key:zSpace/branch/main/claim/select",
+            ),
+            ("GET", "/api/repository/did:key:zSpace/branch/main/export"),
+            ("POST", "/api/repository/did:key:zSpace/branch/main/import"),
+            (
+                "GET",
+                "/api/repository/did:key:zSpace/branch/main/host/id:host/id:index.html",
+            ),
+            ("POST", "/api/repository/did:key:zSpace/branch/main/sync"),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/sync/pull",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/sync/push",
+            ),
+            (
+                "GET",
+                "/api/repository/did:key:zSpace/branch/main/sync/status",
+            ),
+        ] {
+            assert_eq!(
+                data_plane_location(method, path, &state),
+                Some(expected.clone()),
+                "{method} {path} remains in the same-reach guest data plane",
+            );
+        }
+
+        let profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
+        let expected_profile: Location = "main@profile:tonk".parse().unwrap();
+        for (method, path) in [
+            ("GET", "/api/profile/repository"),
+            ("POST", "/api/profile/branch/main/query"),
+            ("POST", "/api/profile/branch/main/evaluate"),
+            ("POST", "/api/profile/branch/main/transact"),
+            ("POST", "/api/profile/branch/main/site"),
+        ] {
+            assert_eq!(
+                data_plane_location(method, path, &profile),
+                Some(expected_profile.clone()),
+                "{method} {path} remains in the profile guest data plane",
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_default_denies_wrong_methods_near_misses_and_unscoped_worker_routes() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        for (method, path) in [
+            ("PUT", "/api/repository/did:key:zSpace"),
+            ("GET", "/api/repository/did:key:zSpace/branch/main/transact"),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/blob/blob:zContent",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/query/near-miss",
+            ),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/claim/assert/incomplete",
+            ),
+            ("POST", "/api/site"),
+            ("POST", "/api/sync"),
+            ("GET", "/api/inspect/repository/did:key:zSpace/branch/main"),
+            ("GET", "/api/not-a-declared-route"),
+        ] {
+            assert!(
+                guest_relay_target(method, path, &state).is_none(),
+                "{method} {path} must be denied by default",
+            );
+        }
     }
 
     #[dialog_common::test]
     fn it_does_not_misclassify_repository_control_routes() {
         let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
         assert_eq!(
-            data_plane_location("/api/repository/did:key:zSpace/remote", &state),
+            data_plane_location("POST", "/api/repository/did:key:zSpace/remote", &state,),
             None,
         );
         assert_eq!(
-            data_plane_location("/api/repository/did:key:zSpace/invite", &state),
+            data_plane_location("POST", "/api/repository/did:key:zSpace/invite", &state,),
             None,
         );
+    }
+
+    /// A sealed guest is untrusted author code. Its raw `fetch()` relay must
+    /// never expose account/profile state or repository lifecycle controls,
+    /// even when the control targets the same repository the portal may use
+    /// for ordinary data-plane operations.
+    #[dialog_common::test]
+    async fn it_denies_guest_access_to_worker_control_routes() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        for (method, path) in [
+            ("GET", "/api/account"),
+            ("GET", "/api/profile"),
+            ("GET", "/api/profiles"),
+            ("POST", "/api/profiles/activate"),
+            ("PUT", "/api/repository/did:key:zSpace"),
+            ("POST", "/api/repository/did:key:zSpace/invite"),
+            ("POST", "/api/repository/did:key:zSpace/remote"),
+        ] {
+            let response = relay_fetch(&state, method, path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-error"),
+                "{method} {path} must be denied before the host fetches it: {response:?}",
+            );
+        }
+    }
+
+    /// The built-in Hub account switcher is trusted profile chrome, even
+    /// though it renders inside the top-level profile's sealed iframe. Keep
+    /// its existing roster/switch contract without reopening account controls
+    /// to ordinary author guests.
+    #[dialog_common::test]
+    async fn it_keeps_profile_controls_available_to_the_trusted_hub() {
+        let state = trusted_hub_state();
+        for (method, path) in [("GET", "/api/profiles"), ("POST", "/api/profiles/activate")] {
+            let response = relay_fetch(&state, method, path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-result"),
+                "trusted Hub chrome must retain {method} {path}: {response:?}",
+            );
+        }
+
+        for (method, path) in [
+            ("POST", "/api/profiles"),
+            ("GET", "/api/profiles/activate"),
+            ("GET", "/api/account"),
+            ("POST", "/api/profiles/add"),
+        ] {
+            let response = relay_fetch(&state, method, path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-error"),
+                "trusted Hub chrome must not gain {method} {path}: {response:?}",
+            );
+        }
+
+        let authored_profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
+        let response = relay_fetch(&authored_profile, "GET", "/api/profiles").await;
+        assert_eq!(
+            get_str(&response, "type").as_deref(),
+            Some("fetch-error"),
+            "a profile-shaped author portal must not acquire Hub authority: {response:?}",
+        );
+    }
+
+    /// Authorization and fetching must use one browser-normalized path. If
+    /// policy inspects the raw spelling but `window.fetch` resolves dot
+    /// segments, a path that appears to target this portal's own branch can
+    /// land on another repository or on an account control endpoint.
+    #[dialog_common::test]
+    async fn it_denies_dot_segment_bypasses_after_browser_normalization() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        for path in [
+            "/api/repository/did:key:zSpace/branch/main/../../../../repository/did:key:zOther/branch/main/query",
+            "/api/repository/did:key:zSpace/branch/main/%2e%2e/%2e%2e/%2e%2e/%2e%2e/repository/did:key:zOther/branch/main/query",
+            "/api/repository/did:key:zSpace/branch/main/../../../../account",
+        ] {
+            let response = relay_fetch(&state, "POST", path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-error"),
+                "normalized target must be denied before fetch: {path} -> {response:?}",
+            );
+        }
+    }
+
+    /// Containment must not break the worker calls sealed content legitimately
+    /// makes: query/transact and the author-facing LSP URL all stay scoped to
+    /// the portal's trusted reach.
+    #[dialog_common::test]
+    async fn it_keeps_same_reach_data_plane_and_lsp_fetches_available() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        for (method, path) in [
+            ("POST", "/api/repository/did:key:zSpace/branch/main/query"),
+            (
+                "POST",
+                "/api/repository/did:key:zSpace/branch/main/transact",
+            ),
+            ("POST", "/api/language-server"),
+        ] {
+            let response = relay_fetch(&state, method, path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-result"),
+                "{method} {path} should still reach the host fetch: {response:?}",
+            );
+        }
+
+        let response = relay_fetch(&state, "POST", "/api/language-server?client=author").await;
+        assert_eq!(get_str(&response, "type").as_deref(), Some("fetch-result"),);
+        assert!(
+            get_str(&response, "url").is_some_and(|url| url.contains(
+                "/api/repository/did%3Akey%3AzSpace/branch/main/language-server?client=author"
+            )),
+            "the neutral author URL must be fetched through the trusted scoped endpoint: {response:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_round_trips_only_the_canonical_slash_branch_lsp_endpoint() {
+        use tonk_host::location::Repo;
+
+        let location = Location {
+            repo: Repo::Named("did:key:zSpace".to_owned()),
+            branch: Some("feat/artifact".to_owned()),
+        };
+        let path = language_server_path(&location);
+        assert_eq!(
+            path,
+            "/api/repository/did%3Akey%3AzSpace/branch/feat%2Fartifact/language-server",
+        );
+        assert_eq!(language_server_location(&path), Some(location));
+
+        let profile = Location {
+            repo: Repo::Profile("team/tonk".to_owned()),
+            branch: Some("feat/artifact".to_owned()),
+        };
+        let profile_path = language_server_path(&profile);
+        assert_eq!(
+            profile_path,
+            "/api/profile/team%2Ftonk/branch/feat%2Fartifact/language-server",
+        );
+        assert_eq!(language_server_location(&profile_path), Some(profile));
+
+        for alias in [
+            "/api/repository/did:key:zSpace/branch/feat%2Fartifact/language-server",
+            "/api/repository/did%3akey%3azSpace/branch/feat%2Fartifact/language-server",
+            "/api/repository/did%3Akey%3AzSpace/branch/feat%2fartifact/language-server",
+            "/api/repository/did%3Akey%3AzSpace/branch/feat/artifact/language-server",
+        ] {
+            assert_eq!(
+                language_server_location(alias),
+                None,
+                "accepted non-canonical route alias {alias}",
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_denies_a_scoped_lsp_endpoint_outside_the_portal_reach() {
+        let state = routed_state(Some("main@did:key:zSpace"), "main@did:key:zSpace");
+        for path in [
+            "/api/repository/did%3Akey%3AzOther/branch/main/language-server",
+            "/api/repository/did%3Akey%3AzSpace/branch/draft/language-server",
+            "/api/profile/tonk/branch/main/language-server",
+        ] {
+            let response = relay_fetch(&state, "POST", path).await;
+            assert_eq!(
+                get_str(&response, "type").as_deref(),
+                Some("fetch-error"),
+                "foreign LSP scope must be denied before fetch: {path}",
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -3435,6 +4097,39 @@ mod tests {
         );
     }
 
+    #[dialog_common::test]
+    async fn it_forwards_a_nested_stale_build_signal_toward_trusted_top_chrome() {
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (_listener, port) = bind(&consumer, &state);
+
+        let announcements = Rc::new(Cell::new(0));
+        let observed = announcements.clone();
+        let on_update = Closure::<dyn FnMut()>::new(move || observed.set(observed.get() + 1));
+        let win = window().expect("window");
+        win.add_event_listener_with_callback(
+            "tonk-update-available",
+            on_update.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+
+        port.post_message(&envelope("update-available", "nested-stale"))
+            .unwrap();
+        sleep(20).await;
+
+        win.remove_event_listener_with_callback(
+            "tonk-update-available",
+            on_update.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+        assert_eq!(
+            announcements.get(),
+            1,
+            "each portal layer must relay the exact stale marker to its parent"
+        );
+    }
+
     /// When THIS portal is itself a nested guest, its host document is
     /// `about:srcdoc` and `location.origin` is `"null"`; the real origin lives
     /// in the parent-forwarded `window.tonk.context.origin`. The ready envelope
@@ -3466,6 +4161,38 @@ mod tests {
             get_str(&context, "origin").as_deref(),
             Some("https://forwarded.test"),
             "a nested portal forwards the parent context origin, not `about:srcdoc`'s null",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_forwards_the_parent_context_build() {
+        let win = window().expect("window");
+        let previous = Reflect::get(&win, &"tonk".into()).unwrap();
+        let tonk = Object::new();
+        let ctx = Object::new();
+        let _ = Reflect::set(&ctx, &"build".into(), &"0123456789abcdef".into());
+        let _ = Reflect::set(&tonk, &"context".into(), &ctx);
+        let _ = Reflect::set(&win, &"tonk".into(), &tonk);
+
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+
+        let ready = listener.wait_for("ready").await;
+        let context = Reflect::get(&ready, &"context".into()).expect("context");
+        let build = get_str(&context, "build");
+
+        if previous.is_undefined() {
+            let _ = Reflect::delete_property(&win, &"tonk".into());
+        } else {
+            let _ = Reflect::set(&win, &"tonk".into(), &previous);
+        }
+
+        assert_eq!(
+            build.as_deref(),
+            Some("0123456789abcdef"),
+            "nested sealed guests must inherit immutable document provenance",
         );
     }
 
@@ -4062,10 +4789,14 @@ mod tests {
     }
 
     /// The relay forwards the FULL request (method, headers, body), not just a
-    /// GET path, so POST query/subscribe/transact route through it. This
-    /// verifies `build_relayed_request` reconstructs each from the envelope.
+    /// GET path, so POST query/subscribe/transact route through it. The trusted
+    /// host replaces any guest-supplied build value with its immutable one.
     #[dialog_common::test]
-    async fn it_builds_a_relayed_request_with_method_headers_body() {
+    async fn it_builds_a_relayed_worker_request_with_host_provenance() {
+        let window = web_sys::window().expect("window");
+        let previous = Reflect::get(&window, &"tonkBuild".into()).unwrap();
+        let _ = Reflect::set(&window, &"tonkBuild".into(), &"0123456789abcdef".into());
+
         // Envelope shaped like what the guest posts: method + [[name,value]]
         // header pairs + a string body.
         let data = Object::new();
@@ -4075,25 +4806,43 @@ mod tests {
         pair.push(&"content-type".into());
         pair.push(&"application/json".into());
         headers.push(&pair);
+        let untrusted_build = Array::new();
+        untrusted_build.push(&tonk_worker_api::PAGE_BUILD_HEADER.into());
+        untrusted_build.push(&"ffffffffffffffff".into());
+        headers.push(&untrusted_build);
+        for (name, value) in [
+            ("x-tonk-site", "site:forged"),
+            ("x-tonk-path", "/forged"),
+            ("x-tonk-hash", "#forged-secret"),
+        ] {
+            let pair = Array::new();
+            pair.push(&name.into());
+            pair.push(&value.into());
+            headers.push(&pair);
+        }
         let _ = Reflect::set(&data, &"headers".into(), &headers);
         let _ = Reflect::set(&data, &"body".into(), &"{\"q\":1}".into());
 
         // `build_relayed_request` reconstructs the `RequestInit`; the path is
         // fetched separately as a bare string (see `handle_host_fetch`).
         // Materialize a real `Request` from the init to read the fields back.
-        let init = build_relayed_request(&data).expect("request");
+        let path = "/api/repository/x/branch/main/blob";
+        let forged_lsp = Array::new();
+        forged_lsp.push(&tonk_worker_api::LSP_CLIENT_HEADER.into());
+        forged_lsp.push(&"portal-forged".into());
+        headers.push(&forged_lsp);
+        let init = build_relayed_request(
+            "POST",
+            true,
+            Some("p-11111111111111111111111111111111"),
+            &data,
+        )
+        .expect("request");
         let request =
-            web_sys::Request::new_with_str_and_init("/api/repository/x/branch/main/query", &init)
-                .expect("request from init");
+            web_sys::Request::new_with_str_and_init(path, &init).expect("request from init");
 
         assert_eq!(request.method(), "POST");
-        assert!(
-            request
-                .url()
-                .ends_with("/api/repository/x/branch/main/query"),
-            "url: {}",
-            request.url(),
-        );
+        assert!(request.url().ends_with(path), "url: {}", request.url(),);
         assert_eq!(
             request
                 .headers()
@@ -4103,10 +4852,152 @@ mod tests {
                 .as_deref(),
             Some("application/json"),
         );
+        assert_eq!(
+            request
+                .headers()
+                .get(tonk_worker_api::LSP_CLIENT_HEADER)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("v1/p-11111111111111111111111111111111"),
+            "a malformed authored identity must be replaced by the portal's canonical principal",
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(tonk_worker_api::PAGE_BUILD_HEADER)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("0123456789abcdef"),
+            "the host's immutable build must replace guest-supplied provenance",
+        );
+        for (name, forged) in [
+            ("x-tonk-site", "site:forged"),
+            ("x-tonk-path", "/forged"),
+            ("x-tonk-hash", "#forged-secret"),
+        ] {
+            assert_ne!(
+                request.headers().get(name).unwrap().as_deref(),
+                Some(forged),
+                "the host must replace guest-supplied {name}",
+            );
+        }
         let body = JsFuture::from(request.text().expect("text()"))
             .await
             .expect("await body");
         assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
+
+        if previous.is_undefined() {
+            let _ = Reflect::delete_property(&window, &"tonkBuild".into());
+        } else {
+            let _ = Reflect::set(&window, &"tonkBuild".into(), &previous);
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_composes_distinct_nested_lsp_principals_across_real_relay_headers() {
+        fn relay(own: &str, forwarded: &[&str]) -> String {
+            let data = Object::new();
+            let headers = Array::new();
+            for value in forwarded {
+                let pair = Array::new();
+                pair.push(&tonk_worker_api::LSP_CLIENT_HEADER.into());
+                pair.push(&JsValue::from_str(value));
+                headers.push(&pair);
+            }
+            let _ = Reflect::set(&data, &"headers".into(), &headers);
+            let init = build_relayed_request("GET", true, Some(own), &data)
+                .expect("authorized relay request");
+            let request = web_sys::Request::new_with_str_and_init(
+                "/api/repository/did%3Akey%3AzOwn/branch/main/language-server",
+                &init,
+            )
+            .expect("request");
+            request
+                .headers()
+                .get(tonk_worker_api::LSP_CLIENT_HEADER)
+                .expect("read client header")
+                .expect("client header")
+        }
+
+        let outer = "p-11111111111111111111111111111111";
+        let inner_a = "p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let inner_b = "p-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let forged = relay(inner_a, &["portal-forged"]);
+        assert_eq!(forged, format!("v1/{inner_a}"));
+
+        let child_a = relay(outer, &[&forged]);
+        let child_b = relay(outer, &[&relay(inner_b, &[])]);
+        assert_eq!(child_a, format!("v1/{outer}/{inner_a}"));
+        assert_eq!(child_b, format!("v1/{outer}/{inner_b}"));
+        assert_ne!(
+            child_a, child_b,
+            "same-scope nested siblings need distinct LSP sessions"
+        );
+
+        let canonical_page_forgery = relay(outer, &["v1/p-cccccccccccccccccccccccccccccccc"]);
+        assert!(
+            canonical_page_forgery.starts_with(&format!("v1/{outer}/")),
+            "a caller value may name only a descendant; it cannot replace the authorized ancestor",
+        );
+        assert_eq!(
+            relay(outer, &[&forged, &relay(inner_b, &[])]),
+            format!("v1/{outer}"),
+            "ambiguous authored headers are discarded rather than selecting a principal",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_normalizes_worker_paths_and_strips_builds_from_control_requests() {
+        for (raw, expected) in [
+            ("/api/../ucan/", "/ucan/"),
+            ("/api/%2e%2e/ucan/", "/ucan/"),
+            (
+                "/api/language-server?stream=1#ignored",
+                "/api/language-server",
+            ),
+        ] {
+            let normalized = normalize_relay_path(raw).expect("host-relative path");
+            assert_eq!(normalized.pathname, expected, "normalize {raw}");
+        }
+        assert!(normalize_relay_path("//provider.example/api").is_err());
+
+        let data = Object::new();
+        let headers = Array::new();
+        let untrusted_build = Array::new();
+        untrusted_build.push(&tonk_worker_api::PAGE_BUILD_HEADER.into());
+        untrusted_build.push(&"ffffffffffffffff".into());
+        headers.push(&untrusted_build);
+        for (name, value) in [
+            ("x-tonk-site", "site:forged"),
+            ("x-tonk-path", "/forged"),
+            ("x-tonk-hash", "#forged-secret"),
+        ] {
+            let pair = Array::new();
+            pair.push(&name.into());
+            pair.push(&value.into());
+            headers.push(&pair);
+        }
+        let _ = Reflect::set(&data, &"headers".into(), &headers);
+        let path = "/.well-known/tonk";
+        let init = build_relayed_request("GET", false, None, &data).expect("control request");
+        let request =
+            web_sys::Request::new_with_str_and_init(path, &init).expect("request from init");
+        assert!(
+            request
+                .headers()
+                .get(tonk_worker_api::PAGE_BUILD_HEADER)
+                .unwrap()
+                .is_none(),
+            "the relay must remove caller provenance from non-worker requests",
+        );
+        for name in ["x-tonk-site", "x-tonk-path", "x-tonk-hash"] {
+            assert!(
+                request.headers().get(name).unwrap().is_none(),
+                "provider/control requests must not receive guest-supplied {name}",
+            );
+        }
     }
 
     /// A relayed response must carry the URL the host fetched.

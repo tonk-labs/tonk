@@ -18,8 +18,13 @@ use wasm_bindgen::prelude::*;
 /// the guest bootstrap. Idempotent.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen]
-pub fn start() {
+pub fn start(trusted_relay_fetch: js_sys::Function) {
     console_error_panic_hook::set_once();
+
+    // RUNTIME_BOOTSTRAP captured this function before authored content ran.
+    // Nested portal requests use it directly, so an authored `window.fetch`
+    // wrapper cannot see or replay trusted descendant-principal headers.
+    tonk_portal::set_trusted_relay_fetch(trusted_relay_fetch);
 
     // The guest host: the REAL host IO surface (document listeners
     // servicing consumer events over plain fetch/SSE — the portal
