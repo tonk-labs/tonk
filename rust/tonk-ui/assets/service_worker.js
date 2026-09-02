@@ -917,22 +917,8 @@ function missingGenerationAssetResponse(path) {
     );
 }
 
-async function serveNavigation(request, path = "/") {
-    // Static document trees such as /guide/ and /storybook/ are stamped as
-    // explicit routes. Ordinary application routes intentionally fall back to
-    // the root SPA shell.
-    //
-    // A slashless directory navigation must redirect rather than serving the
-    // directory document in place: otherwise its relative asset URLs resolve
-    // against the origin root. Derive redirects only from the exact stamped
-    // graph so an arbitrary SPA route never acquires static-site semantics.
-    if (path !== "/" && !path.endsWith("/") && ASSET_PATH_SET.has(`${path}/`)) {
-        const target = new URL(request.url);
-        target.pathname = `${path}/`;
-        return Response.redirect(target.href, 307);
-    }
-    const cachePath = ASSET_PATH_SET.has(path) ? path : "/";
-    const cached = await caches.match(cachePath, { cacheName: SHELL_CACHE });
+async function serveNavigation() {
+    const cached = await caches.match("/", { cacheName: SHELL_CACHE });
 
     if (cached) {
         // The bytes installed for this BUILD_ID are immutable. In particular,
@@ -940,7 +926,7 @@ async function serveNavigation(request, path = "/") {
         // deployment and do not prune assets an old page may still reference.
         return cached;
     }
-    return missingGenerationAssetResponse(cachePath);
+    return missingGenerationAssetResponse("/");
 }
 
 // Whether a request can be served from the shell cache by the JS shim
@@ -1015,7 +1001,7 @@ async function routeFetch(event, path) {
         return rustFetch(event);
     }
     if (event.request.mode === "navigate" && !path.startsWith("/api/")) {
-        return serveNavigation(event.request, path);
+        return serveNavigation();
     }
     if (event.request.mode !== "navigate" && isShellCacheable(event.request, path)) {
         return serveAsset(event);

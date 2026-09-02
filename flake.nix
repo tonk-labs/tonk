@@ -596,62 +596,12 @@
             '';
           };
 
-          # The user guide (mdBook), built to static HTML. Served under
-          # /guide/ on the deployed site, so `site-url` in book.toml must
-          # match that prefix.
-          tonk-guide = pkgs.stdenv.mkDerivation {
-            pname = "tonk-guide";
-            version = "0.1.0";
-            src = filter {
-              root = ./guide;
-            };
-            nativeBuildInputs = [
-              pkgs.mdbook
-              pkgs.mdbook-mermaid
-            ];
-            buildPhase = ''
-              mdbook build --dest-dir ./book
-            '';
-            installPhase = ''
-              mkdir -p $out
-              cp -r ./book/* $out/
-            '';
-          };
-
-          # The dependency-free product Storybook, validated and shipped as
-          # static assets. Its source map remains in docs/storybook; only the
-          # browser explorer is included in the deployed asset bundle.
-          tonk-storybook = pkgs.runCommand "tonk-storybook" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-            cd ${self}
-            python3 docs/storybook/scripts/build.py --check
-            python3 docs/storybook/scripts/check-links.py docs/storybook
-            mkdir -p $out
-            cp -r docs/storybook/app/* $out/
-          '';
-
           tonk-cloudflare-artifacts = buildWasmCrate {
             pname = "tonk-cloudflare-assets";
             buildPhase = ''
               mkdir -p ./build
               cp -r ${tonk-access-service} ./build/tonk-access-service
               cp -r ${tonk-ui} ./build/tonk-ui
-              # Files copied from the read-only nix store keep their
-              # read-only perms, so make the tonk-ui tree writable before
-              # adding the guide subdirectory into it.
-              chmod -R u+w ./build/tonk-ui
-              # Ship the guide as static assets under tonk-ui/guide so the
-              # Cloudflare asset layer serves it at /guide/ directly.
-              mkdir -p ./build/tonk-ui/guide
-              cp -r ${tonk-guide}/* ./build/tonk-ui/guide/
-              # Keep the same reviewed Storybook available to the whole team
-              # from the deployed Tonk asset origin.
-              mkdir -p ./build/tonk-ui/storybook
-              cp -r ${tonk-storybook}/* ./build/tonk-ui/storybook/
-              # The deployed browser tree is complete only after both static
-              # sites are overlaid. Restamp that final tree so BUILD_ID, the
-              # install manifest, and exact request routing cover every byte
-              # Cloudflare can serve under this worker's scope.
-              ${./rust/tonk-ui/scripts/stamp-service-worker.sh} ./build/tonk-ui
             '';
             installPhase = ''
               mkdir -p $out
@@ -709,7 +659,7 @@
                   }
                   handle {
                       root * "$TONK_UI_ROOT"
-                      try_files {path} {path}/index.html /index.html
+                      try_files {path} /index.html
                       file_server
                   }
               }

@@ -48,8 +48,6 @@ function fixtureDist() {
     join(dist, "tonk-prose", "tonk-prose-editor.js"),
     "stable lazy editor\n",
   );
-  mkdirSync(join(dist, "guide"));
-  writeFileSync(join(dist, "guide", "index.html"), "guide document\n");
   return dist;
 }
 
@@ -82,8 +80,6 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
         join(dist, "guest", "guest_bg-a1b2c3.wasm"),
       ),
       "/guest/manifest.json": sha256(join(dist, "guest", "manifest.json")),
-      "/guide/": sha256(join(dist, "guide", "index.html")),
-      "/guide/index.html": sha256(join(dist, "guide", "index.html")),
       "/tonk-prose/tonk-prose-editor.js": sha256(
         join(dist, "tonk-prose", "tonk-prose-editor.js"),
       ),
@@ -117,31 +113,17 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
   }
 });
 
-test("the final Cloudflare browser tree is stamped after guide and Storybook overlays", () => {
+test("the Cloudflare browser tree excludes local documentation tools", () => {
   const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
   const packageStart = flake.indexOf("tonk-cloudflare-artifacts =");
   const packageEnd = flake.indexOf("tonk-ui-test-server =", packageStart);
   const derivation = flake.slice(packageStart, packageEnd);
-  const guideCopy = derivation.indexOf("cp -r ${tonk-guide}/* ./build/tonk-ui/guide/");
-  const storybookCopy = derivation.indexOf("cp -r ${tonk-storybook}/* ./build/tonk-ui/storybook/");
-  const finalStamp = derivation.lastIndexOf("stamp-service-worker.sh");
-
-  assert.ok(guideCopy >= 0 && storybookCopy >= 0, "expected both browser-tree overlays");
-  assert.ok(
-    finalStamp > guideCopy && finalStamp > storybookCopy,
-    "BUILD_ID and asset-manifest.json must derive from the final deployed browser tree",
-  );
-});
-
-test("the browser harness serves stamped directory aliases from their own index", () => {
-  const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
-  const packageStart = flake.indexOf("tonk-ui-test-server =");
-  const server = flake.slice(packageStart);
-
-  assert.match(
-    server,
-    /try_files \{path\} \{path\}\/index\.html \/index\.html/,
-    "directory URLs such as /guide/ must not fall through to the root SPA document",
+  assert.doesNotMatch(derivation, /tonk-guide|\.\/build\/tonk-ui\/guide/);
+  assert.doesNotMatch(derivation, /tonk-storybook|\.\/build\/tonk-ui\/storybook/);
+  assert.doesNotMatch(
+    derivation,
+    /stamp-service-worker\.sh/,
+    "the already-stamped tonk-ui output must not be expanded and restamped",
   );
 });
 

@@ -14,7 +14,7 @@ optional = true
 [output.html]
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
-# The guide is served under /guide/ on the deployed site, so site-relative
+# The local development server mounts the guide at /guide/, so site-relative
 # links (search, print, assets) must resolve under that prefix.
 site-url = "/guide/"
 default-theme = "rust"

@@ -321,12 +321,12 @@ describe("shell cache eligibility", () => {
   test("accepts only exact members of the stamped immutable graph", async () => {
     withGlobals();
     const module = await loadWith({
-      assetPaths: ["/", "/guide/", "/guide/index.html", "/ui-abc.js"],
+      assetPaths: ["/", "/ui-abc.js"],
       exports: ["isShellCacheable"],
     });
 
     assert.equal(
-      module.isShellCacheable(req("https://tonk.test/guide/index.html"), "/guide/index.html"),
+      module.isShellCacheable(req("https://tonk.test/ui-abc.js"), "/ui-abc.js"),
       true,
     );
     for (const path of [
@@ -415,30 +415,18 @@ describe("exact fetch routing", () => {
     assert.equal((await response.json()).build, "testbuild");
   });
 
-  test("serves exact controlled static pages while app routes use the root shell", async () => {
+  test("serves the root shell for controlled application routes", async () => {
     const { self, caches } = withGlobals();
     self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });
     const mod = await loadWith({
       buildId: "published-build",
       wasmHash: "dev",
-      assetPaths: ["/", "/guide/", "/guide/index.html"],
-      activateSource: 'async () => { throw new Error("static navigation booted Rust"); }',
+      assetPaths: ["/"],
+      activateSource: 'async () => { throw new Error("application navigation booted Rust"); }',
       exports: ["SHELL_CACHE"],
     });
     const cache = await caches.open(mod.SHELL_CACHE);
     await cache.put("/", new Response("APP SHELL"));
-    await cache.put("/guide/", new Response("GUIDE"));
-
-    const guide = fetchEvent(
-      {
-        method: "GET",
-        mode: "navigate",
-        url: "https://tonk.test/guide/",
-      },
-      "controlled-top-level",
-    );
-    self.onfetch(guide.event);
-    assert.equal(await (await guide.response()).text(), "GUIDE");
 
     const app = fetchEvent(
       {
@@ -450,35 +438,6 @@ describe("exact fetch routing", () => {
     );
     self.onfetch(app.event);
     assert.equal(await (await app.response()).text(), "APP SHELL");
-  });
-
-  test("redirects slashless static-site navigations before relative assets resolve", async () => {
-    const { self } = withGlobals();
-    self.clients.get = async (clientId) => ({ clientId, frameType: "top-level" });
-    await loadWith({
-      buildId: "published-build",
-      wasmHash: "dev",
-      assetPaths: ["/", "/guide/", "/guide/index.html", "/storybook/"],
-      activateSource: 'async () => { throw new Error("static navigation booted Rust"); }',
-    });
-
-    for (const path of ["/guide", "/storybook"]) {
-      const navigation = fetchEvent(
-        {
-          method: "GET",
-          mode: "navigate",
-          url: `https://tonk.test${path}?theme=dark`,
-        },
-        "controlled-top-level",
-      );
-      self.onfetch(navigation.event);
-      const response = await navigation.response();
-      assert.equal(response.status, 307);
-      assert.equal(
-        response.headers.get("location"),
-        `https://tonk.test${path}/?theme=dark`,
-      );
-    }
   });
 
   test("delegates live edge routes instead of turning them into retained-cache 503s", async () => {
