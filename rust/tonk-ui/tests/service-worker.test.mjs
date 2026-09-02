@@ -103,7 +103,7 @@ async function loadServiceWorker({ fetchImpl, registration } = {}) {
 }
 
 /** Install globals the SW module reads at evaluation time. */
-function withGlobals({ fetchImpl, registration } = {}) {
+function withGlobals({ fetchImpl, registration, BroadcastChannelImpl } = {}) {
   const caches = new FakeCacheStorage();
   const listeners = new Map();
   const self = {
@@ -117,6 +117,10 @@ function withGlobals({ fetchImpl, registration } = {}) {
   globalThis.self = self;
   globalThis.caches = caches;
   globalThis.fetch = fetchImpl ?? (async () => new Response("", { status: 404 }));
+  globalThis.BroadcastChannel = BroadcastChannelImpl ?? class {
+    postMessage() {}
+    close() {}
+  };
   // Capture the worker's own log lines so a test can assert WHICH path
   // ran, not just that the result looked right.
   const logs = [];
@@ -456,6 +460,94 @@ describe("immutable generation install", () => {
         setTimeout(() => reject(new Error("install progress stalled on client discovery")), 100),
       ),
     ]);
+  });
+
+  test("reports progress during one slow verified body", async () => {
+    const chunks = [
+      new Uint8Array([1, 2]),
+      new Uint8Array([3]),
+      new Uint8Array([4, 5, 6]),
+    ];
+    const expected = new Uint8Array(chunks.flatMap((chunk) => [...chunk]));
+    const expectedHash = await sha256Hex(expected);
+    const progress = [];
+    let streamController;
+    const stream = new ReadableStream({
+      start(controller) { streamController = controller; },
+    });
+    withGlobals({
+      fetchImpl: async () => new Response(stream, { status: 200 }),
+      BroadcastChannelImpl: class {
+        postMessage(message) { progress.push(message); }
+        close() {}
+      },
+    });
+    const mod = await loadWith({ exports: ["fetchVerifiedAssets"] });
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      const verified = mod.fetchVerifiedAssets([["/slow.bin", expectedHash]]);
+      for (let index = 0; index < chunks.length; index += 1) {
+        streamController.enqueue(chunks[index]);
+        now += 25_000;
+        await new Promise(setImmediate);
+        assert.ok(
+          progress.filter((message) =>
+            message.type === "tonk-install-progress" &&
+            message.phase === "verify" &&
+            message.completed === 0 &&
+            message.total === 1
+          ).length >= index + 1,
+          `chunk ${index + 1} must publish byte-backed install liveness`,
+        );
+      }
+      streamController.close();
+      const [{ response }] = await verified;
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), expected);
+      assert.ok(now - 1_000 > 60_000, "the simulated transfer spans two watchdog windows");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("does not report liveness for a frozen body", async () => {
+    const progress = [];
+    let streamController;
+    const stream = new ReadableStream({
+      start(controller) { streamController = controller; },
+    });
+    withGlobals({
+      fetchImpl: async () => new Response(stream, { status: 200 }),
+      BroadcastChannelImpl: class {
+        postMessage(message) { progress.push(message); }
+        close() {}
+      },
+    });
+    const mod = await loadWith({ exports: ["fetchVerifiedAssets"] });
+    const realNow = Date.now;
+    let now = 2_000;
+    Date.now = () => now;
+    try {
+      const verified = mod.fetchVerifiedAssets([["/frozen.bin", "dev"]]);
+      streamController.enqueue(new Uint8Array([1]));
+      await new Promise(setImmediate);
+      const reported = progress.length;
+      assert.ok(reported > 0, "the received byte must be observable");
+
+      now += 60_001;
+      await new Promise(setImmediate);
+      assert.equal(
+        progress.length,
+        reported,
+        "elapsed time without bytes must not create timer-only liveness",
+      );
+
+      streamController.error(new Error("test teardown cancels frozen body"));
+      await assert.rejects(verified, /test teardown cancels frozen body/);
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   test("installs the complete verified UI and guest graph before going offline", async () => {
@@ -916,6 +1008,92 @@ describe("immutable generation install", () => {
 });
 
 describe("worker wasm verification", () => {
+  test("reports byte-backed progress while worker wasm is arriving", async () => {
+    const chunks = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
+    const expected = new Uint8Array([1, 2, 3, 4]);
+    const wasmHash = (await sha256Hex(expected)).slice(0, 16);
+    const progress = [];
+    let streamController;
+    const stream = new ReadableStream({
+      start(controller) { streamController = controller; },
+    });
+    withGlobals({
+      fetchImpl: async () => new Response(stream, { status: 200 }),
+      BroadcastChannelImpl: class {
+        postMessage(message) { progress.push(message); }
+        close() {}
+      },
+    });
+    const module = await loadWith({
+      wasmHash,
+      exports: ["fetchVerifiedWorkerWasm"],
+    });
+    const realNow = Date.now;
+    let now = 3_000;
+    Date.now = () => now;
+    try {
+      const verified = module.fetchVerifiedWorkerWasm();
+      for (let index = 0; index < chunks.length; index += 1) {
+        streamController.enqueue(chunks[index]);
+        now += 6_000;
+        await new Promise(setImmediate);
+        assert.ok(
+          progress.filter((message) => message.phase === "verify-worker").length >= index + 1,
+          `worker Wasm chunk ${index + 1} must publish install liveness`,
+        );
+      }
+      streamController.close();
+      assert.deepEqual(new Uint8Array(await verified), expected);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("progress transport failures cannot change verified worker wasm", async (t) => {
+    const bytes = new Uint8Array([8, 6, 7, 5, 3, 0, 9]);
+    const wasmHash = (await sha256Hex(bytes)).slice(0, 16);
+    const cases = [
+      {
+        name: "BroadcastChannel",
+        configure(self) {
+          globalThis.BroadcastChannel = class {
+            constructor() { throw new Error("channel unavailable"); }
+          };
+          self.clients.matchAll = async () => [];
+        },
+      },
+      {
+        name: "client discovery",
+        configure(self) {
+          self.clients.matchAll = async () => { throw new Error("discovery failed"); };
+        },
+      },
+      {
+        name: "client postMessage",
+        configure(self) {
+          self.clients.matchAll = async () => [{
+            postMessage() { throw new Error("postMessage failed"); },
+          }];
+        },
+      },
+    ];
+
+    for (const scenario of cases) {
+      await t.test(scenario.name, async () => {
+        const { self } = withGlobals({
+          fetchImpl: async () => new Response(bytes, { status: 200 }),
+        });
+        scenario.configure(self);
+        const module = await loadWith({
+          wasmHash,
+          exports: ["fetchVerifiedWorkerWasm"],
+        });
+        assert.deepEqual(new Uint8Array(await module.fetchVerifiedWorkerWasm()), bytes);
+        await new Promise(setImmediate);
+      });
+    }
+  });
+
   test("rejects wasm whose hash does not match the stamp", async () => {
     // The heart of the audit's finding 1. Glue and wasm are tightly
     // coupled, so installing a worker whose wasm is not the one built
@@ -1011,7 +1189,7 @@ describe("navigation while an update is waiting", () => {
     waitUntil: (p) => { void p?.catch?.(() => {}); },
   });
 
-  test("keeps serving the outgoing shell until the claim-and-reload handoff", async () => {
+  test("keeps serving the outgoing shell until the controller-replacement handoff", async () => {
     let fetches = 0;
     const { caches } = withGlobals({
       registration: { waiting: {}, installing: null, addEventListener() {} },

@@ -132,3 +132,57 @@ tracks completion of the asynchronous Rust release hook. Consolidating the
 Rust and TypeScript control-frame decoders remains useful follow-up work, but
 it is not required for the rollout bridge and would broaden this change into a
 wire-protocol refactor.
+
+## Pre-merge blocker corrections
+
+The final pre-merge pass closes three correctness gaps without changing the
+immutable-generation transaction or the unconditional one-release
+`skipWaiting()` bridge:
+
+- Verified network clones are consumed with a stream reader. Every non-empty
+  chunk can publish throttled liveness, the first chunk of each body is forced
+  through the transport, and the exact concatenated buffer is hashed once.
+  The original response remains unconsumed for CacheStorage.
+- Service-worker support is captured before API access. Unsupported browsers
+  receive the specific compatibility copy; supported registration, network,
+  script, module, and MIME failures receive generic safe-state recovery. One
+  eager rejection observer renders and logs the failure without a trailing
+  module rethrow.
+- Activation is documented and tested as controller replacement for clients
+  already using the registration. The activate handler does not call
+  `clients.claim()`; an explicit claim remains only for an otherwise-uncontrolled
+  first-install document. A cached pre-protocol document without the persistent
+  `controllerchange` listener can switch controllers without reloading, leaving
+  old lazy asset URLs at risk until navigation.
+
+### Pre-rebase verification
+
+- [x] Focused streamed-body and progress transport tests (11 passed).
+- [x] Boot, terminal, and controller-replacement tests (23 passed).
+- [x] Complete Node service-worker suite (83 passed).
+- [x] `cargo fmt --all -- --check`.
+- [x] `cargo test -p dialog-reactor subscription --lib` (6 passed).
+- [x] `cargo test -p tonk-worker lsp::tests --lib` (5 passed).
+- [x] Chrome A-to-B complete-generation adoption test (1 passed). The first
+  sandboxed attempt could not allocate a local test-server port; the unchanged
+  test passed with host access.
+- [x] `git diff --check`.
+- [ ] Safari/WebKit A-to-B remains unverified.
+
+### Post-rebase verification
+
+- [x] Rebased onto `origin/staging` at `66cf6afda` and preserved staging's
+  isolated browser-profile and local-storage test infrastructure while
+  retaining the generation A-to-B deployment fixture.
+- [x] Complete Node service-worker suite (94 passed).
+- [x] `cargo fmt --all -- --check`.
+- [x] `cargo check -p tonk-ui --features integration-tests`.
+- [x] `cargo test -p dialog-reactor subscription --lib` (6 passed).
+- [x] `cargo test -p tonk-worker lsp::tests --lib` (5 passed).
+- [x] The staging-added browser-profile unit fixture includes the rebased
+  deployment root and passes its focused test (1 passed).
+- [x] Chrome A-to-B complete-generation adoption test (1 passed).
+- [ ] Safari/WebKit A-to-B remains unverified.
+
+Each new install still downloads and verifies the complete generation graph;
+cache reuse and pruning remain follow-up work.

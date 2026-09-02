@@ -725,6 +725,7 @@ mod native {
                 chromedriver: Url::parse("http://127.0.0.1:9515")?,
                 access_service: Url::parse("http://127.0.0.1:8090")?,
                 ca_certificate: None,
+                deployment_root: workspace.directory("deployments")?,
                 service_worker_script: workspace.path().join("service_worker.js"),
                 browser_profile_root: browser_profile_root.clone(),
             };

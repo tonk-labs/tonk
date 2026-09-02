@@ -6,9 +6,9 @@ This crate bundles the browser-facing Tonk app: a Leptos (CSR) front end, the
 service worker that backs every `/api/*` request, and the custom elements the UI
 hosts. Trunk compiles it to Wasm and assembles `dist/` from [`index.html`](./index.html),
 [`Trunk.toml`](./Trunk.toml), and the static assets under [`assets/`](./assets).
-The shell mounts into the page, the service worker (`tonk-worker`) installs and
-claims the page, and once the worker is controlling, the UI's `/api/*` fetches
-route through it.
+The shell mounts into the page, the service worker (`tonk-worker`) installs, and
+an otherwise-uncontrolled first-install page asks it for control. Once the
+worker is controlling, the UI's `/api/*` fetches route through it.
 
 ## Local identity and invite visits
 
@@ -72,17 +72,19 @@ The load lifecycle has four cases:
 - A first install explicitly asks the activated worker to claim the current
   document, then continues without reloading.
 - An online warm load checks for a newer worker behind the boot overlay.
-- A real warm replacement activates through `skipWaiting()`. The update-aware
-  page then explicitly asks that successor to claim it and reloads once before
-  the application root mounts so the document, shell, and controller agree.
+- A real warm replacement activates through `skipWaiting()`. Activation
+  replaces the controller of already-controlled documents; each update-aware
+  page observes `controllerchange` and reloads once before the application root
+  mounts so the document, shell, and controller agree.
 - An offline warm load keeps its existing controller and cached shell. A failed
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
 
-Activation alone does not claim already-open documents. Pages cached before
-this update protocol therefore remain on their compatible existing controller
-until navigation; an update-aware page opts into the new controller only when
-it can perform the guarded alignment reload.
+The activate handler does not call `clients.claim()`. Browser activation still
+replaces the active worker for clients already controlled by the registration
+and fires `controllerchange`; `clients.claim()` is needed only to extend control
+to an otherwise-uncontrolled document, such as the page that initiated a first
+install.
 
 An explicit readiness rejection is not treated as a silent boot stall. Before
 returning with the application root unmounted, the UI terminalizes the static
@@ -99,10 +101,11 @@ cache and service-worker registration intact.
 The one-shot alignment reload is guarded in `sessionStorage`; a stable load
 clears the guard. During the rollout bridge every verified successor calls
 `skipWaiting()`, including when the incumbent page predates this bootstrap.
-Older pages remain on their current controller until navigation because only
-an update-aware page sends the explicit claim. Later deployments are detected
-by the single update check on the first warm load; there is no periodic probe
-or update prompt.
+A cached page from before the persistent replacement listener can therefore be
+switched to the successor without automatically reloading. Its old lazy asset
+URLs may fail until navigation. Later deployments are detected by the single
+update check on the first warm load; there is no periodic probe or update
+prompt.
 
 The service worker is the local backend: the UI talks to it over HTTP and
 listens for change notifications on a `BroadcastChannel`.

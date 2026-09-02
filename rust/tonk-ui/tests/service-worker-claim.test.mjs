@@ -155,7 +155,7 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
   });
   let serviceWorkers;
   const incoming = eventTarget({
-    state: mode === "cold" ? "installing" : "activated",
+    state: mode === "cold" || mode === "warm-update" ? "installing" : "activated",
     postMessage(message) {
       messages.push(message);
       if (message?.type === "claim") {
@@ -165,7 +165,7 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
     },
   });
   const registration = eventTarget({
-    active: mode === "warm-update" ? incoming : incumbent,
+    active: incumbent,
     installing: mode === "warm-update" || mode === "cold" ? incoming : null,
     waiting: null,
     async update() {
@@ -223,12 +223,82 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
       incoming.state = "activated";
       resolveReady(registration);
     },
+    async activateWarmWorker() {
+      registration.installing = null;
+      registration.active = incoming;
+      incoming.state = "activated";
+      serviceWorkers.controller = incoming;
+      await serviceWorkers.dispatch("controllerchange");
+      await incoming.dispatch("statechange");
+    },
     ready: () => self.serviceWorkerActivates(),
   };
 }
 
-test("activation alone does not claim pre-upgrade pages", async () => {
+function multiPageReplacementHarness() {
+  const incumbent = eventTarget({ state: "activated" });
+  const incoming = eventTarget({ state: "installing", postMessage() {} });
+  const registration = eventTarget({
+    active: incumbent,
+    installing: incoming,
+    waiting: null,
+    async update() {},
+  });
+  const serviceWorkers = eventTarget({
+    controller: incumbent,
+    ready: Promise.resolve(registration),
+    async register() { return registration; },
+  });
+  const pages = Array.from({ length: 2 }, () => {
+    const storage = new Map();
+    let reloads = 0;
+    const self = eventTarget({ tonkBootLife() {} });
+    vm.runInNewContext(
+      activationBlock(),
+      {
+        self,
+        window: self,
+        document: eventTarget({
+          visibilityState: "visible",
+          querySelector() { return { textContent: "", setAttribute() {} }; },
+        }),
+        navigator: { serviceWorker: serviceWorkers },
+        BroadcastChannel: FakeBroadcastChannel,
+        sessionStorage: {
+          getItem(key) { return storage.get(key) ?? null; },
+          setItem(key, value) { storage.set(key, String(value)); },
+          removeItem(key) { storage.delete(key); },
+        },
+        location: { reload() { reloads += 1; } },
+        console: { log() {}, warn() {}, error() {} },
+        Event,
+        Number,
+        Promise,
+        setTimeout,
+        clearTimeout,
+      },
+      { filename: INDEX },
+    );
+    return { reloads: () => reloads, storage };
+  });
+  return {
+    pages,
+    async activateSuccessor() {
+      registration.installing = null;
+      registration.active = incoming;
+      incoming.state = "activated";
+      serviceWorkers.controller = incoming;
+      await serviceWorkers.dispatch("controllerchange");
+      await incoming.dispatch("statechange");
+      await new Promise(setImmediate);
+    },
+  };
+}
+
+test("the activate handler does not call clients.claim", async () => {
   const { scope, claims } = loadServiceWorker();
+  // This harness executes the authored activate handler; it does not simulate
+  // the browser's controller-replacement algorithm for already-controlled clients.
   scope.onactivate({});
   await new Promise(setImmediate);
   assert.equal(claims(), 0);
@@ -314,12 +384,23 @@ test("a cold first install waits for activation, then claims", async () => {
   assert.deepEqual(result.messages.map((message) => message.type), ["claim", "connectivity"]);
 });
 
-test("an activated successor claims automatically and causes one guarded reload", async () => {
+test("successor activation replaces the controller and causes one guarded reload", async () => {
   const result = pageHarness({ mode: "warm-update" });
   await new Promise(setImmediate);
-  assert.deepEqual(result.messages.map((message) => message.type), ["claim"]);
+  await result.activateWarmWorker();
+  assert.deepEqual(result.messages, []);
   assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
   assert.equal(result.reloads(), 1);
+});
+
+test("two update-aware documents each reload once on one controller replacement", async () => {
+  const result = multiPageReplacementHarness();
+  await new Promise(setImmediate);
+  await result.activateSuccessor();
+  for (const page of result.pages) {
+    assert.equal(page.storage.get("tonk:sw-upgrade-reload"), "1");
+    assert.equal(page.reloads(), 1);
+  }
 });
 
 test("the alignment reload consumes its guard without another update check", async () => {

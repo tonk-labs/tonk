@@ -106,8 +106,8 @@ function healthResponse() {
 // Both caches are named per BUILD, not per schema version. Two workers
 // from different builds therefore never read or write the same cache:
 // an install populates its OWN cache. No generation is purged automatically:
-// activation deliberately leaves older pages on their existing controller,
-// and that controller may later cold-start from its sole offline Wasm copy.
+// retained caches may still be the sole offline copy of a coherent release,
+// and lifecycle-safe pruning is outside this installation transaction.
 // Separate names still make an install atomic — a half-populated incoming
 // cache can't be observed by the still-serving old worker,
 // which previously could hand out the new shell beside the old build's
@@ -180,7 +180,47 @@ async function digestOf(bytes) {
         .join("");
 }
 
-async function fetchVerified(url, expectedHash, label) {
+function noteVerifiedReadProgress(onChunk, received) {
+    if (!onChunk) return;
+    try {
+        Promise.resolve(onChunk(received)).catch(() => {});
+    } catch {
+        // Install progress is optional observability. A broken transport must
+        // never affect the bytes, hash, or outcome of the verified read.
+    }
+}
+
+async function readResponseClone(response, onChunk) {
+    const clone = response.clone();
+    if (!clone.body || typeof clone.body.getReader !== "function") {
+        return clone.arrayBuffer();
+    }
+
+    const reader = clone.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || value.byteLength === 0) continue;
+        const chunk = value instanceof Uint8Array
+            ? value
+            : new Uint8Array(value);
+        chunks.push(chunk);
+        received += chunk.byteLength;
+        noteVerifiedReadProgress(onChunk, received);
+    }
+
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return bytes.buffer;
+}
+
+async function fetchVerified(url, expectedHash, label, onChunk = null) {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) {
         throw new Error(`${label} fetch failed: ${response.status}`);
@@ -189,7 +229,7 @@ async function fetchVerified(url, expectedHash, label) {
     // unconsumed body when CacheStorage stores it. Reconstructing a synthetic
     // Response would discard that metadata and can change relative asset
     // resolution even when the verified bytes are identical.
-    const bytes = await response.clone().arrayBuffer();
+    const bytes = await readResponseClone(response, onChunk);
     if (expectedHash !== "dev") {
         const actual = await digestOf(bytes);
         if (actual.slice(0, expectedHash.length) !== expectedHash) {
@@ -202,10 +242,21 @@ async function fetchVerified(url, expectedHash, label) {
 }
 
 async function fetchVerifiedWorkerWasm() {
+    let firstChunk = true;
     return (await fetchVerified(
         WORKER_WASM_URL,
         WORKER_WASM_HASH,
         "worker wasm",
+        received => {
+            const force = firstChunk;
+            firstChunk = false;
+            return reportInstallProgress(
+                "verify-worker",
+                received,
+                received,
+                force,
+            );
+        },
     )).bytes;
 }
 
@@ -337,7 +388,22 @@ async function fetchVerifiedAssets(entries) {
             const index = next++;
             const [path, hash] = entries[index];
             const url = new URL(path, self.location.origin).href;
-            const { response } = await fetchVerified(url, hash, `asset ${path}`);
+            let firstChunk = true;
+            const { response } = await fetchVerified(
+                url,
+                hash,
+                `asset ${path}`,
+                () => {
+                    const force = firstChunk;
+                    firstChunk = false;
+                    return reportInstallProgress(
+                        "verify",
+                        completed,
+                        entries.length,
+                        force,
+                    );
+                },
+            );
             results[index] = { path, response };
             completed += 1;
             await reportInstallProgress("verify", completed, entries.length);
@@ -645,12 +711,10 @@ self.oninstall = event => {
 };
 
 self.onactivate = event => {
-    // Do not claim every open page merely because this worker activated.
-    // A page from before the page-directed update protocol cannot align or
-    // reload itself safely, so it stays on its current controller until its
-    // next navigation. A compatible page sends `{type:"claim"}` below after
-    // observing this worker reach `activated`; first-install pages use the
-    // same explicit message.
+    // Activation replaces this registration's active worker for clients that
+    // it already controlled, and those documents receive `controllerchange`.
+    // Do not call `clients.claim()` here: an explicit claim is reserved for an
+    // otherwise-uncontrolled first-install document.
     //
     // The wasm worker is still poked outside waitUntil: activateWorker()
     // waits for the active-worker lock, and gating ACTIVATION on that lock
@@ -695,8 +759,8 @@ async function retire(reason) {
         try {
             const worker = await activateWorker();
             // Stop the sync loop and release long-lived streams so this
-            // instance winds down. Serving continues until the successor
-            // claims the pages — the two may overlap briefly, which storage
+            // instance winds down. Serving can overlap briefly with successor
+            // activation while the browser settles in-flight work, which storage
             // is designed to tolerate (CAS commits over content-addressed
             // blocks; transaction settling is race-armed). Nothing here may
             // couple the successor's startup to this worker's death: worker
@@ -820,7 +884,7 @@ self.addEventListener("online", onConnectivityChange);
 // after a deployment, so a runtime recovery accepts bytes only when the live
 // manifest still matches this worker's stamped manifest and the resource
 // matches that manifest. The outgoing document's update-aware
-// claim-and-reload handoff crosses to the successor; recovery never writes
+// controller-replacement handoff crosses to the successor; recovery never writes
 // current-deployment bytes into an old cache.
 function missingGenerationAssetResponse(path) {
     return new Response(
@@ -952,7 +1016,7 @@ async function routeFetch(event, path) {
 // the browser: nothing here may couple the successor's startup to the
 // outgoing worker's death. On updatefound the outgoing worker stops
 // background work and releases streams; it keeps serving until the
-// successor activates and claims the pages (a brief overlap storage
+// successor activates and replaces their controller (a brief overlap storage
 // tolerates by design: CAS commits over content-addressed blocks,
 // race-armed transaction settling). Teardown is then the browser's
 // default path — it works because every response is fast or bounded
