@@ -271,7 +271,12 @@ mod native {
                 .parent()
                 .and_then(std::path::Path::parent)
                 .ok_or_else(|| anyhow!("tonk-ui manifest has no workspace root"))?;
-            let test_server = format!("path:{}#tonk-ui-test-server", workspace.display());
+            // Use the Git worktree view so ignored build products (`target`,
+            // linked worktrees, benchmark runs) are not copied into the Nix
+            // store every time an integration test starts its web server.
+            // Newly added test source must be staged, just as it must be for
+            // the committed CI revision that ultimately runs this harness.
+            let test_server = format!("git+file:{}#tonk-ui-test-server", workspace.display());
             let service_worker_root = caddy_data.join("service-worker");
             std::fs::create_dir_all(&service_worker_root)?;
             let service_worker_script = service_worker_root.join("service_worker.js");

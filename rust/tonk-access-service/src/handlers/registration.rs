@@ -6,7 +6,7 @@
 
 use dialog_credentials::Ed25519Signer;
 use tonk_account::customer::RegistrationError;
-use worker::{Env, Request, Response, RouteContext, console_error};
+use worker::{Env, Request, Response, RouteContext};
 
 use crate::service::{did_document, signer_from_hex};
 
@@ -55,6 +55,44 @@ pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Res
             Response::from_json(&receipt)
         }
         Err(err) => {
+            use crate::observability::{
+                AccessFailureKind, AccessFailureLog, AccessOperation, AccessOutcome, AccessSite,
+            };
+            use crate::registration::RegistrationCommand;
+            let operation = match crate::registration::registration_command(body) {
+                Some(RegistrationCommand::Enroll) => AccessOperation::Enrollment,
+                Some(RegistrationCommand::Activate) => AccessOperation::Activation,
+                Some(RegistrationCommand::Resend) => AccessOperation::Resend,
+                Some(
+                    RegistrationCommand::ProviderAdd
+                    | RegistrationCommand::Suspend
+                    | RegistrationCommand::Resume
+                    | RegistrationCommand::Archive,
+                )
+                | None => AccessOperation::Provisioning,
+            };
+            let status = err.status();
+            let failure_kind = match status {
+                401 | 403 => AccessFailureKind::AccessDenied,
+                404 => AccessFailureKind::NotFound,
+                409 => AccessFailureKind::Conflict,
+                429 => AccessFailureKind::RateLimited,
+                500..=599 => AccessFailureKind::Unavailable,
+                _ => AccessFailureKind::Invalid,
+            };
+            AccessFailureLog::new(
+                operation,
+                if status >= 500 {
+                    AccessOutcome::Unavailable
+                } else {
+                    AccessOutcome::Refused
+                },
+                failure_kind,
+                status,
+                status >= 500 || status == 429,
+                AccessSite::Registration,
+            )
+            .emit();
             let response = Response::from_json(&serde_json::json!({ "error": err }))?;
             Ok(response.with_status(err.status()))
         }
@@ -107,11 +145,7 @@ async fn replicate_verdicts(answer: &crate::registration::Answer, env: &Env) {
                         .map(|subscription| subscription.consumer)
                         .filter(|consumer| *consumer != customer),
                 ),
-                Err(err) => {
-                    worker::console_error!(
-                        "verdicts for {customer}'s consumers not refreshed: {err}"
-                    );
-                }
+                Err(_) => worker::console_error!("consumer verdicts were not refreshed"),
             }
             // The row itself, for the probe and the email lookup: both
             // poll it, and the write-through is how a poll notices the
@@ -120,15 +154,11 @@ async fn replicate_verdicts(answer: &crate::registration::Answer, env: &Env) {
                 match store.customer(&customer).await {
                     Ok(Some(row)) => crate::store::replica::replicate(kv, &row, now).await,
                     Ok(None) => {}
-                    Err(err) => {
-                        worker::console_error!(
-                            "customer replica for {customer} not written: {err}"
-                        );
-                    }
+                    Err(_) => worker::console_error!("customer replica was not written"),
                 }
             }
         }
-        Err(err) => worker::console_error!("verdicts not refreshed, no CONTROL binding: {err}"),
+        Err(_) => worker::console_error!("verdicts were not refreshed: CONTROL is unavailable"),
     }
     for subject in subjects {
         let _ = derive_verdict(&subject, now, env, kv.as_ref()).await;
@@ -267,8 +297,16 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
 
     let store = match ctx.env.d1("CONTROL") {
         Ok(database) => D1Store::new(database),
-        Err(err) => {
-            worker::console_error!("customer probe unavailable, no CONTROL binding: {err}");
+        Err(_) => {
+            crate::observability::AccessFailureLog::new(
+                crate::observability::AccessOperation::CustomerProbe,
+                crate::observability::AccessOutcome::Unavailable,
+                crate::observability::AccessFailureKind::Unavailable,
+                500,
+                true,
+                crate::observability::AccessSite::ControlStore,
+            )
+            .emit();
             return Response::error("Customer registry is not configured", 500);
         }
     };
@@ -279,8 +317,16 @@ pub async fn handle_customer(req: Request, ctx: RouteContext<()>) -> worker::Res
             }
             answer_probe(row, &req)
         }
-        Err(err) => {
-            worker::console_error!("customer probe failed: {err}");
+        Err(_) => {
+            crate::observability::AccessFailureLog::new(
+                crate::observability::AccessOperation::CustomerProbe,
+                crate::observability::AccessOutcome::Unavailable,
+                crate::observability::AccessFailureKind::Unavailable,
+                500,
+                true,
+                crate::observability::AccessSite::ControlStore,
+            )
+            .emit();
             Response::error("Customer registry is unavailable", 500)
         }
     }
@@ -297,8 +343,8 @@ fn answer_probe(
     match customer {
         Some(customer) => {
             let receipt = Receipt {
-                customer: customer.account.parse().map_err(|err| {
-                    worker::Error::RustError(format!("stored customer did is malformed: {err:?}"))
+                customer: customer.account.parse().map_err(|_| {
+                    worker::Error::RustError("stored customer DID is malformed".to_owned())
                 })?,
                 status: customer.status,
                 ledger: None,
@@ -329,8 +375,16 @@ fn answer_probe(
 pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
     let signer = match service_signer(&ctx.env) {
         Ok(signer) => signer,
-        Err(err) => {
-            console_error!("did document unavailable: {err}");
+        Err(_) => {
+            crate::observability::AccessFailureLog::new(
+                crate::observability::AccessOperation::Provisioning,
+                crate::observability::AccessOutcome::Unavailable,
+                crate::observability::AccessFailureKind::Unavailable,
+                404,
+                false,
+                crate::observability::AccessSite::Entry,
+            )
+            .emit();
             return Response::error("Service identity is not configured", 404);
         }
     };

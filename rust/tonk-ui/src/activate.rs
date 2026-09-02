@@ -175,16 +175,29 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
         let terminal = action_terminal.clone();
         clear_error(&host);
         set_busy(&host, true, false);
+        let mut attempt = crate::account_observability::WebAccountAttempt::start(
+            AccountAction::ActivateAccount,
+            tonk_analytics::account::Surface::ActivationPage,
+            tonk_analytics::account::Trigger::User,
+            tonk_analytics::account::AccountState::PendingActivation,
+        );
         spawn_local(async move {
             let invocation = match link_invocation() {
                 Ok(bytes) => bytes,
                 Err(error) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::Input,
+                        tonk_analytics::account::AccountOutcome::terminal_failure(
+                            tonk_analytics::account::FailureKind::InvalidInput,
+                        ),
+                    );
                     pending.set(false);
                     set_busy(&host, false, false);
                     return show_error(&host, &error);
                 }
             };
             set_status(&host, "Activating…");
+            attempt.checkpoint(tonk_analytics::account::Stage::AccessService);
             let response = reqwest::Client::new()
                 .post(format!("{}/ucan/", crate::api::origin()))
                 .header("content-type", "application/cbor")
@@ -194,6 +207,12 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
+                    attempt.finish(
+                        tonk_analytics::account::Stage::AccessService,
+                        tonk_analytics::account::AccountOutcome::retryable(
+                            tonk_analytics::account::FailureKind::Network,
+                        ),
+                    );
                     web_sys::console::error_1(
                         &format!("account activation request failed: {error}").into(),
                     );
@@ -208,6 +227,10 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 return;
             }
             if status.is_success() {
+                attempt.finish(
+                    tonk_analytics::account::Stage::Complete,
+                    tonk_analytics::account::AccountOutcome::success(),
+                );
                 // The service has consumed the one-use link. Claim the
                 // terminal outcome before recording the receipt can yield,
                 // so no later completion can replace success with an error.
@@ -226,6 +249,14 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 set_status(&host, "");
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
+                attempt.finish(
+                    tonk_analytics::account::Stage::AccessService,
+                    tonk_analytics::account::AccountOutcome::terminal_failure(
+                        tonk_analytics::account::FailureKind::AccessDenied,
+                    )
+                    .with_http_status_class(tonk_analytics::account::HttpStatusClass::ClientError)
+                    .with_service_code(tonk_analytics::account::ServiceCode::Unauthorized),
+                );
                 terminal.set(true);
                 pending.set(false);
                 set_busy(&host, false, true);
@@ -234,6 +265,18 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                     "This activation link has expired. Sign in on your device to get a fresh one.",
                 );
             } else {
+                let outcome = if status.is_server_error() {
+                    tonk_analytics::account::AccountOutcome::retryable(
+                        tonk_analytics::account::FailureKind::ServiceUnavailable,
+                    )
+                    .with_http_status_class(tonk_analytics::account::HttpStatusClass::ServerError)
+                } else {
+                    tonk_analytics::account::AccountOutcome::terminal_failure(
+                        tonk_analytics::account::FailureKind::AccessDenied,
+                    )
+                    .with_http_status_class(tonk_analytics::account::HttpStatusClass::ClientError)
+                };
+                attempt.finish(tonk_analytics::account::Stage::AccessService, outcome);
                 pending.set(false);
                 set_busy(&host, false, false);
                 let message = body["error"]["message"]

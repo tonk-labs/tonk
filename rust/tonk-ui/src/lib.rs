@@ -9,6 +9,8 @@ pub mod account;
 /// Customer activation page reached from the activation email.
 pub mod activate;
 
+mod account_observability;
+
 /// The account panel's registration row, kept live by a subscription to
 /// the fact rather than a fetch, so an activation performed elsewhere
 /// reaches this tab.
