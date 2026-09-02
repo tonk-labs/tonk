@@ -1043,6 +1043,11 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
     {
         log!("account activation not recorded: {error}");
     }
+    // Activation is what the deferred work was waiting on: the custody
+    // publish the ceremony pre-signed, and any space provisioned while
+    // the gate still refused. Nothing polls a status endpoint any more,
+    // so the sweep that noticed is the one that replays it.
+    drain_pending(state).await;
 }
 
 /// Read how far this account got through registering.

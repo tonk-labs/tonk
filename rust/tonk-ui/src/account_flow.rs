@@ -1155,7 +1155,7 @@ mod tests {
         let customer = get_json(&driver, "/api/customer").await?;
         assert_eq!(
             successful_body("read the customer state", &customer)["status"],
-            "registered",
+            "Registered",
             "an unconfirmed account is registered, not active"
         );
 
@@ -2608,7 +2608,7 @@ mod tests {
         wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
         let association = driver
             .execute(
-                r#"const button = document.querySelector('.m-go');
+                r#"const button = document.querySelector('tonk-dialog[data-space-remove-dialog] .m-go');
                    const form = document.querySelector('form[data-remove]');
                    return {
                      attribute: button?.getAttribute('form') || null,
@@ -4323,7 +4323,7 @@ mod tests {
         let customer = get_json(&driver, "/api/customer").await?;
         assert_eq!(
             successful_body("read the customer state", &customer)["status"],
-            "registered",
+            "Registered",
             "the account waits on email confirmation"
         );
 
@@ -4386,7 +4386,7 @@ mod tests {
         let customer = get_json(&driver, "/api/customer").await?;
         assert_eq!(
             successful_body("read the customer state", &customer)["status"],
-            "active"
+            "Active"
         );
 
         // Again no remote: if the worker did not read the recorded
@@ -4445,7 +4445,7 @@ mod tests {
         let customer = get_json(&driver, "/api/customer").await?;
         assert_eq!(
             successful_body("read the customer state", &customer)["status"],
-            "registered",
+            "Registered",
             "activation is pending until the emailed link is opened"
         );
 
@@ -4461,7 +4461,7 @@ mod tests {
         let customer = get_json(&driver, "/api/customer").await?;
         assert_eq!(
             successful_body("read the customer state", &customer)["status"],
-            "active"
+            "Active"
         );
 
         // Still local: activation does not retroactively sync spaces

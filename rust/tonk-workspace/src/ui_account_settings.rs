@@ -617,13 +617,16 @@ fn submit_delete(this: &HtmlElement) {
         return;
     }
     show_status(this, "Waiting for your passkey\u{2026}");
-    transact(&claim(
-        "Delete this account from every service and this device.",
-        serde_json::json!({
-            "email": { "the": "xyz.tonk.delete-account/email", "as": "Text" }
-        }),
-        serde_json::json!({ "email": email }),
-    ));
+    transact(
+        this,
+        &claim(
+            "Delete this account from every service and this device.",
+            serde_json::json!({
+                "email": { "the": "xyz.tonk.delete-account/email", "as": "Text" }
+            }),
+            serde_json::json!({ "email": email }),
+        ),
+    );
 }
 
 /// Sign this device out: the account stays, this browser forgets it.
@@ -648,13 +651,16 @@ fn sign_out(this: &HtmlElement) {
 /// that holds the account, then for the new one.
 fn add_passkey(this: &HtmlElement) {
     show_status(this, "Waiting for your passkey\u{2026}");
-    transact(&claim(
-        "Seal the account under another passkey.",
-        serde_json::json!({
-            "marker": { "the": "dom.event.current-target.dataset/add-passkey", "as": "Entity" }
-        }),
-        serde_json::json!({ "marker": "tonk:add-passkey" }),
-    ));
+    transact(
+        this,
+        &claim(
+            "Seal the account under another passkey.",
+            serde_json::json!({
+                "marker": { "the": "dom.event.current-target.dataset/add-passkey", "as": "Entity" }
+            }),
+            serde_json::json!({ "marker": "tonk:add-passkey" }),
+        ),
+    );
 }
 
 /// Assert `tonk:authorize-device` for the terminal named in the URL.
@@ -663,19 +669,22 @@ fn approve_link(this: &HtmlElement) {
         return;
     };
     show_status(this, "Waiting for your passkey\u{2026}");
-    transact(&claim(
-        "Delegate the account to a waiting terminal.",
-        serde_json::json!({
-            "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
-            "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
-            "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
-        }),
-        serde_json::json!({
-            "audience": request.audience,
-            "callback": bs58::encode(request.callback.as_bytes()).into_string(),
-            "name": request.name,
-        }),
-    ));
+    transact(
+        this,
+        &claim(
+            "Delegate the account to a waiting terminal.",
+            serde_json::json!({
+                "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
+                "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
+                "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
+            }),
+            serde_json::json!({
+                "audience": request.audience,
+                "callback": bs58::encode(request.callback.as_bytes()).into_string(),
+                "name": request.name,
+            }),
+        ),
+    );
 }
 
 /// Tell the waiting terminal no, and come back here.
@@ -720,8 +729,10 @@ fn claim(
 }
 
 /// Call `window.tonk.transact(request)`: routeless, so the claim lands on
-/// the profile branch this guest is mounted with.
-fn transact(request: &serde_json::Value) {
+/// the profile branch this guest is mounted with. A refusal is shown
+/// where the ask was made: a command that never committed reports
+/// nothing else.
+fn transact(this: &HtmlElement, request: &serde_json::Value) {
     let Ok(text) = serde_json::to_string(request) else {
         return;
     };
@@ -734,11 +745,33 @@ fn transact(request: &serde_json::Value) {
                 .map(|f| (tonk, f))
         })
     else {
+        show_status(this, "This page cannot reach the worker.");
         return;
     };
-    if let Ok(body) = JSON::parse(&text) {
-        let _ = transact.call1(&tonk, &body);
-    }
+    let Ok(body) = JSON::parse(&text) else {
+        return;
+    };
+    let host = this.clone();
+    spawn_local(async move {
+        let outcome = match transact.call1(&tonk, &body) {
+            Ok(answer) => match answer.dyn_into::<js_sys::Promise>() {
+                Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map(|_| ()),
+                Err(_) => Ok(()),
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = outcome {
+            let reason = Reflect::get(&error, &"message".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .or_else(|| error.as_string())
+                .unwrap_or_else(|| format!("{error:?}"));
+            tonk_common::log!("ui-account-settings: transact refused: {reason}");
+            show_status(&host, &format!("The worker refused the request: {reason}"));
+        }
+    });
 }
 
 /// Subscribe to the ceremony-status row on the profile overlay.
@@ -770,7 +803,10 @@ fn subscribe_ceremony(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscr
         };
         let tag = JsValue::from_str(CEREMONY_TAG);
         match consumer::subscribe(&consumer, &body, Some(&tag)) {
-            Ok(sub) => *subscription.borrow_mut() = Some(sub),
+            Ok(sub) => {
+                tonk_common::log!("ui-account-settings: watching the ceremony status");
+                *subscription.borrow_mut() = Some(sub)
+            }
             Err(error) => tonk_common::log!("ui-account-settings: subscribe failed: {error:?}"),
         }
     });
@@ -803,6 +839,7 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
             .unwrap_or_default()
     };
     let (which, state, detail) = (field("ceremony"), field("state"), field("detail"));
+    tonk_common::log!("ui-account-settings: ceremony {which} {state} {detail}");
     let subject = match which.as_str() {
         ceremony::DELETE_ACCOUNT => "Deleting the account",
         ceremony::AUTHORIZE_DEVICE => "Approving the terminal",
@@ -1045,6 +1082,33 @@ pub(crate) fn register() {
         .is_undefined()
     {
         UiAccountSettings::define("ui-account-settings");
+        install_frame_shim(&win);
+    }
+}
+
+/// Install `reset` / `update` / `error` on the element prototype,
+/// forwarding to the per-instance closures. The host calls them by name
+/// off the element for every subscription frame; on the prototype (not
+/// each instance) so `this`-binding is correct, the same pattern
+/// `<ui-sync-status>` uses.
+fn install_frame_shim(win: &web_sys::Window) {
+    let constructor = win.custom_elements().get("ui-account-settings");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    for (method, delegate) in [
+        ("reset", "__tonkReset"),
+        ("update", "__tonkUpdate"),
+        ("error", "__tonkError"),
+    ] {
+        let forward = Function::new_with_args(
+            "payload, opts",
+            &format!("if (typeof this.{delegate} === 'function') this.{delegate}(payload, opts);"),
+        );
+        let _ = Reflect::set(&proto, &method.into(), &forward);
     }
 }
 

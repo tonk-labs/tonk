@@ -221,7 +221,39 @@ pub(crate) async fn request_webauthn_with(
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
-    client
-        .post_message(&message)
-        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
+    // Only a top-level document can run WebAuthn, and only it listens
+    // for this. A command asserted from a sealed guest arrives from the
+    // guest's own client, so the ask goes to the top-level windows of
+    // this origin instead; the one holding the guest is among them, and
+    // the relay in each answers at most once.
+    if client.frame_type() == web_sys::FrameType::TopLevel {
+        return client
+            .post_message(&message)
+            .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")));
+    }
+    let options = web_sys::ClientQueryOptions::new();
+    options.set_type(web_sys::ClientType::Window);
+    let windows = JsFuture::from(global.clients().match_all_with_options(&options))
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("clients.matchAll failed: {error:?}"))
+        })?;
+    let mut asked = 0;
+    for window in js_sys::Array::from(&windows).iter() {
+        let Ok(window) = window.dyn_into::<web_sys::Client>() else {
+            continue;
+        };
+        if window.frame_type() != web_sys::FrameType::TopLevel {
+            continue;
+        }
+        if window.post_message(&message).is_ok() {
+            asked += 1;
+        }
+    }
+    if asked == 0 {
+        return Err(TonkWorkerError::Conflict(
+            "no top-level page is open to run the passkey ceremony".into(),
+        ));
+    }
+    Ok(())
 }

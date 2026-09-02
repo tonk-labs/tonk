@@ -33,23 +33,33 @@ thread_local! {
 const CARD_ID: &str = "tonk-custody-consent";
 
 const CARD_HTML: &str = r#"
-<div style="position:fixed;right:1rem;bottom:1rem;z-index:2147483647;max-width:22rem;
-            background:#1c1c1e;color:#f2f2f4;border:1px solid #3a3a3d;border-radius:12px;
-            padding:1rem 1.25rem;font:14px/1.45 system-ui,sans-serif;
-            box-shadow:0 8px 30px rgba(0,0,0,.45)">
-  <strong style="display:block;margin-bottom:.35rem">Passkey needed</strong>
-  <p id="tonk-custody-text" style="margin:0 0 .8rem">
+<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
+            display:flex;flex-direction:column;gap:7px;
+            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
+            color:var(--ink, #38182a);text-transform:none">
+  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
+              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
+              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
+              letter-spacing:.02em;text-transform:lowercase">passkey needed</div>
+  <p id="tonk-custody-text" style="margin:0;padding:14px 16px;background:var(--card, #fcfbfb);
+            box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font-weight:600">
     Tonk is securing something to your account and needs your passkey to
     unlock the account&rsquo;s custody key on this device.
   </p>
-  <div id="tonk-custody-actions" style="display:flex;gap:.5rem;justify-content:flex-end">
-    <button id="tonk-custody-dismiss"
-            style="background:none;border:none;color:#9a9aa0;cursor:pointer;font:inherit">
-      Not now</button>
-    <button id="tonk-custody-continue"
-            style="background:#4a7dff;border:none;color:white;border-radius:8px;
-                   padding:.4rem .9rem;cursor:pointer;font:inherit">
-      Use passkey</button>
+  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
+    <button id="tonk-custody-dismiss" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
+                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      not now</button>
+    <button id="tonk-custody-continue" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
+                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      use passkey</button>
   </div>
 </div>
 "#;
@@ -253,7 +263,12 @@ fn show_command_consent(intent: tonk_worker_api::CustodyIntent) {
     host.set_id(CARD_ID);
     host.set_inner_html(CARD_HTML);
     let _ = body.append_child(&host);
-    set_card_text(text);
+    // Worded before the buttons are bound, and without `set_card_text`,
+    // which retires the actions: that helper narrates an outcome, and
+    // this card has not been answered yet.
+    if let Ok(Some(message)) = host.query_selector("#tonk-custody-text") {
+        message.set_text_content(Some(text));
+    }
     on_click(&host, "#tonk-custody-dismiss", || {
         remove_card();
     });
@@ -437,7 +452,9 @@ impl Mediation {
         // The worker answers a purge or a device authorization with
         // where this page goes next: the guest that asked is on a page
         // the outcome retires, and only the top document can leave it.
-        if let Some(href) = js_sys::Reflect::get(&reply, &"navigate".into())
+        // The worker's answer rides under `ok` on the reply envelope.
+        let answer = js_sys::Reflect::get(&reply, &"ok".into()).unwrap_or(reply);
+        if let Some(href) = js_sys::Reflect::get(&answer, &"navigate".into())
             .ok()
             .and_then(|value| value.as_string())
             && let Some(window) = web_sys::window()

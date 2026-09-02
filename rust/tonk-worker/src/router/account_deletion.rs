@@ -182,8 +182,13 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for DeleteAccount
         let env = env.clone();
         Box::pin(async move {
             let Some(email) = email else {
+                log!("delete-account: the transient carried no address; skipping");
                 return;
             };
+            log!(
+                "delete-account: asked from client {:?}",
+                env.client().map(|c| c.0.clone())
+            );
             {
                 let tonk = env.state().read().await;
                 let plan = match load_plan(&tonk).await {

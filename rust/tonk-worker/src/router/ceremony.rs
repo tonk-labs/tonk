@@ -21,6 +21,7 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
     let Ok(this) = CeremonyStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
         return;
     };
+    log!("{ceremony}: {state} {detail}");
     if let Err(error) = tonk
         .reactor
         .profile_repository()
