@@ -155,34 +155,6 @@ pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue
     Ok(JsValue::from(response))
 }
 
-/// Drop every cache belonging to a build other than this one.
-/// Called from `onactivate`, once this worker is the controller —
-/// only then is the previous build's cache genuinely nobody's.
-///
-/// This is what makes an install atomic: the incoming worker
-/// populates its OWN shell cache, so the still-serving old worker
-/// never observes a half-written one, and the crossing that
-/// `serve_navigation`'s prune logic works to avoid can't arise.
-pub async fn purge_old_caches() -> Result<(), JsValue> {
-    let caches = caches()?;
-    let shell = shell_cache();
-    let worker = format!("{WORKER_PREFIX}{}", build_id());
-    let keys: js_sys::Array = JsFuture::from(caches.keys()).await?.dyn_into()?;
-    for key in keys.iter() {
-        let Some(name) = key.as_string() else {
-            continue;
-        };
-        // Both families, so a superseded build leaves nothing behind:
-        // its shell AND the copy of its wasm the JS shim precached.
-        let stale = (name.starts_with(SHELL_PREFIX) && name != shell)
-            || (name.starts_with(WORKER_PREFIX) && name != worker);
-        if stale {
-            let _ = JsFuture::from(caches.delete(&name)).await;
-        }
-    }
-    Ok(())
-}
-
 /// The service worker's own origin, or `None` outside a worker scope.
 ///
 /// Cache eligibility fails closed when there is no service-worker global or

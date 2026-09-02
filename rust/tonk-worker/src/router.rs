@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use ::axum::{
-    Json, Router,
+    Router,
     extract::{DefaultBodyLimit, State},
-    http::StatusCode,
-    response::IntoResponse,
     routing::get,
     routing::post,
     routing::put,
