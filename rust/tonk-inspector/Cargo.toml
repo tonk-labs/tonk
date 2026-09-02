@@ -14,6 +14,7 @@ web = []
 
 [dependencies]
 bs58 = { workspace = true }
+dialog-artifacts = { workspace = true }
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -30,18 +31,25 @@ web-sys = { workspace = true, features = [
     "CustomEventInit",
     "Document",
     "DomTokenList",
+    "DomStringMap",
     "Element",
     "Event",
     "EventTarget",
     "Headers",
+    "HtmlCollection",
     "HtmlElement",
+    "KeyboardEvent",
     "Location",
+    "MutationObserver",
+    "MutationObserverInit",
     "Navigator",
     "Node",
+    "NodeList",
     "Request",
     "RequestInit",
     "RequestMode",
     "Response",
+    "Selection",
     "Window",
 ] }
 

@@ -1,13 +1,12 @@
 //! Wire-query construction for `<tonk-display>`.
 //!
-//! - [`view_by_model_query`] — resolve a view by querying a view
-//!   *concept* (the predicate) constrained to a `model`, projecting
-//!   `display` (and `type` when the concept declares it).
+//! - [`view_query`] — resolve a model's presentations: the `view`
+//!   concept instance whose `this` IS the model entity, projecting
+//!   the `show` dictionary (facet → template).
 //! - [`entity_query`] — subscribe to a single entity by URI,
 //!   projecting every field in the model concept's descriptor.
 //! - [`view_predicate`] — the descriptor JSON of the built-in
-//!   `view` concept, used as the default view predicate when the
-//!   `<tonk-display>` has no `view` attribute.
+//!   `view` concept, the predicate of every view query.
 
 use std::collections::BTreeMap;
 
@@ -15,33 +14,54 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 use tonk_schema::query::Query;
 
-/// Build the live view-resolution query for the new design: given a
-/// view *concept* descriptor (the concept named by the `view`
-/// attribute, or the built-in `view`) and a `model_entity`, find the
-/// instance of that view concept whose `model` field equals
-/// `model_entity`, projecting `display` (the template) and, if the
-/// descriptor declares it, `type` (the render mode).
-///
-/// The view concept is the query predicate; `model` is the
-/// constraint. The view attribute thus names a concept whose
-/// `display` we query for, rather than an anchor that resolves to
-/// one fixed entity.
-pub fn view_by_model_query(
-    view_descriptor: &Value,
-    model_entity: &str,
-) -> Result<Query, serde_json::Error> {
-    let has_type = view_descriptor
-        .get("with")
-        .and_then(|w| w.get("type"))
-        .is_some();
+/// The facet a `<tonk-display>` with an `entity` renders when no
+/// explicit `view=` facet is given.
+pub const DETAIL_FACET: &str = "ui";
+
+/// The facet a `<tonk-display>` without an `entity` (directory mode)
+/// renders when no explicit `view=` facet is given.
+pub const DIRECTORY_FACET: &str = "directory";
+
+/// The `show` entry marking a portal document: a `type` entry whose
+/// value is `text/html` says the selected template is a full HTML
+/// document mounted in an isolated `<tonk-portal>`, not interpolated
+/// inline.
+pub const TYPE_FACET: &str = "type";
+
+/// Build the live view-resolution query: every `show` entry of the
+/// model's `view` instance. The view instance's `this` IS the model
+/// entity, so the query pins `this` and projects the whole dictionary
+/// — one flat row per facet. The caller folds the rows
+/// ([`crate::fold::select_rows`]) into `show: {facet: template}` and
+/// picks the facet it renders ([`crate::fold::show_template`]).
+pub fn view_query(model_entity: &str) -> Result<Query, serde_json::Error> {
     let mut terms: IndexMap<String, Value> = IndexMap::new();
-    terms.insert("this".into(), json!({ "?": { "name": "view" } }));
-    terms.insert("model".into(), json!(model_entity));
-    terms.insert("display".into(), json!({ "?": { "name": "display" } }));
-    if has_type {
-        terms.insert("type".into(), json!({ "?": { "name": "type" } }));
+    terms.insert("this".into(), json!(model_entity));
+    terms.insert("show".into(), json!({ "?": { "name": "show" } }));
+    terms.insert("show/key".into(), json!({ "?": { "name": "show/key" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": view_predicate() }))
+}
+
+/// Whether a `with:` entry declares a keyed collection: its `the` is a
+/// `{domain, keyed}` object rather than an attribute string.
+///
+/// A collection field binds TWO terms — the field and its key operand
+/// (`block`, `block/key`) — because an entry is a `(key, value)` pair.
+/// Requesting only the field leaves the key unbound, and the wire fold
+/// that turns the pair into `{key: value}` then has nothing to fold:
+/// the entry arrives as a bare value and every key reads empty.
+fn is_collection(spec: &Value) -> bool {
+    spec.get("the").is_some_and(Value::is_object)
+}
+
+/// The terms one `with:` entry contributes: the field, plus its key
+/// operand when the field is a keyed collection.
+fn field_terms(field: &str, spec: &Value, terms: &mut IndexMap<String, Value>) {
+    terms.insert(field.to_owned(), json!({ "?": { "name": field } }));
+    if is_collection(spec) {
+        let key = format!("{field}/key");
+        terms.insert(key.clone(), json!({ "?": { "name": key } }));
     }
-    serde_json::from_value(json!({ "terms": terms, "predicate": view_descriptor }))
 }
 
 /// Build the live entity subscription query: given the model
@@ -61,8 +81,8 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
         .unwrap_or_default();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!(entity));
-    for field in with.keys() {
-        terms.insert(field.clone(), json!({ "?": { "name": field } }));
+    for (field, spec) in &with {
+        field_terms(field, spec, &mut terms);
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -95,35 +115,21 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
 
 /// The descriptor of the built-in `view` concept.
 ///
-/// Two fields: `model` (entity — the concept being displayed) and
-/// `display` (text — the HTML template). Used as the default view
-/// predicate when `<tonk-display>` has no `view` attribute, so the
-/// built-in presentation resolves without reading the concept from
-/// the branch. Attribute URIs follow the `xyz.tonk.view/*`
-/// namespace; this is kept in step with the bootstrap declaration
-/// pinned to `tonk:view`.
+/// One field: `show` — a model's presentations, keyed by facet
+/// (`ui`, `directory`, `label`, `title`, …). Each entry is stored as
+/// `<model> xyz.tonk.view/<facet> <template>`: the view instance IS
+/// the model entity, so there is no `model` back-pointer and no
+/// per-kind view concept. Cardinality is `one` per entry, so
+/// re-asserting a facet supersedes its template. Kept in step with
+/// the bootstrap declaration pinned to `tonk:view`.
 pub fn view_predicate() -> Value {
     json!({
         "with": {
-            "model":   { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
-            "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
-        }
-    })
-}
-
-/// The descriptor of the built-in **directory** view concept
-/// (`tonk:view/directory`). Same `model` field as [`view_predicate`],
-/// but its template lives under `xyz.tonk.view/directory` so a model
-/// can declare a detail view and a directory view independently (both
-/// keyed by `model`). Used as the default view predicate when
-/// `<tonk-display>` has no `entity` (directory mode). The `display`
-/// term name is kept so `view_by_model_query` and the renderer read
-/// the template uniformly regardless of view kind.
-pub fn directory_view_predicate() -> Value {
-    json!({
-        "with": {
-            "model":   { "the": "xyz.tonk.view/model",     "as": "Entity", "cardinality": "one" },
-            "display": { "the": "xyz.tonk.view/directory", "as": "Text",   "cardinality": "one" }
+            "show": {
+                "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
         }
     })
 }
@@ -143,8 +149,8 @@ pub fn instances_query(descriptor_json: &str) -> Result<Query, serde_json::Error
         .unwrap_or_default();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "this" } }));
-    for field in with.keys() {
-        terms.insert(field.clone(), json!({ "?": { "name": field } }));
+    for (field, spec) in &with {
+        field_terms(field, spec, &mut terms);
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -436,14 +442,18 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
-    fn the_view_predicate_has_no_name_field() {
+    fn the_view_predicate_is_the_show_dictionary() {
         let p = view_predicate();
         let with = p.get("with").and_then(|v| v.as_object()).expect("with");
-        assert!(with.contains_key("model"));
-        assert!(with.contains_key("display"));
+        let show = with.get("show").expect("show field");
+        assert_eq!(
+            show.get("the"),
+            Some(&json!({ "domain": "xyz.tonk.view", "keyed": "dictionary" })),
+            "templates live as entries of the xyz.tonk.view domain",
+        );
         assert!(
-            !with.contains_key("name"),
-            "the built-in view concept is keyed by (concept, model), not a `name` field"
+            !with.contains_key("model"),
+            "the view instance IS the model entity; no back-pointer field"
         );
     }
 
@@ -495,6 +505,43 @@ mod tests {
         assert!(q.terms.contains("recipient"));
     }
 
+    /// A keyed-collection field binds its key operand alongside the
+    /// field. An entry is a `(key, value)` pair, and the wire fold that
+    /// turns the pair into `{key: value}` only fires when BOTH are
+    /// bound — so requesting the field alone makes every entry arrive
+    /// as a bare value with no key. A notebook then reads all its
+    /// blocks as unplaced and re-keys every one of them on each edit,
+    /// which duplicates the whole sequence.
+    #[dialog_common::test]
+    fn it_binds_the_key_operand_of_a_collection_field() {
+        let descriptor = r#"{"with":{
+            "title": { "the": "xyz.tonk.notebook/title", "as": "Text", "cardinality": "one" },
+            "block": {
+                "the": { "domain": "xyz.tonk.notebook", "keyed": "sequence" },
+                "as": "Entity",
+                "cardinality": "many"
+            }
+        }}"#;
+
+        let entity = entity_query(descriptor, "id:notebook/scratch").expect("entity_query");
+        assert!(entity.terms.contains("block"), "the field is bound");
+        assert!(
+            entity.terms.contains("block/key"),
+            "so is its key — without it the entry has no key to fold on"
+        );
+        assert!(
+            !entity.terms.contains("title/key"),
+            "a scalar field has no key operand"
+        );
+
+        let instances = instances_query(descriptor).expect("instances_query");
+        assert!(instances.terms.contains("block"));
+        assert!(
+            instances.terms.contains("block/key"),
+            "the directory query binds it too"
+        );
+    }
+
     #[dialog_common::test]
     fn it_distinguishes_uri_from_bookmark() {
         assert!(looks_like_uri("did:key:zAlice"));
@@ -503,42 +550,23 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_builds_a_view_by_model_query_constraining_model() {
-        // The view concept is the predicate; `model` is pinned to
-        // the subject's model entity and `display` flows back.
-        let predicate = view_predicate();
-        let q = view_by_model_query(&predicate, "concept:zCounter").expect("view_by_model_query");
-        let model = q.terms.get("model").expect("model term");
+    fn it_builds_a_view_query_pinning_the_model_entity() {
+        // The view instance IS the model entity: `this` is pinned and
+        // the whole `show` dictionary flows back, entry and key.
+        let q = view_query("concept:zCounter").expect("view_query");
+        let this = q.terms.get("this").expect("this term");
         assert_eq!(
-            serde_json::to_value(model).unwrap(),
+            serde_json::to_value(this).unwrap(),
             json!("concept:zCounter"),
         );
-        let display = q.terms.get("display").expect("display term");
+        let show = q.terms.get("show").expect("show term");
         assert_eq!(
-            serde_json::to_value(display).unwrap(),
-            json!({ "?": { "name": "display" } }),
+            serde_json::to_value(show).unwrap(),
+            json!({ "?": { "name": "show" } }),
         );
-        // The built-in view predicate has no `type` field, so the
-        // query doesn't project one.
-        assert!(!q.terms.contains("type"));
-    }
-
-    #[dialog_common::test]
-    fn it_projects_type_when_the_view_concept_declares_it() {
-        // A custom view concept that adds a `type` field gets `type`
-        // projected so the render-mode fork can read it.
-        let predicate = json!({
-            "with": {
-                "model":   { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
-                "type":    { "the": "xyz.tonk.view/type",    "as": "Text",   "cardinality": "one" },
-                "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
-            }
-        });
-        let q = view_by_model_query(&predicate, "concept:zCounter").expect("view_by_model_query");
-        let typ = q.terms.get("type").expect("type term");
-        assert_eq!(
-            serde_json::to_value(typ).unwrap(),
-            json!({ "?": { "name": "type" } }),
+        assert!(
+            q.terms.contains("show/key"),
+            "the key operand rides along so the wire fold has a key to fold on"
         );
     }
 

@@ -3,7 +3,7 @@
 // element connect — nothing here may be imported *statically* from
 // the shell (types excepted).
 
-import { EditorState, Plugin, TextSelection } from "prosemirror-state";
+import { EditorState, Plugin, Selection, TextSelection } from "prosemirror-state";
 import { Slice } from "prosemirror-model";
 import type { Node } from "prosemirror-model";
 import { EditorView } from "prosemirror-view";
@@ -23,6 +23,7 @@ import { placeholder, placeholderKey } from "./placeholder";
 import { imagePreview } from "./image-preview";
 import { taskList } from "./task-list";
 import { codeBlocks } from "./code-block";
+import { headingSwitcher } from "./heading-switcher";
 import type { EditorOptions, ProseEditor } from "./api";
 
 /** Parse pasted plain text as markdown — Typora's paste behavior —
@@ -137,6 +138,12 @@ export function createEditor(
       // reads it. Order among the rest is not load-bearing except
       // code-block arrow keys before the base keymap.
       reparse(),
+      // Before the keymaps, and only when the host asked for it.
+      // `handleKeyDown` runs in plugin order, so the switcher has to come
+      // first to claim Enter and the arrows while its list is open —
+      // appended last, the base keymap would split the heading before the
+      // switcher ever saw the key.
+      ...(options.switcher ? headingSwitcher(options.switcher) : []),
       reveal(),
       buildInputRules(schema),
       ...codeBlocks(),
@@ -238,6 +245,15 @@ export function createEditor(
 
     focus(): void {
       view.focus();
+    },
+
+    caretToEnd(): void {
+      // `Selection.atEnd` finds the last valid text position, which is
+      // not the same as the document's size: the end of a doc whose last
+      // node is a code block or a list sits inside that node, and a raw
+      // `doc.content.size` would be an invalid position there.
+      const { doc, tr } = view.state;
+      view.dispatch(tr.setSelection(Selection.atEnd(doc)).scrollIntoView());
     },
 
     destroy(): void {
@@ -486,7 +502,11 @@ const EDITOR_STYLESHEET = `
   /* ProseMirror needs these for correct behavior. */
   .ProseMirror { position: relative; }
   .ProseMirror-hideselection *::selection { background: transparent; }
-  .ProseMirror-selectednode { outline: 2px solid var(--tonk-prose-accent); }
+  /* No outline on a selected node. A code cell is selected whenever the
+     caret enters it, and a ring around the box reads as an error state
+     rather than a cursor. The block highlight below carries "where am I"
+     instead, across the whole block rather than one node of it. */
+  .ProseMirror-selectednode { outline: none; }
   .ProseMirror-gapcursor {
     display: none;
     pointer-events: none;

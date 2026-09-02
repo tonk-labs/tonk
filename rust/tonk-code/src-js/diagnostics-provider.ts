@@ -110,6 +110,24 @@ type TonkCodeElement = HTMLElement & {
   view?: EditorView | null;
 };
 
+
+/** The `<tonk-code>` an announcement came from.
+ *
+ *  NOT `event.target`: these events are `composed`, so when an editor lives
+ *  inside a shadow root (a `<tonk-prose>` code-block node view, for one) the
+ *  browser retargets them to that shadow HOST by the time they reach an
+ *  ancestor listener. The host has no `connect`, so the announcement was
+ *  silently dropped and the editor never received an LSP client — no
+ *  diagnostics, no completion. `composedPath()[0]` is the element that
+ *  actually dispatched. */
+function editorOf(event: Event): TonkCodeElement | null {
+  const path = event.composedPath();
+  const first = (path && path.length > 0 ? path[0] : event.target) as
+    | TonkCodeElement
+    | null;
+  return first ?? null;
+}
+
 class TonkDiagnosticsProvider extends HTMLElement {
   static get observedAttributes(): readonly string[] {
     return ["language-server"];
@@ -170,7 +188,7 @@ class TonkDiagnosticsProvider extends HTMLElement {
 
   #onConnect = (event: Event): void => {
     const detail = (event as CustomEvent<TonkCodeConnectDetail>).detail;
-    const target = event.target as TonkCodeElement | null;
+    const target = editorOf(event);
     if (!target || typeof target.connect !== "function") return;
     if (!detail?.source) return;
     this.#attached.set(detail.source, target);
@@ -187,7 +205,7 @@ class TonkDiagnosticsProvider extends HTMLElement {
 
   #onDisconnect = (event: Event): void => {
     const detail = (event as CustomEvent<TonkCodeDisconnectDetail>).detail;
-    const target = event.target as TonkCodeElement | null;
+    const target = editorOf(event);
     if (!target) return;
     if (detail?.source) {
       this.#attached.delete(detail.source);

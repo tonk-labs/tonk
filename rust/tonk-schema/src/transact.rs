@@ -140,6 +140,15 @@ pub enum Application {
         /// `{ predicate, terms }` ready for evaluation. `terms`
         /// includes a `"this"` slot derived from `this`.
         query: ConceptQuery,
+        /// Satellite queries joined with `query` on shared
+        /// variables — one per additional dictionary entry when a
+        /// keyed-collection field binds several
+        /// (`show: {ui: ?ui, directory: ?d}`). A `Parameters` map
+        /// holds one `(key, value)` slot pair per field, so each
+        /// extra entry rides its own query sharing the primary's
+        /// `this` term. Empty for every other query and for all
+        /// mutations.
+        join: Vec<ConceptQuery>,
         /// Where the entity in `terms["this"]` comes from.
         this: ThisIntent,
         /// `&anchor` on the value side, if any. The planner
@@ -261,11 +270,18 @@ impl Application {
     }
 
     /// Variable names appearing in `Term::Variable { name: Some(_) }`
-    /// slots of this application's parameters. Empty for
+    /// slots of this application's parameters — satellite `join`
+    /// queries included, so a multi-entry dictionary query's extra
+    /// entry variables count as bindings. Empty for
     /// [`Application::Rule`] (rules carry no terms).
     pub fn bindings(&self) -> HashSet<String> {
         let mut out = HashSet::new();
         collect_variable_names(self.parameters(), &mut out);
+        if let Self::Concept { join, .. } = self {
+            for satellite in join {
+                collect_variable_names(&satellite.terms, &mut out);
+            }
+        }
         out
     }
 }

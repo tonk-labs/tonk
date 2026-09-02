@@ -110,7 +110,6 @@ mod when_setting_the_home {
             &test.site,
             "habit",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{name}</b>",
             false,
             Default::default(),
@@ -184,7 +183,6 @@ mod when_adding_a_view {
             &test.site,
             "habit",
             tonk_cli::authoring::ViewKind::Detail,
-            None,
             "<b>{name}</b>",
             false,
             Default::default(),
@@ -212,77 +210,6 @@ mod when_adding_a_view {
     }
 
     #[dialog_common::test]
-    async fn it_rejects_an_entity_like_anchor_before_writing() -> Result<()> {
-        let test = TestSite::new().await?;
-        super::seed_habit(&test).await?;
-        let before = test.site.branch().await?.handle().revision();
-
-        let err = tonk_cli::data_ops::view_add(
-            &test.site,
-            "habit",
-            ViewKind::Detail,
-            Some("tonk:vault/shell"),
-            "<b>{name}</b>",
-            false,
-            Default::default(),
-        )
-        .await
-        .unwrap_err();
-        let message = err.to_string();
-
-        assert!(message.contains("id:tonk:vault/shell"), "{message}");
-        assert!(message.contains("tonk assert"), "{message}");
-        assert_eq!(
-            test.site.branch().await?.handle().revision(),
-            before,
-            "an invalid anchor must be rejected before a write"
-        );
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_reports_an_explicit_anchor_and_derived_entity() -> Result<()> {
-        let test = TestSite::new().await?;
-        super::seed_habit(&test).await?;
-
-        let out = tonk_cli::data_ops::view_add(
-            &test.site,
-            "habit",
-            ViewKind::Detail,
-            Some("vault/frame-view"),
-            "<b>{name}</b>",
-            false,
-            Default::default(),
-        )
-        .await?;
-
-        assert!(out.contains("anchor: vault/frame-view"), "{out}");
-        assert!(out.contains("entity: id:vault/frame-view"), "{out}");
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_reports_the_generated_default_anchor_and_entity() -> Result<()> {
-        let test = TestSite::new().await?;
-        super::seed_habit(&test).await?;
-
-        let out = tonk_cli::data_ops::view_add(
-            &test.site,
-            "habit",
-            ViewKind::Directory,
-            None,
-            "<b>{name}</b>",
-            false,
-            Default::default(),
-        )
-        .await?;
-
-        assert!(out.contains("anchor: habit-directory"), "{out}");
-        assert!(out.contains("entity: id:habit-directory"), "{out}");
-        Ok(())
-    }
-
-    #[dialog_common::test]
     async fn dry_run_reports_identity_without_committing() -> Result<()> {
         let test = TestSite::new().await?;
         super::seed_habit(&test).await?;
@@ -292,7 +219,6 @@ mod when_adding_a_view {
             &test.site,
             "habit",
             ViewKind::Detail,
-            Some("habit-preview"),
             "<b>{name}</b>",
             false,
             tonk_cli::data_ops::WriteOptions {
@@ -303,9 +229,7 @@ mod when_adding_a_view {
         .await?;
 
         assert!(out.contains("dry run — nothing committed"), "{out}");
-        assert!(out.contains("would have asserted view"), "{out}");
-        assert!(out.contains("anchor: habit-preview"), "{out}");
-        assert!(out.contains("entity: id:habit-preview"), "{out}");
+        assert!(out.contains("would have asserted the ui view"), "{out}");
         assert_eq!(test.site.branch().await?.handle().revision(), before);
         Ok(())
     }
@@ -319,7 +243,6 @@ mod when_adding_a_view {
             &test.site,
             "habit",
             tonk_cli::authoring::ViewKind::Detail,
-            Some("habit-alt"),
             "<i>{name}</i>",
             false,
             Default::default(),
@@ -343,7 +266,6 @@ mod when_adding_a_view {
             &test.site,
             "habit",
             ViewKind::Directory,
-            None,
             "<li>{name}</li>",
             false,
             Default::default(),
@@ -369,7 +291,6 @@ mod when_adding_a_view {
                 &test.site,
                 "habit",
                 kind,
-                None,
                 "<b>{name}</b>",
                 false,
                 Default::default(),
@@ -392,7 +313,6 @@ mod when_adding_a_view {
             &test.site,
             "habit",
             ViewKind::Detail,
-            None,
             "<b>{name}</b>",
             false,
             Default::default(),
@@ -427,7 +347,6 @@ mod when_adding_a_view {
             &test.site,
             "note",
             ViewKind::Directory,
-            None,
             "<li>{title}</li>",
             true,
             Default::default(),

@@ -4,19 +4,19 @@
 //! component runs, against a [`QueryBackend`], then feeds the result
 //! through the shared `tonk-template` planner and this crate's pure
 //! headless renderer ([`crate::render`]). Nested `<tonk-display>`
-//! elements inside a view are rendered recursively; a view whose
-//! `type` is `text/html` (portal mode) is emitted as an isolated
-//! `<iframe srcdoc>`.
+//! elements inside a view are rendered recursively; a model whose
+//! `show` dictionary carries `type: text/html` (portal mode) is
+//! emitted as an isolated `<iframe srcdoc>`.
 
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
-use tonk_template::fold::select_rows;
+use tonk_template::fold::{select_rows, show_template};
 use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
-    directory_view_predicate, entity_query, instances_query, looks_like_uri, name_query,
-    parse_source, phase1_query, view_by_model_query, view_predicate,
+    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
+    name_query, parse_source, phase1_query, view_query,
 };
 use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
@@ -75,33 +75,22 @@ async fn render_at_depth<B: QueryBackend>(
         None => None,
     };
 
-    // 3. Resolve the views: pick the view predicate (explicit concept,
-    //    or built-in detail/directory), query it by model, and read every
-    //    renderable `display` template + optional `type` in entity order.
-    let view_descriptor = match &route.view {
-        Some(view_name) => {
-            let (_, view_desc_json) = resolve_model(backend, view_name).await?;
-            serde_json::from_str(&view_desc_json).map_err(|e| {
-                RenderError::Descriptor(format!(
-                    "view concept `{view_name}` descriptor invalid: {e}"
-                ))
-            })?
-        }
-        None if entity_uri.is_some() => view_predicate(),
-        None => directory_view_predicate(),
+    // 3. Pick the facet — the explicit route facet, else `ui` (entity
+    //    set) or `directory` (directory mode) — and resolve its
+    //    template from the model's `show` dictionary.
+    let facet = match &route.view {
+        Some(facet) => facet.as_str(),
+        None if entity_uri.is_some() => DETAIL_FACET,
+        None => DIRECTORY_FACET,
     };
-    let views = resolve_views(backend, &view_descriptor, &model_entity).await?;
-    if views.is_empty() {
+    let view = resolve_view(backend, facet, &model_entity).await?;
+    let Some(view) = view else {
         return Err(RenderError::NoView(route.model.clone()));
-    }
+    };
 
-    // 4. Portal mode is frame-wide in the browser: if any matched row is a
-    //    portal, every matched display becomes an isolated portal sibling.
-    if views.iter().any(|view| view.is_portal) {
-        return Ok(views
-            .iter()
-            .map(|view| render_portal(&view.display))
-            .collect());
+    // 4. Portal views (a `type: text/html` entry) render as an isolated iframe.
+    if view.is_portal {
+        return Ok(render_portal(&view.display));
     }
 
     // 5. Query the entity (detail) or all instances (directory), then
@@ -127,19 +116,15 @@ async fn render_at_depth<B: QueryBackend>(
         .iter()
         .map(|c| to_render_conclusion(c, &host_fields))
         .collect();
-    let mut siblings = String::new();
-    for view in views {
-        let mut roots = crate::parse_fragment(&view.display);
-        let bindings = crate::collect_bindings(&mut roots);
-        let repeat_root = this_repeat_root(&bindings);
-        let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
-        let html = crate::render(&roots, &plan, &conclusions);
+    let mut roots = crate::parse_fragment(&view.display);
+    let bindings = crate::collect_bindings(&mut roots);
+    let repeat_root = this_repeat_root(&bindings);
+    let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
+    let html = crate::render(&roots, &plan, &conclusions);
 
-        // 7. Recursively render nested <tonk-display> elements within each
-        //    sibling before concatenating them without a wrapper.
-        siblings.push_str(&expand_nested(backend, html, depth, visited).await?);
-    }
-    Ok(siblings)
+    // 7. Recursively render nested <tonk-display> elements before
+    //    returning.
+    expand_nested(backend, html, depth, visited).await
 }
 
 /// The host attributes a `<tonk-display>` would carry, as
@@ -160,10 +145,9 @@ fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     fields
 }
 
-/// One renderable view row, retaining its entity identity for browser-equivalent
-/// sibling ordering.
+/// View resolution result: the facet's template and whether the
+/// model's views are portals (a `type: text/html` entry).
 struct ResolvedView {
-    entity: String,
     display: String,
     is_portal: bool,
 }
@@ -221,45 +205,45 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
 /// is the wildcard-model entity seeded by core.yaml.
 const DEFAULT_MODEL: &str = "tonk:_";
 
-/// Resolve every renderable view by querying the view concept constrained to
-/// the model. Fall back to `tonk:_` only when no model-specific row has a
-/// `display`, matching the browser's empty-frame fallback boundary.
-async fn resolve_views<B: QueryBackend>(
+/// Resolve one facet's template from the model's `show` dictionary.
+/// Falls back to the `tonk:_` default-model dictionary when the model
+/// has no entry for the facet, matching the browser's
+/// `spawn_default_view`. Returns `None` only when neither carries it.
+async fn resolve_view<B: QueryBackend>(
     backend: &B,
-    view_descriptor: &serde_json::Value,
+    facet: &str,
     model_entity: &str,
-) -> Result<Vec<ResolvedView>, RenderError> {
-    let views = query_views(backend, view_descriptor, model_entity).await?;
-    if !views.is_empty() {
-        return Ok(views);
+) -> Result<Option<ResolvedView>, RenderError> {
+    if let Some(view) = query_view(backend, facet, model_entity).await? {
+        return Ok(Some(view));
     }
-    query_views(backend, view_descriptor, DEFAULT_MODEL).await
+    // No model-specific entry: try the `tonk:_` default.
+    query_view(backend, facet, DEFAULT_MODEL).await
 }
 
-/// Run the view-by-model query for one model value, drop rows without a
-/// `display`, and return all remaining rows in view-entity order.
-async fn query_views<B: QueryBackend>(
+/// Run the view query for one model entity, fold the entry rows into
+/// the `show` dictionary, and read the facet's template (plus the
+/// portal marker).
+async fn query_view<B: QueryBackend>(
     backend: &B,
-    view_descriptor: &serde_json::Value,
+    facet: &str,
     model_entity: &str,
-) -> Result<Vec<ResolvedView>, RenderError> {
-    let query = view_by_model_query(view_descriptor, model_entity)
+) -> Result<Option<ResolvedView>, RenderError> {
+    let query = view_query(model_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
-    let mut views: Vec<ResolvedView> = rows
-        .into_iter()
-        .filter_map(|row| {
-            let display = ipld_string(row.fields.get("display"))?;
-            let is_portal = ipld_string(row.fields.get("type")).as_deref() == Some("text/html");
-            Some(ResolvedView {
-                entity: row.this,
-                display,
-                is_portal,
-            })
-        })
-        .collect();
-    views.sort_by(|a, b| a.entity.cmp(&b.entity));
-    Ok(views)
+    let folded = select_rows(rows);
+    let Some(row) = folded.first() else {
+        return Ok(None);
+    };
+    let Some(display) = show_template(row, facet) else {
+        return Ok(None);
+    };
+    let is_portal = show_template(row, TYPE_FACET) == Some("text/html");
+    Ok(Some(ResolvedView {
+        display: display.to_owned(),
+        is_portal,
+    }))
 }
 
 /// Lower a `tonk_schema::query::Query` to a concept query and run it

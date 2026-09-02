@@ -19,60 +19,44 @@
 # ============================================================
 
 # The `view` concept. Shape matches what `<tonk-display>` queries
-# (resolve.rs `view_predicate`): a `model` (the concept it renders)
-# and a `display` (the HTML template). Pinned to the stable
-# `tonk:view` URI so <tonk-display> can refer to the built-in view
-# concept directly, without a name-resolution round-trip.
+# (resolve.rs `view_predicate`): the instance's `this` IS the model
+# entity, and `show` is its presentations keyed by facet (`ui` for
+# the detail view, `directory` for the entity-set view, `label`,
+# `title`, or any facet a `view=` attribute names). Each entry lands
+# as `<model> xyz.tonk.view/<facet> <template>`; cardinality is one
+# per entry, so re-asserting a facet supersedes its template. Pinned
+# to the stable `tonk:view` URI so <tonk-display> can refer to the
+# built-in view concept directly, without a name-resolution
+# round-trip.
 concept!: &view
   this: tonk:view
-  description: A display template (model, display) for rendering an entity
+  description: A model's presentations, keyed by facet (ui, directory, label, title, ...)
   with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
+    show:
+      description: HTML templates keyed by facet
+      the: xyz.tonk.view
       cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/display
-      cardinality: one
-      as: text
+      as: {[symbol]: text}
 
-concept!: &view/directory
-  this: tonk:view/directory
-  description: A directory view used by tonk-display when entity is not set.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the view
-      the: xyz.tonk.view/directory
-      cardinality: one
-      as: text
-
-# The default directory view: `model: tonk:_` matches any model with no
-# specific `view/directory`. `tonk:_` is the wildcard-model sentinel — a
-# valid entity URI standing in for "no specific model" (the `model` field
-# is `as: entity`, so the value must be a real entity, not bare text).
-# <tonk-display> with no `entity` resolves a directory view for the model
-# first; finding none, it falls back to this. It renders the model's
-# instances in a <wa-carousel>, one slide per instance, each a nested
-# single-entity <tonk-display> (which then resolves its own view, or this
-# default's detail counterpart). The nested `model` is threaded from the
-# host via `{dom.host/model}`, since an instance carries no pointer to
-# its own model.
-view/directory!:
-  this: id:tonk:view/directory/default
-  model: tonk:_
-  display: |
-    <wa-carousel class="vertical seamless" pagination orientation="vertical">
-      <wa-carousel-item subject={this}>
-        <tonk-display entity={this} model={dom.host/model} />
-      </wa-carousel-item>
-    </wa-carousel>
+# The default directory view: `this: tonk:_` matches any model whose
+# own `show` dictionary has no `directory` entry. `tonk:_` is the
+# wildcard-model sentinel — a valid entity URI standing in for "no
+# specific model". <tonk-display> with no `entity` reads the model's
+# own `directory` facet first; finding none, it falls back to this.
+# It renders the model's instances in a <wa-carousel>, one slide per
+# instance, each a nested single-entity <tonk-display> (which then
+# resolves its own view, or the notation fallback). The nested
+# `model` is threaded from the host via `{dom.host/model}`, since an
+# instance carries no pointer to its own model.
+view!:
+  this: tonk:_
+  show:
+    directory: |
+      <wa-carousel class="vertical seamless" pagination orientation="vertical">
+        <wa-carousel-item subject={this}>
+          <tonk-display entity={this} model={dom.host/model} />
+        </wa-carousel-item>
+      </wa-carousel>
 
 
 # ============================================================
@@ -95,74 +79,74 @@ concept!: &blank
       as: entity
 
 view!:
-  this: id:tonk:blank/view
-  model: tonk:blank
-  display: |
-    <div class="blank-canvas">
-      <style>
-        .blank-canvas {
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          min-height: 100dvh;
-          gap: var(--wa-space-2xl);
-          width: 100%;
-          max-width: 620px;
-          margin: 0 auto;
-          padding: var(--wa-space-3xl) var(--wa-space-2xl);
-          color: var(--wa-color-text-normal);
-          font-family: var(--wa-font-family-body);
-        }
-        .blank-canvas__label {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--wa-color-text-quiet);
-        }
-        .blank-canvas__title {
-          margin: 0;
-          padding: 0;
-          background: transparent;
-          color: var(--wa-color-text-normal);
-          font-family: var(--wa-font-family-body);
-          font-size: var(--wa-font-size-2xl);
-          font-weight: var(--wa-font-weight-normal);
-          letter-spacing: -0.02em;
-        }
-        .blank-canvas__deeplink {
-          display: flex;
-          flex-direction: column;
-          gap: var(--wa-space-xs);
-          align-items: flex-start;
-        }
-        /* `tonk-display` is light DOM and projects lifecycle slots by
-           toggling `hidden`. Its custom-element display rule outranks the UA
-           default, so enforce the inactive state here. */
-        .blank-canvas__deeplink tonk-display > [slot][hidden] {
-          display: none !important;
-        }
-      </style>
-      <span class="blank-canvas__label">no template &middot; empty view</span>
-      <h1 class="blank-canvas__title">your starting layout is in place</h1>
-      <section class="blank-canvas__deeplink">
-        <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
-        <tonk-origin>
-          <tonk-display
-            entity={subject}
-            bind:base="data-base"
-            model=tonk:agent-invite
-            data-page="this repo">
+  this: tonk:blank
+  show:
+    ui: |
+      <div class="blank-canvas">
+        <style>
+          .blank-canvas {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 100dvh;
+            gap: var(--wa-space-2xl);
+            width: 100%;
+            max-width: 620px;
+            margin: 0 auto;
+            padding: var(--wa-space-3xl) var(--wa-space-2xl);
+            color: var(--wa-color-text-normal);
+            font-family: var(--wa-font-family-body);
+          }
+          .blank-canvas__label {
+            font-family: var(--wa-font-family-code);
+            font-size: var(--wa-font-size-xs);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--wa-color-text-quiet);
+          }
+          .blank-canvas__title {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            color: var(--wa-color-text-normal);
+            font-family: var(--wa-font-family-body);
+            font-size: var(--wa-font-size-2xl);
+            font-weight: var(--wa-font-weight-normal);
+            letter-spacing: -0.02em;
+          }
+          .blank-canvas__deeplink {
+            display: flex;
+            flex-direction: column;
+            gap: var(--wa-space-xs);
+            align-items: flex-start;
+          }
+          /* `tonk-display` is light DOM and projects lifecycle slots by
+             toggling `hidden`. Its custom-element display rule outranks the UA
+             default, so enforce the inactive state here. */
+          .blank-canvas__deeplink tonk-display > [slot][hidden] {
+            display: none !important;
+          }
+        </style>
+        <span class="blank-canvas__label">no template &middot; empty view</span>
+        <h1 class="blank-canvas__title">your starting layout is in place</h1>
+        <section class="blank-canvas__deeplink">
+          <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
+          <tonk-origin>
             <tonk-display
-              slot="no-entity"
               entity={subject}
-              model=tonk:share/blocked>
-              <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
+              bind:base="data-base"
+              model=tonk:agent-invite
+              data-page="this repo">
+              <tonk-display
+                slot="no-entity"
+                entity={subject}
+                model=tonk:share/blocked>
+                <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
+              </tonk-display>
             </tonk-display>
-          </tonk-display>
-        </tonk-origin>
-      </section>
-    </div>
+          </tonk-origin>
+        </section>
+      </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form
 # asserts this transient command; the worker's `CreateSpaceHandler`
@@ -326,32 +310,32 @@ concept!: &invitation
 # longer concatenates it from parts — shortening is an async round-trip a
 # template can't make, so the whole URL arrives ready to render.
 # `<wa-copy-button>` copies the same value.
-view!: &invitation/link
-  this: id:invitation/link
-  model: invitation
-  display: |
-    <div class="invite-link">
-      <style>
-        /* Full-width invite field: the URL input fills the row and the
-           copy button rides inside it as a suffix, so it reads as one
-           control (matching the wireframe) rather than a narrow box with
-           a tiny detached icon. */
-        .invite-link { display: block; }
-        .invite-link__url { display: block; width: 100%; }
-      </style>
-      <wa-input
-        class="invite-link__url"
-        label="Share link"
-        readonly
-        value="{link}"
-      >
-        <wa-copy-button
-          slot="end"
-          class="invite-link__copy"
+view!:
+  this: invitation
+  show:
+    ui: |
+      <div class="invite-link">
+        <style>
+          /* Full-width invite field: the URL input fills the row and the
+             copy button rides inside it as a suffix, so it reads as one
+             control (matching the wireframe) rather than a narrow box with
+             a tiny detached icon. */
+          .invite-link { display: block; }
+          .invite-link__url { display: block; width: 100%; }
+        </style>
+        <wa-input
+          class="invite-link__url"
+          label="Share link"
+          readonly
           value="{link}"
-        ></wa-copy-button>
-      </wa-input>
-    </div>
+        >
+          <wa-copy-button
+            slot="end"
+            class="invite-link__copy"
+            value="{link}"
+          ></wa-copy-button>
+        </wa-input>
+      </div>
 
 # The agent-invite concept: the live `tonk:invitation` joined with the
 # repository's display `name`, both keyed by the repo subject. The rule
@@ -415,54 +399,54 @@ concept!: &share/blocked
       as: float
 
 view!:
-  this: id:tonk:share/blocked/view
-  model: tonk:share/blocked
-  display: |
-    <div class="local-invite-notice">
-      <style>
-        .local-invite-notice {
-          display: flex;
-          flex-direction: column;
-          gap: 7px;
-          width: min(432px, 100%);
-          --edge-ink: #38182a;
-          --edge-soft: #5b4953;
-          --edge-panel: #f7f6f5;
-          --edge-ring: rgba(56,24,42,.28);
-          color: var(--edge-soft);
-          font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
-        }
-        :root.wa-dark .local-invite-notice {
-          --edge-ink: #e2dfdd;
-          --edge-soft: #c8c3bf;
-          --edge-panel: #1b1718;
-          --edge-ring: rgba(226,223,221,.28);
-        }
-        .local-invite-notice__label {
-          min-height: 36px;
-          padding: 9px 12px;
-          display: flex;
-          align-items: flex-end;
-          background: var(--edge-panel);
-          box-shadow: 0 0 0 1px var(--edge-ring);
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: lowercase;
-        }
-        .local-invite-notice p {
-          margin: 0;
-          min-height: 36px;
-          padding: 12px 14px;
-          background: var(--edge-panel);
-          box-shadow: 0 0 0 1px var(--edge-ring);
-          font-size: 13px;
-          line-height: 1.55;
-          text-wrap: pretty;
-        }
-      </style>
-      <span class="local-invite-notice__label">sharing unavailable</span>
-      <p>{detail}</p>
-    </div>
+  this: tonk:share/blocked
+  show:
+    ui: |
+      <div class="local-invite-notice">
+        <style>
+          .local-invite-notice {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            width: min(432px, 100%);
+            --edge-ink: #38182a;
+            --edge-soft: #5b4953;
+            --edge-panel: #f7f6f5;
+            --edge-ring: rgba(56,24,42,.28);
+            color: var(--edge-soft);
+            font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+          }
+          :root.wa-dark .local-invite-notice {
+            --edge-ink: #e2dfdd;
+            --edge-soft: #c8c3bf;
+            --edge-panel: #1b1718;
+            --edge-ring: rgba(226,223,221,.28);
+          }
+          .local-invite-notice__label {
+            min-height: 36px;
+            padding: 9px 12px;
+            display: flex;
+            align-items: flex-end;
+            background: var(--edge-panel);
+            box-shadow: 0 0 0 1px var(--edge-ring);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: lowercase;
+          }
+          .local-invite-notice p {
+            margin: 0;
+            min-height: 36px;
+            padding: 12px 14px;
+            background: var(--edge-panel);
+            box-shadow: 0 0 0 1px var(--edge-ring);
+            font-size: 13px;
+            line-height: 1.55;
+            text-wrap: pretty;
+          }
+        </style>
+        <span class="local-invite-notice__label">sharing unavailable</span>
+        <p>{detail}</p>
+      </div>
 
 # Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
 # and its live `tonk:invitation` on the same subject (`?this`). `?this`
@@ -493,60 +477,60 @@ rule!:
 # origin base as `data-base` (from `<tonk-origin>`). `<wa-copy-button>`
 # copies the assembled prompt via its `value`.
 view!:
-  this: id:agent-invite/prompt
-  model: tonk:agent-invite
-  display: |
-    <div class="agent-prompt">
-      <style>
-        .agent-prompt { border: var(--wa-border-width-s) solid var(--wa-color-surface-border); border-radius: var(--wa-border-radius-m); background: var(--wa-color-surface-lowered); overflow: hidden; }
-        .agent-prompt__bar { display: flex; align-items: center; justify-content: space-between; padding: var(--wa-space-s) var(--wa-space-m); border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
-        .agent-prompt__label { font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-text-quiet); }
-        .agent-prompt__copy { color: var(--wa-color-text-quiet); }
-        .agent-prompt__copy::part(button) {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          padding: var(--wa-space-xs);
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          border-radius: var(--wa-border-radius-m);
-          background: var(--wa-color-surface-default);
-          color: var(--wa-color-text-quiet);
-          transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
-        }
-        .agent-prompt__copy::part(button):hover {
-          background: var(--wa-color-neutral-fill-quiet);
-          border-color: var(--wa-color-neutral-border-loud);
-          color: var(--wa-color-text-normal);
-        }
-        .agent-prompt__copy::part(copy-icon) { font-size: 15px; }
-        .agent-prompt__pre { margin: 0; padding: var(--wa-space-l) var(--wa-space-m); font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-s); line-height: var(--wa-line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wa-color-text-normal); }
-      </style>
-      <div class="agent-prompt__bar">
-        <span class="agent-prompt__label">prompt for your agent</span>
-        <wa-copy-button class="agent-prompt__copy" value="You're helping build the &quot;{name}&quot; repo.
+  this: tonk:agent-invite
+  show:
+    ui: |
+      <div class="agent-prompt">
+        <style>
+          .agent-prompt { border: var(--wa-border-width-s) solid var(--wa-color-surface-border); border-radius: var(--wa-border-radius-m); background: var(--wa-color-surface-lowered); overflow: hidden; }
+          .agent-prompt__bar { display: flex; align-items: center; justify-content: space-between; padding: var(--wa-space-s) var(--wa-space-m); border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+          .agent-prompt__label { font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-text-quiet); }
+          .agent-prompt__copy { color: var(--wa-color-text-quiet); }
+          .agent-prompt__copy::part(button) {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: var(--wa-space-xs);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-m);
+            background: var(--wa-color-surface-default);
+            color: var(--wa-color-text-quiet);
+            transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+          }
+          .agent-prompt__copy::part(button):hover {
+            background: var(--wa-color-neutral-fill-quiet);
+            border-color: var(--wa-color-neutral-border-loud);
+            color: var(--wa-color-text-normal);
+          }
+          .agent-prompt__copy::part(copy-icon) { font-size: 15px; }
+          .agent-prompt__pre { margin: 0; padding: var(--wa-space-l) var(--wa-space-m); font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-s); line-height: var(--wa-line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wa-color-text-normal); }
+        </style>
+        <div class="agent-prompt__bar">
+          <span class="agent-prompt__label">prompt for your agent</span>
+          <wa-copy-button class="agent-prompt__copy" value="You're helping build the &quot;{name}&quot; repo.
 
-    Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+      Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
 
-    Ask me where I'd like to keep the &quot;{name}&quot; tonk on this machine, then cd into that folder and run:
+      Ask me where I'd like to keep the &quot;{name}&quot; tonk on this machine, then cd into that folder and run:
 
-      npx @tonk/cli join '{link}'
-      npx @tonk/cli guide    # how to drive the CLI
-      npx @tonk/cli schema   # concepts already on the branch
+        npx @tonk/cli join '{link}'
+        npx @tonk/cli guide    # how to drive the CLI
+        npx @tonk/cli schema   # concepts already on the branch
 
-    Then build."></wa-copy-button>
+      Then build."></wa-copy-button>
+        </div>
+        <pre class="agent-prompt__pre">You're helping build the "{name}" repo.
+
+      Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+
+      Ask me where I'd like to keep the "{name}" tonk on this machine, then cd into that folder and run:
+
+        npx @tonk/cli join '{link}'
+        npx @tonk/cli guide    # how to drive the CLI
+        npx @tonk/cli schema   # concepts already on the branch
+
+      Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.</pre>
       </div>
-      <pre class="agent-prompt__pre">You're helping build the "{name}" repo.
-
-    Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
-
-    Ask me where I'd like to keep the "{name}" tonk on this machine, then cd into that folder and run:
-
-      npx @tonk/cli join '{link}'
-      npx @tonk/cli guide    # how to drive the CLI
-      npx @tonk/cli schema   # concepts already on the branch
-
-    Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.</pre>
-    </div>
 
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
@@ -610,146 +594,146 @@ command!: &member/expel
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
-view!: &member/row
-  this: id:tonk:member/row
-  model: tonk:member
-  display: |
-    <div class="roster__row" data-role={role}>
-      <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
-      <span class="roster__identity">
-        <span class="roster__name">{name}</span>
-        <span class="roster__did" title={member}><bdi>{member}</bdi></span>
-      </span>
-      <span class="roster__role" data-role={role}>{role}</span>
-    </div>
+view!:
+  this: tonk:member
+  show:
+    ui: |
+      <div class="roster__row" data-role={role}>
+        <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
+        <span class="roster__identity">
+          <span class="roster__name">{name}</span>
+          <span class="roster__did" title={member}><bdi>{member}</bdi></span>
+        </span>
+        <span class="roster__role" data-role={role}>{role}</span>
+      </div>
 
 # The roster — every `tonk:member` instance rendered as a row. Mounted
 # in the invite panel via `<tonk-display model=tonk:member>` (no
 # `entity`, so the directory view resolves and iterates all members).
-view/directory!:
-  this: id:tonk:member/roster
-  model: tonk:member
-  display: |
-    <div class="roster">
-      <style>
-        /* Share-dialog roster section: a labelled block under the invite
-           link. (Styled here because the roster view always mounts with
-           it, and the share dialog has no <style> of its own.) */
-        .roster-section {
-          margin-top: var(--wa-space-l);
-        }
-        .roster-section__label {
-          margin: 0 0 var(--wa-space-2xs);
-          font-size: var(--wa-font-size-xs);
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-          color: var(--wa-color-text-quiet);
-        }
-        .roster {
-          display: flex;
-          flex-direction: column;
-        }
-        /* Each member instance mounts as a nested <tonk-display>; let the
-           row fill the width so avatar / did / badge lay out across it. */
-        .roster > tonk-display,
-        .roster > tonk-display > tonk-view {
-          display: block;
-        }
-        .roster__row {
-          display: flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          padding: var(--wa-space-xs) 0;
-          border-bottom: 1px solid var(--wa-color-surface-border);
-          font-size: var(--wa-font-size-s);
-        }
-        .roster > tonk-display:last-child .roster__row {
-          border-bottom: none;
-        }
-        /* The sigil-glyph avatar: a deterministic identity glyph hashed
-           from the member DID, CLIPPED to a circle. The sigil renders a
-           square SVG; `border-radius:50%` + `overflow:hidden` on the host
-           clips it round (matching the wireframe avatars). The sprite is
-           supplied by the sealed guest, so it paints inside the opaque
-           iframe. */
-        .roster__avatar {
-          flex: none;
-          width: 28px;
-          height: 28px;
-          border-radius: 50%;
-          border: 1px solid var(--wa-color-surface-border);
-          overflow: hidden;
-        }
-        /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
-           the head (with a leading ellipsis), so the tail stays visible.
-           `<bdi>` keeps the DID itself rendering left-to-right inside the
-           rtl box. Monospace, quiet — a fallback identity until names land. */
-        /* The name + DID column. Grows to fill the row, pushing the role
-           badge to the right edge. */
-        .roster__identity {
-          display: flex;
-          flex-direction: column;
-          flex: 1 1 auto;
-          min-width: 0;
-        }
-        /* The display name — the primary identifier. */
-        .roster__name {
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-normal);
-        }
-        .roster__did {
-          /* Cap to about the last 8 chars (+ the leading ellipsis); the
-             full DID is in `title`. A quiet sub-line under the name. */
-          max-width: 9ch;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          direction: rtl;
-          text-align: left;
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-xs);
-          color: var(--wa-color-text-quiet);
-        }
-        /* The raw role URI is hidden; the badge label comes from ::after
-           keyed on data-role. Square brutalist chip, matching the wireframe:
-           founder is filled (loud), member is outline. */
-        .roster__role {
-          flex: none;
-          font-size: 0;
-          line-height: 0;
-          color: transparent;
-        }
-        .roster__role::after {
-          display: inline-block;
-          font-family: var(--wa-font-family-code);
-          font-size: 11px;
-          line-height: 1.4;
-          letter-spacing: 0.02em;
-          text-transform: lowercase;
-          padding: 1px 7px;
-          border: 1px solid var(--wa-color-text-normal);
-          color: var(--wa-color-text-normal);
-          content: attr(data-role);
-        }
-        .roster__role[data-role="tonk:founder"]::after {
-          content: "founder";
-          background: var(--wa-color-text-normal);
-          color: var(--wa-color-surface-default);
-        }
-        .roster__role[data-role="tonk:admin"]::after {
-          content: "admin";
-        }
-        .roster__role[data-role="tonk:member"]::after {
-          content: "member";
-          color: var(--wa-color-text-quiet);
-          border-color: var(--wa-color-surface-border);
-        }
-      </style>
-      <tonk-display entity={this} model={dom.host/model} />
-    </div>
+view!:
+  this: tonk:member
+  show:
+    directory: |
+      <div class="roster">
+        <style>
+          /* Share-dialog roster section: a labelled block under the invite
+             link. (Styled here because the roster view always mounts with
+             it, and the share dialog has no <style> of its own.) */
+          .roster-section {
+            margin-top: var(--wa-space-l);
+          }
+          .roster-section__label {
+            margin: 0 0 var(--wa-space-2xs);
+            font-size: var(--wa-font-size-xs);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--wa-color-text-quiet);
+          }
+          .roster {
+            display: flex;
+            flex-direction: column;
+          }
+          /* Each member instance mounts as a nested <tonk-display>; let the
+             row fill the width so avatar / did / badge lay out across it. */
+          .roster > tonk-display,
+          .roster > tonk-display > tonk-view {
+            display: block;
+          }
+          .roster__row {
+            display: flex;
+            align-items: center;
+            gap: var(--wa-space-s);
+            padding: var(--wa-space-xs) 0;
+            border-bottom: 1px solid var(--wa-color-surface-border);
+            font-size: var(--wa-font-size-s);
+          }
+          .roster > tonk-display:last-child .roster__row {
+            border-bottom: none;
+          }
+          /* The sigil-glyph avatar: a deterministic identity glyph hashed
+             from the member DID, CLIPPED to a circle. The sigil renders a
+             square SVG; `border-radius:50%` + `overflow:hidden` on the host
+             clips it round (matching the wireframe avatars). The sprite is
+             supplied by the sealed guest, so it paints inside the opaque
+             iframe. */
+          .roster__avatar {
+            flex: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid var(--wa-color-surface-border);
+            overflow: hidden;
+          }
+          /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
+             the head (with a leading ellipsis), so the tail stays visible.
+             `<bdi>` keeps the DID itself rendering left-to-right inside the
+             rtl box. Monospace, quiet — a fallback identity until names land. */
+          /* The name + DID column. Grows to fill the row, pushing the role
+             badge to the right edge. */
+          .roster__identity {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-width: 0;
+          }
+          /* The display name — the primary identifier. */
+          .roster__name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-normal);
+          }
+          .roster__did {
+            /* Cap to about the last 8 chars (+ the leading ellipsis); the
+               full DID is in `title`. A quiet sub-line under the name. */
+            max-width: 9ch;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            direction: rtl;
+            text-align: left;
+            font-family: var(--wa-font-family-code);
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+          }
+          /* The raw role URI is hidden; the badge label comes from ::after
+             keyed on data-role. Square brutalist chip, matching the wireframe:
+             founder is filled (loud), member is outline. */
+          .roster__role {
+            flex: none;
+            font-size: 0;
+            line-height: 0;
+            color: transparent;
+          }
+          .roster__role::after {
+            display: inline-block;
+            font-family: var(--wa-font-family-code);
+            font-size: 11px;
+            line-height: 1.4;
+            letter-spacing: 0.02em;
+            text-transform: lowercase;
+            padding: 1px 7px;
+            border: 1px solid var(--wa-color-text-normal);
+            color: var(--wa-color-text-normal);
+            content: attr(data-role);
+          }
+          .roster__role[data-role="tonk:founder"]::after {
+            content: "founder";
+            background: var(--wa-color-text-normal);
+            color: var(--wa-color-surface-default);
+          }
+          .roster__role[data-role="tonk:admin"]::after {
+            content: "admin";
+          }
+          .roster__role[data-role="tonk:member"]::after {
+            content: "member";
+            color: var(--wa-color-text-quiet);
+            border-color: var(--wa-color-surface-border);
+          }
+        </style>
+        <tonk-display entity={this} model={dom.host/model} />
+      </div>
 
 # NOTE: the FAB's pause affordance is no longer a space-side view. It moved to
 # the host-chrome `<ui-sync-status onpause=tonk:pause-sync>` cap, which
@@ -840,16 +824,16 @@ rule!:
 # no model, and the mount's `slot="no-model"` renders "Untitled" until it
 # does (the worker seeds the name at creation, sync carries it on join).
 view!:
-  this: id:tonk:repository/name-view
-  model: tonk:repository
-  display: |
-    <tonk-editable
-      class="workspace__title-input"
-      value={name}
-      data-subject={this}
-      onchange=tonk/rename-repository
-      aria-label="Space name"
-    ></tonk-editable>
+  this: tonk:repository
+  show:
+    ui: |
+      <tonk-editable
+        class="workspace__title-input"
+        value={name}
+        data-subject={this}
+        onchange=tonk/rename-repository
+        aria-label="Space name"
+      ></tonk-editable>
 
 # ============================================================
 # SELF-IDENTITY CHIP
@@ -893,70 +877,29 @@ command!: &profile/rename
       the: dom.event.current-target.dataset/rename
       as: entity
 
-# A read-only label view kind. Its `display` template lives under a
-# distinct attribute (`xyz.tonk.view/label`) so a model can carry both
-# the editable `tonk:view` banner above AND a plain-text label view
-# without the two colliding under the default `tonk:view` resolution.
-# `<tonk-display>` selects it explicitly with `view=tonk:view/label`.
-concept!: &view/label
-  this: tonk:view/label
-  description: A plain, read-only label view selected via `view=tonk:view/label`.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the label view
-      the: xyz.tonk.view/label
-      cardinality: one
-      as: text
+# The repository's name, as two extra facets of `tonk:repository`'s
+# dictionary. `label` — plain, non-editable text: the Hub card mounts
+# `<tonk-display model=tonk:repository entity={subject} view=label>`
+# inside a per-space `with={subject}` routing context, so each card
+# shows its own space's current name (read from that space's
+# `tonk/repository`, the cross-device source of truth) rather than an
+# editable banner. `title` — the browser tab's title: the space
+# chrome mounts `view=title` inside a per-space `with={id}` routing
+# context; `<tonk-title>` renders nothing — it pushes the text to the
+# host page, which owns `document.title`. Distinct facets, so the
+# editable banner, the plain text, and the title never collide under
+# the default `ui` resolution.
+view!:
+  this: tonk:repository
+  show:
+    label: |
+      {name}
 
-# The repository's name as plain, non-editable text. The Hub card
-# mounts this via `<tonk-display model=tonk:repository entity={subject}
-# view=tonk:view/label>` inside a per-space `with={subject}` routing
-# context, so each card shows its own space's current name (read from
-# that space's `tonk/repository`, the cross-device source of truth)
-# rather than an editable banner. Falls back to nothing when unset.
-view/label!:
-  this: id:tonk:repository/label-view
-  model: tonk:repository
-  display: |
-    {name}
-
-# A tab-title view kind. Its `display` template lives under a distinct
-# attribute (`xyz.tonk.view/title`) so a model can carry the editable
-# `tonk:view` banner, the plain `tonk:view/label` text, AND a title
-# template without the three colliding under the default resolution.
-# `<tonk-display>` selects it explicitly with `view=tonk:view/title`.
-concept!: &view/title
-  this: tonk:view/title
-  description: A browser-tab-title view selected via `view=tonk:view/title`.
-  with:
-    model:
-      description: Concept this view renders
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the title view
-      the: xyz.tonk.view/title
-      cardinality: one
-      as: text
-
-# The repository's name as the browser tab's title. The space chrome
-# mounts this via `<tonk-display model=tonk:repository entity={id}
-# view=tonk:view/title>` inside a per-space `with={id}` routing context,
-# so the tab names the focused space (read from that space's
-# `tonk/repository`, the cross-device source of truth). `<tonk-title>`
-# renders nothing — it pushes the text to the host page, which owns
-# `document.title`.
-view/title!:
-  this: id:tonk:repository/title-view
-  model: tonk:repository
-  display: |
-    <tonk-title text="{name} — Tonk"></tonk-title>
+view!:
+  this: tonk:repository
+  show:
+    title: |
+      <tonk-title text="{name} — Tonk"></tonk-title>
 
 # ============================================================
 # BOARD
@@ -1049,180 +992,180 @@ concept!: &portal
 # `subject={field}` and bottoms out in the tile's content display.
 
 view!:
-  this: tonk:board
-  model: board
-  display: |
-    <tonk-strip>
-      <style>
-        /* Board layout travels with the view, so any route that
-           mounts `model=board` renders the strip identically
-           (board route, bare display route, embedded tile). The strip
-           caps its OWN height at the viewport (`block-size: 100dvh`)
-           rather than borrowing a fixed height from the document — so
-           its columns scroll vertically inside a bounded box and the
-           strip scrolls horizontally, without locking the page. (Other
-           views let the page scroll; the board is a self-contained
-           fixed-height scroller.)
+  this: board
+  show:
+    ui: |
+      <tonk-strip>
+        <style>
+          /* Board layout travels with the view, so any route that
+             mounts `model=board` renders the strip identically
+             (board route, bare display route, embedded tile). The strip
+             caps its OWN height at the viewport (`block-size: 100dvh`)
+             rather than borrowing a fixed height from the document — so
+             its columns scroll vertically inside a bounded box and the
+             strip scrolls horizontally, without locking the page. (Other
+             views let the page scroll; the board is a self-contained
+             fixed-height scroller.)
 
-           The `tonk-display`/`tonk-view` layers that wrap each
-           level are pure rendering wrappers, not layout boxes;
-           `display: contents` makes them transparent so the strip
-           is a flex container over real `<tonk-column>` items. */
-        tonk-display:has(> tonk-view > tonk-strip),
-        tonk-display > tonk-view:has(> tonk-strip) {
-          display: contents;
-        }
+             The `tonk-display`/`tonk-view` layers that wrap each
+             level are pure rendering wrappers, not layout boxes;
+             `display: contents` makes them transparent so the strip
+             is a flex container over real `<tonk-column>` items. */
+          tonk-display:has(> tonk-view > tonk-strip),
+          tonk-display > tonk-view:has(> tonk-strip) {
+            display: contents;
+          }
 
-        tonk-strip {
-          --pitch: 16px;
-          --cell: 64px;
-          /* Narrow gutter between columns — just enough that the
-             contrasting strip fill reads as a seam. */
-          --gap: 4px;
+          tonk-strip {
+            --pitch: 16px;
+            --cell: 64px;
+            /* Narrow gutter between columns — just enough that the
+               contrasting strip fill reads as a seam. */
+            --gap: 4px;
 
-          display: flex;
-          flex-direction: row;
-          align-items: stretch;
-          gap: var(--gap);
-          padding: 0;
-          box-sizing: border-box;
-          block-size: 100dvh;
-          inline-size: 100%;
-          overflow-x: auto;
-          overflow-y: hidden;
-          scroll-snap-type: x proximity;
-          /* The strip's fill shows through every seam — between
-             columns AND between tiles within a column (since
-             `<tonk-column>` is transparent). The neutral-fill token
-             adapts with dark / light mode. */
-          background-color: var(--wa-color-neutral-fill-normal);
-        }
+            display: flex;
+            flex-direction: row;
+            align-items: stretch;
+            gap: var(--gap);
+            padding: 0;
+            box-sizing: border-box;
+            block-size: 100dvh;
+            inline-size: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scroll-snap-type: x proximity;
+            /* The strip's fill shows through every seam — between
+               columns AND between tiles within a column (since
+               `<tonk-column>` is transparent). The neutral-fill token
+               adapts with dark / light mode. */
+            background-color: var(--wa-color-neutral-fill-normal);
+          }
 
-        /* The `tonk-display`/`tonk-view` wrappers between the strip
-           and each column are transparent to the strip's flex flow,
-           so each `<tonk-column>` is a direct flex item (its
-           `flex: 0 0 calc(--col-w * --cell)` sizes the column, not
-           the wrapping display). */
-        tonk-strip > tonk-display,
-        tonk-strip > tonk-display > tonk-view {
-          display: contents;
-        }
-      </style>
-      <tonk-display entity={column} model=column-view />
-    </tonk-strip>
-
-view/directory!:
-  this: tonk:board/directory
-  model: board
-  display: |
-    <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+          /* The `tonk-display`/`tonk-view` wrappers between the strip
+             and each column are transparent to the strip's flex flow,
+             so each `<tonk-column>` is a direct flex item (its
+             `flex: 0 0 calc(--col-w * --cell)` sizes the column, not
+             the wrapping display). */
+          tonk-strip > tonk-display,
+          tonk-strip > tonk-display > tonk-view {
+            display: contents;
+          }
+        </style>
+        <tonk-display entity={column} model=column-view />
+      </tonk-strip>
 
 view!:
-  this: tonk:board/column
-  model: column-view
-  display: |
-    <tonk-column style="--col-w: {width};">
-      <style>
-        tonk-column {
-          /* Width is driven by `--col-w` set on the element by this
-             template (one --cell unit is 64px). Tiles stack
-             top-to-bottom inside; overflow is handled here at the
-             column level so the column's dot-grid background scrolls
-             together with the tiles. */
-          flex: 0 0 calc(var(--col-w, 12) * 64px);
-          block-size: 100%;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          overflow-y: auto;
-          overflow-x: hidden;
-          scroll-snap-align: start;
-          min-block-size: 0;
-          /* Transparent so the strip's seam fill shows through the
-             column-to-column and tile-to-tile gaps. The column's
-             grid layer still paints (a `background-image`, not a
-             fill) against whatever the strip provides underneath. */
-          background-color: transparent;
-        }
-
-        tonk-column::-webkit-scrollbar { display: none; }
-
-        /* Tiles size to their content along the column's main axis
-           and stack top-to-bottom. Overflow happens at the COLUMN
-           level (the column is the scroller), never inside a tile,
-           so a tile renders its content unclipped and the user
-           scrolls the whole column. Tiles paint the dark canvas
-           fill; the gaps expose the strip's lighter seam fill. */
-        tonk-column > .tile {
-          flex: 0 0 auto;
-          inline-size: 100%;
-          box-sizing: border-box;
-          background-color: var(--wa-color-neutral-fill-quiet);
-
-          /* Two-layer engineering graph-paper background, applied to
-             each tile (the surface the dark canvas occupies). The
-             grid travels with the tile content because the tile is
-             the visible canvas. `background-attachment: local` ties
-             the grid to the column's scroll so the dots travel with
-             vertical scroll. */
-          --dot-gap: 16px;
-          --dot-size-dim: 0.5px;
-          --dot-size-bright: 0.5px;
-          --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
-          --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
-          background-image:
-            radial-gradient(
-              circle,
-              var(--dot-color-bright) var(--dot-size-bright),
-              transparent calc(var(--dot-size-bright) + 0.5px)
-            ),
-            radial-gradient(
-              circle,
-              var(--dot-color-dim) var(--dot-size-dim),
-              transparent calc(var(--dot-size-dim) + 0.5px)
-            );
-          background-size:
-            calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
-            var(--dot-gap) var(--dot-gap);
-          background-position:
-            calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
-            calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
-          background-attachment: local;
-        }
-
-        /* The inner `<tonk-display>` participates in the column's
-           scroll — it must NOT clip or scroll on its own. */
-        tonk-column > .tile > tonk-display,
-        tonk-column > .tile > tonk-display > tonk-view {
-          display: block;
-          inline-size: 100%;
-          overflow: visible;
-        }
-      </style>
-      <div class="tile" subject={tile}>
-        <tonk-display entity={tile} model=tile />
-      </div>
-    </tonk-column>
+  this: board
+  show:
+    directory: |
+      <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
 
 view!:
-  this: tonk:board/tile
-  model: tile
-  display: |
-    <tonk-display entity={entity} model={model} />
+  this: column-view
+  show:
+    ui: |
+      <tonk-column style="--col-w: {width};">
+        <style>
+          tonk-column {
+            /* Width is driven by `--col-w` set on the element by this
+               template (one --cell unit is 64px). Tiles stack
+               top-to-bottom inside; overflow is handled here at the
+               column level so the column's dot-grid background scrolls
+               together with the tiles. */
+            flex: 0 0 calc(var(--col-w, 12) * 64px);
+            block-size: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            scroll-snap-align: start;
+            min-block-size: 0;
+            /* Transparent so the strip's seam fill shows through the
+               column-to-column and tile-to-tile gaps. The column's
+               grid layer still paints (a `background-image`, not a
+               fill) against whatever the strip provides underneath. */
+            background-color: transparent;
+          }
+
+          tonk-column::-webkit-scrollbar { display: none; }
+
+          /* Tiles size to their content along the column's main axis
+             and stack top-to-bottom. Overflow happens at the COLUMN
+             level (the column is the scroller), never inside a tile,
+             so a tile renders its content unclipped and the user
+             scrolls the whole column. Tiles paint the dark canvas
+             fill; the gaps expose the strip's lighter seam fill. */
+          tonk-column > .tile {
+            flex: 0 0 auto;
+            inline-size: 100%;
+            box-sizing: border-box;
+            background-color: var(--wa-color-neutral-fill-quiet);
+
+            /* Two-layer engineering graph-paper background, applied to
+               each tile (the surface the dark canvas occupies). The
+               grid travels with the tile content because the tile is
+               the visible canvas. `background-attachment: local` ties
+               the grid to the column's scroll so the dots travel with
+               vertical scroll. */
+            --dot-gap: 16px;
+            --dot-size-dim: 0.5px;
+            --dot-size-bright: 0.5px;
+            --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
+            --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
+            background-image:
+              radial-gradient(
+                circle,
+                var(--dot-color-bright) var(--dot-size-bright),
+                transparent calc(var(--dot-size-bright) + 0.5px)
+              ),
+              radial-gradient(
+                circle,
+                var(--dot-color-dim) var(--dot-size-dim),
+                transparent calc(var(--dot-size-dim) + 0.5px)
+              );
+            background-size:
+              calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
+              var(--dot-gap) var(--dot-gap);
+            background-position:
+              calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
+              calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
+            background-attachment: local;
+          }
+
+          /* The inner `<tonk-display>` participates in the column's
+             scroll — it must NOT clip or scroll on its own. */
+          tonk-column > .tile > tonk-display,
+          tonk-column > .tile > tonk-display > tonk-view {
+            display: block;
+            inline-size: 100%;
+            overflow: visible;
+          }
+        </style>
+        <div class="tile" subject={tile}>
+          <tonk-display entity={tile} model=tile />
+        </div>
+      </tonk-column>
 
 view!:
-  this: tonk:inspector
-  model: inspector
-  display: |
-    <tonk-inspector source={source} />
+  this: tile
+  show:
+    ui: |
+      <tonk-display entity={entity} model={model} />
+
+view!:
+  this: inspector
+  show:
+    ui: |
+      <tonk-inspector source={source} />
 
 
 
-view/directory!:
-  this: tonk:inspector/directory
-  model: inspector
-  display: |
-    <tonk-inspector />
+view!:
+  this: inspector
+  show:
+    directory: |
+      <tonk-inspector />
 
 # The canonical bridge from the `portal` concept to the
 # `<tonk-portal>` element. `html:` forces the binding through
@@ -1230,10 +1173,10 @@ view/directory!:
 # this; nesting a `<tonk-display model=portal>` over a portal entity
 # resolves it by model and renders it.
 view!:
-  this: tonk:portal
-  model: portal
-  display: |
-    <tonk-portal html:content={content} />
+  this: portal
+  show:
+    ui: |
+      <tonk-portal html:content={content} />
 
 # A web component carried as branch data. `module` is a JS module the
 # `<tonk-component>` element executes once per document realm — the
@@ -1261,18 +1204,18 @@ concept!: &component
 # `<tonk-display model=component />` in their shell view) to load
 # every component asserted on the branch.
 view!:
-  this: tonk:component
-  model: component
-  display: |
-    <tonk-component module={module} />
+  this: component
+  show:
+    ui: |
+      <tonk-component module={module} />
 
-view/directory!:
-  this: tonk:component/directory
-  model: component
-  display: |
-    <div class="component-loader" hidden>
-      <tonk-component subject={this} module={module}></tonk-component>
-    </div>
+view!:
+  this: component
+  show:
+    directory: |
+      <div class="component-loader" hidden>
+        <tonk-component subject={this} module={module}></tonk-component>
+      </div>
 
 concept!: &db/session:
   this: concept:session
@@ -1467,11 +1410,11 @@ concept!: &site
 # matched `{concept}` on the SAME site entity, so the route model
 # (e.g. `tonk:space/route`) resolves on the site (picking its `site/*` fields)
 # and its own view renders. One indirection: site → its matched route model.
-view!: &site/view
-  this: id:tonk:site/view
-  model: tonk:site
-  display: |
-    <tonk-display entity={this} model={concept} />
+view!:
+  this: tonk:site
+  show:
+    ui: |
+      <tonk-display entity={this} model={concept} />
 
 # ============================================================
 # ROUTING — routes are models picked by the SW per tab
@@ -1522,12 +1465,25 @@ concept!: &space/route
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
-view!: &space/route/view
-  this: id:tonk:space/route/view
-  model: tonk:space/route
-  display: |
-    <tonk-display entity={replica} model=tonk/space />
+# `with=` here, like every other route view: the space view's own content
+# can nest routing consumers (the notebook space mounts an editor), and
+# context reaches them only by cascading down stamped `with` attributes.
+view!:
+  this: tonk:space/route
+  show:
+    ui: |
+      <tonk-display with="{branch}@{repo}" entity={replica} model=tonk/space />
 
 # The workspace shell — the declarative two-portal composition the space route
 # resolves to. It renders OUTER-side (the top document mounts
@@ -1574,15 +1530,15 @@ concept!: &workspace/shell
 # `{dom.host/with}`) need the branch@repo pair on their host chain —
 # subscriptions inherit the site's pinned context without it, but URL
 # builders have nothing to inherit.
-view!: &workspace/shell/view
-  this: id:tonk:workspace/shell/view
-  model: tonk:workspace/shell
-  display: |
-    <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
-      <div class='display-view-slot'>
-        <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
+view!:
+  this: tonk:workspace/shell
+  show:
+    ui: |
+      <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
+        <div class='display-view-slot'>
+          <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
+        </div>
       </div>
-    </div>
 
 # The directory page — `/space/{name}/{model}`. The `{model}` path param is
 # stamped on the site entity (`xyz.tonk.site/model`) and picked here; the view
@@ -1614,11 +1570,11 @@ concept!: &directory/route
 # (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
-view!: &directory/route/view
-  this: id:tonk:directory/route/view
-  model: tonk:directory/route
-  display: |
-    <tonk-display with="{branch}@{repo}" model={model} />
+view!:
+  this: tonk:directory/route
+  show:
+    ui: |
+      <tonk-display with="{branch}@{repo}" model={model} />
 
 # The artifact page — `/space/{name}/{entity}@{model}`. Binds a concrete entity
 # to a model: the view renders that one instance (`<tonk-display entity model>`).
@@ -1647,11 +1603,11 @@ concept!: &artifact/route
       cardinality: one
       as: text
 
-view!: &artifact/route/view
-  this: id:tonk:artifact/route/view
-  model: tonk:artifact/route
-  display: |
-    <tonk-display with="{branch}@{repo}" entity={entity} model={model} />
+view!:
+  this: tonk:artifact/route
+  show:
+    ui: |
+      <tonk-display with="{branch}@{repo}" entity={entity} model={model} />
 
 # The ad-hoc page — `/space/{name}/{entity}@{model}!{view}`. As the artifact
 # page, but with an explicit `view` chosen for the entity rather than the
@@ -1671,7 +1627,7 @@ concept!: &adhoc/route
       cardinality: one
       as: text
     view:
-      description: The view name from the path, picked off the site entity.
+      description: The show facet from the path, picked off the site entity.
       the: xyz.tonk.site/view
       cardinality: one
       as: text
@@ -1686,11 +1642,11 @@ concept!: &adhoc/route
       cardinality: one
       as: text
 
-view!: &adhoc/route/view
-  this: id:tonk:adhoc/route/view
-  model: tonk:adhoc/route
-  display: |
-    <tonk-display with="{branch}@{repo}" entity={entity} model={model} view={view} />
+view!:
+  this: tonk:adhoc/route
+  show:
+    ui: |
+      <tonk-display with="{branch}@{repo}" entity={entity} model={model} view={view} />
 
 # ---- Seeded routes (bootstrap) ----
 #
@@ -1748,11 +1704,11 @@ concept!: &diagnose
 # URL carries no entity, so `<tonk-display>` resolves a `view/directory`
 # for the model. The inspector needs no entity — it renders the whole
 # branch's tree — so the directory view is the right kind.
-view/directory!:
-  this: id:dialog:diagnose/view
-  model: dialog:diagnose
-  display: |
-    <tonk-tree></tonk-tree>
+view!:
+  this: dialog:diagnose
+  show:
+    directory: |
+      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -1794,106 +1750,106 @@ concept!: &blob
 # host's `with` attribute ("{branch}@{repo}"), forwarded through the
 # `{dom.host/with}` binding.
 view!:
-  this: tonk:blob/media-view
-  model: tonk:blob
-  display: |
-    <div subject={this}>
-      <tonk-component>
-        <script type="tonk/module">
-          customElements.get("tonk-blob-media") ||
-            customElements.define("tonk-blob-media", class extends HTMLElement {
-              static observedAttributes = ["entity", "content-type", "name", "with"];
-              #objectUrl = null;
-              #generation = 0;
-              connectedCallback() { this.render(); }
-              attributeChangedCallback() { if (this.isConnected) this.render(); }
-              disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
-              revoke() {
-                if (this.#objectUrl) {
-                  URL.revokeObjectURL(this.#objectUrl);
-                  this.#objectUrl = null;
+  this: tonk:blob
+  show:
+    ui: |
+      <div subject={this}>
+        <tonk-component>
+          <script type="tonk/module">
+            customElements.get("tonk-blob-media") ||
+              customElements.define("tonk-blob-media", class extends HTMLElement {
+                static observedAttributes = ["entity", "content-type", "name", "with"];
+                #objectUrl = null;
+                #generation = 0;
+                connectedCallback() { this.render(); }
+                attributeChangedCallback() { if (this.isConnected) this.render(); }
+                disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
+                revoke() {
+                  if (this.#objectUrl) {
+                    URL.revokeObjectURL(this.#objectUrl);
+                    this.#objectUrl = null;
+                  }
                 }
-              }
-              url() {
-                const scope = this.getAttribute("with") || "";
-                const entity = this.getAttribute("entity") || "";
-                const at = scope.indexOf("@");
-                if (at < 1 || !entity || scope.includes("{")) return null;
-                return "/api/repository/" + scope.slice(at + 1) +
-                  "/branch/" + scope.slice(0, at) + "/blob/" + entity;
-              }
-              async objectUrl() {
-                const url = this.url();
-                if (!url) return null;
-                const resp = await window.fetch(url);
-                if (!resp.ok) return null;
-                return URL.createObjectURL(await resp.blob());
-              }
-              render() {
-                const key = [
-                  this.getAttribute("with"),
-                  this.getAttribute("entity"),
-                  this.getAttribute("content-type"),
-                  this.getAttribute("name"),
-                ].join("|");
-                if (this.dataset.rendered === key) return;
-                this.dataset.rendered = key;
-                this.#generation++;
-                const root = this.shadowRoot || this.attachShadow({ mode: "open" });
-                const type = this.getAttribute("content-type") || "";
-                const name = this.getAttribute("name") || this.getAttribute("entity") || "";
-                this.revoke();
-                if (type.startsWith("image/")) {
-                  root.innerHTML = "<style>img { max-width: 100%; }</style>" +
-                    "<img part=\"media\">";
-                  root.querySelector("img").alt = name;
-                  const generation = this.#generation;
-                  this.objectUrl().then((u) => {
-                    if (!u) {
-                      delete this.dataset.rendered;
-                      return;
-                    }
-                    if (generation !== this.#generation) {
-                      URL.revokeObjectURL(u);
-                      return;
-                    }
-                    this.#objectUrl = u;
-                    root.querySelector("img").src = u;
-                  }).catch(() => { delete this.dataset.rendered; });
-                  return;
+                url() {
+                  const scope = this.getAttribute("with") || "";
+                  const entity = this.getAttribute("entity") || "";
+                  const at = scope.indexOf("@");
+                  if (at < 1 || !entity || scope.includes("{")) return null;
+                  return "/api/repository/" + scope.slice(at + 1) +
+                    "/branch/" + scope.slice(0, at) + "/blob/" + entity;
                 }
-                root.innerHTML =
-                  "<style>" +
-                  "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
-                  "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
-                  "max-width: 28rem; font-family: system-ui, sans-serif; }" +
-                  "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
-                  "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
-                  "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
-                  "[part=action] { cursor: pointer; }" +
-                  "</style>" +
-                  "<div part=\"card\"><span part=\"name\"></span>" +
-                  "<span part=\"badge\"></span>" +
-                  "<button part=\"action\" type=\"button\">Download</button></div>";
-                root.querySelector("[part=name]").textContent = name;
-                root.querySelector("[part=badge]").textContent = type || "file";
-                root.querySelector("[part=action]").addEventListener("click", async () => {
-                  let u;
-                  try {
-                    u = await this.objectUrl();
-                  } catch {
+                async objectUrl() {
+                  const url = this.url();
+                  if (!url) return null;
+                  const resp = await window.fetch(url);
+                  if (!resp.ok) return null;
+                  return URL.createObjectURL(await resp.blob());
+                }
+                render() {
+                  const key = [
+                    this.getAttribute("with"),
+                    this.getAttribute("entity"),
+                    this.getAttribute("content-type"),
+                    this.getAttribute("name"),
+                  ].join("|");
+                  if (this.dataset.rendered === key) return;
+                  this.dataset.rendered = key;
+                  this.#generation++;
+                  const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+                  const type = this.getAttribute("content-type") || "";
+                  const name = this.getAttribute("name") || this.getAttribute("entity") || "";
+                  this.revoke();
+                  if (type.startsWith("image/")) {
+                    root.innerHTML = "<style>img { max-width: 100%; }</style>" +
+                      "<img part=\"media\">";
+                    root.querySelector("img").alt = name;
+                    const generation = this.#generation;
+                    this.objectUrl().then((u) => {
+                      if (!u) {
+                        delete this.dataset.rendered;
+                        return;
+                      }
+                      if (generation !== this.#generation) {
+                        URL.revokeObjectURL(u);
+                        return;
+                      }
+                      this.#objectUrl = u;
+                      root.querySelector("img").src = u;
+                    }).catch(() => { delete this.dataset.rendered; });
                     return;
                   }
-                  if (!u) return;
-                  const a = document.createElement("a");
-                  a.href = u;
-                  a.download = name;
-                  a.click();
-                  URL.revokeObjectURL(u);
-                });
-              }
-            });
-        </script>
-      </tonk-component>
-      <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
-    </div>
+                  root.innerHTML =
+                    "<style>" +
+                    "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
+                    "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
+                    "max-width: 28rem; font-family: system-ui, sans-serif; }" +
+                    "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
+                    "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
+                    "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
+                    "[part=action] { cursor: pointer; }" +
+                    "</style>" +
+                    "<div part=\"card\"><span part=\"name\"></span>" +
+                    "<span part=\"badge\"></span>" +
+                    "<button part=\"action\" type=\"button\">Download</button></div>";
+                  root.querySelector("[part=name]").textContent = name;
+                  root.querySelector("[part=badge]").textContent = type || "file";
+                  root.querySelector("[part=action]").addEventListener("click", async () => {
+                    let u;
+                    try {
+                      u = await this.objectUrl();
+                    } catch {
+                      return;
+                    }
+                    if (!u) return;
+                    const a = document.createElement("a");
+                    a.href = u;
+                    a.download = name;
+                    a.click();
+                    URL.revokeObjectURL(u);
+                  });
+                }
+              });
+          </script>
+        </tonk-component>
+        <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
+      </div>

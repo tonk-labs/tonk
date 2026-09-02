@@ -25,7 +25,12 @@ import { materializeDoc, demarkupDoc } from "./markup";
  *  no raw HTML) but with the extensions we support turned back on: GFM
  *  strikethrough (`~~`) and highlight (`==`, via markdown-it-mark). The
  *  `commonmark` preset disables the built-ins, so we start from it and
- *  re-enable only what we want. */
+ *  re-enable only what we want.
+ *
+ *  Note markdown-it's `breaks` option does NOT help here: it is a
+ *  *renderer* option, applied when markdown-it writes HTML. We consume
+ *  tokens, so a single newline arrives as a `softbreak` token either way.
+ *  The parser's token map below is where it becomes a line break. */
 const markdownIt = MarkdownIt("commonmark", { html: false })
   .enable(["strikethrough"])
   .use(markdownItMark);
@@ -37,6 +42,14 @@ const parser = new MarkdownParser(schema, markdownIt, {
   ...defaultMarkdownParser.tokens,
   s: { mark: "strikethrough" },
   mark: { mark: "highlight" },
+  // A single newline is a LINE BREAK, not a space.
+  //
+  // CommonMark calls it a "soft" break and folds it to a space, so a
+  // newline the author typed vanishes the moment the document is
+  // serialized back: the editor silently reflows their text. Mapping the
+  // token to `hard_break` keeps the break in the document, and the
+  // serializer below writes it back as a bare newline.
+  softbreak: { node: "hard_break" },
 });
 
 /** A leading GFM task-list checkbox (`[ ] ` / `[x] `) in a list item's
@@ -57,6 +70,19 @@ export const serializer = new MarkdownSerializer(
     // materialization stamps and the reparse loop reads back.
     bullet_list(state, node) {
       state.renderList(node, "  ", () => "- ");
+    },
+    // A bare newline, not the default `\`-then-newline. With `breaks` on,
+    // every line break the author types parses as a `hard_break`, so the
+    // default escape would write a backslash into text that never had one.
+    // Trailing breaks are still dropped: they carry no content and would
+    // accumulate blank lines across an edit cycle.
+    hard_break(state, node, parent, index) {
+      for (let i = index + 1; i < parent.childCount; i++) {
+        if (parent.child(i).type !== node.type) {
+          state.write("\n");
+          return;
+        }
+      }
     },
     paragraph(state, node, parent, index) {
       const first = node.firstChild;

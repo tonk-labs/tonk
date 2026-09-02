@@ -566,17 +566,22 @@ fn load_activation_notice(host: HtmlElement) {
             Err(error) => {
                 let problem = user_error::api_problem(AccountAction::LoadRegistration, &error);
                 attempt.finish(tonk_analytics::account::Stage::AccountLoad, problem.outcome);
-                set_text(
-                    &host,
-                    "#account-registration-value",
-                    "Unavailable — reload to retry",
-                );
                 if host.has_attribute(ACCOUNT_NOT_READY) {
                     show_automatic_api_error(&host, AccountAction::LoadRegistration, &error);
                 } else {
                     log_action_error(AccountAction::LoadAccount, &error.to_string());
                 }
-                return;
+                // One failed probe is not an answer. The dashboard often
+                // loads while the worker is still hydrating the account
+                // it navigated in from — activation hands the tab
+                // straight here — and returning froze the panel on
+                // "reload to retry" with `data-backup` never settled,
+                // so nothing downstream (the pending-backup drain, the
+                // e2e waiter) ever ran. Fall into the retry loop below
+                // instead; `Value::Null` marks the probe as unanswered,
+                // which also keeps the enrollment fallthrough from
+                // treating a failure as an authoritative absence.
+                serde_json::Value::Null
             }
         };
         // A linked account the access service does not know is one that
@@ -585,7 +590,8 @@ fn load_activation_notice(host: HtmlElement) {
         // that — registration is web-only — so enroll right here, with
         // the device-chained deposit since no ceremony is at hand, and
         // fall through to the ordinary pending notice.
-        if state["status"].is_null()
+        if !state.is_null()
+            && state["status"].is_null()
             && crate::deployment::get()
                 .await
                 .is_ok_and(|config| config.service_did.is_some())
@@ -620,6 +626,9 @@ fn load_activation_notice(host: HtmlElement) {
                         "Not registered — reload to retry",
                     );
                     show_api_error(&host, AccountAction::LoadAccount, &error);
+                    // Settled the same way the exhausted probe is:
+                    // a reload retries, so say so.
+                    let _ = host.set_attribute("data-backup", "stuck");
                     return;
                 }
             }
@@ -650,6 +659,12 @@ fn load_activation_notice(host: HtmlElement) {
                 if let Some(error) = last_probe_error {
                     log_action_error(AccountAction::LoadAccount, &error);
                 }
+                // The settled answer for a probe that never came:
+                // "stuck" is the state a reload retries, which is what
+                // the message asks for and what the e2e waiter does —
+                // leaving the attribute unset left both waiting on
+                // nothing.
+                let _ = host.set_attribute("data-backup", "stuck");
                 return;
             }
             wait_for(500).await;

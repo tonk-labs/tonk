@@ -56,23 +56,19 @@ rule!:
     - assert: math/sum
       where: { of: ?old, with: 1, is: ?count }
 
-view!: &counter-basic
-  this: id:counter-basic
-  model: counter
-  display: !text/html |
-    <p>{count}
-      <button onclick=increment data-subject={this}>+</button>
-    </p>
+view!:
+  this: counter
+  show:
+    ui: |
+      <p>{count}
+        <button onclick=increment data-subject={this}>+</button>
+      </p>
 ```
 
-The anchor publishes the view name; `this: id:counter-basic` pins its
-entity so re-asserting a different `display` updates the same view.
-`<tonk-display>` does not select this anchor directly: it resolves a
-view concept (normally `tonk:view`) and queries that concept for the
-views whose `model` is `counter`. Every matching view entry renders in
-view-entity order. `tonk view add --anchor counter-basic` authors this stable
-shape for you by deriving `this: id:counter-basic`; omitting `--anchor`
-generates the stable default for the selected view kind.
+The view lives ON the model: `this: counter` is the concept being
+rendered, and `ui` is the `show` facet `<tonk-display>` picks by
+default. Re-asserting the facet supersedes the template. `tonk view
+add counter --template …` authors this shape for you.
 
 A click on the button asserts an `increment` whose `subject`
 reads from the bound button's `data-subject` (which the template
@@ -200,14 +196,14 @@ for. Surface what you need on the element with `data-*` and
 read it back through `dom.event.current-target.dataset/<name>`:
 
 ```yaml tonk=parse
-view!: &todo-row
-  this: id:todo-row
-  model: todo
-  display: !text/html |
-    <li>
-      <span>{title}</span>
-      <button onclick=complete data-todo={this}>done</button>
-    </li>
+view!:
+  this: todo
+  show:
+    ui: |
+      <li>
+        <span>{title}</span>
+        <button onclick=complete data-todo={this}>done</button>
+      </li>
 
 command!: &complete
   with:
@@ -257,14 +253,14 @@ command!: &save
 ```
 
 ```yaml tonk=parse
-view!: &save-form
-  this: id:save-form
-  model: note
-  display: !text/html |
-    <form onsubmit=save>
-      <textarea name="body"></textarea>
-      <button type="submit">save</button>
-    </form>
+view!:
+  this: note
+  show:
+    ui: |
+      <form onsubmit=save>
+        <textarea name="body"></textarea>
+        <button type="submit">save</button>
+      </form>
 ```
 
 The submit fires on the `<form>`, so `current-target` is the
@@ -372,14 +368,14 @@ rule!:
 ```
 
 ```yaml tonk=parse
-view!: &composer
-  this: id:composer
-  model: board
-  display: !text/html |
-    <form>
-      <textarea name="body"></textarea>
-      <button type="button" onclick=publish>Post</button>
-    </form>
+view!:
+  this: board
+  show:
+    ui: |
+      <form>
+        <textarea name="body"></textarea>
+        <button type="button" onclick=publish>Post</button>
+      </form>
 ```
 
 `type="button"` means there is no native submit to prevent, so the

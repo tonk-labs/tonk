@@ -266,6 +266,18 @@ impl Scope {
         {
             return Some(found.clone());
         }
+        // Inline concept attributes register with no anchor name, so
+        // they only live in the by-entity table — an id lookup must
+        // still find them (a concept and a raw write of its attribute
+        // in one document is the live-authoring shape).
+        if let Some(found) = self
+            .in_doc_attributes_by_entity
+            .lock()
+            .values()
+            .find(|def| def.descriptor.the().to_string() == id)
+        {
+            return Some(found.clone());
+        }
         self.attributes_by_id.lock().get(id).cloned()
     }
 

@@ -33,15 +33,15 @@ A **view** says how a concept renders. It is an HTML template with `{placeholder
 
 ```yaml
 view!:
-  description: Renders a counter as its current value
-  model: counter
-  display: |
-    <div>
-      <span>{count}</span>
-    </div>
+  this: counter
+  show:
+    ui: |
+      <div>
+        <span>{count}</span>
+      </div>
 ```
 
-`model: counter` points the view at the concept it renders, and `{count}` is replaced by the value. Render it with `<tonk-display>`:
+`this: counter` puts the template on the concept it renders — a view is the concept's own `show` dictionary, and `ui` is the facet `<tonk-display>` shows by default. `{count}` is replaced by the value. Render it with `<tonk-display>`:
 
 ```html
 <tonk-display model="counter" entity="…your counter…"></tonk-display>
@@ -55,13 +55,13 @@ Put a button in the view. We stamp the counter's own identity onto it with `{thi
 
 ```yaml
 view!:
-  description: Renders a counter with a button to increment it
-  model: counter
-  display: |
-    <div>
-      <button onclick=increment data-counter={this}>+</button>
-      <span>{count}</span>
-    </div>
+  this: counter
+  show:
+    ui: |
+      <div>
+        <button onclick=increment data-counter={this}>+</button>
+        <span>{count}</span>
+      </div>
 ```
 
 A **command** is what an interaction means, captured as data. The click becomes an `increment` that records which counter was clicked:

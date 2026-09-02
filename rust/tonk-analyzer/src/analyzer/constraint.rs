@@ -29,7 +29,9 @@
 
 use std::sync::OnceLock;
 
-use dialog_query::constraint::{AtLeast, AtMost, Equality, GreaterThan, LessThan, StartsWith};
+use dialog_query::constraint::{
+    AtLeast, AtMost, Coalesce, Equality, GreaterThan, LessThan, StartsWith,
+};
 use dialog_query::{Any, Term};
 
 /// One built-in constraint: its formal name plus its operand names.
@@ -156,6 +158,18 @@ fn build_registry() -> Vec<ConstraintInfo> {
         ConstraintInfo {
             name: "starts-with",
             operands: operands_of(StartsWith::new(term(), Term::<String>::unique()).schema()),
+        },
+        // `is` takes `source` when it is present and `fallback` when it is
+        // absent — the only way notation can turn a `maybe:` field into a
+        // bound one. Without it a rule needing an optional bound has to be
+        // written once per present/absent combination, because a rule body is
+        // a conjunction and a premise cannot be skipped. The constraint has
+        // always existed on the wire (`{assert: coalesce, where: {...}}`) and
+        // `DeductiveRule::new` validates it however it was built; only this
+        // registry was withholding the name.
+        ConstraintInfo {
+            name: "coalesce",
+            operands: operands_of(Coalesce::new(term(), term(), term()).schema()),
         },
     ]
 }
