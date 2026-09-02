@@ -16,29 +16,6 @@ test-threads = 1
 # Report every failure: a fail-fast pass over an hour-long suite hides
 # everything after the first broken test.
 fail-fast = false
-# QUARANTINE — these account flows fail deterministically on every
-# branch since the 2026-09-01 staging merges; the extra failure waits
-# pushed the e2e job past its 60-minute timeout, so runs were killed
-# before reporting at all. Tracked in
-# https://github.com/tonk-labs/tonk/issues/852 — fix and remove; new
-# entries need a linked issue.
-default-filter = """
-not (
-    test(=account_flow::tests::it_adds_a_second_account_and_switches_between_disjoint_space_lists)
-  | test(=account_flow::tests::it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key)
-  | test(=account_flow::tests::it_backs_up_a_claimed_space_for_another_account_device)
-  | test(=account_flow::tests::it_deletes_the_account_and_releases_its_email_and_profile)
-  | test(=account_flow::tests::it_explains_email_verification_before_account_sync)
-  | test(=account_flow::tests::it_finishes_both_waiting_devices_when_a_third_confirms)
-  | test(=account_flow::tests::it_links_the_cli_through_the_browser_callback)
-  | test(=account_flow::tests::it_links_without_being_told_the_account_service)
-  | test(=account_flow::tests::it_names_pending_activation_consistently_in_a_space)
-  | test(=account_flow::tests::it_offers_the_copy_row_once_an_account_exists)
-  | test(=account_flow::tests::it_registers_before_linking_a_cli_from_a_fresh_browser)
-  | test(=account_flow::tests::it_revokes_the_cli_device_from_the_browser)
-  | test(=account_flow::tests::it_signs_back_into_the_same_account_after_signing_out)
-  | test(=account_flow::tests::it_signs_up_through_the_account_panels)
-  | test(=account_flow::tests::it_syncs_a_local_only_space_once_sync_is_enabled)
-  | test(=account_flow::tests::it_waits_for_the_email_when_a_second_device_signs_in)
-)
-"""
+# The #852 quarantine is drained: every account flow it named is
+# repaired and back in the suite. To quarantine a newly broken test,
+# add a `default-filter` here excluding it, with a linked issue.

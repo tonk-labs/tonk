@@ -95,6 +95,17 @@ mod native {
                 caps.set_binary(&chrome_binary)?;
             }
 
+            // Diagnostic tap, off unless asked for: makes chromedriver
+            // retain every console message (page and service worker
+            // alike) for the classic /se/log endpoint, so a wedged async
+            // flow can be read from the test log instead of guessed at.
+            if std::env::var("TONK_E2E_CHROME_LOG").is_ok() {
+                caps.insert_base_capability(
+                    "goog:loggingPrefs".to_string(),
+                    serde_json::json!({ "browser": "ALL" }),
+                );
+            }
+
             let driver = WebDriver::new(&self.chromedriver.to_string(), caps).await?;
             // Bound each navigation well under the suite's patience. The
             // default page-load allowance is five minutes, so one wedged
