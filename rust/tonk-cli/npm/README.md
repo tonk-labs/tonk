@@ -25,8 +25,9 @@ and an entry in the wrapper's `optionalDependencies`.
 ## Publishing (maintainers)
 
 Publishing runs in CI so every platform binary is built reproducibly —
-you cannot build the Linux binary from a Mac. It is **tag-driven**;
-nothing publishes on a normal push.
+you cannot build the Linux binary from a Mac. npm Trusted Publishing is
+attached to `.github/workflows/cli-npm.yml`; the workflow uses GitHub
+OIDC and `npm publish`, with no repository npm token.
 
 The bump and the tag are separate acts on separate machines, and have to
 be. Rulesets on `staging` require a pull request and forbid
@@ -36,13 +37,7 @@ SHA, so a tag created locally would point at a commit that never lands.
 So `cargo release` makes only the commit, and `release-tag.yml` creates
 the `v<version>` tag in CI once that commit is on `staging`.
 
-1. One-time: add an `NPM_TOKEN` repository secret — an npm automation
-   token with read-write on the whole **`@tonk` scope**, not a package
-   subset, so platform packages added later keep working. A token
-   scoped too narrowly still passes `npm whoami` and then fails with a
-   bare `404 Not Found - PUT`, which reads like a missing package.
-
-2. Cut the bump on a `release/*` branch off current `staging`:
+1. Cut the bump on a `release/*` branch off current `staging`:
 
    ```sh
    git fetch origin && git switch -c release/0.6.4 origin/staging
@@ -58,12 +53,12 @@ the `v<version>` tag in CI once that commit is on `staging`.
 
    Which level to use:
 
-   | Command | From | To | Ends up on |
+   | Command | From | To | npm result after merge |
    | --- | --- | --- | --- |
-   | `cargo release patch` (also `minor`, `major`) | 0.6.3 | 0.6.4 | `@latest` |
-   | `cargo release rc` | 0.6.3 | 0.6.4-rc.1 | `@next` |
-   | `cargo release rc` | 0.6.4-rc.1 | 0.6.4-rc.2 | `@next` |
-   | `cargo release release` | 0.6.4-rc.2 | 0.6.4 | `@latest` |
+   | `cargo release patch` (also `minor`, `major`) | 0.6.3 | 0.6.4 | tagged; unpublished until stable promotion |
+   | `cargo release rc` | 0.6.3 | 0.6.4-rc.1 | publish `@next` |
+   | `cargo release rc` | 0.6.4-rc.1 | 0.6.4-rc.2 | publish `@next` |
+   | `cargo release release` | 0.6.4-rc.2 | 0.6.4 | tagged; unpublished until stable promotion |
 
    `release` **only strips an existing prerelease**. Run from a final
    version it has nothing to strip, so it changes no version and makes
@@ -74,18 +69,20 @@ the `v<version>` tag in CI once that commit is on `staging`.
    level-plus-prerelease flag, so if scope grows mid-cycle, re-target
    explicitly: `cargo release 0.7.0-rc.1 --execute`.
 
-3. Open a PR for that one commit and merge it to `staging`. On the
+2. Open a PR for that one commit and merge it to `staging`. On the
    merge, `release-tag.yml` notices that `[workspace.package] version`
    changed across the pushed range, creates the annotated tag
-   `v0.6.4` at the merged commit, and starts `cli-npm.yml` — which
-   builds both platform binaries and publishes them.
+   `v0.6.4` at the merged commit. A prerelease tag immediately dispatches
+   `cli-npm.yml` and publishes `next`. A final tag is created but remains
+   unpublished until the same commit reaches `stable`.
 
    It tags on a version *change* only. A missing `v<version>` is never
    on its own a reason to tag, which is why staging can sit well past
    0.6.3 with no `v0.6.3` and nothing fires.
 
-4. At a milestone, promote by fast-forwarding `stable` **to the release
-   commit itself**:
+3. For a final release, wait for `v<version>` to be created, verify the
+   version has no prerelease suffix, then fast-forward `stable` **to the
+   release commit itself**:
 
    ```sh
    git push origin v0.6.4:refs/heads/stable
@@ -96,36 +93,48 @@ the `v<version>` tag in CI once that commit is on `staging`.
    commit on `stable` that is not on `staging` — sort that out rather
    than forcing it.
 
-   `cli-npm-promote.yml` then re-points the `stable` dist-tag; it never
-   publishes. It requires `stable`'s HEAD to be exactly the commit
-   `v<version>` names and fails otherwise: fast-forwarding to some later
-   staging commit would leave `@stable` serving a tarball that does not
-   contain the code `stable` holds, while `cli.yml` builds the
-   `tonk-latest` GitHub release from stable's real HEAD.
+   The push starts `CLI npm`, which proves that the checkout, the
+   immutable version tag, and `origin/stable` are the same commit before
+   publishing `latest`. Watch that workflow run through all platform
+   and wrapper packages. A later staging commit is not a valid promotion
+   target, even when it is a descendant of the release.
 
-   Wait for the `CLI npm` run on the tag to finish before promoting.
-   Promote too early and it fails with
-   `@tonk/cli@<version> is not published; nothing to promote`, which
-   means "not yet" rather than a broken release. Re-run a promote with
-   `gh workflow run cli-npm-promote.yml --ref stable`.
+### Recovery
+
+Never mint a replacement tag or move an existing one. To retry a partial
+prerelease publish, dispatch the existing prerelease tag:
+
+```sh
+gh workflow run cli-npm.yml --ref v0.6.4-rc.1
+```
+
+To retry a final publish, use the same command at the final tag, but only
+after verifying `origin/stable` resolves to that tag commit:
+
+```sh
+git fetch --no-tags origin refs/heads/stable:refs/remotes/origin/stable
+test "$(git rev-parse origin/stable)" = "$(git rev-parse 'v0.6.4^{commit}')"
+gh workflow run cli-npm.yml --ref v0.6.4
+```
+
+The channel policy rejects a premature final retry. Publication retains
+the existing partial-failure behavior: packages already present at that
+version are skipped while missing platform or wrapper packages continue.
 
 ### Dist-tags
 
 | Tag | Points at | Install |
 | --- | --- | --- |
-| `next` | prereleases from `staging` | `npx @tonk/cli@next` |
-| `latest` | finals from `staging` | `npx @tonk/cli` |
-| `stable` | the release commit `stable` holds | `npx @tonk/cli@stable` |
+| `next` | newest explicitly released prerelease from `staging` | `npx @tonk/cli@next` |
+| `latest` | final release commit held by `stable` | `npx @tonk/cli` |
 
-`latest` tracks staging finals rather than `stable` on purpose. `stable`
-moves on milestones, so mapping `latest` onto it would make the default
-install progressively more stale.
+Bare `npx @tonk/cli` and `npm install -g @tonk/cli` are stable installs.
+Prereleases always require the explicit `next` tag.
 
-The workflow **refuses to publish if the tag disagrees with the Cargo
-workspace version**, and `release-tag.yml` derives the tag from that
-version, so they cannot diverge. `cli-npm.yml` can also be run manually
-(`gh workflow run cli-npm.yml --ref v0.6.4`) to retry a failed publish
-without cutting a new tag; it skips any version already on the registry.
+The legacy npm `stable` alias is frozen at the cutover final for
+compatibility. New automation and documentation must not use
+`@tonk/cli@stable`; removing the alias later requires a separately
+announced compatibility decision.
 
 To verify locally without publishing, from `rust/tonk-cli/npm`:
 
