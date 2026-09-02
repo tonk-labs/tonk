@@ -27,6 +27,7 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::prelude::DidExt as _;
 
 use crate::TonkWorkerError;

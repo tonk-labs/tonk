@@ -952,6 +952,81 @@ mod tests {
         enroll(&store, &other, "alice@example.com", at + 2).await;
     }
 
+    /// After the purge the gate serves nothing of the account's: not
+    /// its own space, and not any space it provided. Someone else's
+    /// space is untouched.
+    #[dialog_common::test]
+    async fn it_denies_the_account_and_every_space_it_provided_after_the_purge() {
+        use crate::provisioning::screen;
+
+        let store = SqliteStore::in_memory().unwrap();
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let root = Ed25519Signer::import(&[51; 32]).await.unwrap();
+        let other = Ed25519Signer::import(&[52; 32]).await.unwrap();
+        let mine = Ed25519Signer::import(&[53; 32]).await.unwrap();
+        let theirs = Ed25519Signer::import(&[54; 32]).await.unwrap();
+        let at = now();
+        for (customer, email) in [(&root, "mine@example.com"), (&other, "theirs@example.com")] {
+            enroll(&store, customer, email, at).await;
+            store
+                .activate_customer(customer.did().as_str(), "2026-08", at)
+                .await
+                .unwrap();
+        }
+        store
+            .add_subscription(
+                mine.did().as_str(),
+                root.did().as_str(),
+                at,
+                SubscriptionKind::Space,
+            )
+            .await
+            .unwrap();
+        store
+            .add_subscription(
+                theirs.did().as_str(),
+                other.did().as_str(),
+                at,
+                SubscriptionKind::Space,
+            )
+            .await
+            .unwrap();
+        let served = |did: String| {
+            let store = &store;
+            async move { screen(store, &did, at + 1).await.unwrap().is_ok() }
+        };
+        assert!(
+            served(root.did().to_string()).await,
+            "the account is served before"
+        );
+        assert!(
+            served(mine.did().to_string()).await,
+            "its space is served before"
+        );
+
+        purge(
+            &store,
+            &purger,
+            &purge_container(root.clone()).await,
+            at + 1,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !served(root.did().to_string()).await,
+            "the account is refused after"
+        );
+        assert!(
+            !served(mine.did().to_string()).await,
+            "its space is refused after"
+        );
+        assert!(
+            served(theirs.did().to_string()).await,
+            "another customer's space is not the purge's business"
+        );
+    }
+
     /// The chain is the authority. A device the root delegated to
     /// purges as well as the root does; a chain rooted elsewhere, or
     /// one over the wrong command, does not.

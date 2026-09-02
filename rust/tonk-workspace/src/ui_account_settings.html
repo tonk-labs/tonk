@@ -23,14 +23,33 @@
       Your passkey replaces a password and may be saved to a device, browser
       profile, or password manager.
     </p>
+    <div class="srowd">
+      <span>another passkey for this account</span>
+      <button class="cta" type="button" data-add-passkey>add a passkey</button>
+    </div>
     <div class="sect">delete data</div>
     <div class="srowd">
       <span>delete all data associated with this account</span>
-      <a class="cta" href="/account" data-settings-full>delete account (permanent)</a>
+      <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
     </div>
     <div class="srowd">
       <span>remove all data associated with this account from this device</span>
-      <a class="cta" href="/account" data-settings-full>remove this device</a>
+      <button class="cta" type="button" data-sign-out-open>remove this device</button>
+    </div>
+    <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
+  </div>
+  <div class="pane" data-pane="link" hidden data-link-approval>
+    <div class="sect">a terminal is asking for access</div>
+    <div class="srowd"><span>name</span><b data-link-name></b></div>
+    <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
+    <p class="expl">
+      Approving gives that terminal the same access to your account as this
+      browser: every space, on every device. Decline if you did not just run
+      <code>tonk account login</code> yourself.
+    </p>
+    <div class="srowd">
+      <button class="cta" type="button" data-link-decline>decline</button>
+      <button class="cta" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
   <div class="pane" data-pane="devices" hidden>
@@ -41,3 +60,32 @@
     </p>
   </div>
 </div>
+<tonk-dialog data-delete-account-dialog heading="delete account permanently">
+  <p data-delete-scope>Loading what this deletes&hellip;</p>
+  <ul data-delete-spaces></ul>
+  <p>
+    Tonk will permanently delete hosted content for the spaces you created,
+    your account backups, device registrations, and the account record.
+    Spaces created by other people are not deleted. Tonk cannot erase copies
+    already replicated to other devices.
+  </p>
+  <label class="srowd">
+    <span>account email</span>
+    <input class="sname" data-delete-email type="email" autocomplete="off" aria-label="account email">
+  </label>
+  <label class="srowd">
+    <input data-delete-understood type="checkbox">
+    <span>I understand that this cannot be recovered by Tonk.</span>
+  </label>
+  <p data-delete-error class="expl" role="alert" hidden></p>
+  <button slot="actions" type="button" data-dialog="close">cancel</button>
+  <button slot="actions" type="button" data-delete-account-submit><span data-delete-submit-label>delete owned spaces and account</span></button>
+</tonk-dialog>
+<tonk-dialog data-sign-out-dialog heading="remove this device">
+  <p>
+    Signing out removes this account from this browser. Spaces stay with the
+    account and come back when you sign in again.
+  </p>
+  <button slot="actions" type="button" data-dialog="close">cancel</button>
+  <button slot="actions" type="button" data-sign-out-submit>remove this device</button>
+</tonk-dialog>
