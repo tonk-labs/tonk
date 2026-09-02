@@ -269,11 +269,11 @@ pub async fn check() {
         .unwrap_or(Channel::Stable);
     let fetched = tokio::time::timeout(CHECK_TIMEOUT, fetch::manifest(channel)).await;
     state.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
-    if let Ok(Ok(manifest)) = fetched {
-        if manifest.channel == channel.as_str() {
-            state.latest_version = Some(manifest.version);
-            state.latest_commit = Some(manifest.commit);
-        }
+    if let Ok(Ok(manifest)) = fetched
+        && manifest.channel == channel.as_str()
+    {
+        state.latest_version = Some(manifest.version);
+        state.latest_commit = Some(manifest.commit);
     }
     let _ = state::store(&state);
 }
