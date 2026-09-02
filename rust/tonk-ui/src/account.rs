@@ -2242,7 +2242,7 @@ pub(crate) async fn run_login_ceremony(
         }),
     )
     .await?;
-    Ok(())
+    await_registered_account().await
 }
 
 /// Run the account-creation ceremony, with no panel to report into.
@@ -2261,7 +2261,11 @@ pub(crate) async fn run_account_ceremony(
     email: &str,
     narrate: impl Fn(&str),
 ) -> Result<(), crate::custody_relay::CeremonyError> {
-    prepare_added_profile().await?;
+    let lease = crate::account_setup::begin().await?;
+    if let Err(error) = prepare_added_profile().await {
+        crate::account_setup::abandon_before_credential(&lease).await?;
+        return Err(crate::custody_relay::CeremonyError::said(error));
+    }
     narrate("Waiting for your passkey…");
 
     // The page's whole part: one passkey ceremony. The worker
@@ -2270,7 +2274,7 @@ pub(crate) async fn run_account_ceremony(
     // no key material exists in this document at any point.
     let provider = proposed_remote()?;
     narrate("Creating your account…");
-    crate::custody_relay::mediate_now(
+    let outcome = crate::custody_relay::mediate_now(
         "createPasskey",
         tonk_worker_api::CustodyIntent::CreateAccount(tonk_worker_api::AccountCreation {
             email: email.to_owned(),
@@ -2280,9 +2284,56 @@ pub(crate) async fn run_account_ceremony(
             created_on: Some(crate::device_name::current()),
         }),
     )
-    .await
-    .map_err(|error| error.message)?;
-    Ok(())
+    .await;
+    match outcome {
+        Ok(()) => settle_created_account(&lease).await,
+        Err(error) if !error.passkey_created => {
+            crate::account_setup::abandon_before_credential(&lease).await?;
+            Err(error)
+        }
+        Err(_) => Err(crate::account_setup::retained()),
+    }
+}
+
+/// Release update safety only after the worker can read back the account link
+/// its custody command persisted.
+///
+/// The custody reply follows the operator write, but the worker reactor can
+/// briefly keep serving the profile snapshot from before that write. Clearing
+/// the hold in that window lets a navigation or replacement worker render the
+/// browser as signed out even though a new passkey already exists. A bounded
+/// read-back closes that gap; failure retains the hold and therefore remains an
+/// unsafe-to-retry post-WebAuthn outcome.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn settle_created_account(
+    lease: &crate::account_setup::Lease,
+) -> Result<(), crate::custody_relay::CeremonyError> {
+    await_registered_account()
+        .await
+        .map_err(|_| crate::account_setup::retained())?;
+    crate::account_setup::settle(lease).await
+}
+
+/// Wait until the account reactor observes a worker-persisted attachment.
+///
+/// Custody replies after the operator write, but an immediate account read can
+/// still come from the reactor snapshot that preceded it. Both creation and
+/// login must cross this read-back boundary before their UI announces success;
+/// otherwise dismissing the ceremony can render the profile as signed out.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn await_registered_account() -> Result<(), crate::custody_relay::CeremonyError> {
+    for _ in 0..60 {
+        if matches!(
+            crate::api::account_status().await,
+            Ok(AccountStatus::Registered { .. })
+        ) {
+            return Ok(());
+        }
+        wait_for(250).await;
+    }
+    Err(crate::custody_relay::CeremonyError::said(
+        "the linked account did not become readable",
+    ))
 }
 
 /// Whether this deployment registers accounts with an access service at
@@ -2569,7 +2620,6 @@ fn bind(host: &HtmlElement) {
             Ok(value) => value,
             Err(error) => return show_error(&host, error),
         };
-        let device_name = crate::device_name::current();
         set_busy(&host, true, "Waiting for your passkey…");
         spawn_local(async move {
             let mut attempt = crate::account_observability::WebAccountAttempt::start(
@@ -2578,30 +2628,10 @@ fn bind(host: &HtmlElement) {
                 tonk_analytics::account::Trigger::User,
                 tonk_analytics::account::AccountState::None,
             );
-            let result = async {
-                prepare_added_profile().await?;
-                // The page's whole part: one passkey ceremony. The
-                // worker generates the account secret, seals it under
-                // the new passkey's KEK, records the root, signs the
-                // creation request and enrolls — so no key material
-                // exists in this document at any point.
-                let provider = service(&host).await?;
-                crate::custody_relay::mediate_now(
-                    "createPasskey",
-                    tonk_worker_api::CustodyIntent::CreateAccount(
-                        tonk_worker_api::AccountCreation {
-                            email: email.clone(),
-                            device_name,
-                            remote: proposed_remote()?,
-                            provider,
-                            created_on: Some(crate::device_name::current()),
-                        },
-                    ),
-                )
-                .await?;
-                set_busy(&host, true, "Creating your account…");
-                Ok::<(), crate::custody_relay::CeremonyError>(())
-            }
+            let narration_host = host.clone();
+            let result = run_account_ceremony(&email, move |status| {
+                set_busy(&narration_host, true, status);
+            })
             .await;
             match result {
                 Ok(()) => attempt.finish(
@@ -2617,7 +2647,14 @@ fn bind(host: &HtmlElement) {
                         tonk_analytics::account::Stage::WorkerHandoff,
                         problem.outcome,
                     );
-                    set_busy(&host, false, "");
+                    set_busy(
+                        &host,
+                        error.retry_unsafe,
+                        error
+                            .retry_unsafe
+                            .then_some("Account recovery needs attention")
+                            .unwrap_or(""),
+                    );
                     show_ceremony_error(&host, AccountAction::CreateAccount, &error);
                 }
             }
@@ -2871,6 +2908,7 @@ fn bind(host: &HtmlElement) {
                         "remote": proposed_remote()?,
                         "descriptorHex": authorized.descriptor_hex,
                         "credentialId": authorized.root_did,
+                        "remote": proposed_remote()?,
                         "attachmentId": attachment_id,
                         "serviceUrl": service(&host).await.unwrap_or_default(),
                     })

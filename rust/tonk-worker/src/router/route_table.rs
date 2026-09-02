@@ -12,7 +12,9 @@
 /// Every route the worker serves, sorted. The data plane (branch query,
 /// transact, evaluate, blob, sync) belongs here; account, membership,
 /// invite, and custody operations are commands or are on their way to
-/// becoming ones.
+/// becoming ones. The account-setup compatibility probe is lifecycle control
+/// plane: a read-only negotiation across independently deployed components,
+/// not a durable domain operation.
 const ROUTES: &[&str] = &[
     "/api",
     "/api/account",
@@ -23,6 +25,7 @@ const ROUTES: &[&str] = &[
     "/api/account/devices/register",
     "/api/account/devices/revoke",
     "/api/account/display-name",
+    "/api/account/setup-capabilities",
     "/api/account/spaces/delete",
     "/api/account/summary",
     "/api/custody/provision",
@@ -151,13 +154,14 @@ const STATE_CHANGING_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/custody/queue"),
     ("POST", "/api/customer/activated"),
     ("POST", "/api/identity/root"),
-    ("POST", "/api/language-server"),
+    ("POST", "/api/profile/tonk/branch/main/language-server"),
     ("POST", "/api/profile/branch/main/evaluate"),
     ("POST", "/api/profile/branch/main/site"),
     ("POST", "/api/profile/branch/main/transact"),
     ("POST", "/api/profile/join"),
     ("POST", "/api/profiles/activate"),
     ("POST", "/api/profiles/add"),
+    ("POST", "/api/repository/space/branch/main/language-server"),
     ("POST", "/api/repository/space/branch/main/blob"),
     (
         "POST",

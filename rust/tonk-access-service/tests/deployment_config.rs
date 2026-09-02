@@ -47,3 +47,25 @@ async fn it_returns_not_found_without_deployment_config() -> anyhow::Result<()> 
     service.stop().await?;
     Ok(())
 }
+
+#[dialog_common::test]
+async fn it_advertises_account_setup_lifecycle_without_account_state() -> anyhow::Result<()> {
+    let service = access_service(AccessServiceSettings::default()).await?;
+    let response = reqwest::get(format!(
+        "{}/capabilities",
+        service.address.access_service_url
+    ))
+    .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.headers()["access-control-allow-origin"], "*");
+    assert_eq!(
+        response.json::<serde_json::Value>().await?,
+        serde_json::json!({
+            "service": "tonk-access-service",
+            "capabilities": { "accountSetupLifecycle": 1 },
+        })
+    );
+
+    service.stop().await?;
+    Ok(())
+}

@@ -336,6 +336,23 @@ pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
     secret.signer().await
 }
 
+/// Unlock an account and mint the local root record for this browser.
+///
+/// Current sign-in is worker-mediated. This compatibility producer remains
+/// necessary for a page from before encryption-key persistence: it deliberately
+/// hands the caller the key so the test can omit it from the local root record
+/// and exercise the worker's assertion recovery path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn unlock_account(
+    device_did: dialog_varsig::Did,
+    endpoint: &str,
+) -> Result<RootCeremony> {
+    let (secret, credential_id) = assert_unlock(endpoint, None).await?;
+    let root = secret.signer().await?;
+    let encryption_key = secret.secret().did().to_string();
+    root_ceremony(root, credential_id, device_did, None, Some(encryption_key)).await
+}
+
 /// Derive the account's X25519 recipient through a custody assertion,
 /// for a device whose root record predates the key: the worker asks the
 /// page for this when it needs custody set up and nothing recorded it.

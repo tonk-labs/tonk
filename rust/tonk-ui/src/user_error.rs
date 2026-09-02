@@ -171,6 +171,13 @@ pub(crate) fn ceremony_problem(
     use tonk_identity::custody::CustodyDenial;
     use tonk_identity::passkey::CeremonyRefusal;
 
+    if error.update_safety {
+        return AccountProblem::new(
+            error.message.clone(),
+            update_safety_outcome(error.retry_unsafe),
+        );
+    }
+
     match &error.denial {
         Some(CustodyDenial::AwaitingActivation) => AccountProblem::new(
             "Open the confirmation link in your email to finish signing in. You can leave this page open.".to_owned(),
@@ -199,6 +206,15 @@ pub(crate) fn ceremony_problem(
             };
             AccountProblem::new(diagnostic_message(action, &error.message), outcome)
         }
+    }
+}
+
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn update_safety_outcome(retry_unsafe: bool) -> AccountOutcome {
+    if retry_unsafe {
+        AccountOutcome::unknown_commit(FailureKind::LocalState)
+    } else {
+        AccountOutcome::retryable(FailureKind::LocalState)
     }
 }
 
@@ -415,6 +431,22 @@ fn fallback(action: AccountAction) -> &'static str {
 mod tests {
     use super::*;
     use crate::error::AccountTransportKind;
+
+    #[test]
+    fn update_safety_distinguishes_safe_retry_from_an_unknown_commit() {
+        assert_eq!(
+            update_safety_outcome(false).result(),
+            tonk_analytics::account::AccountResult::RetryableFailure
+        );
+        assert_eq!(
+            update_safety_outcome(true).result(),
+            tonk_analytics::account::AccountResult::UnknownCommit
+        );
+        assert_eq!(
+            update_safety_outcome(true).failure_kind(),
+            Some(FailureKind::LocalState)
+        );
+    }
 
     #[test]
     fn it_turns_passkey_diagnostics_into_specific_recovery_steps() {

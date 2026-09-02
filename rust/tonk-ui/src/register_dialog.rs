@@ -1606,16 +1606,23 @@ pub(crate) fn run_signup_ceremony() {
                     problem.outcome,
                 );
                 set_status(&problem.message);
-                // Back to something clickable: a control left mid-flight
-                // refuses every later attempt.
-                set_action(
-                    if existing {
-                        "log in with your passkey"
-                    } else {
-                        "create a passkey"
-                    },
-                    true,
-                );
+                if error.retry_unsafe {
+                    // A durable account-setup hold means credential creation
+                    // may have crossed its irreversible boundary. Offering
+                    // Create again here could mint a second passkey.
+                    hide_action();
+                } else {
+                    // Back to something clickable: a control left mid-flight
+                    // refuses every later attempt.
+                    set_action(
+                        if existing {
+                            "log in with your passkey"
+                        } else {
+                            "create a passkey"
+                        },
+                        true,
+                    );
+                }
             }
             Ok(()) => {
                 // The account exists as of this line — created, or
