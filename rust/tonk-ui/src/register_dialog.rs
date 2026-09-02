@@ -438,16 +438,18 @@ pub fn close() {
     OPEN.with(|open| open.set(false));
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        // The panel under the cluster re-reads the account on its way
-        // out. The mid-ceremony announcement covers the instant-success
-        // path, but a signup parked on its emailed link lands its
-        // enrollment as a command AFTER that announcement — so a panel
-        // that only listened then still shows the pre-ceremony face,
-        // and its pending-activation banner never appears. Whether the
-        // ceremony announced decides how the re-read treats a stale
-        // `Unregistered`: after a success it is enrollment still
-        // landing, after a cancel it is the answer.
-        crate::account::resettle(ANNOUNCED.with(|announced| announced.replace(false)));
+        // A panel under a cluster whose ceremony announced an account
+        // re-reads it on the way out. The mid-ceremony announcement
+        // covers the instant-success path, but a signup parked on its
+        // emailed link lands its enrollment as a command AFTER that
+        // announcement — so a panel that only listened then still
+        // shows the pre-ceremony face, and its pending-activation
+        // banner never appears. A plain cancel changed nothing, and
+        // must not re-read: the re-render would replace the very
+        // opener this close is about to restore focus to.
+        if ANNOUNCED.with(|announced| announced.replace(false)) {
+            crate::account::resettle();
+        }
         finish_action();
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {

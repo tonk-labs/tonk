@@ -1824,16 +1824,18 @@ fn landing(
     }
 }
 
-/// Re-read the account and repaint the panel.
+/// Re-read the account and repaint the panel, after a ceremony.
 ///
 /// The ceremony runs in the registration cluster now, which sits over
 /// this panel and finishes without telling it anything — so a panel
 /// that was showing "link an account" when the cluster opened is still
 /// showing it when the cluster closes, over an account that now exists.
-/// The cluster calls this on its way out. It is the same read the panel
-/// does when it boots, which is what decides which face to show.
+/// The cluster calls this on its way out, and ONLY when its ceremony
+/// announced an account: the read is the same one the panel does when
+/// it boots, but a `Unregistered` answer here is the enrollment still
+/// landing rather than the signed-out answer it means on a boot.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn resettle(after_ceremony: bool) {
+pub(crate) fn resettle() {
     let Some(host) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.query_selector("tonk-account").ok().flatten())
@@ -1841,7 +1843,7 @@ pub(crate) fn resettle(after_ceremony: bool) {
     else {
         return;
     };
-    load_status_with(host, after_ceremony);
+    load_status_with(host, true);
 }
 
 /// One account read that rides out the moment it lands in.
