@@ -744,7 +744,12 @@ mod tests {
         driver.switch_to_window(confirm).await?;
         goto(driver, &link).await?;
         element(driver, "#activate-accept").await?.click().await?;
-        element(driver, "#activate-done").await?;
+        // Displayed, not merely present: the done panel is in the DOM
+        // from page load, only hidden, so a presence wait returns while
+        // the activation POST is still in flight — and closing the tab
+        // then abandons the request and drops the flow's terminal
+        // telemetry event. Visible means the response landed.
+        wait_for_displayed(driver, "#activate-done").await?;
         driver.close_window().await?;
         driver.switch_to_window(ceremony).await?;
         Ok(())
@@ -895,7 +900,12 @@ mod tests {
         let account = driver.current_url().await?;
         goto(driver, &link).await?;
         element(driver, "#activate-accept").await?.click().await?;
-        element(driver, "#activate-done").await?;
+        // Displayed, not merely present: the done panel is in the DOM
+        // from page load, only hidden, so a presence wait returns while
+        // the activation POST is still in flight — and navigating away
+        // then abandons the request and drops the flow's terminal
+        // telemetry event. Visible means the response landed.
+        wait_for_displayed(driver, "#activate-done").await?;
         // Activation is what unblocks the deferred account work, and the
         // custody-cell publish in that queue is what every later ceremony
         // (unlock, CLI approval, legacy link) resolves. The dashboard
