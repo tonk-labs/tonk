@@ -11,9 +11,9 @@ use tonk_cli::render::{self, RenderRoute};
 
 use crate::common::TestSite;
 
-// Site init seeds the standard library (`tonk:view`,
-// `tonk:view/directory`, etc.), so these tests rely on the built-in
-// view concepts being present rather than seeding them by hand.
+// Site init seeds the standard library (the `tonk:view` concept and
+// the `tonk:_` default dictionary), so these tests rely on the
+// built-in view concept being present rather than seeding it by hand.
 
 const PERSON_CONCEPT: &str = r#"attribute!: &person-name
   description: "person name"
