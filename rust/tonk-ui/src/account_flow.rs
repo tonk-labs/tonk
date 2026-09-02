@@ -20,6 +20,65 @@ mod tests {
 
     const EMAIL: &str = "person@example.com";
 
+    async fn install_account_capture_fixture(driver: &WebDriver) -> Result<()> {
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({
+                    "source": r#"
+                        (() => {
+                            const read = () => {
+                                try { return JSON.parse(sessionStorage.getItem("tonk:test:account-events") || "[]"); }
+                                catch { return []; }
+                            };
+                            let config = null;
+                            let superProperties = {};
+                            const fixture = {
+                                init(_key, next) { config = next; },
+                                register(next) { superProperties = { ...superProperties, ...next }; },
+                                identify() {},
+                                capture(event, properties = {}) {
+                                    let payload = {
+                                        event,
+                                        properties: {
+                                            ...superProperties,
+                                            ...properties,
+                                            $current_url: location.href,
+                                            $pathname: location.pathname,
+                                            $referrer: document.referrer
+                                        }
+                                    };
+                                    if (config && config.before_send) payload = config.before_send(payload);
+                                    if (!payload) return;
+                                    const events = read();
+                                    events.push({ ...payload, captured_at: Date.now() });
+                                    sessionStorage.setItem("tonk:test:account-events", JSON.stringify(events));
+                                }
+                            };
+                            Object.defineProperty(window, "posthog", {
+                                configurable: false,
+                                get: () => fixture,
+                                set: () => {}
+                            });
+                        })();
+                    "#
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn captured_account_events(driver: &WebDriver) -> Result<Vec<serde_json::Value>> {
+        let value = driver
+            .execute(
+                r#"return JSON.parse(sessionStorage.getItem("tonk:test:account-events") || "[]")
+                    .filter(event => event.event === "account_event");"#,
+                Vec::new(),
+            )
+            .await?;
+        Ok(serde_json::from_value(value.json().clone())?)
+    }
+
     async fn element(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -882,8 +941,100 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_captures_the_ordered_signup_account_journey(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        install_account_capture_fixture(&driver).await?;
+        sign_up(&driver, &env, "observability-signup@example.com").await?;
+
+        let events = captured_account_events(&driver).await?;
+        let wire = serde_json::to_string(&events)?;
+        for sentinel in [
+            "observability-signup@example.com",
+            "did:key:",
+            "credentialId",
+            "activation?ucan=",
+            "/api/account",
+            "127.0.0.1",
+        ] {
+            anyhow::ensure!(
+                !wire.contains(sentinel),
+                "captured account payload exposed privacy sentinel {sentinel:?}: {wire}"
+            );
+        }
+
+        let expected = [
+            (
+                "open_registration",
+                "finished",
+                "input",
+                Some("success"),
+                None,
+            ),
+            ("create_account", "started", "input", None, None),
+            ("create_account", "checkpoint", "email_lookup", None, None),
+            ("create_account", "checkpoint", "passkey_create", None, None),
+            (
+                "create_account",
+                "finished",
+                "activation_wait",
+                Some("blocked"),
+                Some("awaiting_activation"),
+            ),
+            ("activate_account", "started", "input", None, None),
+            (
+                "activate_account",
+                "finished",
+                "complete",
+                Some("success"),
+                None,
+            ),
+            ("settle_account", "started", "account_sync", None, None),
+            (
+                "settle_account",
+                "finished",
+                "complete",
+                Some("success"),
+                None,
+            ),
+        ];
+        let mut cursor = 0;
+        for (action, phase, stage, result, failure) in expected {
+            let Some(offset) = events[cursor..].iter().position(|event| {
+                let properties = &event["properties"];
+                properties["action"] == action
+                    && properties["phase"] == phase
+                    && properties["stage"] == stage
+                    && result.is_none_or(|value| properties["result"] == value)
+                    && failure.is_none_or(|value| properties["failure_kind"] == value)
+            }) else {
+                anyhow::bail!(
+                    "signup account_event sequence missed {action}/{phase}/{stage}: {events:?}"
+                );
+            };
+            cursor += offset + 1;
+        }
+
+        let mut terminals = std::collections::HashMap::<String, usize>::new();
+        for event in &events {
+            if event["properties"]["phase"] == "finished"
+                && let Some(attempt_id) = event["properties"]["attempt_id"].as_str()
+            {
+                *terminals.entry(attempt_id.to_owned()).or_default() += 1;
+            }
+        }
+        anyhow::ensure!(
+            terminals.values().all(|count| *count == 1),
+            "an account attempt emitted more than one terminal event: {events:?}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_signs_up_through_the_account_panels(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
+        install_account_capture_fixture(&driver).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
         wait_for_text_containing(&driver, "#account-email-value", EMAIL).await?;
@@ -983,6 +1134,126 @@ mod tests {
         let settings = driver.current_url().await?;
         goto(&driver, settings.as_str()).await?;
         wait_for_value(&driver, "#account-display-name", "Settings Name").await?;
+
+        let events = captured_account_events(&driver).await?;
+        anyhow::ensure!(
+            !events.is_empty(),
+            "signup emitted no account_event payloads"
+        );
+        let wire = serde_json::to_string(&events)?;
+        for sentinel in [
+            EMAIL,
+            "did:key:",
+            "credentialId",
+            "activation?ucan=",
+            "/api/account",
+            "127.0.0.1",
+        ] {
+            anyhow::ensure!(
+                !wire.contains(sentinel),
+                "captured account payload exposed privacy sentinel {sentinel:?}: {wire}"
+            );
+        }
+        let mut terminals = std::collections::HashMap::<String, usize>::new();
+        for event in &events {
+            let properties = &event["properties"];
+            if properties["phase"] == "finished"
+                && let Some(attempt_id) = properties["attempt_id"].as_str()
+            {
+                *terminals.entry(attempt_id.to_owned()).or_default() += 1;
+            }
+        }
+        anyhow::ensure!(
+            terminals.values().all(|count| *count == 1),
+            "an account attempt emitted more than one terminal event: {events:?}"
+        );
+
+        let event_position = |action: &str,
+                              phase: &str,
+                              stage: Option<&str>,
+                              result: Option<&str>,
+                              failure: Option<&str>| {
+            events.iter().position(|event| {
+                let properties = &event["properties"];
+                properties["action"] == action
+                    && properties["phase"] == phase
+                    && stage.is_none_or(|value| properties["stage"] == value)
+                    && result.is_none_or(|value| properties["result"] == value)
+                    && failure.is_none_or(|value| properties["failure_kind"] == value)
+            })
+        };
+        let registration = event_position(
+            "open_registration",
+            "finished",
+            Some("input"),
+            Some("success"),
+            None,
+        );
+        let create_start = event_position("create_account", "started", None, None, None);
+        let email_lookup = event_position(
+            "create_account",
+            "checkpoint",
+            Some("email_lookup"),
+            None,
+            None,
+        );
+        let passkey_create = event_position(
+            "create_account",
+            "checkpoint",
+            Some("passkey_create"),
+            None,
+            None,
+        );
+        let create_wait = event_position(
+            "create_account",
+            "finished",
+            Some("activation_wait"),
+            Some("blocked"),
+            Some("awaiting_activation"),
+        );
+        let activation_start = event_position("activate_account", "started", None, None, None);
+        let activation_success = event_position(
+            "activate_account",
+            "finished",
+            Some("complete"),
+            Some("success"),
+            None,
+        );
+        let settle_start = event_position("settle_account", "started", None, None, None);
+        let settle_success = event_position(
+            "settle_account",
+            "finished",
+            Some("complete"),
+            Some("success"),
+            None,
+        );
+        let sequence = [
+            registration,
+            create_start,
+            email_lookup,
+            passkey_create,
+            create_wait,
+            activation_start,
+            activation_success,
+            settle_start,
+            settle_success,
+        ];
+        anyhow::ensure!(
+            sequence.iter().all(Option::is_some),
+            "signup account_event sequence was incomplete: {events:?}"
+        );
+        let positions = sequence.into_iter().flatten().collect::<Vec<_>>();
+        anyhow::ensure!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "signup account_event sequence was out of order: {events:?}"
+        );
+        anyhow::ensure!(
+            events.windows(2).all(|pair| {
+                pair[0]["captured_at"].as_u64().unwrap_or_default()
+                    <= pair[1]["captured_at"].as_u64().unwrap_or_default()
+            }),
+            "signup account_event timestamps were out of order: {events:?}"
+        );
 
         driver.quit().await?;
         Ok(())

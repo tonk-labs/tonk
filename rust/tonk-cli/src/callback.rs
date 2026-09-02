@@ -20,7 +20,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::extract::{Form, State};
 use axum::response::Html;
@@ -31,6 +30,60 @@ use tokio::sync::{Notify, oneshot};
 
 /// How long to wait for the browser before giving up.
 const DEADLINE: Duration = Duration::from_secs(300);
+
+/// Stable callback failure classification retained beside the local detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackFailureKind {
+    /// The loopback listener could not bind or expose its address.
+    Bind,
+    /// The browser connection closed without an answer.
+    Closed,
+    /// The callback HTTP server failed.
+    Server,
+    /// No answer arrived before the deadline.
+    Timeout,
+}
+
+/// A callback failure with closed telemetry evidence and local-only detail.
+#[derive(Debug, thiserror::Error)]
+#[error("{detail}")]
+pub struct CallbackFailure {
+    kind: CallbackFailureKind,
+    detail: String,
+}
+
+impl CallbackFailure {
+    fn new(kind: CallbackFailureKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    /// Stable callback failure kind.
+    pub fn kind(&self) -> CallbackFailureKind {
+        self.kind
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn callback_failure_keeps_kind_beside_local_detail() {
+        for kind in [
+            CallbackFailureKind::Bind,
+            CallbackFailureKind::Closed,
+            CallbackFailureKind::Server,
+            CallbackFailureKind::Timeout,
+        ] {
+            let failure = CallbackFailure::new(kind, "local diagnostic with secret");
+            assert_eq!(failure.kind(), kind);
+            assert!(failure.to_string().contains("local diagnostic"));
+        }
+    }
+}
 
 /// What the authorizing page sent back.
 pub enum Authorization {
@@ -72,13 +125,23 @@ impl Callback {
     ///
     /// Port 0 lets the OS choose, so two `tonk` processes authorizing at once
     /// cannot collide and no scan is needed to find a free port.
-    pub async fn bind() -> Result<Self> {
+    pub async fn bind() -> Result<Self, CallbackFailure> {
         let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
-            .context("failed to bind the authorization callback listener")?;
+            .map_err(|error| {
+                CallbackFailure::new(
+                    CallbackFailureKind::Bind,
+                    format!("failed to bind the authorization callback listener: {error}"),
+                )
+            })?;
         let port = listener
             .local_addr()
-            .context("failed to read the callback listener address")?
+            .map_err(|error| {
+                CallbackFailure::new(
+                    CallbackFailureKind::Bind,
+                    format!("failed to read the callback listener address: {error}"),
+                )
+            })?
             .port();
         Ok(Self {
             url: format!("http://127.0.0.1:{port}"),
@@ -97,7 +160,10 @@ impl Callback {
     /// not leave a listener bound for the life of the shell.
     /// `redirect_origin` is the origin of the page this process opened, the
     /// only place a delivered `redirect` may point back to.
-    pub async fn receive(self, redirect_origin: Option<String>) -> Result<Authorization> {
+    pub async fn receive(
+        self,
+        redirect_origin: Option<String>,
+    ) -> Result<Authorization, CallbackFailure> {
         let (sender, receiver) = oneshot::channel();
         let shutdown = Arc::new(Notify::new());
         let state = Waiting {
@@ -119,9 +185,18 @@ impl Callback {
         .await
         {
             Ok((Ok(()), Ok(authorization))) => Ok(authorization),
-            Ok((Ok(()), Err(_))) => bail!("the authorization page closed without answering"),
-            Ok((Err(error), _)) => Err(error).context("the authorization callback server failed"),
-            Err(_) => bail!("timed out waiting for authorization in the browser"),
+            Ok((Ok(()), Err(_))) => Err(CallbackFailure::new(
+                CallbackFailureKind::Closed,
+                "the authorization page closed without answering",
+            )),
+            Ok((Err(error), _)) => Err(CallbackFailure::new(
+                CallbackFailureKind::Server,
+                format!("the authorization callback server failed: {error}"),
+            )),
+            Err(_) => Err(CallbackFailure::new(
+                CallbackFailureKind::Timeout,
+                "timed out waiting for authorization in the browser",
+            )),
         }
     }
 }
