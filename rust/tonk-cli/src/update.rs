@@ -198,6 +198,7 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
 
     // A fresh check next run rather than a stale "newer available".
     let mut state = state::load();
+    state.select_channel(channel.as_str());
     state.latest_version = Some(remote.version.clone());
     state.latest_commit = Some(remote.commit.clone());
     let _ = state::store(&state);
@@ -244,6 +245,19 @@ fn check_permitted() -> bool {
     true
 }
 
+/// Resolve the release channel for the running copy, failing safely
+/// toward stable if the executable cannot be located.
+fn running_channel() -> Channel {
+    running_binary()
+        .ok()
+        .map(|target| {
+            let install_dir = target_dir(&target);
+            let receipt = receipt::load();
+            resolve_channel(receipt.as_ref(), &install_dir)
+        })
+        .unwrap_or(Channel::Stable)
+}
+
 /// Refresh the cached release info if it is stale.
 ///
 /// Deliberately silent on every failure — offline, DNS, rate limit,
@@ -255,18 +269,15 @@ pub async fn check() {
     if !check_permitted() {
         return;
     }
+    let channel = running_channel();
     let mut state = state::load();
+    let channel_changed = state.select_channel(channel.as_str());
     if !state::should_check(&state, chrono::Utc::now()) {
+        if channel_changed {
+            let _ = state::store(&state);
+        }
         return;
     }
-    let channel = running_binary()
-        .ok()
-        .map(|target| {
-            let install_dir = target_dir(&target);
-            let receipt = receipt::load();
-            resolve_channel(receipt.as_ref(), &install_dir)
-        })
-        .unwrap_or(Channel::Stable);
     let fetched = tokio::time::timeout(CHECK_TIMEOUT, fetch::manifest(channel)).await;
     state.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
     if let Ok(Ok(manifest)) = fetched
@@ -287,7 +298,11 @@ pub fn nag() {
     if !check_permitted() {
         return;
     }
+    let channel = running_channel();
     let mut state = state::load();
+    if state.select_channel(channel.as_str()) {
+        let _ = state::store(&state);
+    }
     let now = chrono::Utc::now();
     if !state::should_nag(&state, env!("CARGO_PKG_VERSION"), now) {
         return;

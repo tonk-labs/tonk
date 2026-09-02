@@ -87,8 +87,8 @@ fn run_update(endpoint: &str, state_dir: &std::path::Path, args: &[&str]) -> std
         // Isolated so the test never reads the developer's real
         // telemetry choice; without a key nothing is sent anyway.
         .env("TONK_TELEMETRY_STATE", state_dir)
-        // Even an explicit legacy channel selection must not move
-        // self-update away from staging.
+        // Ambient installer input must not override the matching
+        // receipt (or the safe stable default).
         .env("TONK_CHANNEL", "stable")
         .env_remove("TONK_POSTHOG_KEY")
         .output()
@@ -340,6 +340,39 @@ fn it_checks_stable_in_the_background_for_a_matching_stable_receipt() {
     let output = run_probe(&endpoint, dir.path(), &[]);
     assert!(output.status.success());
     assert_only_stable_was_requested(&requests);
+}
+
+#[dialog_common::test]
+fn it_refreshes_and_does_not_nag_with_cached_data_from_another_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_receipt(dir.path(), "stable", &running_install_dir(), "abc1234def");
+    std::fs::write(
+        dir.path().join("update.json"),
+        r#"{
+  "check_enabled": true,
+  "channel": "staging",
+  "last_checked_at": "2099-01-01T00:00:00Z",
+  "last_nagged_at": null,
+  "latest_version": "99.0.0",
+  "latest_commit": "fff9999"
+}"#,
+    )
+    .expect("write stale channel cache");
+    let (endpoint, requests) = serve_recording(vec![(
+        "/releases/latest/download/manifest.json".to_owned(),
+        manifest_body("0.0.1", "aaa0001", "stable"),
+    )]);
+
+    let output = run_probe(&endpoint, dir.path(), &[]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("is available"));
+    assert_only_stable_was_requested(&requests);
+
+    let state = std::fs::read_to_string(dir.path().join("update.json")).expect("state");
+    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse state");
+    assert_eq!(parsed["channel"], "stable", "state: {state}");
+    assert_eq!(parsed["latest_version"], "0.0.1", "state: {state}");
+    assert_eq!(parsed["latest_commit"], "aaa0001", "state: {state}");
 }
 
 #[dialog_common::test]

@@ -24,6 +24,9 @@ pub const NAG_INTERVAL_SECS: i64 = 24 * 60 * 60;
 pub struct State {
     /// Whether the background check runs (opt-out model: default on).
     pub check_enabled: bool,
+    /// Release channel that produced the cached release information.
+    #[serde(default)]
+    pub channel: Option<String>,
     /// RFC3339 time of the last check attempt, successful or not.
     pub last_checked_at: Option<String>,
     /// RFC3339 time the nag last printed.
@@ -38,11 +41,30 @@ impl Default for State {
     fn default() -> Self {
         Self {
             check_enabled: true,
+            channel: None,
             last_checked_at: None,
             last_nagged_at: None,
             latest_version: None,
             latest_commit: None,
         }
+    }
+}
+
+impl State {
+    /// Select the active release channel, invalidating cached release
+    /// information when it changes. The user's check preference is
+    /// independent of the selected channel and is preserved.
+    pub fn select_channel(&mut self, channel: &str) -> bool {
+        if self.channel.as_deref() == Some(channel) {
+            return false;
+        }
+
+        self.channel = Some(channel.to_owned());
+        self.last_checked_at = None;
+        self.last_nagged_at = None;
+        self.latest_version = None;
+        self.latest_commit = None;
+        true
     }
 }
 
@@ -240,6 +262,62 @@ mod tests {
         };
         store_at(&path, &state).expect("store");
         assert_eq!(load_from(&path), state);
+    }
+
+    #[dialog_common::test]
+    fn it_loads_state_written_before_channels_were_cached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("update.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "check_enabled": false,
+  "last_checked_at": "2026-07-16T00:00:00Z",
+  "last_nagged_at": null,
+  "latest_version": "0.5.0",
+  "latest_commit": "abc1234"
+}"#,
+        )
+        .expect("write legacy state");
+
+        let state = load_from(&path);
+        assert!(!state.check_enabled);
+        assert_eq!(state.channel, None);
+        assert_eq!(state.latest_version.as_deref(), Some("0.5.0"));
+    }
+
+    #[dialog_common::test]
+    fn it_invalidates_cached_release_information_when_the_channel_changes() {
+        let mut state = State {
+            check_enabled: false,
+            channel: Some("staging".to_owned()),
+            last_checked_at: Some("2026-07-16T00:00:00Z".to_owned()),
+            last_nagged_at: Some("2026-07-16T00:00:00Z".to_owned()),
+            latest_version: Some("99.0.0".to_owned()),
+            latest_commit: Some("fff9999".to_owned()),
+        };
+
+        assert!(state.select_channel("stable"));
+        assert!(!state.check_enabled);
+        assert_eq!(state.channel.as_deref(), Some("stable"));
+        assert_eq!(state.last_checked_at, None);
+        assert_eq!(state.last_nagged_at, None);
+        assert_eq!(state.latest_version, None);
+        assert_eq!(state.latest_commit, None);
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_cached_release_information_when_the_channel_is_unchanged() {
+        let mut state = State {
+            channel: Some("stable".to_owned()),
+            last_checked_at: Some("2026-07-16T00:00:00Z".to_owned()),
+            latest_version: Some("0.5.0".to_owned()),
+            ..State::default()
+        };
+        let before = state.clone();
+
+        assert!(!state.select_channel("stable"));
+        assert_eq!(state, before);
     }
 
     #[dialog_common::test]
