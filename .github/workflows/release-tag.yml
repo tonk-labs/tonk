@@ -1,6 +1,8 @@
 name: 'Release tag'
 
-# Turns a merged version bump into the `v<version>` tag that publishes it.
+# Turns a merged version bump into its immutable `v<version>` tag.
+# Prereleases publish immediately; finals wait until stable is
+# fast-forwarded to that exact tag commit.
 #
 # CI owns the tag because a maintainer cannot own it. Two active rulesets
 # cover `staging` (the default branch) and require a pull request, forbid
@@ -131,10 +133,16 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
           set -euo pipefail
+          if [[ "$VERSION" != *-* ]]; then
+            echo "final v$VERSION is tagged and ready for promotion"
+            echo "authorize npm publication with: git push origin v$VERSION:refs/heads/stable"
+            exit 0
+          fi
+
           # `cli-npm.yml` resolves the version from the ref's Cargo
-          # workspace version and refuses a mismatch, so dispatching it
-          # against the tag publishes exactly the tagged code -- the same
-          # contract a tag push would have given us.
+          # workspace version and proves the checkout is the tag commit,
+          # so dispatching it against the prerelease tag publishes
+          # exactly those bits to npm's `next` channel.
           for attempt in 1 2 3; do
             if gh workflow run cli-npm.yml --ref "v$VERSION"; then
               echo "dispatched CLI npm for v$VERSION"
@@ -143,7 +151,7 @@ jobs:
             echo "dispatch attempt $attempt failed; retrying in 5s"
             sleep 5
           done
-          # The tag exists at this point, so recovery is a re-dispatch
-          # rather than another release.
+          # The prerelease tag exists at this point, so recovery is a
+          # re-dispatch rather than another release.
           echo "::error::could not start CLI npm for v$VERSION; re-run it with: gh workflow run cli-npm.yml --ref v$VERSION"
           exit 1

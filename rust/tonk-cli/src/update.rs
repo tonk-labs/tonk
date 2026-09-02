@@ -1,11 +1,11 @@
 //! Self-update for `install.sh` installs: an explicit `tonk update`
 //! and a once-a-day check that nags when a newer release exists.
 //!
-//! Self-update always follows the rolling staging release, matching
-//! npm's default `latest` deployment. Releases publish a `manifest.json`
-//! carrying version + commit: the nag compares versions (a real
-//! update bumps it, staging churn does not), `tonk update` compares
-//! commits (catching same-version rebuilds).
+//! Self-update follows the channel recorded by `install.sh` for the
+//! running copy, defaulting safely to stable. Releases publish a
+//! `manifest.json` carrying version + commit: the nag compares versions
+//! (a real update bumps it, staging churn does not), `tonk update`
+//! compares commits (catching same-version rebuilds).
 
 use anyhow::{Context as _, bail};
 
@@ -40,6 +40,15 @@ pub enum Channel {
 }
 
 impl Channel {
+    /// Parse the exact labels persisted by `install.sh`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "stable" => Some(Channel::Stable),
+            "staging" => Some(Channel::Staging),
+            _ => None,
+        }
+    }
+
     /// Label as it appears in the receipt and `TONK_CHANNEL`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -81,12 +90,16 @@ pub fn is_newer(local: &str, remote: &str) -> bool {
     remote > local
 }
 
-/// The release channel checked by explicit and background updates.
+/// Select the release channel for this installed copy.
 ///
-/// npm's default `latest` deployment is cut from staging, so self-update
-/// follows the same channel regardless of the install receipt or environment.
-pub fn resolve_channel() -> Channel {
-    Channel::Staging
+/// A receipt can steer updates only when it describes the directory of
+/// the running binary. Missing, corrupt, unknown, or stale receipts fail
+/// toward stable rather than moving an unrelated copy onto prereleases.
+pub fn resolve_channel(receipt: Option<&receipt::Receipt>, install_dir: &str) -> Channel {
+    receipt
+        .filter(|receipt| receipt.install_dir == install_dir)
+        .and_then(|receipt| Channel::parse(&receipt.channel))
+        .unwrap_or(Channel::Stable)
 }
 
 /// Handle `tonk update`. Returns the line to print on success.
@@ -120,7 +133,8 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
     }
     let install_dir = target_dir(&target);
 
-    let channel = resolve_channel();
+    let receipt = receipt::load();
+    let channel = resolve_channel(receipt.as_ref(), &install_dir);
     let platform = manifest::platform().with_context(|| {
         format!(
             "no published tonk build for {}-{}",
@@ -130,6 +144,13 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
     })?;
 
     let remote = fetch::manifest(channel).await?;
+    if remote.channel != channel.as_str() {
+        bail!(
+            "release manifest says channel {}, but this install selected {}; refusing to update",
+            remote.channel,
+            channel.as_str()
+        );
+    }
     let local_version = env!("CARGO_PKG_VERSION");
 
     // Commit, not version: on a rolling channel the same version can
@@ -140,7 +161,7 @@ pub async fn run(set_check: Option<bool>) -> anyhow::Result<String> {
     // must not share one "already current" answer. A false mismatch
     // just costs a redundant reinstall — the safe direction, versus
     // wrongly claiming current.
-    if receipt::load().is_some_and(|receipt| {
+    if receipt.is_some_and(|receipt| {
         receipt.commit == remote.commit && receipt.install_dir == install_dir
     }) {
         return Ok(format!(
@@ -238,11 +259,21 @@ pub async fn check() {
     if !state::should_check(&state, chrono::Utc::now()) {
         return;
     }
-    let fetched = tokio::time::timeout(CHECK_TIMEOUT, fetch::manifest(resolve_channel())).await;
+    let channel = running_binary()
+        .ok()
+        .map(|target| {
+            let install_dir = target_dir(&target);
+            let receipt = receipt::load();
+            resolve_channel(receipt.as_ref(), &install_dir)
+        })
+        .unwrap_or(Channel::Stable);
+    let fetched = tokio::time::timeout(CHECK_TIMEOUT, fetch::manifest(channel)).await;
     state.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
     if let Ok(Ok(manifest)) = fetched {
-        state.latest_version = Some(manifest.version);
-        state.latest_commit = Some(manifest.commit);
+        if manifest.channel == channel.as_str() {
+            state.latest_version = Some(manifest.version);
+            state.latest_commit = Some(manifest.commit);
+        }
     }
     let _ = state::store(&state);
 }
@@ -348,8 +379,47 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_always_resolves_staging() {
-        assert_eq!(resolve_channel(), Channel::Staging);
+    fn it_parses_known_channels_exactly() {
+        assert_eq!(Channel::parse("stable"), Some(Channel::Stable));
+        assert_eq!(Channel::parse("staging"), Some(Channel::Staging));
+        assert_eq!(Channel::parse("Stable"), None);
+        assert_eq!(Channel::parse("nightly"), None);
+    }
+
+    fn sample_receipt(channel: &str, install_dir: &str) -> receipt::Receipt {
+        receipt::Receipt {
+            channel: channel.to_owned(),
+            version: "0.6.11".to_owned(),
+            commit: "abc1234".to_owned(),
+            install_dir: install_dir.to_owned(),
+            installed_at: "2026-09-02T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_the_channel_from_a_matching_receipt() {
+        let stable = sample_receipt("stable", "/opt/tonk");
+        let staging = sample_receipt("staging", "/opt/tonk");
+        assert_eq!(resolve_channel(Some(&stable), "/opt/tonk"), Channel::Stable);
+        assert_eq!(
+            resolve_channel(Some(&staging), "/opt/tonk"),
+            Channel::Staging
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_defaults_to_stable_for_missing_unknown_or_mismatched_receipts() {
+        let unknown = sample_receipt("nightly", "/opt/tonk");
+        let other_copy = sample_receipt("staging", "/other/tonk");
+        assert_eq!(resolve_channel(None, "/opt/tonk"), Channel::Stable);
+        assert_eq!(
+            resolve_channel(Some(&unknown), "/opt/tonk"),
+            Channel::Stable
+        );
+        assert_eq!(
+            resolve_channel(Some(&other_copy), "/opt/tonk"),
+            Channel::Stable
+        );
     }
 
     #[dialog_common::test]

@@ -1,9 +1,10 @@
 # A release is two acts, split across two machines, because it has to be.
 # `cargo release <level>` makes the version bump commit and stops. The
 # tag is created in CI by `.github/workflows/release-tag.yml` once that
-# commit lands on `staging`, and the tag is what publishes. That
-# workflow's header explains why the split is forced; the `push` and
-# `tag` settings below say what it means here.
+# commit lands on `staging`. A prerelease tag publishes immediately;
+# a final tag publishes only after `stable` fast-forwards to that exact
+# commit. That workflow's header explains why the split is forced; the
+# `push` and `tag` settings below say what it means here.
 #
 # Every setting here overrides a default that misfires on this workspace.
 
@@ -23,8 +24,9 @@ tag = false
 # Kept even though `tag = false`: it names the tag for the escape hatch
 # where a maintainer cuts one by hand (`--tag` plus a manual push), and
 # it must stay in step with the tag `release-tag.yml` creates.
-# `cli-npm.yml` triggers on the `v*` glob, and cargo-release's default of
-# `{{prefix}}v{{version}}` yields `tonk-cli-v0.6.4`, which never matches.
+# Release CI and the npm channel policy both resolve `v{{version}}`;
+# cargo-release's default of `{{prefix}}v{{version}}` would instead yield
+# `tonk-cli-v0.6.4`, which neither release path recognizes.
 tag-name = "v{{version}}"
 
 pre-release-commit-message = "chore: release {{version}}"
