@@ -1491,7 +1491,6 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_broadcasts_the_invite_minted_by_profile_routed_enable_sync() {
         use futures_util::FutureExt as _;
-        use http_body_util::BodyExt as _;
 
         let state = test_state().await;
         let (app, state, _lsp) = super::api_router_with_state(state);
@@ -1564,23 +1563,15 @@ pub mod tests {
             1,
             "enable-sync should finish minting the invitation",
         );
-        let mut frame = None;
+        let mut delta = None;
         for _ in 0..10 {
-            if let Some(ready) = body.frame().now_or_never().flatten() {
-                frame = Some(ready.expect("SSE frame should be readable"));
+            if let Some(ready) = read_sse_frame(&mut body).now_or_never() {
+                delta = Some(ready);
                 break;
             }
             wasm_yield().await;
         }
-        let frame = frame.expect("enable-sync mint should broadcast its link");
-        let bytes = frame.into_data().expect("data frame");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        let delta: serde_json::Value = serde_json::from_str(
-            text.strip_prefix("data: ")
-                .and_then(|text| text.strip_suffix("\n\n"))
-                .expect("SSE-framed body"),
-        )
-        .expect("delta is JSON");
+        let delta = delta.expect("enable-sync mint should broadcast its link");
         // An ordinary mint on a quiet handle broadcasts an incremental
         // `asserted` delta; a snapshot (`conclusions`) arrives when a poll
         // serves a pending subscriber instead. The FAB accepts both frame
@@ -3801,7 +3792,7 @@ employee:
 
     /// Open an SSE subscription and return the open body so the
     /// caller can read frames as they arrive.
-    async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {
+    async fn open_subscription(app: &Router, repo: &str, branch: &str) -> SseReader {
         open_subscription_with_query(app, repo, branch, named_concept_wire_query()).await
     }
 
@@ -3811,7 +3802,7 @@ employee:
         repo: &str,
         branch: &str,
         query: serde_json::Value,
-    ) -> Body {
+    ) -> SseReader {
         let response = app
             .clone()
             .oneshot(
@@ -3833,25 +3824,55 @@ employee:
                 .map(|v| v.to_str().unwrap_or("")),
             Some("text/event-stream"),
         );
-        response.into_body()
+        SseReader::new(response.into_body())
     }
 
-    /// Read one SSE `data: <json>\n\n` frame off `body` and parse
-    /// the JSON payload.
-    async fn read_sse_frame(body: &mut Body) -> serde_json::Value {
-        use http_body_util::BodyExt as _;
-        let frame = body
-            .frame()
+    /// Test-side SSE decoder. HTTP body chunks and SSE event boundaries are
+    /// independent: one chunk may contain several events, and one event may
+    /// span several chunks.
+    struct SseReader {
+        body: Body,
+        buffered: Vec<u8>,
+    }
+
+    impl SseReader {
+        fn new(body: Body) -> Self {
+            Self {
+                body,
+                buffered: Vec::new(),
+            }
+        }
+
+        async fn next_event(&mut self) -> Option<serde_json::Value> {
+            use http_body_util::BodyExt as _;
+
+            loop {
+                if let Some(end) = self.buffered.windows(2).position(|bytes| bytes == b"\n\n") {
+                    let event: Vec<u8> = self.buffered.drain(..end + 2).collect();
+                    let text = std::str::from_utf8(&event[..end]).expect("utf8 SSE event");
+                    let json_text = text.strip_prefix("data: ").expect("SSE data event");
+                    return Some(serde_json::from_str(json_text).expect("SSE payload is JSON"));
+                }
+
+                let Some(frame) = self.body.frame().await else {
+                    assert!(
+                        self.buffered.is_empty(),
+                        "SSE body ended with an incomplete event"
+                    );
+                    return None;
+                };
+                let bytes = frame.expect("frame ok").into_data().expect("data frame");
+                self.buffered.extend_from_slice(&bytes);
+            }
+        }
+    }
+
+    /// Read one SSE `data: <json>\n\n` event and parse its JSON payload.
+    async fn read_sse_frame(reader: &mut SseReader) -> serde_json::Value {
+        reader
+            .next_event()
             .await
-            .expect("at least one frame")
-            .expect("frame ok");
-        let bytes = frame.into_data().expect("data frame");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        let json_text = text
-            .strip_prefix("data: ")
-            .and_then(|s| s.strip_suffix("\n\n"))
-            .expect("SSE-framed body");
-        serde_json::from_str(json_text).expect("snapshot is JSON")
+            .expect("at least one complete SSE event")
     }
 
     /// Open an SSE subscription, read the first event (a
@@ -4227,7 +4248,6 @@ employee:
     /// short-circuit.
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
-        use http_body_util::BodyExt as _;
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
@@ -4260,7 +4280,7 @@ employee:
 
         // Race the next frame against a short sleep. We expect
         // the sleep to win — no frame should arrive.
-        let next_frame = body.frame();
+        let next_frame = body.next_event();
         let timeout = crate::sleep(web_time::Duration::from_millis(200));
         tokio::select! {
             frame = next_frame => panic!("unexpected SSE frame after no-op repoll: {frame:?}"),
@@ -4453,7 +4473,6 @@ employee:
     /// expect the body to end (next frame yields `None`).
     #[dialog_common::test]
     async fn it_releases_sse_subscribers_on_shutdown() {
-        use http_body_util::BodyExt as _;
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
@@ -4475,10 +4494,10 @@ employee:
             guard.retire();
         }
 
-        // The body must end — `frame()` returns `None`. Race
+        // The body must end — the next decoded event returns `None`. Race
         // against a timeout so a regression hangs the test rather
         // than passing on a delayed frame.
-        let next_frame = body.frame();
+        let next_frame = body.next_event();
         let timeout = crate::sleep(web_time::Duration::from_millis(500));
         tokio::select! {
             frame = next_frame => assert!(
@@ -4514,7 +4533,7 @@ employee:
                     .and_then(|v| v.to_str().ok()),
                 Some("text/event-stream")
             );
-            let mut body = response.into_body();
+            let mut body = SseReader::new(response.into_body());
             let snapshot = read_sse_frame(&mut body).await;
             assert_eq!(snapshot["kind"], "snapshot");
             assert!(snapshot["conclusions"].is_array());
@@ -4524,7 +4543,7 @@ employee:
                 "retired query reconnect {attempt} must receive the handoff frame after its snapshot",
             );
             assert!(
-                body.frame().await.is_none(),
+                body.next_event().await.is_none(),
                 "retired query reconnect {attempt} must close after the handoff frame",
             );
         }
