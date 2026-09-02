@@ -427,16 +427,11 @@ view!:
       <!-- Revoked and deleted intentionally share this one screen. The
            diagnostic reason remains in the console/worker status; rendering it
            here would reveal whether the space still exists. -->
-      <section class="edge-wall edge-wall--closed" aria-labelledby="edge-closed-title">
-        <div class="edge-statement" id="edge-closed-title">this share link is closed</div>
-        <div class="edge-field edge-field--settled">
-          <span class="edge-noun">share link</span>
-          <span class="edge-value">closed</span>
-        </div>
-        <div class="edge-narrator">this link no longer opens a space; ask its sender for a current share link</div>
+      <section class="edge-wall edge-wall--closed" role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
+        <h1 class="edge-statement" id="edge-closed-title">this share link expired</h1>
+        <div class="edge-narrator" id="edge-closed-guidance">ask the person who shared this space to send you a new link</div>
         <div class="edge-run">
-          <a class="ebtn quiet" href="/">start a new space</a>
-          <tonk-join-retry class="ebtn solid" kind={kind}>join this space</tonk-join-retry>
+          <a class="ebtn solid" href="/">go to home</a>
         </div>
       </section>
 
@@ -633,7 +628,7 @@ view!:
               margin-top:43px; display:flex; flex-direction:column; gap:7px; }
             .edge-statement, .edge-field, .edge-narrator { min-height:36px;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
-            .edge-statement { padding:10px 14px; display:flex; align-items:flex-end;
+            .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
               font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
               line-height:1.55; text-wrap:balance; }
             .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;

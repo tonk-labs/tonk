@@ -205,7 +205,7 @@ window.STORYBOOK_DATA = {
       "variants": "C2, C3, CX; repository ready/unhydrated."
     },
     {
-      "evidence": "Partial DOM keyboard/blur tests; pending-verification browser coverage proves the field remains disabled, and presenter unit tests mask transport details.",
+      "evidence": "Focused browser coverage proves Enter ends the edit through the existing change-save path and the unfocused field has no decorative cursor; pending-verification coverage proves the field remains disabled, and presenter unit tests mask transport details.",
       "gaps": "Ready-state remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B13",
@@ -389,7 +389,7 @@ window.STORYBOOK_DATA = {
       "variants": "All precedence levels; nested/stale/missing binding."
     },
     {
-      "evidence": "Whole CLI process coverage; browser pre-activation flow covers local-first use.",
+      "evidence": "Whole CLI process coverage; browser pre-activation flow covers local-first use, and a focused FABB browser regression keeps post-create renaming active through whitespace.",
       "gaps": "Crash between data/registry/binding, read-only/full disk, concurrent same name.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-03",
@@ -397,7 +397,7 @@ window.STORYBOOK_DATA = {
       "variants": "Canonical/custom site; valid/invalid/colliding name."
     },
     {
-      "evidence": "Partial authority and browser flows.",
+      "evidence": "Partial authority and browser flows; the shared FABB rename regression proves internal whitespace does not commit early.",
       "gaps": "All service states, ownership transaction crash, lost response, retry without duplicate space.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-04",
@@ -549,8 +549,8 @@ window.STORYBOOK_DATA = {
       "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
     },
     {
-      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection.",
-      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility in real browser.",
+      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps the blank-space agent prompt's displayed and copied text identical.",
+      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility and real clipboard parity in a browser.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-02",
       "title": "Define/list a detail, directory, label, or title view.",

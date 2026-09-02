@@ -409,6 +409,29 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
+    assert!(
+        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        "an unfocused display-name field must not draw an editing cursor",
+    );
+    assert!(
+        !HUB_STYLES.contains("tonk-settings-caret"),
+        "the removed resting cursor must not leave a blinking animation behind",
+    );
+}
+
+#[test]
+fn it_displays_and_copies_the_same_agent_prompt() {
+    let ending = "Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.";
+    assert_eq!(
+        STANDARD_LIBRARY.matches(ending).count(),
+        2,
+        "the copy-button value and visible prompt must share the complete ending",
+    );
+    assert!(
+        !STANDARD_LIBRARY.contains("Then build.\"></wa-copy-button>"),
+        "the clipboard prompt must not retain its shorter ending",
+    );
 }
 
 #[test]
@@ -430,8 +453,17 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this share link is closed"));
+    assert!(failure.contains("this share link expired"));
+    assert!(failure.contains("ask the person who shared this space to send you a new link"));
+    assert!(failure.contains("go to home"));
+    assert!(!failure.contains("edge-field edge-field--settled"));
+    assert!(!failure.contains("paste a new link"));
+    assert!(!failure.contains("tonk-join-retry"));
+    assert!(!failure.contains("join this space"));
+    assert!(!failure.contains("start a new space"));
     assert!(route.contains("you do not have access to this space"));
+    assert!(route.contains("start a new space"));
+    assert!(route.contains("join this space"));
     for wall in [("closed", failure), ("no-access", route)] {
         assert_eq!(
             wall.1.matches("class=\"ebtn solid\"").count(),
@@ -439,8 +471,6 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the {} wall must carry exactly one solid ink door",
             wall.0,
         );
-        assert!(wall.1.contains("start a new space"));
-        assert!(wall.1.contains("join this space"));
     }
 }
 

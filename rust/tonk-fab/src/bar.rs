@@ -136,10 +136,19 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         };
         let host = this.clone();
         let shared = state.clone();
-        listeners.push(shadow::on_click(&button, move || {
+        listeners.push(shadow::bind(&button, "click", move |event| {
             // A click on the space cell mid-rename is aimed at the text:
-            // commit it, do not also open the stack over what was typed.
+            // commit it, do not also open the stack over what was typed. A
+            // Space typed into the nested contenteditable also makes the
+            // surrounding button synthesize a keyboard click (`detail ==
+            // 0`); that click belongs to the character, not to the cell.
             if cell == Cell::Space && shared.borrow().editing {
+                if event
+                    .dyn_ref::<web_sys::MouseEvent>()
+                    .is_some_and(|mouse| mouse.detail() == 0)
+                {
+                    return;
+                }
                 commit_edit(&host, &shared);
                 return;
             }
