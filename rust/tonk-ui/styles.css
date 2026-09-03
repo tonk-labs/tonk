@@ -3522,7 +3522,7 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
 /* the verbs — soft until approached, left of the row. Soft ink is
    metadata-only, so they take full ink the moment they are live. */
-.verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
+.verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:18px;
   opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
 .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
 ui-space-remove { display:contents; }

@@ -399,6 +399,18 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 }
 
 #[test]
+fn it_aligns_the_hub_space_actions_in_one_flex_context() {
+    assert!(
+        css_rule(HUB_STYLES, ".verbs ui-copy-link,").contains("display:contents"),
+        "the copy-link host must not offset its button from delete or leave"
+    );
+    assert!(
+        css_rule(HUB_STYLES, ".verbs {").contains("gap:18px"),
+        "desktop Hub actions must remain a close visual group"
+    );
+}
+
+#[test]
 fn it_separates_the_account_roster_into_independent_blocks() {
     let menu = css_rule(HUB_STYLES, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
