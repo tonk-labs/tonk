@@ -299,9 +299,17 @@
             };
 
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
+            const EVICTION_RELOAD = "tonk:sw-eviction-reload";
             const INSTALL_PROGRESS_CHANNEL =
                 "tonk-sw-install-progress-v1";
             let observingInstallLifecycle = false;
+
+            // A normal application document is the successful end of an
+            // eviction recovery. Consume its one-shot loop guard here; a
+            // second recovery document consumes the same guard itself.
+            try {
+                sessionStorage.removeItem(EVICTION_RELOAD);
+            } catch {}
 
             const noteInstallProgress = (message) => {
                 const wellFormed =
@@ -332,8 +340,15 @@
             }
 
             // Begin registration and update detection eagerly, while the UI
-            // Wasm downloads. Every caller receives this exact promise, so the
-            // pre-mount gate and later host IO cannot start duplicate updates.
+            // Wasm downloads. Page readiness resolves once the current
+            // generation controls the document; successor observation may
+            // continue behind it without blocking the pre-mount gate.
+            let markServiceWorkerReady;
+            let failServiceWorkerReady;
+            const serviceWorkerReadiness = new Promise((resolve, reject) => {
+                markServiceWorkerReady = resolve;
+                failServiceWorkerReady = reject;
+            });
             const serviceWorkerActivation = (async () => {
                 if (!serviceWorkersSupported) {
                     throw new Error(
@@ -423,6 +438,7 @@
                     } catch {}
                     observingInstallLifecycle = false;
                     await sendConnectivity();
+                    markServiceWorkerReady();
                     return;
                 }
                 navigator.serviceWorker.removeEventListener(
@@ -443,8 +459,12 @@
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
                     await sendConnectivity();
+                    markServiceWorkerReady();
                     return;
                 }
+
+                await sendConnectivity();
+                markServiceWorkerReady();
 
                 let incoming = null;
                 let settled = false;
@@ -535,7 +555,6 @@
                             try {
                                 sessionStorage.removeItem(UPGRADE_RELOAD);
                             } catch {}
-                            await sendConnectivity();
                             return;
                         }
                         throw error;
@@ -567,13 +586,13 @@
                         `service-worker update failed in state ${incoming?.state ?? "unknown"}; keeping the active worker`,
                     );
                 }
-                await sendConnectivity();
             })();
 
-            // Observe rejection immediately so the eager promise cannot create
-            // a transient `unhandledrejection` before Rust reaches its strict
-            // await. The original promise remains rejected for that await.
+            // Observe rejection immediately so the eager background task
+            // cannot create a transient `unhandledrejection`. Fail readiness
+            // too when registration/control fails before it has resolved.
             serviceWorkerActivation.catch((error) => {
+                failServiceWorkerReady(error);
                 console.error("service-worker activation failed", error);
                 presentBootFailure(
                     !serviceWorkersSupported
@@ -581,7 +600,7 @@
                         : GENERIC_BOOT_FAILURE,
                 );
             });
-            self.serviceWorkerActivates = () => serviceWorkerActivation;
+            self.serviceWorkerActivates = () => serviceWorkerReadiness;
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes
