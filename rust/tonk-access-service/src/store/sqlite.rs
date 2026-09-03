@@ -9,13 +9,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
-    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION, Enrollment,
-    INSERT_CUSTODY_SUBSCRIPTION, INSERT_CUSTOMER, INSERT_LEDGER_SUBSCRIPTION,
-    INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT, RELEASE_LAPSED_ADDRESS, REMOVE_SUBSCRIPTION,
-    RESUME_SUBSCRIPTION, SELECT_CUSTOMER, SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY,
-    SELECT_SUBSCRIPTION, SELECT_SUBSCRIPTIONS_BY_OWNER, START_SELF_SUBSCRIPTION_DELETION,
-    START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION, Servability, Store, StoreError,
-    Subscription, SubscriptionKind, Suspension, UPDATE_REGISTERED_EMAIL, parse_status,
+    DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION,
+    DENY_CUSTOMER_SUBSCRIPTIONS, Enrollment, INSERT_CUSTODY_SUBSCRIPTION, INSERT_CUSTOMER,
+    INSERT_LEDGER_SUBSCRIPTION, INSERT_SELF_SUBSCRIPTION, RECORD_ACTIVATION_SENT,
+    RELEASE_LAPSED_ADDRESS, REMOVE_SUBSCRIPTION, RESUME_SUBSCRIPTION, SELECT_CUSTOMER,
+    SELECT_CUSTOMER_BY_EMAIL, SELECT_SERVABILITY, SELECT_SUBSCRIPTION,
+    SELECT_SUBSCRIPTIONS_BY_OWNER, START_SUBSCRIPTION_DELETION, SUSPEND_SUBSCRIPTION, Servability,
+    Store, StoreError, Subscription, SubscriptionKind, Suspension, UPDATE_REGISTERED_EMAIL,
+    parse_status,
 };
 
 /// Native `rusqlite`-backed [`Store`], for tests and local development.
@@ -444,12 +445,11 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
-    async fn mark_self_consumer_deleting(&self, did: &str, now: u64) -> Result<bool, StoreError> {
+    async fn deny_customer(&self, did: &str, now: u64) -> Result<u64, StoreError> {
         let conn = self.0.lock().expect("store mutex poisoned");
         Ok(conn
-            .execute(START_SELF_SUBSCRIPTION_DELETION, params![did, now as i64])
-            .map_err(map_err)?
-            > 0)
+            .execute(DENY_CUSTOMER_SUBSCRIPTIONS, params![did, now as i64])
+            .map_err(map_err)? as u64)
     }
 
     async fn delete_customer(&self, did: &str) -> Result<bool, StoreError> {

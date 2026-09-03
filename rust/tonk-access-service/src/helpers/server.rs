@@ -654,39 +654,23 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
-    if crate::deletion::is_customer_deletion(&body_bytes) {
-        let response = if crate::deletion::command_for_native_handler(&body_bytes)
-            == crate::deletion::CUSTOMER_PLAN_COMMAND.map(str::to_string)
+    if crate::deletion::is_purge(&body_bytes) {
+        let response = match crate::deletion::purge(
+            &registration.store,
+            &registration.purger,
+            &body_bytes,
+            unix_now(),
+        )
+        .await
         {
-            match crate::deletion::customer_plan(&registration.store, &body_bytes, unix_now()).await
-            {
-                Ok(plan) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&plan).expect("deletion plan serializes"),
-                    )))
-                    .unwrap(),
-                Err(error) => deletion_error_response(error),
-            }
-        } else {
-            match crate::deletion::delete_customer(
-                &registration.store,
-                &registration.purger,
-                &body_bytes,
-                unix_now(),
-            )
-            .await
-            {
-                Ok(receipt) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
-                    )))
-                    .unwrap(),
-                Err(error) => deletion_error_response(error),
-            }
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("purge receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => deletion_error_response(error),
         };
         return Ok(cors_response(response));
     }

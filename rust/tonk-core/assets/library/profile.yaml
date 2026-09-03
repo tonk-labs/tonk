@@ -563,6 +563,13 @@ route!: &route/settings
   path: "/settings"
   concept: tonk:settings
 
+# `/settings/link` is the same page: a terminal opened it to ask for
+# access, and the settings panel reads the request off the location.
+route!: &route/settings/link
+  this: id:tonk:route/settings/link
+  path: "/settings/link"
+  concept: tonk:settings
+
 concept!: &settings-route
   this: tonk:settings
   description: The account settings page.

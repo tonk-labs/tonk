@@ -334,42 +334,6 @@ pub async fn create_custody_passkey(
     Ok(CustodyCredential { id, evaluation })
 }
 
-/// A user-verification gesture bound to the account's own passkey:
-/// `credentials.get` with `allowCredentials` pinned to the stored
-/// credential id and user verification required. No PRF evaluation is
-/// requested, nothing is derived, and no custody cell is touched — the
-/// success of the assertion is the whole result. This is the deletion
-/// checkpoint: the human at the keyboard controls this account's
-/// passkey, while the destructive invocations themselves sign with the
-/// device's delegated authority.
-pub async fn verify_custody_passkey(credential_id: &[u8]) -> Result<()> {
-    let mut challenge = rand::random::<[u8; 32]>();
-    let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
-    options.set_user_verification(UserVerificationRequirement::Required);
-    if let Some(id) = current_rp_id() {
-        options.set_rp_id(id);
-    }
-    let mut credential_id = credential_id.to_vec();
-    let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
-        &mut credential_id,
-        PublicKeyCredentialType::PublicKey,
-    );
-    let allowed = js_sys::Array::new();
-    allowed.push(&descriptor);
-    options.set_allow_credentials(&allowed);
-    let request = CredentialRequestOptions::new();
-    request.set_public_key(&options);
-    let promise = credentials()?
-        .get_with_options(&request)
-        .map_err(|e| ceremony_error("credentials.get was rejected", e))?;
-    let _: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("passkey verification failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
-    Ok(())
-}
-
 /// Evaluate both custody salts via an assertion. One biometric prompt;
 /// must be called during a user gesture.
 ///

@@ -634,6 +634,59 @@ pub mod command {
         pub struct Space(pub Entity);
     }
 
+    /// Attributes the `tonk:delete-account` command carries. Dispatched
+    /// from the hub's settings page on the PROFILE branch; the address
+    /// is the person's retyped confirmation.
+    pub mod delete_account {
+        use super::Attribute;
+
+        /// The account email retyped to confirm the deletion. The derived
+        /// attribute is `xyz.tonk.delete-account/email`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.delete-account")]
+        pub struct Email(pub String);
+    }
+
+    /// Attributes the `tonk:authorize-device` command carries: a waiting
+    /// process (the CLI) asked this browser to delegate the account to
+    /// its key, and the person approved.
+    pub mod authorize_device {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The device DID the delegation is addressed to. The derived
+        /// attribute is `xyz.tonk.authorize-device/audience`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.authorize-device")]
+        pub struct Audience(pub Entity);
+
+        /// Where the waiting process listens, base58 over the URL: a
+        /// bare URL string carries a `:` and would decode as an entity.
+        /// The derived attribute is `xyz.tonk.authorize-device/callback`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.authorize-device")]
+        pub struct Callback(pub String);
+
+        /// The name the waiting process gave itself. The derived
+        /// attribute is `xyz.tonk.authorize-device/name`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.authorize-device")]
+        pub struct Name(pub String);
+    }
+
+    /// Attributes the `tonk:add-passkey` command carries.
+    pub mod add_passkey {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The per-command marker, so `{this}` alone never decodes as
+        /// some other command. The derived attribute is
+        /// `dom.event.current-target.dataset/add-passkey`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct AddPasskey(pub Entity);
+    }
+
     /// Attributes the `tonk/rename-repository` command carries when the FAB
     /// dispatches it from the PROFILE branch.
     pub mod rename_repository {
@@ -846,6 +899,32 @@ pub mod command {
 /// durable fact per answer would write a row per keystroke into a branch
 /// that syncs. The overlay is per-session and unreplicated, which is
 /// what a question about a half-typed address deserves.
+/// Attributes of [`crate::CeremonyStatus`]: where a command that needs
+/// the person's passkey reports its progress to the page that asked.
+pub mod ceremony_status {
+    use super::Attribute;
+
+    /// Which ceremony this row describes: `delete-account`,
+    /// `authorize-device`, or `add-passkey`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.ceremony")]
+    #[cardinality(one)]
+    pub struct Ceremony(pub String);
+
+    /// Where the ceremony got to. See [`crate::ceremony_state`].
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.ceremony")]
+    #[cardinality(one)]
+    pub struct State(pub String);
+
+    /// What to tell the person, when the state alone does not say:
+    /// the reason a ceremony failed, or where a finished one leads.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.ceremony")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
+}
+
 pub mod email_status {
     use super::Attribute;
 

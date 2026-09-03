@@ -303,7 +303,7 @@ fn open_cluster(this: &HtmlElement) {
     on_bail.forget();
 
     let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        tonk_host::navigate_to("/account");
+        tonk_host::navigate_to("/settings");
     });
     let _ = cluster
         .add_event_listener_with_callback("fabb-change-noun", on_change.as_ref().unchecked_ref());

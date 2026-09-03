@@ -860,3 +860,95 @@ async fn it_denies_a_revoked_device_at_every_service_it_reaches(
 
     Ok(())
 }
+
+/// A purged account is refused at `/ucan/` from the next request on.
+///
+/// The purge is one root-signed invocation; what it changes is what the
+/// gate answers, so the assertion is the gate's answer before and after,
+/// for the account's own subject.
+#[dialog_common::test]
+async fn it_stops_serving_an_account_once_it_is_purged(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_ucan_core::{Container, InvocationBuilder};
+    use dialog_varsig::Principal as _;
+
+    let root = Ed25519Signer::generate().await.expect("account key");
+    env.activate_customer(&root, "purged@example.com").await?;
+
+    let presign = || {
+        let root = root.clone();
+        async move {
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert(
+                "catalog".to_string(),
+                dialog_ucan_core::promise::Promised::String("blobs".to_string()),
+            );
+            arguments.insert(
+                "digest".to_string(),
+                dialog_ucan_core::promise::Promised::Bytes(vec![7u8; 32]),
+            );
+            let invocation = InvocationBuilder::new()
+                .issuer(Signer::from(root.clone()))
+                .audience(&root.did())
+                .subject(&root.did())
+                .command(vec![
+                    "use".to_string(),
+                    "get".to_string(),
+                    "archive".to_string(),
+                    "block".to_string(),
+                ])
+                .arguments(arguments)
+                .proofs(vec![])
+                .try_build()
+                .await
+                .expect("an invocation");
+            Container::new(vec![
+                serde_ipld_dagcbor::to_vec(&invocation).expect("the invocation encodes"),
+            ])
+            .into_bytes()
+            .expect("a container")
+        }
+    };
+    let client = reqwest::Client::new();
+    let post = |body: Vec<u8>| {
+        client
+            .post(env.ucan_endpoint())
+            .header("Content-Type", "application/cbor")
+            .body(body)
+            .send()
+    };
+
+    let before = post(presign().await).await?;
+    assert!(
+        before.status().is_success(),
+        "the account must be served before the purge, got {}: {}",
+        before.status(),
+        before.text().await.unwrap_or_default()
+    );
+
+    let purged = post(tonk_identity::request::build_purge_invocation(root.clone()).await?).await?;
+    assert!(
+        purged.status().is_success(),
+        "the purge must be accepted, got {}: {}",
+        purged.status(),
+        purged.text().await.unwrap_or_default()
+    );
+
+    let after = post(presign().await).await?;
+    assert_eq!(
+        after.status().as_u16(),
+        403,
+        "a purged account must be refused: {}",
+        after.text().await.unwrap_or_default()
+    );
+
+    // Deleting the account again: still no account.
+    let again = post(tonk_identity::request::build_purge_invocation(root).await?).await?;
+    assert!(
+        again.status().is_success(),
+        "a repeat purge is still a deleted account"
+    );
+    Ok(())
+}

@@ -113,7 +113,7 @@ window.STORYBOOK_DATA = {
       "gaps": "Mount failures, unsafe next, duplicated/malformed query, history/reload.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B01",
-      "title": "Open /settings; redirect legacy /account* without losing the query.",
+      "title": "Open /settings in the hub; /settings/link carries a terminal's request.",
       "variants": "Fresh, linked, add-account, revoke, delete, callback queries."
     },
     {
@@ -879,9 +879,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -900,9 +899,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -920,9 +918,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -942,9 +939,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "CLI authorization handoff",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs",
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
@@ -966,9 +962,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account settings",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -989,9 +984,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Devices and revocation",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1009,9 +1003,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Deletion review",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",

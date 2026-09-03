@@ -5419,6 +5419,7 @@ dependencies = [
 name = "tonk-workspace"
 version = "0.6.11"
 dependencies = [
+ "bs58",
  "custom-elements",
  "dialog-common",
  "gloo-timers",

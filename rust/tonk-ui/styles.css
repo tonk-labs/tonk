@@ -2225,6 +2225,10 @@ ui-account-settings .cta { font: 600 13px/1 var(--cond);
     white-space: nowrap; display: inline-block; cursor: pointer;
     text-decoration: underline; text-underline-offset: 3px; }
 ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
+/* a verb is a button for the keyboard's sake; it wears the word alone */
+ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
+    background: none; border: 0; margin: 0; padding: 0; text-align: right; }
+ui-account-settings .srowd > .cta { flex: none; }
 /* a real input wearing the ceremony email field's coat: no border, no
    background, no outline — the row it sits in is all the chrome it gets.
    The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
@@ -2258,6 +2262,50 @@ ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
 @media (hover: none) {
     ui-account-settings [data-settings-devices] .cta { opacity: 1; }
 }
+/* the confirm clusters — the page dims, the surface never. the body is
+   set in the reading face at weight 600, ink on card, like the hub's
+   space-removal confirm; the arming row is the gate: type the address,
+   the block cursor shows where, and the solid verb stays off until it
+   matches. */
+/* the confirm is a solid card in the page's own scheme, like the mock's
+   modal: the page dims, the surface never, and nothing reads through.
+   The cluster element wears the FABB skin, pinned light, so its tokens
+   are re-pointed at the page's here. */
+ui-account-settings tonk-dialog {
+    --fabb-panel: var(--card); --fabb-ink: var(--ink);
+    --fabb-ink-soft: var(--soft); --fabb-on-ink: var(--on-ink);
+    --fabb-ring: var(--ring); --fabb-sep: var(--sep);
+    --fabb-hover: var(--wash); --fabb-press: var(--wash);
+    --fabb-dim: var(--dim); }
+ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
+    font-weight: 600; font-size: 13.5px; line-height: 1.6;
+    text-transform: none; color: var(--ink); }
+ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
+    letter-spacing: 0.02em; color: var(--soft); }
+ui-account-settings .armrow b { color: var(--ink); font-weight: 600;
+    text-transform: none; }
+ui-account-settings .armfield { display: inline-block; min-width: 6ch;
+    margin-left: 8px; padding: 0 1px 2px; border-bottom: 1.5px solid var(--ink);
+    outline: none; caret-color: transparent; color: var(--ink);
+    text-transform: none; white-space: nowrap; user-select: text; }
+ui-account-settings .armfield:focus-visible { box-shadow: none; }
+ui-account-settings .armrow .cur { display: inline-block; width: 7px;
+    height: 13px; background: var(--ink); vertical-align: -1px;
+    animation: hub-hardblink 1.05s steps(1, end) infinite; }
+@keyframes hub-hardblink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    ui-account-settings .armrow .cur { animation: none; }
+}
+/* an unarmed verb stays visibly off, not merely inert */
+ui-account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
+ui-account-settings .m-go:disabled:hover { background: var(--ink); }
+/* the link pane's answer is a fused action run, like a confirm's foot */
+ui-account-settings .link-foot { display: flex; justify-content: flex-end;
+    gap: 0; margin-top: 18px; }
+ui-account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
+/* where a ceremony got to, under the rows that asked for it */
+ui-account-settings [data-ceremony-status] { color: var(--ink); }
+ui-account-settings [data-ceremony-status][hidden] { display: none; }
 
 /* Map our Web Awesome theme into the `<tonk-code>` element's
    public CSS variables. The element ships GitHub-flavored defaults
