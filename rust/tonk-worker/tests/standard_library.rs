@@ -492,6 +492,39 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
 }
 
 #[test]
+fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
+    let route = PROFILE_LIBRARY
+        .split("view!:\n  this: tonk:join/route")
+        .nth(1)
+        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .expect("join route view");
+
+    assert!(
+        css_rule(route, ".edge-statement {").contains("color:var(--edge-ink)"),
+        "join statements must override the global heading colour with local mode ink",
+    );
+    assert!(
+        route.contains(".join-status:has(.edge-wall--closed) .join-opening { display:none; }"),
+        "retained failure content must suppress the opening row even while its display reconnects",
+    );
+
+    let action = css_rule(route, ".ebtn {");
+    for contract in [
+        "height:40px",
+        "border:0",
+        "border-radius:0",
+        "font:inherit",
+        "line-height:1",
+        "white-space:normal",
+    ] {
+        assert!(
+            action.contains(contract),
+            "join actions must normalize links and native buttons with `{contract}`",
+        );
+    }
+}
+
+#[test]
 fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
@@ -524,7 +557,7 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     }
     for contract in [
         ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
-        ".edge-field, .ebtn, .ebtn.solid button { min-height:44px; }",
+        ".edge-field, .ebtn { height:44px; min-height:44px; }",
         ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
         ".edge-input { min-height:44px; font-size:16px; }",
         ".edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }",

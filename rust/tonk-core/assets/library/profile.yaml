@@ -649,7 +649,7 @@ view!:
             .edge-statement, .edge-field, .edge-narrator { min-height:36px;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
             .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
-              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+              color:var(--edge-ink); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
               line-height:1.55; text-wrap:balance; }
             .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;
               display:flex; align-items:flex-end; gap:12px; overflow:hidden; }
@@ -667,17 +667,15 @@ view!:
               font-weight:400; line-height:1.55; text-wrap:pretty; }
             .edge-narrator__invalid { display:none; }
             .edge-run { display:flex; gap:0; }
-            .ebtn { min-height:40px; flex:1 1 0; padding:8px 10px; display:flex;
-              align-items:flex-end; justify-content:flex-end; color:var(--edge-ink);
+            .ebtn { height:40px; min-height:40px; flex:1 1 0; box-sizing:border-box;
+              padding:8px 10px; display:flex; align-items:flex-end; justify-content:flex-end;
+              appearance:none; border:0; border-radius:0; color:var(--edge-ink);
+              background:transparent; font:inherit; line-height:1; white-space:normal;
               text-decoration:none; text-transform:lowercase; cursor:pointer; }
             .ebtn.quiet { background:var(--edge-card);
               box-shadow:0 0 0 1px var(--edge-ring); }
             .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
-            .ebtn.solid button { width:100%; min-height:40px; padding:8px 10px;
-              display:flex; align-items:flex-end; justify-content:flex-end;
-              border:0; color:inherit; background:transparent; font:inherit;
-              text-transform:lowercase; cursor:pointer; }
-            .ebtn:active, .ebtn.solid button:active { scale:.96; }
+            .ebtn:active { scale:.96; }
             tonk-invite-link { display:none; }
             .edge-wall:has(tonk-invite-link[data-state="invalid"]) .edge-field {
               animation:edge-reject .45s ease 2; }
@@ -697,12 +695,16 @@ view!:
               display:flex; align-items:center; justify-content:space-between;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
             .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
+            /* A reconnect keeps the last good failure view mounted while its
+               display returns to loading. Prefer the rendered terminal state
+               over that transient lifecycle attribute, or both rows appear. */
+            .join-status:has(.edge-wall--closed) .join-opening { display:none; }
             @media (max-width:680px) {
               .edge-mast { left:16px; top:18px; width:98px; min-height:44px;
                 display:flex; align-items:center; }
               .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
               .edge-run { flex-direction:column; }
-              .edge-field, .ebtn, .ebtn.solid button { min-height:44px; }
+              .edge-field, .ebtn { height:44px; min-height:44px; }
               .edge-field { height:44px; padding-bottom:0; align-items:stretch; }
               .edge-input { min-height:44px; font-size:16px; }
               .edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }
