@@ -135,6 +135,7 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
 struct UiHubAccount {
     click: Option<EventClosure>,
     keydown: Option<KeyClosure>,
+    position_change: Option<EventClosure>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
     subscriptions: Rc<RefCell<Vec<Subscription>>>,
@@ -218,6 +219,25 @@ impl CustomElement for UiHubAccount {
 
         subscribe_account_signals(this, self.subscriptions.clone());
 
+        // The bar is inside this sealed guest while its account ceremony is
+        // in the top page. Keep their shared viewport anchor live when focus
+        // in the top-page input routes scrolling back through the Hub.
+        let host = this.clone();
+        let position_change: EventClosure = Closure::wrap(Box::new(move |_event: Event| {
+            if host.has_attribute("data-linking") {
+                request_linking_position(&host);
+            }
+        }));
+        if let Some(window) = window() {
+            for event in ["scroll", "resize"] {
+                let _ = window.add_event_listener_with_callback(
+                    event,
+                    position_change.as_ref().unchecked_ref(),
+                );
+            }
+        }
+        self.position_change = Some(position_change);
+
         // The /settings route mounts this element with `view="settings"`:
         // the same chrome, arriving with the settings page open. On that
         // route the spaces cell and Escape NAVIGATE home — there is no
@@ -240,6 +260,7 @@ impl CustomElement for UiHubAccount {
                 == Some("account")
         {
             enter_linking(this);
+            request_linking_position(this);
         }
 
         let host = this.clone();
@@ -468,6 +489,16 @@ impl CustomElement for UiHubAccount {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        }
+        if let Some(position_change) = self.position_change.take()
+            && let Some(window) = window()
+        {
+            for event in ["scroll", "resize"] {
+                let _ = window.remove_event_listener_with_callback(
+                    event,
+                    position_change.as_ref().unchecked_ref(),
+                );
+            }
         }
         close_menu(this, false);
     }
@@ -710,6 +741,15 @@ fn apply_account_name(this: &HtmlElement, name: &str) {
 /// state the user typed survives tab switches.
 fn start_linking(this: &HtmlElement) {
     enter_linking(this);
+    request_linking_position(this);
+}
+
+/// Publish the Hub bar's current viewport rectangle to the top page.
+///
+/// The ceremony cannot measure this element itself: the Hub is a sealed,
+/// opaque-origin guest. The opening click and later scroll/resize events all
+/// use this same path so the two documents cannot disagree about the seat.
+fn request_linking_position(this: &HtmlElement) {
     let anchor = this
         .query_selector(".hubbar")
         .ok()
@@ -1019,8 +1059,11 @@ fn install_frame_shims() {
 
 #[cfg(test)]
 mod tests {
+    use js_sys::{Array, Function, Object, Reflect};
     use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
     use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::closure::Closure;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
     use web_sys::{Event, EventInit, HtmlElement, KeyboardEvent, KeyboardEventInit, window};
 
@@ -1065,6 +1108,30 @@ mod tests {
         host
     }
 
+    fn record_registration_requests() -> Array {
+        let calls = Array::new();
+        let recorded = calls.clone();
+        let register = Closure::wrap(Box::new(move |payload: JsValue| {
+            recorded.push(&payload);
+        }) as Box<dyn FnMut(JsValue)>);
+        let tonk = Object::new();
+        Reflect::set(
+            &tonk,
+            &JsValue::from_str("register"),
+            register.as_ref().unchecked_ref::<Function>(),
+        )
+        .unwrap();
+        Reflect::set(&window().unwrap(), &JsValue::from_str("tonk"), &tonk).unwrap();
+        register.forget();
+        calls
+    }
+
+    fn clear_registration_recorder() {
+        let window = window().unwrap();
+        let _ =
+            Reflect::delete_property(window.unchecked_ref::<Object>(), &JsValue::from_str("tonk"));
+    }
+
     #[wasm_bindgen_test]
     fn it_registers_the_hub_account_element() {
         super::register();
@@ -1073,6 +1140,32 @@ mod tests {
             !registry.get("ui-hub-account").is_undefined(),
             "ui-hub-account must be registered"
         );
+    }
+
+    /// The bar and the top-page ceremony live in different documents. A
+    /// scroll changes the bar's viewport rectangle, so the guest must relay a
+    /// fresh anchor instead of leaving the ceremony at its opening position.
+    #[wasm_bindgen_test]
+    fn it_reanchors_the_linking_ceremony_when_the_hub_scrolls() {
+        clear_registration_recorder();
+        let calls = record_registration_requests();
+        let host = account_element();
+        super::enter_linking(&host);
+
+        window()
+            .unwrap()
+            .dispatch_event(&Event::new("scroll").unwrap())
+            .unwrap();
+
+        let count = calls.length();
+        let payload = calls.get(0).as_string().unwrap_or_default();
+        host.remove();
+        clear_registration_recorder();
+
+        assert_eq!(count, 1, "scrolling must publish one fresh anchor");
+        let request: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(request["reason"], "needs-account");
+        assert!(request["anchor"]["bottom"].is_number());
     }
 
     #[wasm_bindgen_test]

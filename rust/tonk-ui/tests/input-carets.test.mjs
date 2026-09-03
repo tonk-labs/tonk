@@ -52,3 +52,38 @@ test("account deletion names its confirmation phrase beside a native input", () 
   assert.match(settings, /<input class="armfield"[^>]+data-delete-confirm/);
   assert.doesNotMatch(settings, /contenteditable/);
 });
+
+test("active account fields use a measured two-line row spanning its full width", () => {
+  assert.match(
+    registration,
+    /class="orow mblk editing" id="tonk-register-email-row"/,
+  );
+  assert.match(registration, /class_list\(\)\.remove_1\("editing"\)/);
+  assert.match(
+    appStyles,
+    /\.tonk-ceremony \.orow\.editing \{[\s\S]*?box-sizing: border-box;[\s\S]*?height: 60px;[\s\S]*?grid-template-rows: 13px 20px;[\s\S]*?gap: 7px;/,
+  );
+  assert.match(
+    appStyles,
+    /\.tonk-ceremony \.orow\.editing \.ed \{[\s\S]*?display: block;[\s\S]*?inline-size: 100%;[\s\S]*?max-inline-size: none;/,
+    "the password manager must see the field's real trailing edge",
+  );
+  assert.doesNotMatch(
+    appStyles,
+    /\.tonk-ceremony \.ed\[autocomplete~="webauthn"\]/,
+    "input padding shifts the password-manager affordance away from the row edge",
+  );
+});
+
+test("an anchored account ceremony cannot scroll away from its hub bar", () => {
+  assert.match(
+    appStyles,
+    /html:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\),[\s\S]*?body:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\)\s*\{\s*overflow: hidden;/,
+    "the top page must be locked while its fixed account page is open",
+  );
+  assert.match(
+    appStyles,
+    /#tonk-register\[data-anchored\]\s*\{[\s\S]*?overflow: hidden;[\s\S]*?overscroll-behavior: none;/,
+    "the account page must neither scroll nor chain wheel input to the page behind it",
+  );
+});

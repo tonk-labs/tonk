@@ -118,7 +118,7 @@ const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
     <div class="m-head mblk" id="tonk-register-head">link an account</div>
-    <div class="orow mblk" id="tonk-register-email-row">
+    <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
             inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
@@ -280,6 +280,7 @@ fn unfold(row: &Element) {
 /// sequence of replaced screens.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn settle(row: &Element, noun: &str, value: &str) {
+    let _ = row.class_list().remove_1("editing");
     row.set_inner_html("");
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -1933,7 +1934,7 @@ fn ask_for_name(host: &Element) {
         return;
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
-    row.set_class_name("orow mblk pre");
+    row.set_class_name("orow mblk pre editing");
     row.set_inner_html(
         r##"<span class="k">display name</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
@@ -2158,7 +2159,7 @@ pub struct Request {
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
-    /// Where to seat the cluster, in page coordinates. The Hub's
+    /// Where to seat the cluster, in viewport coordinates. The Hub's
     /// "link an account" tab sends its bar's rect so the ceremony rows
     /// render IN the column right under it — the tab activates and the
     /// email and instruction rows are simply what its page shows. Absent
@@ -2168,7 +2169,7 @@ pub struct Request {
     pub anchor: Option<Anchor>,
 }
 
-/// A seat for the anchored cluster: the opener bar's box, page coordinates.
+/// A seat for the anchored cluster: the opener bar's viewport box.
 #[derive(Debug, PartialEq, serde::Deserialize)]
 pub struct Anchor {
     /// The bar's left edge — the column's own left.
@@ -2364,10 +2365,7 @@ pub fn describe(payload: &str) {
         );
         let _ = host.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
         escape.forget();
-        let style = host.style();
-        let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
-        let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
-        let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
+        position_at(&host, anchor);
     }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
@@ -2380,6 +2378,30 @@ pub fn describe(payload: &str) {
     {
         head.set_text_content(Some("confirm your email to share"));
     }
+}
+
+/// Move an already-open anchored ceremony to the guest bar's latest viewport
+/// rectangle. Scroll and resize updates use this without rebuilding the
+/// editor, so the address and focus both survive.
+pub fn reanchor(request: &Request) {
+    let Some(anchor) = &request.anchor else {
+        return;
+    };
+    let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    position_at(&host, anchor);
+}
+
+fn position_at(host: &HtmlElement, anchor: &Anchor) {
+    let style = host.style();
+    let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
+    let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
+    let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
 }
 
 /// Wire `selector`'s click, inside the gesture so a ceremony started

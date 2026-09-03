@@ -3129,10 +3129,22 @@ tonk-notebook-index {
      ARE that tab's page, seated in the column one gap under the bar, so
      there is no veil and no head row (the tab is the head). */
   #tonk-register[data-anchored]::backdrop { background: transparent; }
+  /* The Hub bar lives in the routed iframe while this page lives in the top
+     document. A wheel over the only pointer-active part of the dialog (its
+     input column) must not scroll either realm out from under the other.
+     Release the page lock while the ceremony is suspended behind SPACES. */
+  html:has(#tonk-register[data-anchored][open]:not([data-suspended])),
+  body:has(#tonk-register[data-anchored][open]:not([data-suspended])) {
+    overflow: hidden;
+  }
   /* Non-modal and full-viewport, the host would swallow every click —
      including the bar tabs it sits under, which are the way OUT of the
      page. Only the seated column is really here. */
-  #tonk-register[data-anchored] { pointer-events: none; }
+  #tonk-register[data-anchored] {
+    pointer-events: none;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
   #tonk-register[data-anchored] .ocol { pointer-events: auto; }
   #tonk-register[data-anchored] .ocol {
     position: absolute; margin: 0;
@@ -3209,6 +3221,33 @@ tonk-notebook-index {
   .tonk-ceremony .orow .v,
   .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
 
+  /* An active editor opens into a two-line workspace. The noun remains
+     visible at the upper left while the value gets the full row below;
+     settling the answer removes `editing` and restores the compact record. */
+  .tonk-ceremony .orow.editing {
+    box-sizing: border-box;
+    height: 60px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 13px 20px;
+    align-items: stretch;
+    gap: 7px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .tonk-ceremony .orow.editing .k,
+  .tonk-ceremony .orow.editing .v {
+    width: 100%;
+    padding-bottom: 0;
+    margin-bottom: 0;
+  }
+  .tonk-ceremony .orow.editing .k { align-items: flex-start; }
+  .tonk-ceremony .orow.editing .v {
+    align-items: flex-end;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
   /* The editor: inline text with the browser's native caret. */
   /* A real `<input>`, not the study's contenteditable span.
      Conditional mediation is the reason: WebAuthn will only offer a
@@ -3220,6 +3259,7 @@ tonk-notebook-index {
      behavior and no extra control chrome. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
+    box-sizing: border-box;
     background: none; border: 0; outline: none; margin: 0;
     padding: 0;
     font: inherit; letter-spacing: inherit; text-transform: none;
@@ -3229,6 +3269,14 @@ tonk-notebook-index {
        same baseline as the noun beside it rather than centring itself in
        whatever height it claims. */
     height: 1em; line-height: 1;
+  }
+  .tonk-ceremony .orow.editing .ed {
+    display: block;
+    inline-size: 100%;
+    max-inline-size: none;
+    height: 20px;
+    line-height: 20px;
+    text-align: left;
   }
   .tonk-ceremony .ed::placeholder {
     color: var(--soft); opacity: .55; text-transform: none;
