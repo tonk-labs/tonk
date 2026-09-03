@@ -279,7 +279,7 @@ mod tests {
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
-    use crate::router::account::TEST_ACCOUNT_PROVIDER;
+    use crate::router::account::TEST_ACCOUNT_REMOTE;
     use crate::router::tests::{put_repo, test_state, test_state_without_root};
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -302,7 +302,7 @@ mod tests {
             .find(|entry| entry.active)
             .expect("the active profile lists itself");
         assert_eq!(active.profile_name, response.active);
-        assert_eq!(active.provider.as_deref(), Some(TEST_ACCOUNT_PROVIDER));
+        assert_eq!(active.provider.as_deref(), Some(TEST_ACCOUNT_REMOTE));
         assert!(
             active.root_did.is_some(),
             "an attached profile names its account root"
