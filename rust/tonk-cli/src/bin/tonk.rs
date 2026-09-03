@@ -2313,15 +2313,12 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
                 &store,
                 &name,
                 site.as_deref(),
-                None,
+                Some(&cwd),
                 create_config.clone(),
             )
             .await
             {
                 Ok(outcome) => {
-                    if let Err(error) = tonk_cli::space::bind(&store, &outcome.name, &cwd) {
-                        return print_failure(error);
-                    }
                     if outcome.adopted {
                         println!(
                             "Registered space '{}' on the site data already at that path",
@@ -3455,31 +3452,19 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
                 }
             };
 
-            let mut registry = match store.load() {
-                Ok(registry) => registry,
-                Err(err) => return print_failure(err),
-            };
-            if registry.spaces.contains_key(&name) {
-                return print_error(format!(
-                    "{err}\nthe site was claimed at {root}; register it with \
-                     `tonk space new <other-name> --site {root}`",
-                    err = tonk_cli::space::SpaceError::Exists(name.clone()),
-                    root = root.display(),
-                ));
-            }
-
-            registry
-                .spaces
-                .insert(name.clone(), tonk_cli::space::SpaceEntry::at(root.clone()));
-            if let Err(err) = store.save(&registry) {
+            if let Err(err) = tonk_cli::space::register_existing_bound(store, &name, &root, &cwd) {
+                if matches!(err, tonk_cli::space::SpaceError::Exists(_)) {
+                    return print_error(format!(
+                        "{err}\nthe site was claimed at {root}; register it with \
+                         `tonk space new <other-name> --site {root}`",
+                        root = root.display(),
+                    ));
+                }
                 return print_error(format!(
                     "joined, but registering space '{name}' failed: {err}\n\
                      re-register with `tonk space new {name} --site {root}`",
                     root = root.display(),
                 ));
-            }
-            if let Err(error) = tonk_cli::space::bind(store, &name, &cwd) {
-                return print_failure(error);
             }
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_space_resolution(store, flag, Some(&cwd));

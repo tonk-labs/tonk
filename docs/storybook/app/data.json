@@ -1962,6 +1962,14 @@
       "result": "Pass (local, 2026-08-29): the focused real-browser regression completed every step against the built product."
     },
     {
+      "claim": "Concurrent registry writers serialize the complete logical mutation (Interactions with other systems).",
+      "device": "two-process + locked",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-13",
+      "priority": "P1",
+      "result": "Pass (native, 2026-08-30): focused real-binary create/create and bind/remove overlap regressions."
+    },
+    {
       "claim": "Status reports R0–R6 without mutation (Settle).",
       "device": "two-actor",
       "file": "verification/cli-spaces-ui.md",
@@ -2222,7 +2230,7 @@
     "blocked": 0,
     "fail": 0,
     "other": 0,
-    "pass": 1,
+    "pass": 2,
     "unrun": 114
   },
   "visualCommit": "49a873a23"

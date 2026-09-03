@@ -5,7 +5,7 @@
 //! `space` module's in-process ops (covered by `tests/space.rs`).
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// Path to the `tonk` binary under test. Mirrors `tests/telemetry.rs`:
 /// the compile-time `CARGO_BIN_EXE_tonk` points into the sandbox the
@@ -221,6 +221,137 @@ mod when_no_account_is_signed_in {
         assert!(
             spaces["account"].is_null(),
             "no account is signed in: {spaces}"
+        );
+    }
+}
+
+mod when_registry_writers_overlap {
+    use super::*;
+
+    fn hold_registry_lock(state: &Path) -> std::fs::File {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(state.join("spaces.lock"))
+            .expect("open registry lock");
+        lock.lock().expect("hold registry lock");
+        lock
+    }
+
+    fn captured_in(state: &Path, cwd: &Path, args: &[&str]) -> std::process::Child {
+        tonk_cmd(state, args, &[])
+            .current_dir(cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn tonk writer")
+    }
+
+    fn assert_blocked(child: &mut std::process::Child) {
+        assert!(
+            child.try_wait().expect("query tonk writer").is_none(),
+            "registry writer completed while another process held spaces.lock"
+        );
+    }
+
+    #[dialog_common::test]
+    fn concurrent_registry_distinct_creates_are_serialized() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let first_work = state.path().join("first-work");
+        let second_work = state.path().join("second-work");
+        std::fs::create_dir(&first_work).expect("first work directory");
+        std::fs::create_dir(&second_work).expect("second work directory");
+        let first_site = state.path().join("first-site");
+        let second_site = state.path().join("second-site");
+        let lock = hold_registry_lock(state.path());
+
+        let mut first = captured_in(
+            state.path(),
+            &first_work,
+            &[
+                "space",
+                "new",
+                "first",
+                "--site",
+                first_site.to_str().expect("utf-8 first site"),
+            ],
+        );
+        let mut second = captured_in(
+            state.path(),
+            &second_work,
+            &[
+                "space",
+                "new",
+                "second",
+                "--site",
+                second_site.to_str().expect("utf-8 second site"),
+            ],
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_blocked(&mut first);
+        assert_blocked(&mut second);
+        drop(lock);
+
+        let first = first.wait_with_output().expect("first writer output");
+        let second = second.wait_with_output().expect("second writer output");
+        assert!(first.status.success(), "{}", stderr_of(&first));
+        assert!(second.status.success(), "{}", stderr_of(&second));
+
+        let registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("spaces.json")).expect("space registry"),
+        )
+        .expect("valid space registry");
+        assert!(registry["spaces"]["first"].is_object(), "{registry}");
+        assert!(registry["spaces"]["second"].is_object(), "{registry}");
+    }
+
+    #[dialog_common::test]
+    fn concurrent_registry_bind_and_remove_preserve_both_results() {
+        let state = tempfile::tempdir().expect("tempdir");
+        let first_site = state.path().join("first-site");
+        let second_site = state.path().join("second-site");
+        std::fs::create_dir(&first_site).expect("first site");
+        std::fs::create_dir(&second_site).expect("second site");
+        write_registry(
+            state.path(),
+            &[("first", &first_site), ("second", &second_site)],
+            None,
+        );
+        let work = state.path().join("work");
+        std::fs::create_dir(&work).expect("work directory");
+        let canonical_work = work.canonicalize().expect("canonical work directory");
+        let lock = hold_registry_lock(state.path());
+
+        let mut binding = captured_in(state.path(), &work, &["space", "use", "first"]);
+        let mut removal = captured_in(
+            state.path(),
+            state.path(),
+            &["space", "rm", "second", "--keep-data"],
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert_blocked(&mut binding);
+        assert_blocked(&mut removal);
+        drop(lock);
+
+        let binding = binding.wait_with_output().expect("binding output");
+        let removal = removal.wait_with_output().expect("removal output");
+        assert!(binding.status.success(), "{}", stderr_of(&binding));
+        assert!(removal.status.success(), "{}", stderr_of(&removal));
+
+        let registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("spaces.json")).expect("space registry"),
+        )
+        .expect("valid space registry");
+        assert!(registry["spaces"]["first"].is_object(), "{registry}");
+        assert!(registry["spaces"].get("second").is_none(), "{registry}");
+        assert_eq!(
+            registry["bindings"][canonical_work.display().to_string()],
+            "first",
+            "{registry}"
         );
     }
 }
