@@ -1365,12 +1365,11 @@ function failurePage() {
 
 /// Release streams if a successor is waiting and we have not already.
 ///
-/// Called from the fetch path because that is the one thing guaranteed
-/// to run. A worker holding an open SSE stream is never killed — the
-/// stream keeps it alive — so it never restarts, never re-evaluates
-/// this script, and never reaches the startup catch-up above. Its only
-/// remaining contact with the outside world is the fetches it serves,
-/// so the check has to live here too.
+/// Called from both the fetch path and an explicit update-aware page nudge. A
+/// worker holding an open SSE stream is never killed — the stream keeps it
+/// alive — so it never restarts, never re-evaluates this script, and never
+/// reaches the startup catch-up above. Either contact can wake it after the
+/// successor becomes durable registration state.
 function retireIfSuperseded(event) {
     if (retired || !self.registration.waiting || !isActiveIncumbent()) return null;
     const attempt = retireActiveIncumbent("a successor is waiting");
@@ -1472,18 +1471,26 @@ self.onfetch = event => {
 // worker's `onmessage` stashes the port against the client id and
 // routes per-envelope dispatch from there.
 //
-// One synchronous early-out: a `{type:"claim"}` message asks the
-// SW to take control of every client in scope. The page sends
-// this on cold-start when it lands on a SW that was activated in
-// a previous session — `onactivate` doesn't refire, so without
-// this nudge the page would stay uncontrolled (and every /api/*
-// fetch would land on the static-asset server as a 405). The
-// claim raises `controllerchange` on the page side, which the
-// shell's `serviceWorkerActivates()` Promise awaits.
+// Synchronous early-outs handle lifecycle nudges before ordinary iframe
+// messages reach Rust. A `{type:"claim"}` message asks the SW to take control
+// of every client in scope. The page sends this on cold-start when it lands on
+// a SW that was activated in a previous session — `onactivate` doesn't refire,
+// so without this nudge the page would stay uncontrolled (and every /api/*
+// fetch would land on the static-asset server as a 405). The claim raises
+// `controllerchange` on the page side, which the shell's
+// `serviceWorkerActivates()` Promise awaits.
 self.onmessage = event => {
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
         extendOfflineGeneration(event);
+        return;
+    }
+    // An update-aware page observed that a fully-installed successor is
+    // waiting. This reaches an incumbent that stayed alive long enough to miss
+    // `updatefound` and therefore never ran the startup catch-up above. Verify
+    // the registration state here before releasing any streams.
+    if (event.data && event.data.type === "retire-if-superseded") {
+        retireIfSuperseded(event);
         return;
     }
     // Connectivity nudge from the active page on an `online`/`offline`

@@ -467,6 +467,7 @@
                 markServiceWorkerReady();
 
                 let incoming = null;
+                let retirementRequested = false;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -481,6 +482,22 @@
                 const onWorkerState = () => {
                     noteLife();
                     if (incoming?.state === "redundant") finish("failed");
+                    // A long-lived outgoing worker can miss `updatefound` and
+                    // never restart, while its open streams keep an installed
+                    // successor waiting. The update-aware page has durable
+                    // visibility of that state, so wake the incumbent once and
+                    // let it verify the waiting worker before releasing.
+                    if (
+                        !retirementRequested &&
+                        incoming?.state === "installed" &&
+                        registration.waiting === incoming &&
+                        navigator.serviceWorker.controller === priorController
+                    ) {
+                        retirementRequested = true;
+                        priorController.postMessage({
+                            type: "retire-if-superseded",
+                        });
+                    }
                     // Browser activation replaces the incumbent controller;
                     // `controllerchange` below drives the guarded reload.
                     if (
