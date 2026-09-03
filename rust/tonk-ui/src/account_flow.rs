@@ -1981,7 +1981,6 @@ mod tests {
     struct CliDeviceRow {
         status: String,
         name: String,
-        did: String,
         this_device: bool,
     }
 
@@ -4411,7 +4410,6 @@ mod tests {
         let terminal = CliDeviceRow {
             status: "active".into(),
             name: "e2e terminal".into(),
-            did: "did:key:zTerminal".into(),
             this_device: true,
         };
         assert!(!callback_device_rows_ready(std::slice::from_ref(&terminal)));
@@ -4419,7 +4417,6 @@ mod tests {
         let browser = CliDeviceRow {
             status: "active".into(),
             name: "Chrome on Linux".into(),
-            did: "did:key:zBrowser".into(),
             this_device: false,
         };
         assert!(callback_device_rows_ready(&[terminal, browser]));
@@ -4435,12 +4432,6 @@ mod tests {
             ));
         }
         Ok(report.rows.into_iter().map(|row| row.subject).collect())
-    }
-
-    fn did_for_device<'a>(rows: &'a [CliDeviceRow], name: &str) -> Option<&'a str> {
-        rows.iter()
-            .find(|row| row.name == name)
-            .map(|row| row.did.as_str())
     }
 
     fn active_profile_and_label(body: &serde_json::Value) -> Result<(String, String)> {
@@ -5126,9 +5117,8 @@ mod tests {
         );
 
         // The sealed Hub's settings row is a link to the /settings route:
-        // the same chrome with the settings section open, reading real
-        // account and device facts and keeping unsupported Usage/Syncing
-        // surfaces absent.
+        // the same chrome with the account settings section open and
+        // unsupported Devices/Usage/Syncing surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
         driver.enter_default_frame().await?;
@@ -5141,8 +5131,13 @@ mod tests {
             passkey_created_on.as_str(),
         )
         .await?;
-        click(&driver, ".s-rail [data-pane=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-settings-devices]", "this device").await?;
+        assert!(
+            driver
+                .find_all(By::Css("ui-account-settings [data-pane=\"devices\"]"))
+                .await?
+                .is_empty(),
+            "settings must not expose a devices tab or pane"
+        );
         let settings_text = element(&driver, "ui-account-settings")
             .await?
             .text()
@@ -5157,7 +5152,6 @@ mod tests {
 
         // The authoritative display-name write repaints the bar's account
         // cell and remains in the field after the page is reloaded.
-        click(&driver, ".s-rail [data-pane=\"account\"]").await?;
         let display_name = element(&driver, "[data-settings-name]").await?;
         let select_all = if cfg!(target_os = "macos") {
             Key::Command + "a"
@@ -5728,55 +5722,6 @@ mod tests {
 
         guest.quit().await?;
         owner.quit().await?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_revokes_the_cli_device_from_the_browser(env: TestEnvironment) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        sign_up(&driver, &env, EMAIL).await?;
-        let linked = link_cli(&driver, &env).await?;
-        // Cache the complete callback view before revocation. The CLI creates
-        // its own row locally, so a terminal-only list does not prove it has
-        // pulled the browser row that must remain visible in its stale cache.
-        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
-        let cli_did = did_for_device(&listed_rows, "e2e terminal")
-            .context("CLI device was absent from the account device list")?
-            .to_string();
-
-        open_hub_settings(&driver, &env).await?;
-        // The device list lives on the Devices pane, hidden until
-        // selected — and hidden text reads as empty.
-        click(&driver, ".s-rail [data-pane=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-settings-devices]", "e2e terminal").await?;
-        // Removing access asks in place: the first press arms the verb,
-        // the second revokes.
-        let selector = format!("[data-revoke-device=\"{cli_did}\"]");
-        click(&driver, &selector).await?;
-        wait_for_text(&driver, &selector, "sure? remove").await?;
-        click(&driver, &selector).await?;
-
-        // The row leaves with the authority: revoking retracted the
-        // link's facts from the account space, and the refreshed list no
-        // longer shows the device. Storage enforcement of the published
-        // revocation is pinned by the native access-service tests.
-        wait_for_text_without(&driver, "[data-settings-devices]", "e2e terminal").await?;
-
-        // The revoked CLI still answers locally — the list is facts, not
-        // a service round trip — but it can no longer pull the account,
-        // so its own stale row is all it has left of the retraction.
-        let listed = devices(&linked.profile, &env).await?;
-        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let listed_rows = device_rows(&listed.stdout)?;
-        assert!(
-            listed_rows
-                .iter()
-                .any(|row| row.name.starts_with("Chrome on ")),
-            "{}",
-            listed.stdout
-        );
-
-        driver.quit().await?;
         Ok(())
     }
 

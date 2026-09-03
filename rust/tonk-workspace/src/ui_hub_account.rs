@@ -1148,7 +1148,7 @@ mod tests {
     fn account_element() -> HtmlElement {
         super::register();
         // The settings section embeds `<ui-account-settings>`; without its
-        // registration the panel never injects its rail, which only shows
+        // registration the panel never injects its body, which only shows
         // when a test runs ISOLATED (CI's nextest) — the pooled local run
         // hides it behind another test's registration.
         crate::ui_account_settings::register();
@@ -1897,22 +1897,11 @@ mod tests {
             .unwrap();
         assert!(!settings_view.hidden(), "the settings section swaps in");
         assert!(stack.hidden(), "the spaces stack steps aside for it");
-        // The rail: devices is a pane switch, and the account tab leads
-        // back to the account rows.
-        host.query_selector(".s-rail [data-pane=\"devices\"]")
-            .unwrap()
-            .unwrap()
-            .dyn_into::<HtmlElement>()
-            .unwrap()
-            .click();
         assert!(
-            !host
-                .query_selector(".s-body [data-pane=\"devices\"]")
+            host.query_selector("[data-pane=\"devices\"]")
                 .unwrap()
-                .unwrap()
-                .dyn_into::<HtmlElement>()
-                .unwrap()
-                .hidden()
+                .is_none(),
+            "settings only exposes the account pane"
         );
         let menu: HtmlElement = host
             .query_selector("[data-account-menu]")

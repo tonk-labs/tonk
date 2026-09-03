@@ -2179,28 +2179,12 @@ wa-page::part(drawer) {
     flex: 0 0 auto;
 }
 
-/* ── <ui-account-settings> — the account settings panel (DESIGN.md's
-   rail-over-panel reading). One element, two seats: the Hub's account tab
+/* ── <ui-account-settings> — the account settings panel. One element, two
+   seats: the Hub's account tab
    embeds it in-column, and the space route raises it in a <tonk-dialog>
    from the FAB's settings row — so its styling lives here, where both
-   documents receive it. The rail is a run of boxy tabs above the body; the
-   current rail item is a folder tab, same surface as the body, seam
-   erased by an explicit 1px cover. */
+   documents receive it. */
 ui-account-settings { display: block; }
-ui-account-settings .s-rail { display: flex; gap: 7px; }
-ui-account-settings .s-rail .blk { flex: 1; height: 36px; display: flex;
-    align-items: flex-end; justify-content: flex-end; padding: 0 12px 9px;
-    cursor: pointer; font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
-    text-transform: lowercase; color: var(--ink);
-    background: var(--frost-solid); border: 0;
-    box-shadow: 0 0 0 1px var(--ring); }
-ui-account-settings .s-rail .blk:hover {
-    background: linear-gradient(var(--wash), var(--wash)), var(--frost-solid); }
-ui-account-settings .s-rail .blk.cur { background: var(--panel);
-    box-shadow: none; border: 1px solid var(--ring); border-bottom: 0;
-    position: relative; z-index: 1; cursor: default; }
-ui-account-settings .s-rail .blk.cur::after { content: ""; position: absolute;
-    left: 0; bottom: -1px; width: 100%; height: 1px; background: var(--panel); }
 ui-account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
     max-height: 60vh; overflow: auto; padding: 8px 18px 18px;
     background: var(--panel); border: 1px solid var(--ring);
@@ -2249,21 +2233,6 @@ ui-account-settings .sname {
    resting block cursor: an unfocused field must read as settled, not as
    though it is still taking input. */
 ui-account-settings .sname:focus-visible { box-shadow: none; }
-/* devices — last seen rides soft beside the remove-access verb */
-ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
-ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
-    color: var(--soft); font-size: 12.5px; white-space: nowrap; }
-/* the current device rides its name as a soft suffix (the mock's d.self) */
-ui-account-settings .dev-self { font-weight: 400; color: var(--soft); }
-/* the device verb surfaces on approach — same law as the spaces rows */
-ui-account-settings [data-settings-devices] .cta { opacity: 0;
-    transition: opacity 0.15s var(--ease); }
-ui-account-settings [data-settings-devices] .srowd:hover .cta,
-ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
-    opacity: 1; }
-@media (hover: none) {
-    ui-account-settings [data-settings-devices] .cta { opacity: 1; }
-}
 /* the confirm clusters — the page dims, the surface never. the body is
    set in the reading face at weight 600, ink on card, like the hub's
    space-removal confirm; the arming row is the gate: type the displayed
@@ -3512,7 +3481,7 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 
 /* ── settings — a page of the account tab (the wireframe's reading):
    the stack steps aside and the section hangs from the same bar.
-   The panel's own styling (rail, body, rows) ships with
+   The panel's own styling (body and rows) ships with
    `<ui-account-settings>` in `tonk-ui/styles.css`, because the FAB
    raises the same panel in a dialog on the space route — only the
    hub seat's geometry lives here. ── */

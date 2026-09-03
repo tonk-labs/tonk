@@ -1,7 +1,3 @@
-<nav class="s-rail" aria-label="settings sections">
-  <button class="blk cur" type="button" data-pane="account">account</button>
-  <button class="blk" type="button" data-pane="devices">devices</button>
-</nav>
 <div class="s-body">
   <div class="pane" data-pane="account">
     <div class="srowd">
@@ -51,13 +47,6 @@
       <button class="m-cancel" type="button" data-link-decline>decline</button>
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
-  </div>
-  <div class="pane" data-pane="devices" hidden>
-    <div data-settings-devices></div>
-    <p class="expl">
-      devices holding this account. removing access clears the account from
-      that device &mdash; spaces stay with their members.
-    </p>
   </div>
 </div>
 <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
