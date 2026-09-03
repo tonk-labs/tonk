@@ -563,6 +563,30 @@ mod tests {
         }
     }
 
+    /// Wait until a profile-changing action has rebuilt the top document.
+    async fn wait_for_top_reload(
+        driver: &WebDriver,
+        before: &serde_json::Value,
+        action: &str,
+    ) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != before)
+            {
+                wait_for_service_worker(driver).await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for {action} to reload the page"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Answer the worker's ask for a passkey: the custody relay raises a
     /// consent card in the TOP document, and its button runs the
     /// assertion the virtual authenticator answers.
@@ -775,6 +799,41 @@ mod tests {
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
     }
 
+    async fn credential_ids(driver: &WebDriver, authenticator_id: &str) -> Result<Vec<String>> {
+        let result = ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "WebAuthn.getCredentials",
+                serde_json::json!({ "authenticatorId": authenticator_id }),
+            )
+            .await?;
+        result["credentials"]
+            .as_array()
+            .map(|credentials| {
+                credentials
+                    .iter()
+                    .filter_map(|credential| credential["credentialId"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator credentials"))
+    }
+
+    async fn remove_credential(
+        driver: &WebDriver,
+        authenticator_id: &str,
+        credential_id: &str,
+    ) -> Result<()> {
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "WebAuthn.removeCredential",
+                serde_json::json!({
+                    "authenticatorId": authenticator_id,
+                    "credentialId": credential_id,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn emulate_phone(driver: &WebDriver, width: u32, height: u32) -> Result<()> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools
@@ -894,19 +953,48 @@ mod tests {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
         await_register_action(driver, "create a passkey").await?;
+        let before = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
         click_register_action(driver).await?;
-        let passkey = await_settled_row(driver, "passkey").await?;
-        anyhow::ensure!(
-            passkey.contains(" on "),
-            "the passkey row names the device, got {passkey:?}",
-        );
-        // The ceremony hands enrollment off rather than awaiting a
-        // receipt — it is a command now — so the row asking for the
-        // emailed link is what says it landed. A caller that goes
-        // straight to the inbox would otherwise read it before the
-        // service had been asked to send anything.
-        await_narrator_containing(driver, "confirmation link").await?;
-        Ok(())
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            // Creating an account under an already-account-bound local
+            // profile promotes a fresh profile. The worker replies only
+            // after enrollment is durable, then the page reloads into it.
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != &before)
+            {
+                wait_for_service_worker(driver).await?;
+                return Ok(());
+            }
+            if let Ok(row) = driver.find(By::Css("#tonk-register-passkey-row .v")).await
+                && !row.text().await?.trim().is_empty()
+            {
+                let passkey = row.text().await?;
+                anyhow::ensure!(
+                    passkey.contains(" on "),
+                    "the passkey row names the device, got {passkey:?}",
+                );
+                // The ceremony hands enrollment off rather than awaiting a
+                // receipt — it is a command now — so the row asking for the
+                // emailed link is what says it landed. A caller that goes
+                // straight to the inbox would otherwise read it before the
+                // service had been asked to send anything.
+                await_narrator_containing(driver, "confirmation link").await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "account creation neither settled nor reloaded after profile routing"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Sign in to an existing account for `email`, from an already raised
@@ -919,15 +1007,40 @@ mod tests {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
         await_register_action(driver, "log in with your passkey").await?;
+        let before = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
         click_register_action(driver).await?;
         // Wait for the ceremony's own receipt before taking the cluster
         // down, the way signing up does. Dismissing on the click alone
         // races the assertion the platform is still holding, so a caller
         // that goes straight on to read the panel is reading it before
         // there is anything to read.
-        await_settled_row(driver, "passkey").await?;
-        dismiss_register_dialog(driver).await?;
-        Ok(())
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != &before)
+            {
+                wait_for_service_worker(driver).await?;
+                return Ok(());
+            }
+            if let Ok(row) = driver.find(By::Css("#tonk-register-passkey-row .v")).await
+                && !row.text().await?.trim().is_empty()
+            {
+                dismiss_register_dialog(driver).await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "login neither settled nor reloaded after profile routing"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Confirm the emailed address from a SECOND TAB, leaving the
@@ -1636,13 +1749,46 @@ mod tests {
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
+        let retained = create_space_awaiting_remote(&driver, "Same Account Draft", false).await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let active_before = successful_body("profiles before sign-out", &profiles)["active"]
+            .as_str()
+            .context("profiles omitted the active profile")?
+            .to_string();
+        let root = get_json(&driver, "/api/identity/root").await?;
+        let root_before = successful_body("root before sign-out", &root)["rootDid"]
+            .as_str()
+            .context("root status omitted rootDid")?
+            .to_string();
+        let devices = get_json(&driver, "/api/account/devices").await?;
+        let device_count_before = successful_body("devices before sign-out", &devices)
+            .as_array()
+            .context("device list was not an array")?
+            .len();
 
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-sign-out-open]").await?;
-        click(&driver, "[data-sign-out-submit]").await?;
-        // Signing out rebuilds the page on the unlinked profile: the Hub
-        // offers to link an account again.
         driver.enter_default_frame().await?;
+        let before_sign_out = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-submit]").await?;
+        // Signing out rebuilds the page on a rootless local profile so the
+        // signed-out account's spaces are preserved but no longer displayed.
+        wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        assert_ne!(
+            successful_body("profiles immediately after sign-out", &profiles)["active"],
+            active_before,
+            "sign-out must leave the retained account profile inactive"
+        );
+        assert!(
+            !space_keys(&driver).await?.contains(&retained),
+            "the post-sign-out Hub must not display the account profile's spaces"
+        );
         raise_cluster_from_hub(&driver, &env).await?;
 
         run_cluster_login(&driver, EMAIL).await?;
@@ -1694,7 +1840,27 @@ mod tests {
         let devices = successful_body("device list after re-login", &devices)
             .as_array()
             .context("device list was not an array")?;
-        assert_eq!(devices.len(), 1, "re-login must not duplicate the device");
+        assert_eq!(
+            devices.len(),
+            device_count_before,
+            "re-login must not duplicate the device"
+        );
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        assert_eq!(
+            successful_body("profiles after re-login", &profiles)["active"],
+            active_before,
+            "same-account login must keep the active profile"
+        );
+        let root = get_json(&driver, "/api/identity/root").await?;
+        assert_eq!(
+            successful_body("root after re-login", &root)["rootDid"],
+            root_before,
+            "same-account login must keep its historical root"
+        );
+        assert!(
+            space_keys(&driver).await?.contains(&retained),
+            "same-account login must retain the profile's local space catalogue"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -5210,6 +5376,187 @@ mod tests {
             space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),
             "switching back must restore the first account's space list"
         );
+        enter_hub(&driver).await?;
+        click(&driver, "[data-account-trigger]").await?;
+        wait_for_text_containing(&driver, "[data-account-menu]", "Second Hub").await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_signs_into_another_account_without_rebinding_retained_local_spaces(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const FIRST: &str = "retained-first@example.com";
+        const SECOND: &str = "retained-second@example.com";
+
+        let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&driver, &env, FIRST).await?;
+        let first_credential = credential_ids(&driver, &authenticator)
+            .await?
+            .into_iter()
+            .next()
+            .context("the first signup minted no passkey")?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let profiles = successful_body("profiles after first signup", &profiles);
+        let first_profile = profiles["active"]
+            .as_str()
+            .context("the first profile has no active handle")?
+            .to_string();
+
+        enter_hub(&driver).await?;
+        click(&driver, "[data-account-trigger]").await?;
+        click(&driver, "[data-add-profile]").await?;
+        driver.enter_default_frame().await?;
+        run_cluster_ceremony(&driver, SECOND).await?;
+        activate(&driver, &env, SECOND).await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let profiles = successful_body("profiles after second signup", &profiles);
+        let second_profile = profiles["active"]
+            .as_str()
+            .context("the second profile has no active handle")?
+            .to_string();
+        let profile_count = profiles["profiles"]
+            .as_array()
+            .context("profile roster is not an array")?
+            .len();
+        assert_ne!(first_profile, second_profile);
+
+        let switched = post_json(
+            &driver,
+            "/api/profiles/activate",
+            serde_json::json!({ "profile": first_profile.clone() }),
+        )
+        .await?;
+        successful_body("switch back to first profile", &switched);
+        goto(&driver, env.tonk_web.as_str()).await?;
+        open_hub_settings(&driver, &env).await?;
+        click(&driver, "[data-sign-out-open]").await?;
+        driver.enter_default_frame().await?;
+        let before_sign_out = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-submit]").await?;
+        wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
+
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let profiles = successful_body("profiles after first sign-out", &profiles);
+        assert_eq!(
+            profiles["active"], second_profile,
+            "signing out must switch directly to the next signed-in account"
+        );
+        assert_eq!(
+            profiles["profiles"]
+                .as_array()
+                .context("profile roster is not an array")?
+                .len(),
+            profile_count,
+            "sign-out to an existing account must not create another profile"
+        );
+
+        // The signed-out profile remains explicitly reachable for its local
+        // work, but is no longer the default Hub landing view.
+        let switched = post_json(
+            &driver,
+            "/api/profiles/activate",
+            serde_json::json!({ "profile": first_profile.clone() }),
+        )
+        .await?;
+        successful_body("open signed-out first profile", &switched);
+        goto(&driver, env.tonk_web.as_str()).await?;
+
+        let retained = create_space_awaiting_remote(&driver, "Retained Draft", false).await?;
+        let repository = get_json(&driver, &format!("/api/repository/{retained}")).await?;
+        assert!(
+            successful_body("retained local space", &repository)["remote"]
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty),
+            "a space created after sign-out must stay local-only"
+        );
+
+        remove_credential(&driver, &authenticator, &first_credential).await?;
+
+        // Bind a sibling top-level document to A's current generation. It
+        // must be reloaded by the worker before it can observe B.
+        let ceremony_tab = driver.window().await?;
+        let sibling_tab = driver.new_tab().await?;
+        driver.switch_to_window(sibling_tab.clone()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        let _ = get_json(&driver, "/api/profile").await?;
+        let sibling_before = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        driver.switch_to_window(ceremony_tab.clone()).await?;
+
+        raise_cluster_from_hub(&driver, &env).await?;
+        run_cluster_login(&driver, SECOND).await?;
+
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let profiles = successful_body("profiles after routed login", &profiles);
+        assert_eq!(profiles["active"], second_profile);
+        assert_eq!(
+            profiles["profiles"]
+                .as_array()
+                .context("profile roster is not an array")?
+                .len(),
+            profile_count,
+            "routing to an existing account must not create a third profile"
+        );
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("second account summary", &summary)["email"],
+            SECOND
+        );
+        assert!(
+            !space_keys(&driver).await?.contains(&retained),
+            "the second account must not inherit the first profile's retained space"
+        );
+
+        driver.switch_to_window(sibling_tab).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != &sibling_before)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the sibling tab did not reload after account profile routing"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_service_worker(&driver).await?;
+        let sibling_summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("second account in reloaded sibling", &sibling_summary)["email"],
+            SECOND,
+            "the sibling may render B only after receiving a new client context"
+        );
+        driver.switch_to_window(ceremony_tab).await?;
+
+        let switched = post_json(
+            &driver,
+            "/api/profiles/activate",
+            serde_json::json!({ "profile": first_profile.clone() }),
+        )
+        .await?;
+        successful_body("return to signed-out workspace", &switched);
+        goto(&driver, env.tonk_web.as_str()).await?;
+        assert!(space_keys(&driver).await?.contains(&retained));
+        let second_local =
+            create_space_awaiting_remote(&driver, "Retained Follow-up", false).await?;
+        assert!(space_keys(&driver).await?.contains(&second_local));
 
         driver.quit().await?;
         Ok(())

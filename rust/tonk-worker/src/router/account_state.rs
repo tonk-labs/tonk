@@ -197,7 +197,13 @@ pub(crate) async fn is_account_key(tonk: &TonkState, key: &str) -> bool {
 /// subject IS the local root, so one key derives from it.
 async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
     let mut keys = HashSet::new();
-    if let Ok(root) = super::identity::local_root(tonk).await {
+    // A retained historical root is provenance for this profile, not an
+    // active account attachment. Once sign-out clears the provider and
+    // account replicas, generic repository routing must stop reserving the
+    // account key even though the root remains available for a later login.
+    if super::account::provider(tonk).await.is_some()
+        && let Ok(root) = super::identity::local_root(tonk).await
+    {
         keys.insert(root.root_did.repo_key().to_owned());
     }
     keys
@@ -1873,6 +1879,8 @@ mod tests {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
             },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         };
         crate::router::repository::bootstrap_profile(&state)
             .await

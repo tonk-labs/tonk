@@ -237,11 +237,12 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for DeleteAccount
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn purge(
     state: &AppState,
+    source: Option<&super::ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
 ) -> Result<(), String> {
     use tonk_schema::{ceremony, ceremony_state};
 
-    let outcome = purge_inner(state, custodian).await;
+    let outcome = purge_inner(state, source, custodian).await;
     let tonk = state.read().await;
     match &outcome {
         Ok(()) => {
@@ -264,6 +265,7 @@ pub(crate) async fn purge(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn purge_inner(
     state: &AppState,
+    source: Option<&super::ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
 ) -> Result<(), String> {
     use dialog_varsig::Principal as _;
@@ -313,12 +315,12 @@ async fn purge_inner(
             .map_err(|error| error.to_string())?;
         tonk.profile.did()
     };
-    let _ = super::account::unlink(State(state.clone()))
+    let _ = super::account::unlink(State(state.clone()), source.cloned().map(Extension))
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
     // Finish on a fresh profile so the released email can immediately
     // create a genuinely new account.
-    let _ = super::profiles::add(State(state.clone()))
+    let _ = super::profiles::add(State(state.clone()), source.cloned().map(Extension))
         .await
         .map_err(|error| format!("a fresh profile did not open: {error}"))?;
     // Permanent deletion retires this account's profile rather than

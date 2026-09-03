@@ -1,8 +1,9 @@
 //! Attach optional provider services to the provider-neutral local root, and
 //! name the account repository that root owns.
 
-use axum::{Json, extract::State};
+use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_operator::Profile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
@@ -13,6 +14,7 @@ use tonk_worker_api::{
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::worker::DefaultOperator;
 
 const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
@@ -33,12 +35,18 @@ async fn load_provider(
     state: &crate::worker::TonkState,
     _root_did: &dialog_varsig::Did,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
-    let bytes = match state
-        .profile
+    load_provider_from(&state.profile, &state.operator).await
+}
+
+async fn load_provider_from(
+    profile: &Profile,
+    operator: &DefaultOperator,
+) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
+    let bytes = match profile
         .credential()
         .site(ACCOUNT_PROVIDER_SITE)
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(operator)
         .await
     {
         Ok(bytes) => bytes,
@@ -49,6 +57,9 @@ async fn load_provider(
             )));
         }
     };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
     AccountProviderRecord::decode(&bytes).map_err(|error| {
         TonkWorkerError::Internal(format!("stored account provider is unusable: {error}"))
     })
@@ -94,6 +105,26 @@ pub(crate) async fn provider(state: &crate::worker::TonkState) -> Option<String>
     attachment(state)
         .await
         .map(|record| record.address().to_owned())
+}
+
+/// Attached provider base URL for an explicit, inactive profile.
+///
+/// Profile roster reads use this without booting every candidate. A profile
+/// with no valid historical root, a cleared provider tombstone, or unreadable
+/// credentials is provider-free.
+pub(crate) async fn provider_from(profile: &Profile, operator: &DefaultOperator) -> Option<String> {
+    super::identity::historical_root_did(profile, operator)
+        .await
+        .ok()
+        .flatten()?;
+    match load_provider_from(profile, operator).await {
+        Ok(Some(record)) => Some(record.address().to_owned()),
+        Ok(None) => None,
+        Err(error) => {
+            log!("inactive account provider attachment unusable: {error}");
+            None
+        }
+    }
 }
 
 /// The stable local root grant, available to provider operations only when attached.
@@ -399,13 +430,13 @@ pub(crate) async fn finish_link(
 }
 
 /// Disconnect provider services while preserving the local root and spaces.
-#[wasm_compat]
-pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let state = state.read().await;
+pub(crate) async fn disconnect(
+    state: &crate::worker::TonkState,
+) -> Result<AccountStatus, TonkWorkerError> {
     // The replica retraction is the unlink: it clears the linked-state
     // signal sync and status read. It goes first so a failure leaves the
     // device consistently linked rather than half signed out.
-    super::account_state::retract_account_replicas(&state).await?;
+    super::account_state::retract_account_replicas(state).await?;
     state
         .profile
         .credential()
@@ -422,8 +453,19 @@ pub async fn unlink(State(state): State<AppState>) -> Result<Json<AccountStatus>
     // fields clear, so the switcher renders this row as a local
     // workspace. The persisted root stays, so signing back in with the
     // same passkey still short-circuits in place.
-    super::profiles::upsert_active_entry(&state, None).await;
-    Ok(Json(status(&state).await?))
+    super::profiles::upsert_active_entry(state, None).await;
+    status(state).await
+}
+
+/// Disconnect this account, then leave its retained spaces behind by
+/// promoting another signed-in profile or a rootless local workspace.
+#[wasm_compat]
+pub async fn unlink(
+    State(state): State<AppState>,
+    source: Option<Extension<super::ClientId>>,
+) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    let source = source.as_ref().map(|source| &source.0);
+    super::profiles::sign_out(&state, source).await.map(Json)
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -449,7 +491,9 @@ mod tests {
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
-    use crate::router::tests::{test_state_without_account, test_state_without_root};
+    use crate::router::tests::{
+        put_repo, test_state, test_state_without_account, test_state_without_root,
+    };
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn matching_request(state: &crate::worker::TonkState) -> AccountLinkRequest {
@@ -510,6 +554,7 @@ mod tests {
             matching_request(&state).await
         };
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
+        let signed_out_profile = state.read().await.profile_name.clone();
         {
             let tonk = state.read().await;
             let roster = tonk
@@ -523,7 +568,7 @@ mod tests {
                 .expect("link writes the profile's roster entry");
         }
 
-        let _ = unlink(State(state.clone())).await.unwrap();
+        let _ = unlink(State(state.clone()), None).await.unwrap();
 
         let tonk = state.read().await;
         let roster = tonk
@@ -533,7 +578,7 @@ mod tests {
             .unwrap();
         roster
             .iter()
-            .find(|entry| entry.profile_name == tonk.profile_name)
+            .find(|entry| entry.profile_name == signed_out_profile)
             .expect("unlink keeps the roster entry: the profile is still openable");
     }
 
@@ -592,7 +637,17 @@ mod tests {
             matching_request(&state).await
         };
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
-        let _ = unlink(State(state.clone())).await.unwrap();
+        let signed_out_profile = state.read().await.profile_name.clone();
+        let _ = unlink(State(state.clone()), None).await.unwrap();
+        let _ = super::super::profiles::activate(
+            State(state.clone()),
+            None,
+            Json(tonk_worker_api::ActivateProfileRequest {
+                profile: signed_out_profile,
+            }),
+        )
+        .await
+        .unwrap();
 
         let tonk = state.read().await;
         assert!(
@@ -606,16 +661,119 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_signs_out_without_deleting_the_root_or_local_spaces() {
+        use axum::extract::Path;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
+        let key = put_repo(&app, "retained-local-space").await;
+        let (root_before, profile_name, profile_did, root_key) = {
+            let tonk = state.read().await;
+            let root = super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .expect("the fixture has a local root");
+            let root_key = super::super::identity::local_root(&tonk)
+                .await
+                .unwrap()
+                .root_did
+                .repo_key()
+                .to_string();
+            assert!(
+                super::super::account_state::is_account_key(&tonk, &root_key).await,
+                "the linked account key is hidden from generic repository routing"
+            );
+            (
+                root,
+                tonk.profile_name.clone(),
+                tonk.profile.did(),
+                root_key,
+            )
+        };
+
+        let Json(status) = unlink(State(state.clone()), None).await.unwrap();
+        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+
+        let tonk = state.read().await;
+        assert_ne!(tonk.profile_name, profile_name);
+        assert!(
+            super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(tonk);
+        let Json(local_profile) = super::super::profile::get_profile(State(state.clone()))
+            .await
+            .unwrap();
+        assert!(
+            !local_profile.space.iter().any(|space| space.key == key),
+            "the post-sign-out hub must not render the signed-out account's spaces"
+        );
+
+        let _ = super::super::profiles::activate(
+            State(state.clone()),
+            None,
+            Json(tonk_worker_api::ActivateProfileRequest {
+                profile: profile_name.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let tonk = state.read().await;
+        assert!(provider(&tonk).await.is_none());
+        assert!(
+            super::super::account_state::linked_account(&tonk)
+                .await
+                .unwrap()
+                .is_none(),
+            "sign-out retracts the account replicas"
+        );
+        assert!(
+            !super::super::account_state::is_account_key(&tonk, &root_key).await,
+            "sign-out releases hidden account-key routing"
+        );
+        assert_eq!(
+            super::super::identity::load_record(&tonk).await.unwrap(),
+            Some(root_before),
+            "the root record remains byte-for-byte unchanged"
+        );
+        assert_eq!(tonk.profile.did(), profile_did);
+        drop(tonk);
+
+        let Json(profile) = super::super::profile::get_profile(State(state.clone()))
+            .await
+            .unwrap();
+        assert!(profile.space.iter().any(|space| space.key == key));
+        let Json(repository) = super::super::repository::get_repository(State(state), Path(key))
+            .await
+            .expect("the retained local space remains loadable");
+        assert!(repository.remote.is_empty());
+    }
+
+    #[dialog_common::test]
     async fn it_detaches_a_provider_without_revoking_or_rotating_the_device() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let before = state.read().await.profile.did();
+        let (profile_name, before) = {
+            let tonk = state.read().await;
+            (tonk.profile_name.clone(), tonk.profile.did())
+        };
         let request = {
             let state = state.read().await;
             matching_request(&state).await
         };
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
-        let Json(status) = unlink(State(state.clone())).await.unwrap();
+        let Json(status) = unlink(State(state.clone()), None).await.unwrap();
         assert!(matches!(status, AccountStatus::Unregistered { .. }));
+        let _ = super::super::profiles::activate(
+            State(state.clone()),
+            None,
+            Json(tonk_worker_api::ActivateProfileRequest {
+                profile: profile_name,
+            }),
+        )
+        .await
+        .unwrap();
         assert_eq!(state.read().await.profile.did(), before);
     }
 }

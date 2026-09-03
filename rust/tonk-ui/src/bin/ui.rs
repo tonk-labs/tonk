@@ -52,6 +52,17 @@ async fn main() {
         // dismiss remains the true teardown.
         let request = tonk_ui::register_dialog::parse_request(reason);
         match request.reason.as_str() {
+            "profile-transition" => {
+                // Add Account already promoted the empty landing profile.
+                // Preserve the anchored ceremony request, then reload so
+                // this tab receives a new client binding before it sends
+                // any work through that profile.
+                tonk_ui::register_dialog::stash_reopen(reason);
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().reload();
+                }
+                return;
+            }
             "dismiss" => {
                 tonk_ui::register_dialog::close();
                 return;
@@ -107,6 +118,11 @@ async fn main() {
         return;
     }
     mount_root();
+    if let Some(request) = tonk_ui::register_dialog::take_reopen() {
+        tonk_ui::register_dialog::open();
+        tonk_ui::register_dialog::describe(&request);
+        tonk_ui::register_dialog::adopt_stashed_share();
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
