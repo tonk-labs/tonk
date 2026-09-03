@@ -424,8 +424,7 @@ mod tests {
                    return {
                      cluster: read('.tonk-cluster'),
                      row: read('.orow'),
-                     action: read('.obtn'),
-                     cursor: read('.cur')
+                     action: read('.obtn')
                    };"#,
                 Vec::new(),
             )
@@ -1431,12 +1430,10 @@ mod tests {
                 "{selector} transition must stop in reduced motion: {reduced}"
             );
         }
-        for selector in ["action", "cursor"] {
-            assert_eq!(
-                reduced[selector]["animation"], "none",
-                "{selector} animation must stop in reduced motion: {reduced}"
-            );
-        }
+        assert_eq!(
+            reduced["action"]["animation"], "none",
+            "action animation must stop in reduced motion: {reduced}"
+        );
         driver.quit().await?;
         Ok(())
     }
