@@ -7057,6 +7057,62 @@ block/insert!:
         changes
     }
 
+    /// Build the routeless invite command emitted by `<tonk-share>`.
+    ///
+    /// Unlike a space-authored invite form, the FABB dispatches from the
+    /// profile branch and names the target space explicitly. Joined members
+    /// exercise this path too, so a regression here otherwise presents only
+    /// as the share control waiting until its clipboard timeout.
+    fn fabb_invite_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_artifacts::Changes {
+        use dialog_artifacts::Statement;
+        use dialog_query::the;
+        use tonk_schema::prelude::DidExt as _;
+
+        let mut changes = invite_transient(of);
+        let entity = of.parse().expect("entity URI");
+        the!("xyz.tonk.invite/space")
+            .of(entity)
+            .is(subject.this())
+            .assert(&mut changes);
+        changes
+    }
+
+    /// A member who arrived through an invite can mint the next invite from
+    /// the FABB. The visible failure is a timeout, but the boundary that must
+    /// answer is the routeless `tonk:invite` dispatch: it has to resolve the
+    /// joined repository and delegate from the authority accepted at join.
+    #[dialog_common::test]
+    async fn it_mints_from_the_fabb_after_joining_a_space() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = crate::router::join::tests::handcrafted_invite_url(121, 122).await;
+        assert_eq!(
+            crate::router::join::tests::post_join(&app, &url).await,
+            StatusCode::CREATED,
+            "the member first joins the space",
+        );
+
+        let _ = post_remote(&app, &key, "https://sync.example.test/ucan/", None).await;
+        let subject: dialog_varsig::Did = key.parse().expect("joined subject DID");
+        let before = content_invitations(&state, &key).await.len();
+
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin::default(),
+            fabb_invite_transient("did:key:zJoinedMemberFabbInvite", &subject),
+        )
+        .await;
+
+        assert_eq!(
+            content_invitations(&state, &key).await.len(),
+            before + 1,
+            "the joined member's FABB share must mint a fresh invitation",
+        );
+        assert!(
+            share_blocked_rows(&state, &key).await.is_empty(),
+            "a joined member's valid authority must not be reported as a refused share",
+        );
+    }
+
     /// Dispatching a `tonk:invite` command clears the overlay (to rotate
     /// the credential) but MUST re-stamp `state:self` so the topbar chip
     /// retains the member's identity data. Without the re-stamp the chip
