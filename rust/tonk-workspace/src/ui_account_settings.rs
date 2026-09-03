@@ -1066,7 +1066,8 @@ fn load_devices(this: &HtmlElement) {
             };
             name.set_class_name("lft");
             name.set_text_content(Some(&device.name));
-            if !own.is_empty() && device.did == own {
+            let own_device = is_current_device(&device.did, &own);
+            if own_device {
                 if let Ok(marker) = document.create_element("span") {
                     marker.set_class_name("dev-self");
                     marker.set_text_content(Some(" \u{b7} this device"));
@@ -1086,6 +1087,11 @@ fn load_devices(this: &HtmlElement) {
                 .to_locale_date_string("default", &JsValue::UNDEFINED);
             when.set_text_content(Some(&format!("linked {}", String::from(date))));
             let _ = meta.append_child(&when);
+            if own_device {
+                let _ = row.append_child(&meta);
+                let _ = list.append_child(&row);
+                continue;
+            }
             let Ok(verb) = document.create_element("button") else {
                 continue;
             };
@@ -1098,6 +1104,10 @@ fn load_devices(this: &HtmlElement) {
             let _ = list.append_child(&row);
         }
     });
+}
+
+fn is_current_device(device: &str, own: &str) -> bool {
+    !own.is_empty() && device == own
 }
 
 /// Revoke one device's access, asking in place: the first press arms the
@@ -1254,6 +1264,16 @@ mod tests {
             &wasm_bindgen::JsValue::UNDEFINED,
         )
         .unwrap();
+    }
+
+    /// An unknown identity must not hide every revoke action, while an exact
+    /// current-device match marks the one row whose action is withheld.
+    #[wasm_bindgen_test]
+    fn it_identifies_only_the_current_device() {
+        let own = "did:key:zCurrent";
+        assert!(super::is_current_device(own, own));
+        assert!(!super::is_current_device("did:key:zOther", own));
+        assert!(!super::is_current_device(own, ""));
     }
 
     fn pane(host: &HtmlElement, name: &str) -> HtmlElement {
