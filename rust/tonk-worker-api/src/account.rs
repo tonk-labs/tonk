@@ -41,7 +41,7 @@ pub struct AccountDeletionSpace {
 pub struct AccountDeletionPlan {
     /// Account root the purge must be signed for.
     pub root_did: String,
-    /// Verified email the user must type exactly.
+    /// Verified email bound into the deletion command after review.
     pub email: String,
     /// Hosted spaces this account provides.
     pub spaces: Vec<AccountDeletionSpace>,

@@ -133,7 +133,7 @@ pub async fn delete_space(
     }))
 }
 
-/// `tonk:delete-account`: check the retyped address, then ask the page
+/// `tonk:delete-account`: check the reviewed plan's address, then ask the page
 /// for the passkey. The purge itself runs in [`purge`] once the
 /// handles arrive.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -209,7 +209,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for DeleteAccount
                         &tonk,
                         ceremony::DELETE_ACCOUNT,
                         ceremony_state::REFUSED,
-                        "the confirmation email does not match this account",
+                        "the reviewed email does not match this account",
                     )
                     .await;
                     return;

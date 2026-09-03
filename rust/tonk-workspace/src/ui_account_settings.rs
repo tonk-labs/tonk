@@ -33,6 +33,8 @@ type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
+const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
+const DELETE_SPACE_CONFIRMATION: &str = "delete this space";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -168,7 +170,7 @@ impl CustomElement for UiAccountSettings {
             };
             // Enter in the arming field submits when armed, and never
             // breaks the line.
-            if target.has_attribute("data-delete-email") {
+            if target.has_attribute("data-delete-confirm") {
                 key.prevent_default();
                 submit_delete(&host_enter);
                 return;
@@ -191,7 +193,7 @@ impl CustomElement for UiAccountSettings {
             let in_field = event
                 .target()
                 .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|target| target.has_attribute("data-delete-email"));
+                .is_some_and(|target| target.has_attribute("data-delete-confirm"));
             if in_field {
                 arm_delete(&host);
             }
@@ -444,23 +446,24 @@ fn close_dialog(this: &HtmlElement, selector: &str) {
     }
 }
 
-/// What the arming field holds: a `contenteditable` span, so its text.
-fn typed_address(this: &HtmlElement) -> String {
-    this.query_selector("[data-delete-email]")
+/// What the destructive confirmation field holds.
+fn typed_confirmation(this: &HtmlElement) -> String {
+    this.query_selector("[data-delete-confirm]")
         .ok()
         .flatten()
-        .and_then(|field| field.text_content())
+        .and_then(|field| field.dyn_into::<HtmlInputElement>().ok())
+        .map(|field| field.value())
         .unwrap_or_default()
         .trim()
         .to_owned()
 }
 
-/// Arm the solid verb only while the typed address is the account's.
+/// Arm the solid verb only while the requested destructive phrase is exact.
 fn arm_delete(this: &HtmlElement) {
     let expected = this
-        .get_attribute("data-delete-email-expected")
+        .get_attribute("data-delete-confirm-expected")
         .unwrap_or_default();
-    let armed = !expected.is_empty() && typed_address(this) == expected;
+    let armed = !expected.is_empty() && typed_confirmation(this) == expected;
     if let Ok(Some(verb)) = this.query_selector("[data-delete-account-submit]") {
         if armed {
             let _ = verb.remove_attribute("disabled");
@@ -483,16 +486,38 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 /// The plan is read from the account db by the worker: which listed
 /// spaces this account provides, and how many it merely joined.
 fn open_delete_dialog(this: &HtmlElement) {
+    let requested = requested_space_deletion();
+    let confirmation = if requested.is_some() {
+        DELETE_SPACE_CONFIRMATION
+    } else {
+        DELETE_ACCOUNT_CONFIRMATION
+    };
+    set_text(this, "[data-delete-confirm-label]", confirmation);
+    set_text(
+        this,
+        "[data-delete-submit-label]",
+        if requested.is_some() {
+            "delete this space"
+        } else {
+            "delete account"
+        },
+    );
     set_text(
         this,
         "[data-delete-scope]",
         "loading what this deletes\u{2026}",
     );
-    set_text(this, "[data-delete-email]", "");
-    let _ = this.remove_attribute("data-delete-email-expected");
+    if let Ok(Some(field)) = this.query_selector("[data-delete-confirm]")
+        && let Ok(field) = field.dyn_into::<HtmlInputElement>()
+    {
+        field.set_value("");
+    }
+    let _ = this.remove_attribute("data-delete-confirm-expected");
+    let _ = this.remove_attribute("data-delete-account-email");
+    let _ = this.remove_attribute("data-delete-space");
     arm_delete(this);
     show_dialog(this, "[data-delete-account-dialog]");
-    if let Ok(Some(field)) = this.query_selector("[data-delete-email]")
+    if let Ok(Some(field)) = this.query_selector("[data-delete-confirm]")
         && let Ok(field) = field.dyn_into::<HtmlElement>()
     {
         let _ = field.focus();
@@ -512,7 +537,6 @@ fn open_delete_dialog(this: &HtmlElement) {
             );
             return;
         };
-        let requested = requested_space_deletion();
         let spaces: Vec<_> = plan
             .spaces
             .iter()
@@ -535,15 +559,6 @@ fn open_delete_dialog(this: &HtmlElement) {
         let _ = host.set_attribute(
             "data-delete-space",
             requested.as_deref().unwrap_or_default(),
-        );
-        set_text(
-            &host,
-            "[data-delete-submit-label]",
-            if requested.is_some() {
-                "delete this space"
-            } else {
-                "delete account"
-            },
         );
         let owned = spaces.len();
         let names: Vec<&str> = spaces
@@ -571,8 +586,8 @@ fn open_delete_dialog(this: &HtmlElement) {
                 )
             },
         );
-        set_text(&host, "[data-delete-email-expected-label]", &plan.email);
-        let _ = host.set_attribute("data-delete-email-expected", &plan.email);
+        let _ = host.set_attribute("data-delete-account-email", &plan.email);
+        let _ = host.set_attribute("data-delete-confirm-expected", confirmation);
         arm_delete(&host);
     });
 }
@@ -581,13 +596,13 @@ fn open_delete_dialog(this: &HtmlElement) {
 /// the account, asks the page for the passkey, and reports through the
 /// ceremony row this panel watches.
 fn submit_delete(this: &HtmlElement) {
-    let email = typed_address(this);
-    let expected = this
-        .get_attribute("data-delete-email-expected")
+    let confirmation = typed_confirmation(this);
+    let expected_confirmation = this
+        .get_attribute("data-delete-confirm-expected")
         .unwrap_or_default();
-    // The verb is off until the address matches; a submit that arrives
+    // The verb is off until the phrase matches; a submit that arrives
     // anyway (keyboard, script) is answered the same way.
-    if expected.is_empty() || email != expected {
+    if expected_confirmation.is_empty() || confirmation != expected_confirmation {
         arm_delete(this);
         return;
     }
@@ -616,6 +631,10 @@ fn submit_delete(this: &HtmlElement) {
         });
         return;
     }
+    let Some(email) = this.get_attribute("data-delete-account-email") else {
+        arm_delete(this);
+        return;
+    };
     show_status(this, "Waiting for your passkey\u{2026}");
     transact(
         this,
@@ -1262,10 +1281,10 @@ mod tests {
         clear_context();
     }
 
-    /// The deletion verb stays off until the account's address is typed
+    /// The deletion verb stays off until the prompt's phrase is typed
     /// into the arming field, and comes on the moment it is.
     #[wasm_bindgen_test]
-    fn it_arms_the_deletion_only_once_the_address_is_typed() {
+    fn it_arms_the_deletion_only_once_the_prompt_is_typed() {
         clear_context();
         let host = mount();
         host.query_selector("[data-delete-account-open]")
@@ -1300,27 +1319,29 @@ mod tests {
             "nothing typed, nothing armed"
         );
 
-        // The plan names the address; the field must match it.
-        host.set_attribute("data-delete-email-expected", "goner@example.com")
-            .unwrap();
-        let field: HtmlElement = host
-            .query_selector("[data-delete-email]")
+        host.set_attribute(
+            "data-delete-confirm-expected",
+            super::DELETE_ACCOUNT_CONFIRMATION,
+        )
+        .unwrap();
+        let field: HtmlInputElement = host
+            .query_selector("[data-delete-confirm]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
         let typed = |text: &str| {
-            field.set_text_content(Some(text));
+            field.set_value(text);
             let init = web_sys::EventInit::new();
             init.set_bubbles(true);
             let event = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
             field.dispatch_event(&event).unwrap();
         };
-        typed("someone-else@example.com");
-        assert!(verb.has_attribute("disabled"), "a wrong address stays off");
-        typed("goner@example.com");
-        assert!(!verb.has_attribute("disabled"), "the right address arms it");
-        typed("goner@example.co");
+        typed("delete");
+        assert!(verb.has_attribute("disabled"), "a partial phrase stays off");
+        typed(super::DELETE_ACCOUNT_CONFIRMATION);
+        assert!(!verb.has_attribute("disabled"), "the exact phrase arms it");
+        typed("delete accounts");
         assert!(
             verb.has_attribute("disabled"),
             "and editing it away disarms"

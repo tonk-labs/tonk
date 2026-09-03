@@ -2264,9 +2264,8 @@ ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
 }
 /* the confirm clusters — the page dims, the surface never. the body is
    set in the reading face at weight 600, ink on card, like the hub's
-   space-removal confirm; the arming row is the gate: type the address,
-   the block cursor shows where, and the solid verb stays off until it
-   matches. */
+   space-removal confirm; the arming row is the gate: type the displayed
+   phrase, and the solid verb stays off until it matches. */
 /* the confirm is a solid card in the page's own scheme, like the mock's
    modal: the page dims, the surface never, and nothing reads through.
    The cluster element wears the FABB skin, pinned light, so its tokens
@@ -2281,21 +2280,17 @@ ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
 ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
-    letter-spacing: 0.02em; color: var(--soft); }
+    letter-spacing: 0.02em; color: var(--soft);
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 ui-account-settings .armrow b { color: var(--ink); font-weight: 600;
     text-transform: none; }
-ui-account-settings .armfield { display: inline-block; min-width: 6ch;
-    margin-left: 8px; padding: 0 1px 2px; border-bottom: 1.5px solid var(--ink);
-    outline: none; caret-color: transparent; color: var(--ink);
-    text-transform: none; white-space: nowrap; user-select: text; }
+ui-account-settings .armfield { appearance: none; -webkit-appearance: none;
+    display: inline-block; min-width: 14ch; max-width: 100%;
+    margin: 0; padding: 0 1px 2px; border: 0;
+    border-bottom: 1.5px solid var(--ink); border-radius: 0;
+    outline: none; background: transparent; caret-color: var(--ink); color: var(--ink);
+    font: inherit; text-transform: none; white-space: nowrap; }
 ui-account-settings .armfield:focus-visible { box-shadow: none; }
-ui-account-settings .armrow .cur { display: inline-block; width: 7px;
-    height: 13px; background: var(--ink); vertical-align: -1px;
-    animation: hub-hardblink 1.05s steps(1, end) infinite; }
-@keyframes hub-hardblink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-    ui-account-settings .armrow .cur { animation: none; }
-}
 /* an unarmed verb stays visibly off, not merely inert */
 ui-account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
 ui-account-settings .m-go:disabled:hover { background: var(--ink); }
@@ -3100,9 +3095,8 @@ tonk-notebook-index {
  *
  * Written as classes rather than against one element's id: the
  * registration cluster is the first surface built this way, not the
- * only one it suits. `.ed` in particular is the study's editor — a
- * bare input wearing the row's own type, with a block cursor for a
- * seat — and any row that takes a value wants it.
+ * only one it suits. `.ed` in particular is a bare input wearing the
+ * row's own type, and any row that takes a value wants it.
  */
   /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
      page and the surface itself never dims. Each row settles into a
@@ -3215,25 +3209,21 @@ tonk-notebook-index {
   .tonk-ceremony .orow .v,
   .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
 
-  /* The editor: inline text, no caret of its own, a block cursor
-     hard-blinking on the tail. The cursor IS the affordance. */
+  /* The editor: inline text with the browser's native caret. */
   /* A real `<input>`, not the study's contenteditable span.
      Conditional mediation is the reason: WebAuthn will only offer a
      discoverable passkey through `autocomplete="username webauthn"` on
      an actual form control, so a span could never surface the autofill
      this ceremony is built around. Styled to sit in the row like the
-     study's editor — no chrome, right-aligned, the row's own type. */
-  /* A real input, wearing the study's editor.
-     `caret-color: transparent` hides the native caret so the block
-     cursor over it is the only seat marker — the same trick the study
-     plays on its contenteditable. The trailing padding reserves the
-     seat the block takes when the caret is on the tail. */
+     study's editor — no chrome and wearing the row's own type. */
+  /* A real input wearing the study's editor, with native text-entry
+     behavior and no extra control chrome. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
     background: none; border: 0; outline: none; margin: 0;
-    padding: 0 8px 0 0;
+    padding: 0;
     font: inherit; letter-spacing: inherit; text-transform: none;
-    color: var(--ink); caret-color: transparent;
+    color: var(--ink); caret-color: var(--ink);
     text-align: right; width: 100%; min-width: 0;
     /* The row is `align-items: flex-end`, so the input has to sit on the
        same baseline as the noun beside it rather than centring itself in
@@ -3250,55 +3240,6 @@ tonk-notebook-index {
   .tonk-ceremony .ed:-webkit-autofill:focus {
     -webkit-text-fill-color: var(--ink);
     box-shadow: 0 0 0 100px var(--card) inset;
-  }
-
-  /* The block cursor: hard-blinking, over the character the caret sits
-     on. Absolute so `follow_caret` (register_dialog.rs) can seat it by
-     its offset from the field's right edge; it rests on the tail until
-     that wiring places it. Hidden while the field is unfocused, since
-     the seat is only meaningful where the typing goes. */
-  .tonk-ceremony .v { position: relative; }
-  /* The blend renders the covered glyph in negative rather than hiding
-     it under the block — the same difference/exclusion pair the FABB
-     skin's terminal cursor wears. */
-  .tonk-ceremony .cur {
-    position: absolute; right: 1px; bottom: 3px;
-    width: 7px; height: 13px;
-    background: var(--ink); pointer-events: none;
-    mix-blend-mode: difference;
-    animation: tonk-register-caret 1.05s steps(1, end) infinite;
-  }
-  :root.wa-dark .tonk-ceremony .cur { mix-blend-mode: exclusion; }
-  .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
-  @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
-
-  /* The mirror `follow_caret` measures with: the text after the caret,
-     in the field's own type. `text-transform: none` has to match the
-     field, or a capital measures wider than it renders. */
-  .tonk-ceremony .measure {
-    position: absolute; visibility: hidden; pointer-events: none;
-    white-space: pre; text-transform: none;
-  }
-
-  /* Engines that draw a block caret natively need none of the above:
-     the real caret takes the block shape and the hard blink, and the
-     faked one stands down. `tonk-block-caret` is page-level on purpose —
-     account.css leans on it for the same treatment. */
-  @supports (caret-shape: block) {
-    .tonk-ceremony .ed {
-      caret-shape: block;
-      caret-animation: manual;
-      /* Solid under the animation, so reduced-motion's `animation: none`
-         leaves a visible caret rather than the transparent base. */
-      caret-color: var(--ink);
-      animation: tonk-block-caret 1.05s steps(1, end) infinite;
-    }
-    .tonk-ceremony .ed:not(:focus) { animation: none; }
-    .tonk-ceremony .cur { display: none; }
-  }
-  @keyframes tonk-block-caret {
-    0%, 49% { caret-color: var(--ink); }
-    50%, 100% { caret-color: transparent; }
   }
 
   /* An action step: solid ink, full rung, the word bottom-right. While a
@@ -3369,13 +3310,6 @@ tonk-notebook-index {
       font-size: 16px;
       line-height: 44px;
     }
-    /* The row centres at this size, so the block centres with it — and
-       the mirror has to wear the field's grown type to measure true. */
-    .tonk-ceremony .cur {
-      bottom: calc(50% - 8px);
-      height: 16px;
-    }
-    .tonk-ceremony .measure { font-size: 16px; }
     .tonk-ceremony .ghost {
       min-height: 44px;
       display: flex;
@@ -3389,8 +3323,6 @@ tonk-notebook-index {
     .tonk-ceremony .obtn {
       transition: none;
     }
-    .tonk-ceremony .cur,
-    .tonk-ceremony .ed,
     .tonk-ceremony .obtn.wait,
     .tonk-ceremony .flash {
       animation: none;

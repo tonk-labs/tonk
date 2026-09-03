@@ -66,7 +66,12 @@
     are you sure you want to delete all data associated with this account?
     this action is permanent. there is no option to recover your data.
     your passkey will be asked for.
-    <div class="armrow">type <b data-delete-email-expected-label></b> to confirm:<span class="armfield" data-delete-email contenteditable="plaintext-only" role="textbox" aria-label="account email"></span><i class="cur" aria-hidden="true"></i></div>
+    <div class="armrow">
+      <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
+      <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
+        autocomplete="off" autocapitalize="off" spellcheck="false"
+        aria-label="deletion confirmation" />
+    </div>
   </div>
   <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
   <button class="m-go" slot="actions" type="button" data-delete-account-submit disabled><span data-delete-submit-label>delete account</span></button>

@@ -112,20 +112,17 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
 ///
-/// `type="text"` rather than `type="email"`, deliberately: the selection
-/// API answers `null` on an email input, and [`follow_caret`] needs
-/// `selectionStart` to seat the block cursor mid-text. `inputmode`
-/// keeps the email keyboard, and [`is_plausible`] gates the lookups.
+/// `type="email"` gives the field its native semantics and mobile keyboard;
+/// [`is_plausible`] still gates lookups while the address is incomplete.
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
     <div class="m-head mblk" id="tonk-register-head">link an account</div>
     <div class="orow mblk" id="tonk-register-email-row">
       <span class="k">email</span>
-      <span class="v"><input class="ed" id="tonk-register-email" type="text"
+      <span class="v"><input class="ed" id="tonk-register-email" type="email"
             inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
-            aria-label="email" placeholder="you@example.com"><i class="cur"
-            aria-hidden="true"></i></span>
+            aria-label="email" placeholder="you@example.com"></span>
     </div>
     <!-- Unfolds once the address is committed and the lookup answers:
          "create a passkey" for an address nobody has, "log in with your
@@ -208,8 +205,6 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     focus_on_row_click(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    follow_caret(&host, EMAIL_INPUT);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     open_when_upgraded(&host);
@@ -246,7 +241,7 @@ fn open_when_upgraded(host: &Element) {
     raise.forget();
 }
 
-/// Seat the cursor in the address field.
+/// Focus the address field.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_address(host: &Element) {
     let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
@@ -255,99 +250,6 @@ fn focus_address(host: &Element) {
     if let Some(element) = field.dyn_ref::<HtmlElement>() {
         let _ = element.focus();
     }
-}
-
-/// Keep the block cursor on the caret.
-///
-/// The field's native caret is transparent and the `.cur` block beside
-/// it is the visible one (`styles.css`, the ceremony's `.ed`), so the
-/// block has to follow the real insertion point instead of squatting on
-/// the tail. Engines that support `caret-shape: block` draw the block
-/// natively and never show `.cur`, so they skip this wiring entirely.
-///
-/// The field is right-aligned, so the seat is measured from the right
-/// edge: the width of the text after the caret, read off a hidden
-/// mirror span wearing the row's own type. Selection offsets count
-/// UTF-16 code units, so the tail is cut in that encoding rather than
-/// by byte.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn follow_caret(host: &Element, selector: &str) {
-    if web_sys::css::supports_with_value("caret-shape", "block").unwrap_or(false) {
-        return;
-    }
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-        return;
-    };
-    let Some(field) = host.query_selector(selector).ok().flatten() else {
-        return;
-    };
-    let Ok(field) = field.dyn_into::<web_sys::HtmlInputElement>() else {
-        return;
-    };
-    let Some(seat) = field.parent_element() else {
-        return;
-    };
-    let Some(cursor) = seat.query_selector(".cur").ok().flatten() else {
-        return;
-    };
-    let Ok(mirror) = document.create_element("span") else {
-        return;
-    };
-    mirror.set_class_name("measure");
-    let _ = mirror.set_attribute("aria-hidden", "true");
-    if seat.append_child(&mirror).is_err() {
-        return;
-    }
-
-    let target = field.clone();
-    let place = move || {
-        let value = field.value();
-        let units: Vec<u16> = value.encode_utf16().collect();
-        let backward = field
-            .selection_direction()
-            .ok()
-            .flatten()
-            .is_some_and(|direction| direction == "backward");
-        let edge = if backward {
-            field.selection_start()
-        } else {
-            field.selection_end()
-        };
-        let caret = edge
-            .ok()
-            .flatten()
-            .map(|index| index as usize)
-            .unwrap_or(units.len())
-            .min(units.len());
-        let tail = String::from_utf16_lossy(&units[caret..]);
-        mirror.set_text_content(Some(&tail));
-        let offset = mirror.get_bounding_client_rect().width();
-        // The trailing padding the stylesheet reserves is the block's
-        // rightmost seat; clamp so an overflowing value cannot push it
-        // out of the row.
-        let room = (seat.get_bounding_client_rect().width() - 8.0).max(1.0);
-        let right = (offset + 1.0).min(room);
-        // Restart the blink so the block is solid right after a
-        // keystroke, the way a terminal's cursor behaves.
-        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px;animation:none"));
-        if let Some(element) = cursor.dyn_ref::<HtmlElement>() {
-            let _ = element.offset_width();
-        }
-        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px"));
-    };
-
-    let listener = Closure::<dyn FnMut()>::new(place);
-    for event in [
-        "input",
-        "keyup",
-        "click",
-        "focus",
-        "scroll",
-        "selectionchange",
-    ] {
-        let _ = target.add_event_listener_with_callback(event, listener.as_ref().unchecked_ref());
-    }
-    listener.forget();
 }
 
 /// Unfold a row into the stack: appended folded, then released a frame
@@ -370,8 +272,7 @@ fn unfold(row: &Element) {
     release.forget();
 }
 
-/// Settle a row into its record: the noun stays, the value becomes ink,
-/// and the block cursor goes.
+/// Settle a row into its record: the noun stays and the value becomes ink.
 ///
 /// A settled row is the step's receipt. It stays on screen so what you
 /// have already answered is legible above what you are answering now,
@@ -429,11 +330,9 @@ fn action_is_offered() -> bool {
         .is_some_and(|action| !action.has_attribute("hidden") && !action.disabled())
 }
 
-/// Clicking anywhere in a row seats the cursor in its editor.
+/// Clicking anywhere in a row focuses its editor.
 ///
-/// The editor is a bare span with a block cursor for a seat, so without
-/// this the only target is the glyph itself. In the study the row owns
-/// the click for the same reason.
+/// The editor is visually bare, so the row owns the larger click target.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_on_row_click(host: &Element) {
     let Some(row) = host.query_selector(EMAIL_ROW).ok().flatten() else {
@@ -2038,8 +1937,7 @@ fn ask_for_name(host: &Element) {
     row.set_inner_html(
         r##"<span class="k">display name</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"><i class="cur"
-                  aria-hidden="true"></i></span>"##,
+                  enterkeyhint="go" aria-label="display name"></span>"##,
     );
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
@@ -2052,7 +1950,6 @@ fn ask_for_name(host: &Element) {
     }
     unfold(&row);
     commit_name_on_enter(host);
-    follow_caret(host, "#tonk-register-name");
     if let Some(field) = host
         .query_selector("#tonk-register-name")
         .ok()

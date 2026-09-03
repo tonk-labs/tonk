@@ -4867,33 +4867,34 @@ mod tests {
         click(&driver, "[data-delete-account-open]").await?;
         wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
 
-        // The typed address is the gate: a mistyped one leaves the solid
+        // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
         // verb off, and nothing is asked of the worker.
-        let address = element(&driver, "[data-delete-email]").await?;
-        address.send_keys("someone-else@example.com").await?;
+        let confirmation = element(&driver, "[data-delete-confirm]").await?;
+        confirmation.send_keys("delete").await?;
         let verb = element(&driver, "[data-delete-account-submit]").await?;
         assert!(
             verb.attr("disabled").await?.is_some(),
-            "a wrong address must not arm the deletion"
+            "a partial confirmation must not arm the deletion"
         );
 
-        // The real thing: the account's own address arms the verb, and
+        // The real thing: the exact phrase arms the verb, and
         // the passkey gesture the virtual authenticator answers on the
         // consent card the worker's ask raises finishes it.
         driver
             .execute(
-                r#"const field = document.querySelector("[data-delete-email]");
-                   field.textContent = "";"#,
+                r#"const field = document.querySelector("[data-delete-confirm]");
+                   field.value = "";
+                   field.dispatchEvent(new Event("input", { bubbles: true }));"#,
                 Vec::new(),
             )
             .await
             .ok();
-        address.send_keys(email).await?;
+        confirmation.send_keys("delete account").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while verb.attr("disabled").await?.is_some() {
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the right address must arm the deletion"
+                "the exact confirmation phrase must arm the deletion"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

@@ -416,8 +416,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
-    // The block cursor belongs to the confirm's arming field alone: an
-    // unfocused display-name field must read as settled.
+    // Editable settings fields use native text inputs and native carets.
     let name_row = SETTINGS_PANEL_MARKUP
         .split("<span>display name</span>")
         .nth(1)
@@ -428,12 +427,16 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         "an unfocused display-name field must not draw an editing cursor",
     );
     assert!(
-        SETTINGS_PANEL_MARKUP.contains("class=\"armfield\" data-delete-email"),
-        "the deletion confirm is armed by typing the address",
+        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm type=\"text\""),
+        "the deletion confirm is a native text input",
     );
     assert!(
-        !HUB_STYLES.contains("tonk-settings-caret"),
-        "the removed resting cursor must not leave a blinking animation behind",
+        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm-label>delete account</b>"),
+        "the deletion confirm must say exactly what to type",
+    );
+    assert!(
+        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        "settings inputs must not draw terminal-style cursors",
     );
 }
 
