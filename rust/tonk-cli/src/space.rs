@@ -259,6 +259,9 @@ pub enum SpaceError {
     /// Site bootstrap (`space new`) failed inside the site layer.
     #[error("failed to initialize site: {0}")]
     Init(String),
+    /// `space transplant` failed inside the site layer.
+    #[error("transplant failed: {0}")]
+    Transplant(String),
     /// Registry or site-directory I/O.
     #[error("{0}")]
     Io(String),
@@ -843,6 +846,74 @@ pub async fn create(
     }
     store.save(&registry)?;
     Ok(outcome)
+}
+
+/// Outcome of [`transplant`].
+#[derive(Debug, Clone)]
+pub struct TransplantOutcome {
+    /// The registered name, unchanged by the transplant.
+    pub name: String,
+    /// Absolute path of the (re-rooted) site directory.
+    pub site: PathBuf,
+    /// The subject the history was adopted from.
+    pub origin: String,
+    /// The fresh subject DID.
+    pub did: String,
+    /// Where the pre-transplant copy of the site was kept, unless the
+    /// transplant ran in place.
+    pub backup: Option<PathBuf>,
+}
+
+/// Re-root a registered space under a freshly minted subject, keeping
+/// its data and history in place — the recovery when the space's keys
+/// are lost, or the retirement of a subject on purpose.
+///
+/// The registry entry is untouched: the name still points at the same
+/// site directory, whose identity file is what changed. By default the
+/// whole site is first copied aside to `<site>.pre-transplant` so the
+/// origin-keyed store survives as a fallback; `in_place` skips the
+/// copy.
+pub async fn transplant(
+    store: &SpaceStore,
+    name: &str,
+    in_place: bool,
+    config: crate::site::SiteConfig,
+) -> Result<TransplantOutcome, SpaceError> {
+    let resolved = store.resolve(Some(name), None, None)?;
+    let backup = if in_place {
+        None
+    } else {
+        let backup = backup_path(&resolved.site);
+        if backup.exists() {
+            return Err(SpaceError::Transplant(format!(
+                "a pre-transplant copy already exists at {}; move it aside or pass --in-place",
+                backup.display()
+            )));
+        }
+        crate::migrate::copy_dir_recursive(&resolved.site, &backup)
+            .map_err(|e| SpaceError::Transplant(format!("failed to copy the site aside: {e:#}")))?;
+        Some(backup)
+    };
+    let transplanted = crate::site::transplant_at_with(&resolved.site, name, config)
+        .await
+        .map_err(|e| SpaceError::Transplant(format!("{e:#}")))?;
+    Ok(TransplantOutcome {
+        name: name.to_owned(),
+        site: resolved.site,
+        did: transplanted.site.repository.did().to_string(),
+        origin: transplanted.origin,
+        backup,
+    })
+}
+
+/// The sibling directory a transplant copies the origin-keyed site to.
+fn backup_path(site: &Path) -> PathBuf {
+    let mut file_name = site
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    file_name.push(".pre-transplant");
+    site.with_file_name(file_name)
 }
 
 /// Outcome of [`bind`].

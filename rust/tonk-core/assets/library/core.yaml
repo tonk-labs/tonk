@@ -741,6 +741,36 @@ view!:
 # carrying the target space. So there is no `tonk:view/fab-pause` here anymore —
 # an older space missing it no longer breaks the FAB.
 
+# A transplant scar: this space adopted its history from another
+# subject, re-rooted under a fresh key (typically because the old
+# subject's keys were lost). Written by `tonk space transplant` in the
+# first commit minted under the new subject, so the record sits at the
+# origin boundary and the seam stays queryable. `origin` is the old
+# subject's DID entity — the same form membership and directory rows
+# use, so the scar joins against facts still anchored on it.
+concept!:
+  this: tonk:transplant
+  description: A record of this space adopting its history from another subject.
+  with:
+    origin:
+      description: The subject DID the history was adopted from
+      the: xyz.tonk.transplant/origin
+      cardinality: one
+      as: entity
+    revision:
+      description: >
+        The origin's last published head record, byte-exact. The record
+        is operator-signed, so the endpoint of the adopted history stays
+        verifiable after the origin's own stores are gone.
+      the: xyz.tonk.transplant/revision
+      cardinality: one
+      as: bytes
+    tree:
+      description: The tree root the transplant adopted
+      the: xyz.tonk.transplant/tree
+      cardinality: one
+      as: text
+
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
