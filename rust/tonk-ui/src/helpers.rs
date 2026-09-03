@@ -96,7 +96,25 @@ mod native {
         }
 
         fn close(self) -> std::io::Result<()> {
-            self.0.close()
+            // A child terminated a moment ago can still be flushing its
+            // last writes while removal walks the tree, and the walk then
+            // reports "Directory not empty" for an otherwise green test.
+            // A short retry absorbs that race; a process genuinely still
+            // holding the tree keeps failing and surfaces the first error.
+            let path = self.0.path().to_path_buf();
+            let first = match self.0.close() {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => return Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(_) => {}
+                }
+            }
+            Err(first)
         }
     }
 
