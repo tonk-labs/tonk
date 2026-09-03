@@ -91,7 +91,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B01", "ACCT-B02", "ACCT-B03", "ACCT-B09", "ACCT-B10"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-08",
@@ -103,7 +103,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-09",
@@ -115,7 +115,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B03", "ACCT-B08", "ACCT-B09"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-10",
@@ -127,7 +127,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs", "rust/tonk-cli/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs", "rust/tonk-cli/src/account.rs"]
     },
     {
       "id": "WEB-11",
@@ -139,7 +139,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-12",
@@ -151,7 +151,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B04", "ACCT-B14", "ACCT-B15", "AUTH-01", "AUTH-02", "AUTH-03"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-13",
@@ -163,7 +163,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["AUTH-04", "AUTH-05", "AUTH-06"],
-      "source_paths": ["rust/tonk-ui/src/account.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/account.rs"]
+      "source_paths": ["rust/tonk-workspace/src/ui_account_settings.html", "rust/tonk-workspace/src/ui_account_settings.rs"]
     },
     {
       "id": "WEB-14",

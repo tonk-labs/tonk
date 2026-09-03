@@ -25,6 +25,7 @@ js-sys = { workspace = true }
 tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-worker-api = { workspace = true }
+bs58 = { workspace = true }
 reqwest = { workspace = true }
 gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen = { workspace = true }

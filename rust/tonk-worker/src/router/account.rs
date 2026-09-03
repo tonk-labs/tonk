@@ -93,7 +93,7 @@ pub(crate) async fn attachment(state: &crate::worker::TonkState) -> Option<Accou
 pub(crate) async fn provider(state: &crate::worker::TonkState) -> Option<String> {
     attachment(state)
         .await
-        .map(|record| record.provider().to_owned())
+        .map(|record| record.address().to_owned())
 }
 
 /// The stable local root grant, available to provider operations only when attached.
@@ -171,8 +171,7 @@ async fn linked(state: &crate::worker::TonkState) -> bool {
 pub(crate) async fn attach_test_account(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {
-    let record = AccountProviderRecord::attach(TEST_ACCOUNT_PROVIDER, TEST_ACCOUNT_REMOTE, 0)
-        .map_err(provider_error)?;
+    let record = AccountProviderRecord::attach(TEST_ACCOUNT_REMOTE, 0).map_err(provider_error)?;
     save_provider(state, &record).await
 }
 
@@ -263,7 +262,7 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
                     Ok(AccountStatus::Registered {
                         root_did: root.root_did.to_string(),
                         device_did,
-                        provider: record.provider().to_owned(),
+                        provider: record.address().to_owned(),
                         account_state,
                     })
                 }
@@ -278,7 +277,7 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
             Ok(AccountStatus::Registered {
                 root_did: root.root_did.to_string(),
                 device_did,
-                provider: record.provider().to_owned(),
+                provider: record.address().to_owned(),
                 account_state,
             })
         }
@@ -327,11 +326,15 @@ pub(crate) async fn persist_link(
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let record = AccountProviderRecord::attach(&request.provider, &request.remote, now)
-        .map_err(provider_error)?;
+    // The page names where the account syncs in `remote`; `provider`
+    // stands in only for a request from before the two collapsed.
+    let address = Some(request.remote.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(request.provider.trim());
+    let record = AccountProviderRecord::attach(address, now).map_err(provider_error)?;
 
     if let Some(existing) = load_provider(state, &root.root_did).await?
-        && existing.provider() != record.provider()
+        && existing.address() != record.address()
     {
         return Err(TonkWorkerError::Conflict(
             "another account provider is already attached".to_string(),
@@ -553,8 +556,7 @@ mod tests {
         {
             let tonk = state.read().await;
             let request = matching_request(&tonk).await;
-            let record =
-                AccountProviderRecord::attach(&request.provider, &request.remote, 1).unwrap();
+            let record = AccountProviderRecord::attach(&request.remote, 1).unwrap();
             save_provider(&tonk, &record).await.unwrap();
 
             assert!(!linked(&tonk).await);

@@ -398,9 +398,11 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // `/settings` is a real route: the hub chrome with the settings
     // section already open (`view="settings"`), reached by href from the
-    // account menu and the FAB alike. The legacy account panel lives at
-    // /account, where the settings panel's ceremony links point.
+    // account menu and the FAB alike. Every account act lives in this
+    // panel; nothing links out to a top-level page. `/settings/link` is
+    // the same page opened by a terminal asking for access.
     assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
+    assert!(PROFILE_LIBRARY.contains("path: \"/settings/link\""));
     assert!(PROFILE_LIBRARY.contains("<ui-hub-account view=\"settings\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
@@ -410,12 +412,27 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"link\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-delete-account-open"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-open"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-add-passkey"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
+    // The block cursor belongs to the confirm's arming field alone: an
+    // unfocused display-name field must read as settled.
+    let name_row = SETTINGS_PANEL_MARKUP
+        .split("<span>display name</span>")
+        .nth(1)
+        .and_then(|rest| rest.split("</div>").next())
+        .expect("the display-name row");
     assert!(
-        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        !name_row.contains("<i class=\"cur\""),
         "an unfocused display-name field must not draw an editing cursor",
+    );
+    assert!(
+        SETTINGS_PANEL_MARKUP.contains("class=\"armfield\" data-delete-email"),
+        "the deletion confirm is armed by typing the address",
     );
     assert!(
         !HUB_STYLES.contains("tonk-settings-caret"),

@@ -105,7 +105,7 @@ pub(crate) async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorke
     // actually talking to the service.
     if let Some(remote) = super::account::attachment(tonk)
         .await
-        .and_then(|record| record.remote().map(ToOwned::to_owned))
+        .map(|record| record.address().to_owned())
     {
         return Ok(remote);
     }

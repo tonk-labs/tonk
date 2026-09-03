@@ -22,6 +22,67 @@ use dialog_query::Concept;
 
 use crate::domain::command::Value as SpaceName;
 
+/// `tonk:delete-account`: purge the account from every service and
+/// this device.
+///
+/// Dispatched from the hub's settings page after the person retyped
+/// the account address. The worker checks the address, asks the page
+/// for the account's passkey, signs `/void/customer/purge` with the
+/// recovered root, and reports through [`crate::CeremonyStatus`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeleteAccount {
+    /// The command entity (a fresh id per submission).
+    pub this: Entity,
+    /// The retyped account email.
+    pub email: crate::domain::command::delete_account::Email,
+}
+
+impl Command for DeleteAccount {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:authorize-device`: delegate the account to a waiting process.
+///
+/// The CLI opens `/settings/link?audience=&callback=&name=` and waits on
+/// `callback`; the hub shows what is asking and, on approval, asserts
+/// this. The worker asks the page for the passkey, mints the
+/// `account -> device` grant with the recovered root, and sends the
+/// page to the callback with the grant.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AuthorizeDevice {
+    /// The command entity (a fresh id per approval).
+    pub this: Entity,
+    /// The device DID to delegate to.
+    pub audience: crate::domain::command::authorize_device::Audience,
+    /// The waiting process's callback URL, base58.
+    pub callback: crate::domain::command::authorize_device::Callback,
+    /// The name the waiting process gave itself.
+    pub name: crate::domain::command::authorize_device::Name,
+}
+
+impl Command for AuthorizeDevice {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:add-passkey`: seal the account under a second passkey.
+///
+/// The worker asks the page for both ceremonies — the passkey that
+/// holds the account, and the new one — and re-seals the secret.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddPasskey {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The per-command marker; see [`crate::domain::command::add_passkey`].
+    pub marker: crate::domain::command::add_passkey::AddPasskey,
+}
+
+impl Command for AddPasskey {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Request to create a new space (repository) by local name.
 ///
 /// Asserted transiently when the user submits the Add Space form (a

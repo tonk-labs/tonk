@@ -146,7 +146,6 @@ impl AccountFixture {
             &profile,
             &test.site.operator,
             test.config.clone(),
-            remote,
             "fixture-credential",
             link.clone(),
             remote,
