@@ -238,8 +238,8 @@ The relevant source locations are:
   tests for command behavior.
 - [`rust/tonk-ui/src/bin/ui.rs`](../../rust/tonk-ui/src/bin/ui.rs): top-document
   route selection.
-- [`rust/tonk-ui/src/account.rs`](../../rust/tonk-ui/src/account.rs): browser
-  account lifecycle and settings interaction state.
+- [`rust/tonk-workspace/src/ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs):
+  the hub's settings page, where every account interaction lives.
 - [`rust/tonk-ui/src/activate.rs`](../../rust/tonk-ui/src/activate.rs): emailed
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):

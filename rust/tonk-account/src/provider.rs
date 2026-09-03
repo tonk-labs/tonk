@@ -18,9 +18,12 @@ use crate::DescriptorError;
 
 const RECORD_VERSION: u8 = 1;
 
-/// Wire form. Kept JSON and field-compatible with records written before the
-/// descriptor existed: those decode with `descriptor: None`, which is exactly
-/// the "attached but unconfigured" state a legacy account is in.
+/// Wire form. Kept JSON and field-compatible with records written when the
+/// account service and the sync remote were separate addresses: `provider`
+/// carried the service, `remote` the `/ucan/` endpoint. The service is
+/// decommissioned, so both slots now carry the one address the account
+/// syncs with — written to both so a record survives a rollback to a
+/// reader that still requires `provider`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Wire {
     version: u8,
@@ -31,37 +34,35 @@ struct Wire {
     remote: Option<String>,
 }
 
-/// A provider attachment, with the account repository descriptor it owns.
+/// A provider attachment: the one address this account syncs with, and
+/// when it attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountProviderRecord {
-    provider: String,
+    address: String,
     attached_at: Option<u64>,
-    remote: Option<String>,
 }
 
 impl AccountProviderRecord {
-    /// Attach `provider` to this account, syncing at `remote`.
-    ///
-    /// The remote is where the account's data lives — the access
-    /// service's `/ucan/` address — and is separate from the provider,
-    /// which is the account service. An empty one is absent: the
-    /// address is derivable from the origin, so recording nothing is a
-    /// fallback rather than a failure.
-    pub fn attach(
-        provider: &str,
-        remote: &str,
-        attached_at: u64,
-    ) -> Result<Self, AccountProviderError> {
+    /// Attach the provider serving this account at `address` — the access
+    /// service's `/ucan/` endpoint the account repository syncs through.
+    pub fn attach(address: &str, attached_at: u64) -> Result<Self, AccountProviderError> {
+        let address = address.trim();
+        if address.is_empty() {
+            return Err(AccountProviderError::EmptyProvider);
+        }
         Ok(Self {
-            provider: canonical_provider(provider)?,
+            address: address.to_owned(),
             attached_at: Some(attached_at),
-            remote: Some(remote.trim().to_owned()).filter(|value| !value.is_empty()),
         })
     }
 
-    /// Decode a stored credential value against `root_did`. Empty bytes are
-    /// the detach tombstone: the credential store has no delete, so unlinking
-    /// writes an empty value.
+    /// Decode a stored credential value. Empty bytes are the detach
+    /// tombstone: the credential store has no delete, so unlinking writes
+    /// an empty value.
+    ///
+    /// A record from the two-address era resolves to its `remote` — where
+    /// the account actually syncs — and only a record that never named one
+    /// falls back to the retired service address it carried.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, AccountProviderError> {
         if bytes.is_empty() {
             return Ok(None);
@@ -71,10 +72,14 @@ impl AccountProviderRecord {
         if wire.version != RECORD_VERSION {
             return Err(AccountProviderError::UnsupportedVersion(wire.version));
         }
+        let address = wire
+            .remote
+            .map(|remote| remote.trim().to_owned())
+            .filter(|remote| !remote.is_empty())
+            .unwrap_or(wire.provider);
         Ok(Some(Self {
-            provider: wire.provider,
+            address,
             attached_at: wire.attached_at,
-            remote: wire.remote,
         }))
     }
 
@@ -82,35 +87,22 @@ impl AccountProviderRecord {
     pub fn encode(&self) -> Result<Vec<u8>, AccountProviderError> {
         serde_json::to_vec(&Wire {
             version: RECORD_VERSION,
-            provider: self.provider.clone(),
+            provider: self.address.clone(),
             attached_at: self.attached_at,
-            remote: self.remote.clone(),
+            remote: Some(self.address.clone()),
         })
         .map_err(|error| AccountProviderError::Encoding(error.to_string()))
     }
 
-    /// Attached provider base URL, without a trailing slash.
-    pub fn provider(&self) -> &str {
-        &self.provider
-    }
-
-    /// Where the account syncs, when the link named it.
-    pub fn remote(&self) -> Option<&str> {
-        self.remote.as_deref()
+    /// The address this account syncs with.
+    pub fn address(&self) -> &str {
+        &self.address
     }
 
     /// When the provider was attached, for records that recorded it.
     pub fn attached_at(&self) -> Option<u64> {
         self.attached_at
     }
-}
-
-fn canonical_provider(provider: &str) -> Result<String, AccountProviderError> {
-    let provider = provider.trim().trim_end_matches('/');
-    if provider.is_empty() {
-        return Err(AccountProviderError::EmptyProvider);
-    }
-    Ok(provider.to_owned())
 }
 
 /// Local provider-attachment validation failure.
@@ -145,40 +137,43 @@ mod tests {
 
     use super::*;
 
-    const PROVIDER: &str = "https://accounts.example";
     const REMOTE: &str = "https://accounts.example/ucan/";
 
-    /// The record is provider plus when it was attached; the address an
-    /// account syncs with is resolved, not stored here.
     #[dialog_common::test]
     fn it_round_trips_an_attachment() {
-        let record = AccountProviderRecord::attach(PROVIDER, REMOTE, 42).unwrap();
+        let record = AccountProviderRecord::attach(REMOTE, 42).unwrap();
         let decoded = AccountProviderRecord::decode(&record.encode().unwrap())
             .unwrap()
             .unwrap();
-        assert_eq!(decoded.provider(), PROVIDER);
-        assert_eq!(decoded.remote(), Some(REMOTE));
+        assert_eq!(decoded.address(), REMOTE);
         assert_eq!(decoded.attached_at(), Some(42));
     }
 
     #[dialog_common::test]
-    fn it_trims_a_trailing_slash_and_rejects_a_blank_provider() {
-        let record = AccountProviderRecord::attach("https://accounts.example/", REMOTE, 1).unwrap();
-        assert_eq!(record.provider(), PROVIDER);
+    fn it_rejects_a_blank_address() {
         assert_eq!(
-            AccountProviderRecord::attach("   ", REMOTE, 1).unwrap_err(),
+            AccountProviderRecord::attach("   ", 1).unwrap_err(),
             AccountProviderError::EmptyProvider
         );
     }
 
-    /// A record written before the descriptor was dropped still decodes:
-    /// the field it carried is ignored rather than refused.
+    /// A two-address-era record resolves to its remote — where the account
+    /// actually syncs — and extra fields it carried are ignored.
     #[dialog_common::test]
-    fn it_reads_a_record_that_still_carries_a_descriptor() {
-        let legacy = br#"{"version":1,"provider":"https://accounts.example","attached_at":9,"descriptor":[1,2,3]}"#;
+    fn it_reads_a_two_address_record_as_its_remote() {
+        let legacy = br#"{"version":1,"provider":"https://accounts.example","attached_at":9,"remote":"https://accounts.example/ucan/","descriptor":[1,2,3]}"#;
         let decoded = AccountProviderRecord::decode(legacy).unwrap().unwrap();
-        assert_eq!(decoded.provider(), PROVIDER);
+        assert_eq!(decoded.address(), REMOTE);
         assert_eq!(decoded.attached_at(), Some(9));
+    }
+
+    /// A record that never named a remote falls back to the service
+    /// address it carried.
+    #[dialog_common::test]
+    fn it_falls_back_to_the_service_address_when_no_remote_was_named() {
+        let legacy = br#"{"version":1,"provider":"https://accounts.example","attached_at":9}"#;
+        let decoded = AccountProviderRecord::decode(legacy).unwrap().unwrap();
+        assert_eq!(decoded.address(), "https://accounts.example");
     }
 
     #[dialog_common::test]

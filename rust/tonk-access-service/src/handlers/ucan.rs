@@ -175,8 +175,8 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
     #[cfg(target_arch = "wasm32")]
-    if crate::deletion::is_customer_deletion(&body_bytes) {
-        return crate::handlers::deletion::handle_customer(&body_bytes, &env)
+    if crate::deletion::is_purge(&body_bytes) {
+        return crate::handlers::deletion::handle_purge(&body_bytes, &env)
             .await
             .map(with_cors_headers);
     }

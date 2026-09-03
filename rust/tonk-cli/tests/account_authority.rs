@@ -396,7 +396,6 @@ async fn it_syncs_a_claimed_space_after_linking_an_account(
         &joined.profile,
         joined.operator.inner(),
         &tonk_cli::account::LinkOptions {
-            service_url: remote,
             device_name: "pre-link-claimer".to_owned(),
             open_browser: false,
             via: Some(page.url.clone()),
@@ -527,7 +526,6 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         &joiner_profile,
         joiner_operator,
         &tonk_cli::account::LinkOptions {
-            service_url: remote.clone(),
             device_name: "test-device".to_owned(),
             open_browser: false,
             via: Some(page.url.clone()),
