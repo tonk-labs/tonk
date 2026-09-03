@@ -67,6 +67,9 @@ async fn main() {
             _ => {}
         }
         if tonk_ui::register_dialog::is_open() {
+            // A standing anchored ceremony keeps its typed state, but the
+            // guest bar may have moved after a scroll or resize.
+            tonk_ui::register_dialog::reanchor(&request);
             // A repeat request re-shows the standing cluster — everything
             // typed survives the round trip through the spaces tab.
             tonk_ui::register_dialog::resume();

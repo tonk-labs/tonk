@@ -438,6 +438,18 @@ test("an installed successor retires the incumbent exactly once", async () => {
   assert.equal(retirements(), 1);
 });
 
+test("an update-aware page can wake the incumbent to retire for a waiting successor", async () => {
+  const result = loadServiceWorker();
+  result.scope.registration.waiting = {};
+  const pending = [];
+  result.scope.onmessage({
+    data: { type: "retire-if-superseded" },
+    waitUntil(promise) { pending.push(promise); },
+  });
+  await Promise.all(pending);
+  assert.equal(result.retirements(), 1);
+});
+
 test("a failed stream release is retried on the next incumbent fetch", async () => {
   const result = loadServiceWorker({ retirementFailures: 1 });
   const candidate = eventTarget({ state: "installing" });
@@ -524,6 +536,19 @@ test("successor activation replaces the controller and causes one guarded reload
   );
   assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
   assert.equal(result.reloads(), 1);
+});
+
+test("an installed successor asks the incumbent to release its streams", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  assert.deepEqual(
+    result.messages.map((message) => message.type),
+    ["connectivity", "retire-if-superseded"],
+  );
 });
 
 test("two update-aware documents each reload once on one controller replacement", async () => {

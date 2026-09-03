@@ -1,7 +1,3 @@
-<nav class="s-rail" aria-label="settings sections">
-  <button class="blk cur" type="button" data-pane="account">account</button>
-  <button class="blk" type="button" data-pane="devices">devices</button>
-</nav>
 <div class="s-body">
   <div class="pane" data-pane="account">
     <div class="srowd">
@@ -52,21 +48,19 @@
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
-  <div class="pane" data-pane="devices" hidden>
-    <div data-settings-devices></div>
-    <p class="expl">
-      devices holding this account. removing access clears the account from
-      that device &mdash; spaces stay with their members.
-    </p>
-  </div>
 </div>
 <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
   <div class="confirm-body">
     <span data-delete-scope>loading what this deletes&hellip;</span>
-    are you sure you want to delete all data associated with this account?
-    this action is permanent. there is no option to recover your data.
-    your passkey will be asked for.
-    <div class="armrow">type <b data-delete-email-expected-label></b> to confirm:<span class="armfield" data-delete-email contenteditable="plaintext-only" role="textbox" aria-label="account email"></span><i class="cur" aria-hidden="true"></i></div>
+    <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
+    <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
+    <span data-delete-passkey>your passkey will be asked for.</span>
+    <div class="armrow">
+      <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
+      <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
+        autocomplete="off" autocapitalize="off" spellcheck="false"
+        aria-label="deletion confirmation" />
+    </div>
   </div>
   <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
   <button class="m-go" slot="actions" type="button" data-delete-account-submit disabled><span data-delete-submit-label>delete account</span></button>

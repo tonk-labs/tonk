@@ -548,6 +548,12 @@ async fn complete_login(
         false,
     )
     .await?;
+    {
+        let tonk = state.read().await;
+        crate::router::account::finish_link(&tonk)
+            .await
+            .map_err(|error| format!("the account link did not finish: {error}"))?;
+    }
     Ok(())
 }
 

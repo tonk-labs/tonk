@@ -361,27 +361,41 @@ pub async fn link(
         log!("new-account display-name seed did not complete: {error}");
     }
 
+    Ok(Json(finish_link(&state).await?))
+}
+
+/// Finish the bounded local setup for a provider attachment already persisted.
+///
+/// The HTTP attachment route and the worker-owned passkey-login ceremony meet
+/// here. It runs the first bounded hydration/convergence attempt and refreshes
+/// the roster before returning; with a healthy account remote that projects
+/// the authoritative display name into the local profile synchronously instead
+/// of leaving it to a later background sweep. Callers must not report login
+/// complete after only writing the provider record.
+pub(crate) async fn finish_link(
+    state: &crate::worker::TonkState,
+) -> Result<AccountStatus, TonkWorkerError> {
     // Mount/hydrate the hidden account repository before touching user
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
-    super::account_state::ensure_account_state(&state).await;
+    super::account_state::ensure_account_state(state).await;
     // Everything created or joined before this account existed hangs off
     // the onboarding account; re-issue it to the root from the custodied
     // seeds ahead of the backup sweep, so what gets backed up is the
     // account-rooted authority, and retire the onboarding account.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::rotation::rotate_from_onboarding(&state).await;
+    super::rotation::rotate_from_onboarding(state).await;
 
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it
     // blank until a later refresh.
-    let email = super::account_devices::account_summary(&state)
+    let email = super::account_devices::account_summary(state)
         .await
         .ok()
         .and_then(|summary| summary.email);
-    super::profiles::upsert_active_entry(&state, email).await;
+    super::profiles::upsert_active_entry(state, email).await;
 
-    Ok(Json(status(&state).await?))
+    status(state).await
 }
 
 /// Disconnect provider services while preserving the local root and spaces.

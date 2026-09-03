@@ -424,8 +424,7 @@ mod tests {
                    return {
                      cluster: read('.tonk-cluster'),
                      row: read('.orow'),
-                     action: read('.obtn'),
-                     cursor: read('.cur')
+                     action: read('.obtn')
                    };"#,
                 Vec::new(),
             )
@@ -1431,12 +1430,10 @@ mod tests {
                 "{selector} transition must stop in reduced motion: {reduced}"
             );
         }
-        for selector in ["action", "cursor"] {
-            assert_eq!(
-                reduced[selector]["animation"], "none",
-                "{selector} animation must stop in reduced motion: {reduced}"
-            );
-        }
+        assert_eq!(
+            reduced["action"]["animation"], "none",
+            "action animation must stop in reduced motion: {reduced}"
+        );
         driver.quit().await?;
         Ok(())
     }
@@ -1984,7 +1981,6 @@ mod tests {
     struct CliDeviceRow {
         status: String,
         name: String,
-        did: String,
         this_device: bool,
     }
 
@@ -3260,6 +3256,85 @@ mod tests {
         Ok(())
     }
 
+    /// A passkey login from a fresh browser finishes only once the account's
+    /// portable name is available, then returns straight to the complete Hub.
+    /// The ceremony is anchored under the Hub bar, so its terminal action must
+    /// name that destination instead of claiming there is a space behind it.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_returns_a_new_browser_login_to_the_synced_hub(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "return-to-hub@example.com";
+        const NAME: &str = "Jack";
+
+        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&owner, &env, EMAIL).await?;
+        let renamed = post_json(
+            &owner,
+            "/api/account/display-name",
+            serde_json::json!({ "name": NAME }),
+        )
+        .await?;
+        assert_eq!(successful_body("name the account", &renamed)["name"], NAME);
+        successful_body(
+            "publish the account name",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+
+        let (second, _second_authenticator) =
+            second_device_with_same_passkey(&env, &owner, &authenticator).await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        await_register_action(&second, "log in with your passkey").await?;
+        click_register_action(&second).await?;
+        await_settled_row(&second, "passkey").await?;
+
+        // Login success is the boundary: the account branch must already be
+        // hydrated, rather than exposing the fresh profile's petname until a
+        // later background sweep happens to catch up.
+        let summary = get_json(&second, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("read the newly linked account", &summary)["displayName"],
+            NAME
+        );
+        await_register_action(&second, "return to hub").await?;
+
+        enter_hub(&second).await?;
+        wait_for_text(&second, "[data-account-label]", NAME).await?;
+        second.enter_default_frame().await?;
+        click_register_action(&second).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while second.find(By::Css("#tonk-register")).await.is_ok() {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "return to hub left the registration ceremony standing"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        enter_hub(&second).await?;
+        assert!(
+            element(&second, "[data-spaces-view]")
+                .await?
+                .is_displayed()
+                .await?,
+            "return to hub must restore the spaces stack without a second click"
+        );
+        assert_eq!(
+            element(&second, "[data-return-spaces]")
+                .await?
+                .attr("aria-current")
+                .await?
+                .as_deref(),
+            Some("page")
+        );
+        wait_for_text(&second, "[data-account-label]", NAME).await?;
+
+        owner.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
     /// The tap-bound assertion hands clone-safe PRF bytes to the worker,
     /// never `CryptoKey` handles. Keep the real virtual-authenticator
     /// ceremony and intercept only the final service-worker post.
@@ -4335,7 +4410,6 @@ mod tests {
         let terminal = CliDeviceRow {
             status: "active".into(),
             name: "e2e terminal".into(),
-            did: "did:key:zTerminal".into(),
             this_device: true,
         };
         assert!(!callback_device_rows_ready(std::slice::from_ref(&terminal)));
@@ -4343,7 +4417,6 @@ mod tests {
         let browser = CliDeviceRow {
             status: "active".into(),
             name: "Chrome on Linux".into(),
-            did: "did:key:zBrowser".into(),
             this_device: false,
         };
         assert!(callback_device_rows_ready(&[terminal, browser]));
@@ -4359,12 +4432,6 @@ mod tests {
             ));
         }
         Ok(report.rows.into_iter().map(|row| row.subject).collect())
-    }
-
-    fn did_for_device<'a>(rows: &'a [CliDeviceRow], name: &str) -> Option<&'a str> {
-        rows.iter()
-            .find(|row| row.name == name)
-            .map(|row| row.did.as_str())
     }
 
     fn active_profile_and_label(body: &serde_json::Value) -> Result<(String, String)> {
@@ -4567,17 +4634,18 @@ mod tests {
         Ok(())
     }
 
-    /// A space created before activation becomes syncable once the user
-    /// asks for it, and not before.
+    /// A space created before activation becomes syncable once the account
+    /// has fully reconciled, and not before.
     ///
-    /// The opt-in half of the local-only gate: creation withholds the
-    /// remote, and an explicit enable-sync is what provisions the space
-    /// and attaches one. Provisioning at attach time is what makes this
-    /// work — before, `enable_sync` attached without ever calling
-    /// `/provider/add`, so the upstream pointed at a subject the service
-    /// refused.
+    /// Creation still withholds the remote while the service would refuse
+    /// provisioning. Once activation is observed and the account pull has
+    /// converged, the worker scans local replicas, provisions every one with
+    /// zero remotes, and attaches the account provider without another user
+    /// action.
     #[dialog_common::test]
-    async fn it_syncs_a_local_only_space_once_sync_is_enabled(env: TestEnvironment) -> Result<()> {
+    async fn it_syncs_a_local_only_space_once_the_account_reconciles(
+        env: TestEnvironment,
+    ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         let email = "optin@example.com";
         enroll_only(&driver, &env, email).await?;
@@ -4604,35 +4672,21 @@ mod tests {
             "Active"
         );
 
-        // Still local: activation does not retroactively sync spaces
-        // created before it. The user opts in per space.
-        //
-        // No settling wait is needed to make this meaningful. The
-        // handler's attach step, had it run, would have run before
-        // `create_space` returned — and the navigation, the whole
-        // activation ceremony, and the panel wait have all happened
-        // since. An absent remote here is a decision, not a race.
-        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        let info = successful_body("read the space configuration", &info);
-        assert!(
-            info["remote"]
-                .as_object()
-                .is_none_or(serde_json::Map::is_empty),
-            "activation must not retroactively attach a remote, got {}",
-            info["remote"],
-        );
-
-        // Opting in attaches and provisions, so the space can now push.
-        let attached = post_json(
-            &driver,
-            &format!("/api/repository/{key}/remote"),
-            serde_json::json!({
-                "remote": { "origin": { "address": { "Ucan": { "endpoint": env.tonk_web.join("ucan/")? } } } },
-                "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } },
-            }),
-        )
-        .await?;
-        successful_body("attach the remote", &attached);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the space configuration", &info);
+            if info["remote"]["origin"].is_object()
+                && info["branch"]["main"]["upstream"]["remote"].as_str() == Some("origin")
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "account reconciliation did not attach origin/main: {info}",
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -4867,33 +4921,34 @@ mod tests {
         click(&driver, "[data-delete-account-open]").await?;
         wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
 
-        // The typed address is the gate: a mistyped one leaves the solid
+        // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
         // verb off, and nothing is asked of the worker.
-        let address = element(&driver, "[data-delete-email]").await?;
-        address.send_keys("someone-else@example.com").await?;
+        let confirmation = element(&driver, "[data-delete-confirm]").await?;
+        confirmation.send_keys("delete").await?;
         let verb = element(&driver, "[data-delete-account-submit]").await?;
         assert!(
             verb.attr("disabled").await?.is_some(),
-            "a wrong address must not arm the deletion"
+            "a partial confirmation must not arm the deletion"
         );
 
-        // The real thing: the account's own address arms the verb, and
+        // The real thing: the exact phrase arms the verb, and
         // the passkey gesture the virtual authenticator answers on the
         // consent card the worker's ask raises finishes it.
         driver
             .execute(
-                r#"const field = document.querySelector("[data-delete-email]");
-                   field.textContent = "";"#,
+                r#"const field = document.querySelector("[data-delete-confirm]");
+                   field.value = "";
+                   field.dispatchEvent(new Event("input", { bubbles: true }));"#,
                 Vec::new(),
             )
             .await
             .ok();
-        address.send_keys(email).await?;
+        confirmation.send_keys("delete account").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while verb.attr("disabled").await?.is_some() {
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the right address must arm the deletion"
+                "the exact confirmation phrase must arm the deletion"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -5062,9 +5117,8 @@ mod tests {
         );
 
         // The sealed Hub's settings row is a link to the /settings route:
-        // the same chrome with the settings section open, reading real
-        // account and device facts and keeping unsupported Usage/Syncing
-        // surfaces absent.
+        // the same chrome with the account settings section open and
+        // unsupported Devices/Usage/Syncing surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
         click(&driver, "[data-open-settings]").await?;
         driver.enter_default_frame().await?;
@@ -5077,8 +5131,13 @@ mod tests {
             passkey_created_on.as_str(),
         )
         .await?;
-        click(&driver, ".s-rail [data-pane=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-settings-devices]", "this device").await?;
+        assert!(
+            driver
+                .find_all(By::Css("ui-account-settings [data-pane=\"devices\"]"))
+                .await?
+                .is_empty(),
+            "settings must not expose a devices tab or pane"
+        );
         let settings_text = element(&driver, "ui-account-settings")
             .await?
             .text()
@@ -5093,7 +5152,6 @@ mod tests {
 
         // The authoritative display-name write repaints the bar's account
         // cell and remains in the field after the page is reloaded.
-        click(&driver, ".s-rail [data-pane=\"account\"]").await?;
         let display_name = element(&driver, "[data-settings-name]").await?;
         let select_all = if cfg!(target_os = "macos") {
             Key::Command + "a"
@@ -5664,55 +5722,6 @@ mod tests {
 
         guest.quit().await?;
         owner.quit().await?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_revokes_the_cli_device_from_the_browser(env: TestEnvironment) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        sign_up(&driver, &env, EMAIL).await?;
-        let linked = link_cli(&driver, &env).await?;
-        // Cache the complete callback view before revocation. The CLI creates
-        // its own row locally, so a terminal-only list does not prove it has
-        // pulled the browser row that must remain visible in its stale cache.
-        let (_listed, listed_rows) = wait_for_callback_device_rows(&linked.profile, &env).await?;
-        let cli_did = did_for_device(&listed_rows, "e2e terminal")
-            .context("CLI device was absent from the account device list")?
-            .to_string();
-
-        open_hub_settings(&driver, &env).await?;
-        // The device list lives on the Devices pane, hidden until
-        // selected — and hidden text reads as empty.
-        click(&driver, ".s-rail [data-pane=\"devices\"]").await?;
-        wait_for_text_containing(&driver, "[data-settings-devices]", "e2e terminal").await?;
-        // Removing access asks in place: the first press arms the verb,
-        // the second revokes.
-        let selector = format!("[data-revoke-device=\"{cli_did}\"]");
-        click(&driver, &selector).await?;
-        wait_for_text(&driver, &selector, "sure? remove").await?;
-        click(&driver, &selector).await?;
-
-        // The row leaves with the authority: revoking retracted the
-        // link's facts from the account space, and the refreshed list no
-        // longer shows the device. Storage enforcement of the published
-        // revocation is pinned by the native access-service tests.
-        wait_for_text_without(&driver, "[data-settings-devices]", "e2e terminal").await?;
-
-        // The revoked CLI still answers locally — the list is facts, not
-        // a service round trip — but it can no longer pull the account,
-        // so its own stale row is all it has left of the retraction.
-        let listed = devices(&linked.profile, &env).await?;
-        assert!(listed.status.success(), "devices failed: {}", listed.stderr);
-        let listed_rows = device_rows(&listed.stdout)?;
-        assert!(
-            listed_rows
-                .iter()
-                .any(|row| row.name.starts_with("Chrome on ")),
-            "{}",
-            listed.stdout
-        );
-
-        driver.quit().await?;
         Ok(())
     }
 

@@ -605,6 +605,7 @@ mod tests {
             {
                 last = state.json().clone();
                 if last["health"]["build"] == build
+                    && last["health"]["worker"] == "ok"
                     && last["documentBuild"] == build
                     && last["manifest"]["build"] == build
                     && last["mounted"] == true
@@ -853,7 +854,7 @@ mod tests {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
         let first_tab = driver.window().await?;
-        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         create_state_sentinels(&driver).await?;
 
         let second_tab = driver.new_tab().await?;
@@ -986,9 +987,8 @@ mod tests {
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
-        let build_a = generation_a.build;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         let build_b = generation_b.build;
-        wait_for_mounted_build(&driver, &build_a).await?;
 
         let query = tonk_worker::helpers::named_concept_wire_query();
         let opened = driver
