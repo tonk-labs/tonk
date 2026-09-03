@@ -1474,12 +1474,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Different-root login into a used profile is refused without writes (Exit early).",
-      "device": "fresh-browser",
+      "claim": "Different-account login selects the account's existing profile without rebinding retained local work (Resolve).",
+      "device": "returning-browser + two-actor",
       "file": "verification/accounts.md",
       "id": "LIFE-17",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated: it_signs_into_another_account_without_rebinding_retained_local_spaces."
     },
     {
       "claim": "Two browser accounts switch without leaking spaces or in-flight results (Settle).",
@@ -1487,7 +1487,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "LIFE-18",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated in it_signs_into_another_account_without_rebinding_retained_local_spaces plus the worker stale-client regression."
     },
     {
       "claim": "Unconfigured and unhydrated account states are visible and recoverable (Resolve).",
@@ -2221,9 +2221,9 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 0,
+    "other": 2,
     "pass": 1,
-    "unrun": 114
+    "unrun": 112
   },
   "visualCommit": "49a873a23"
 };
