@@ -117,7 +117,7 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">link an account</div>
+    <div class="m-head mblk" id="tonk-register-head">add an account</div>
     <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
