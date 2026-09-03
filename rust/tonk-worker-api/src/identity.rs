@@ -116,7 +116,7 @@ pub enum CustodyIntent {
 }
 
 /// The purge [`CustodyIntent::PurgeAccount`] carries. Empty: the worker
-/// already checked the retyped address when the command arrived, and
+/// already checked the plan-bound address when the command arrived, and
 /// the root the passkey recovers is checked against the linked account
 /// before anything is signed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

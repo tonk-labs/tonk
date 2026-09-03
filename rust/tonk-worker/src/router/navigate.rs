@@ -78,6 +78,57 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
     });
 }
 
+/// Ask every other top-level document to reload after the active browser
+/// profile changes. The message carries no profile or account identifier.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let except = except.map(|client| client.0.clone());
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => {
+            log!("profile change: not in a service worker scope; skipping reload broadcast");
+            return;
+        }
+    };
+    spawn_local(async move {
+        let options = web_sys::ClientQueryOptions::new();
+        options.set_type(web_sys::ClientType::Window);
+        let windows = match JsFuture::from(global.clients().match_all_with_options(&options)).await
+        {
+            Ok(windows) => windows,
+            Err(error) => {
+                log!("profile change: clients.matchAll failed: {error:?}");
+                return;
+            }
+        };
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("profile-changed"),
+        );
+        for value in js_sys::Array::from(&windows).iter() {
+            let Ok(client) = value.dyn_into::<web_sys::Client>() else {
+                continue;
+            };
+            if client.frame_type() != web_sys::FrameType::TopLevel
+                || except.as_deref() == Some(client.id().as_str())
+            {
+                continue;
+            }
+            if let Err(error) = client.post_message(&message) {
+                log!("profile change: reload message failed: {error:?}");
+            }
+        }
+    });
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
+
 /// Post a typed launch-funnel success to the originating page.
 ///
 /// The message never leaves the browser. It carries the local space routing

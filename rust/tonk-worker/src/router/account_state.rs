@@ -197,7 +197,13 @@ pub(crate) async fn is_account_key(tonk: &TonkState, key: &str) -> bool {
 /// subject IS the local root, so one key derives from it.
 async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
     let mut keys = HashSet::new();
-    if let Ok(root) = super::identity::local_root(tonk).await {
+    // A retained historical root is provenance for this profile, not an
+    // active account attachment. Once sign-out clears the provider and
+    // account replicas, generic repository routing must stop reserving the
+    // account key even though the root remains available for a later login.
+    if super::account::provider(tonk).await.is_some()
+        && let Ok(root) = super::identity::local_root(tonk).await
+    {
         keys.insert(root.root_did.repo_key().to_owned());
     }
     keys
@@ -1348,14 +1354,15 @@ async fn custody_recipient(
     }
 }
 
-/// Project the authoritative account display name into the local profile
-/// name cache and every known real-space roster.
+/// Reconcile account-derived state into this device's local spaces.
 ///
-/// The idempotent catch-up: a rename projects at the moment it happens,
-/// and this runs on every sweep for whatever that moment could not reach
-/// (a space that was unmounted, a name another device chose). Every
-/// space is checked and written independently; a failure is logged and
-/// left for the next sweep rather than failing the others.
+/// The idempotent catch-up runs after every successful account pull. It
+/// projects the authoritative account display name, applies the latest
+/// directory mount facts to replicas already present on this device, repairs
+/// names learned after a joined space hydrated, and attaches the account
+/// provider to genuinely local-only spaces once the customer is served.
+/// Every space is checked independently; a failure is logged and left for the
+/// next sweep rather than failing its siblings.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     use tonk_schema::{AccountDisplayName, ProfileName};
@@ -1381,45 +1388,47 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         .map_err(|error| {
             TonkWorkerError::Internal(format!("read account display name: {error:?}"))
         })?;
-    let Some(name) = names.into_iter().next().map(|name| name.name.0) else {
-        return Ok(());
-    };
-
-    let profile_entity = tonk.profile.did().this();
-    let profile = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("open profile name cache: {error}")))?;
-    let cached: Vec<ProfileName> = profile
-        .handle()
-        .query()
-        .select(Query::<ProfileName> {
-            this: Term::from(profile_entity.clone()),
-            name: Term::var("name"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("read profile name: {error:?}")))?;
-    let profile_changed = cached.first().is_none_or(|cached| cached.name.0 != name);
-    if profile_changed {
-        tonk.reactor
+    if let Some(name) = names.into_iter().next().map(|name| name.name.0) {
+        let profile_entity = tonk.profile.did().this();
+        let profile = tonk
+            .reactor
             .profile_repository()
             .branch(tonk_account::MAIN_BRANCH)
-            .transaction()
-            .assert(ProfileName::new(profile_entity, name.clone()))
-            .commit()
-            .perform(&tonk.operator)
+            .acquire(&tonk.operator)
             .await
             .map_err(|error| {
-                TonkWorkerError::Internal(format!("project account name to profile: {error}"))
+                TonkWorkerError::Internal(format!("open profile name cache: {error}"))
             })?;
+        let cached: Vec<ProfileName> = profile
+            .handle()
+            .query()
+            .select(Query::<ProfileName> {
+                this: Term::from(profile_entity.clone()),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| TonkWorkerError::Internal(format!("read profile name: {error:?}")))?;
+        let profile_changed = cached.first().is_none_or(|cached| cached.name.0 != name);
+        if profile_changed {
+            tonk.reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .transaction()
+                .assert(ProfileName::new(profile_entity, name.clone()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("project account name to profile: {error}"))
+                })?;
+        }
+
+        project_member_names(tonk, &ready.subject, &name, profile_changed).await;
     }
 
-    project_member_names(tonk, &ready.subject, &name, profile_changed).await;
+    super::adopt::reconcile_account_spaces(tonk).await;
     Ok(())
 }
 
@@ -1870,6 +1879,8 @@ mod tests {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
             },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         };
         crate::router::repository::bootstrap_profile(&state)
             .await

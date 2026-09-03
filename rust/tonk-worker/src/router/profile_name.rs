@@ -5,12 +5,14 @@
 //! when no override exists. This is what every `MemberName` write uses.
 
 use dialog_query::{Output as _, Query, Term};
+use dialog_repository::Repository;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
 
 use crate::RepositoryError;
-use crate::worker::TonkState;
+use crate::worker::{DefaultOperator, TonkState};
+use dialog_operator::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
@@ -27,30 +29,37 @@ const CONTENT_BRANCH: &str = "main";
 /// The member's effective display name: stored override, else the
 /// deterministic default derived from the profile DID.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    let profile_entity = tonk.profile.did().this();
+    resolve_display_name_from(&tonk.profile, &tonk.operator).await
+}
 
-    let session = match tonk
-        .reactor
-        .profile_repository()
+/// Resolve the effective display name for an explicit profile without
+/// booting it as the active worker state.
+pub(crate) async fn resolve_display_name_from(
+    profile: &Profile,
+    operator: &DefaultOperator,
+) -> String {
+    let profile_entity = profile.did().this();
+
+    let branch = match Repository::from(profile)
         .branch(PROFILE_BRANCH)
-        .acquire(&tonk.operator)
+        .open()
+        .perform(operator)
         .await
     {
-        Ok(s) => s,
+        Ok(branch) => branch,
         Err(e) => {
             log!("resolve_display_name: meta acquire failed: {e}");
-            return petname(&tonk.profile.did());
+            return petname(&profile.did());
         }
     };
 
-    let rows: Vec<ProfileName> = session
-        .handle()
+    let rows: Vec<ProfileName> = branch
         .query()
         .select(Query::<ProfileName> {
             this: Term::from(profile_entity),
             name: Term::var("name"),
         })
-        .perform(&tonk.operator)
+        .perform(operator)
         .try_vec()
         .await
         .unwrap_or_default();
@@ -58,7 +67,7 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
     rows.into_iter()
         .next()
         .map(|pn| pn.name.0)
-        .unwrap_or_else(|| petname(&tonk.profile.did()))
+        .unwrap_or_else(|| petname(&profile.did()))
 }
 
 /// Ensure a durable `ProfileName` exists on the profile meta branch.
@@ -299,6 +308,8 @@ mod tests {
                 profile: name.to_string(),
                 directory: dialog_effects::storage::Directory::Profile,
             },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         }
     }
 
