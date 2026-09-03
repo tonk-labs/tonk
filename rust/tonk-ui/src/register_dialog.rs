@@ -2276,6 +2276,28 @@ pub fn resume() {
 /// navigation to the linking screen.
 const SHARE_STASH: &str = "tonk-pending-share";
 
+/// The anchored registration request to reopen after a profile-transition
+/// reload. Session scope keeps it in this tab and removal makes it one-shot.
+const REOPEN_STASH: &str = "tonk-reopen-registration";
+
+/// Park an account-linking request across the reload that gives the promoted
+/// profile a fresh service-worker client context.
+pub fn stash_reopen(payload: &str) {
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+    {
+        let _ = storage.set_item(REOPEN_STASH, payload);
+    }
+}
+
+/// Consume the account-linking request parked by [`stash_reopen`].
+pub fn take_reopen() -> Option<String> {
+    let storage = web_sys::window()?.session_storage().ok().flatten()?;
+    let payload = storage.get_item(REOPEN_STASH).ok().flatten()?;
+    let _ = storage.remove_item(REOPEN_STASH);
+    Some(payload)
+}
+
 /// Park a blocked share's space so it survives the navigation to
 /// `/settings`, where the linking ceremony picks it up.
 pub fn stash_share(space: &str) {

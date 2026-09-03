@@ -432,7 +432,8 @@ impl CustomElement for UiHubAccount {
                         return;
                     }
                     close_menu(&host, false);
-                    start_linking(&host);
+                    enter_linking(&host);
+                    request_linking_position_for(&host, "profile-transition");
                 });
                 return;
             }
@@ -779,6 +780,12 @@ fn start_linking(this: &HtmlElement) {
 /// opaque-origin guest. The opening click and later scroll/resize events all
 /// use this same path so the two documents cannot disagree about the seat.
 fn request_linking_position(this: &HtmlElement) {
+    request_linking_position_for(this, tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT);
+}
+
+/// Ask the top page to seat the linking ceremony, optionally using a
+/// lifecycle reason that the page handles before opening it.
+fn request_linking_position_for(this: &HtmlElement, reason: &str) {
     let anchor = this
         .query_selector(".hubbar")
         .ok()
@@ -786,7 +793,7 @@ fn request_linking_position(this: &HtmlElement) {
         .map(|bar| bar.get_bounding_client_rect());
     let payload = match anchor {
         Some(rect) => serde_json::json!({
-            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "reason": reason,
             "space": "",
             "anchor": {
                 "left": rect.left(),
@@ -795,7 +802,7 @@ fn request_linking_position(this: &HtmlElement) {
             },
         }),
         None => serde_json::json!({
-            "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            "reason": reason,
             "space": "",
         }),
     };

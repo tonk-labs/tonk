@@ -299,6 +299,8 @@ mod tests {
                 profile: name.to_string(),
                 directory: dialog_effects::storage::Directory::Profile,
             },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         }
     }
 

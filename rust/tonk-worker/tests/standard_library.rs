@@ -450,12 +450,29 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
     // The panes live in the shared panel — one element, two seats: the
     // Hub's account tab and the FAB's settings dialog on the space route.
+    // Device revocation is no longer a separate settings pane.
     assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"link\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-delete-account-open"));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-open"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("<div class=\"sect\">sign out</div>"));
+    assert!(
+        SETTINGS_PANEL_MARKUP.contains("disconnect this account; keep local spaces on this device")
+    );
+    assert!(SETTINGS_PANEL_MARKUP.contains("sign out on this device"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("heading=\"confirm sign out\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains(
+        "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
+    ));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-submit>sign out</button>"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("remove this device"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("confirm device removal"));
+    assert!(
+        !SETTINGS_PANEL_MARKUP
+            .contains("remove all data associated with this account from this device")
+    );
     assert!(SETTINGS_PANEL_MARKUP.contains("data-add-passkey"));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));

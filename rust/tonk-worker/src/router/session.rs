@@ -60,6 +60,29 @@ pub struct ClientState {
     /// Latched once this client appeared in `clients.matchAll()`. Until
     /// then the client is presumed to be booting, never dead.
     pub seen_live: bool,
+    /// Active-profile generation under which this browser document first
+    /// reached a profile-scoped route. Immutable for this Client ID.
+    pub context_generation: Option<u64>,
+}
+
+/// Bind a browser client to the current profile generation, or reject it when
+/// it was already bound before a profile transition.
+pub(crate) async fn client_context_is_current(
+    tonk: &crate::worker::TonkState,
+    client: &ClientId,
+) -> bool {
+    use std::sync::atomic::Ordering;
+
+    let generation = tonk.context_generation.load(Ordering::Acquire);
+    let mut clients = tonk.clients.write().await;
+    let client = clients.entry(client.clone()).or_default();
+    match client.context_generation {
+        Some(bound) => bound == generation,
+        None => {
+            client.context_generation = Some(generation);
+            true
+        }
+    }
 }
 
 /// Shared ledger of SW client → what it registered. The stale-client

@@ -449,7 +449,9 @@ mod tests {
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
-    use crate::router::tests::{test_state_without_account, test_state_without_root};
+    use crate::router::tests::{
+        put_repo, test_state, test_state_without_account, test_state_without_root,
+    };
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn matching_request(state: &crate::worker::TonkState) -> AccountLinkRequest {
@@ -603,6 +605,72 @@ mod tests {
             "unlink retracts the account replica"
         );
         assert!(!linked(&tonk).await);
+    }
+
+    #[dialog_common::test]
+    async fn it_signs_out_without_deleting_the_root_or_local_spaces() {
+        use axum::extract::Path;
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
+        let key = put_repo(&app, "retained-local-space").await;
+        let (root_before, profile_name, profile_did, root_key) = {
+            let tonk = state.read().await;
+            let root = super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .expect("the fixture has a local root");
+            let root_key = super::super::identity::local_root(&tonk)
+                .await
+                .unwrap()
+                .root_did
+                .repo_key()
+                .to_string();
+            assert!(
+                super::super::account_state::is_account_key(&tonk, &root_key).await,
+                "the linked account key is hidden from generic repository routing"
+            );
+            (
+                root,
+                tonk.profile_name.clone(),
+                tonk.profile.did(),
+                root_key,
+            )
+        };
+
+        let Json(status) = unlink(State(state.clone())).await.unwrap();
+        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+
+        let tonk = state.read().await;
+        assert!(provider(&tonk).await.is_none());
+        assert!(
+            super::super::account_state::linked_account(&tonk)
+                .await
+                .unwrap()
+                .is_none(),
+            "sign-out retracts the account replicas"
+        );
+        assert!(
+            !super::super::account_state::is_account_key(&tonk, &root_key).await,
+            "sign-out releases hidden account-key routing"
+        );
+        assert_eq!(
+            super::super::identity::load_record(&tonk).await.unwrap(),
+            Some(root_before),
+            "the root record remains byte-for-byte unchanged"
+        );
+        assert_eq!(tonk.profile_name, profile_name);
+        assert_eq!(tonk.profile.did(), profile_did);
+        drop(tonk);
+
+        let Json(profile) = super::super::profile::get_profile(State(state.clone()))
+            .await
+            .unwrap();
+        assert!(profile.space.iter().any(|space| space.key == key));
+        let Json(repository) = super::super::repository::get_repository(State(state), Path(key))
+            .await
+            .expect("the retained local space remains loadable");
+        assert!(repository.remote.is_empty());
     }
 
     #[dialog_common::test]

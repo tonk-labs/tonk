@@ -11,7 +11,8 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::worker::TonkState;
+use crate::worker::{DefaultOperator, TonkState};
+use dialog_operator::Profile;
 
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
@@ -86,12 +87,21 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    let bytes = match state
-        .profile
+    load_record_from(&state.profile, &state.operator).await
+}
+
+/// Load and validate the serialized root record belonging to an explicit
+/// profile. Account routing uses this without constructing a full TonkState
+/// for every inactive roster entry.
+async fn load_record_from(
+    profile: &Profile,
+    operator: &DefaultOperator,
+) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
+    let bytes = match profile
         .credential()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(operator)
         .await
     {
         Ok(bytes) => bytes,
@@ -112,6 +122,21 @@ pub(crate) async fn load_record(
         )));
     }
     Ok(Some(record))
+}
+
+/// Return the verified historical account root for an explicit profile.
+/// A missing record is a rootless profile; a malformed or misaddressed grant
+/// is an unreadable profile and is never treated as a match.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn historical_root_did(
+    profile: &Profile,
+    operator: &DefaultOperator,
+) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
+    let Some(record) = load_record_from(profile, operator).await? else {
+        return Ok(None);
+    };
+    let delegation = validate_grant(record.delegation, &profile.did()).await?;
+    Ok(Some(delegation.issuer().clone()))
 }
 
 /// Load and validate the local root, failing when it is missing.
