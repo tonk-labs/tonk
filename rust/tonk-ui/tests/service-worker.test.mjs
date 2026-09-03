@@ -75,7 +75,7 @@ async function loadServiceWorker({ fetchImpl, registration } = {}) {
   const listeners = new Map();
   const scope = {
     location: { href: "https://tonk.test/service_worker.js", origin: "https://tonk.test" },
-    registration: registration ?? { waiting: null, installing: null, addEventListener() {} },
+    registration: registration ?? { active: {}, waiting: null, installing: null, addEventListener() {} },
     serviceWorker: {},
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => [] },
@@ -93,7 +93,7 @@ async function loadServiceWorker({ fetchImpl, registration } = {}) {
   // Expose the internals under test without altering the shipped file.
   const instrumented =
     body +
-    "\nexport { isShellCacheable, SHELL_CACHE, WORKER_CACHE, BUILD_ID, fetchVerifiedWorkerWasm, digestOf };\n";
+    "\nexport { isShellCacheable, SHELL_CACHE, WORKER_CACHE, RUNTIME_CACHE, BUILD_ID, fetchVerifiedWorkerWasm, digestOf };\n";
 
   const module = await import(
     "data:text/javascript;base64," + Buffer.from(instrumented).toString("base64")
@@ -107,7 +107,7 @@ function withGlobals({ fetchImpl, registration, BroadcastChannelImpl } = {}) {
   const listeners = new Map();
   const self = {
     location: { href: "https://tonk.test/service_worker.js", origin: "https://tonk.test" },
-    registration: registration ?? { waiting: null, installing: null, addEventListener() {} },
+    registration: registration ?? { active: {}, waiting: null, installing: null, addEventListener() {} },
     serviceWorker: {},
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => [] },
@@ -551,7 +551,7 @@ describe("exact fetch routing", () => {
 });
 
 describe("cache naming", () => {
-  test("scopes both caches to the build", async () => {
+  test("scopes runtime and generation caches to the build", async () => {
     // Per-build names are what make an install atomic: the incoming
     // worker populates its OWN caches, so the still-serving old worker
     // never observes a half-written one.
@@ -559,7 +559,9 @@ describe("cache naming", () => {
     const { module } = await loadServiceWorker();
     assert.ok(module.SHELL_CACHE.endsWith(module.BUILD_ID));
     assert.ok(module.WORKER_CACHE.endsWith(module.BUILD_ID));
+    assert.ok(module.RUNTIME_CACHE.endsWith(module.BUILD_ID));
     assert.notEqual(module.SHELL_CACHE, module.WORKER_CACHE);
+    assert.notEqual(module.RUNTIME_CACHE, module.WORKER_CACHE);
   });
 
   test("accepts only exact lifecycle-owned cache names", async () => {
@@ -568,6 +570,7 @@ describe("cache naming", () => {
       exports: [
         "parseFinalShellGeneration",
         "parseFinalWorkerGeneration",
+        "parseRuntimeGeneration",
         "parseGenerationMarkerCache",
         "parseShellStageGeneration",
         "parseWorkerStageGeneration",
@@ -577,6 +580,7 @@ describe("cache naming", () => {
     const nonce = "a".repeat(32);
     assert.equal(mod.parseFinalShellGeneration(`TONK_SHELL_${build}`), build);
     assert.equal(mod.parseFinalWorkerGeneration(`TONK_WORKER_${build}`), build);
+    assert.equal(mod.parseRuntimeGeneration(`TONK_RUNTIME_${build}`), build);
     assert.equal(mod.parseGenerationMarkerCache(`TONK_GENERATION_${build}`), build);
     assert.equal(mod.parseShellStageGeneration(`TONK_SHELL_STAGE_${build}_${nonce}`), build);
     assert.equal(mod.parseWorkerStageGeneration(`TONK_WORKER_STAGE_${build}_${nonce}`), build);
@@ -587,11 +591,13 @@ describe("cache naming", () => {
       `TONK_SHELL_${build}_extra`,
       `TONK_SHELL_STAGE_${build}_${nonce}_extra`,
       `TONK_WORKER_STAGE_${build}_short`,
+      `TONK_RUNTIMES_${build}`,
       `TONK_GENERATIONS_${build}`,
       "tonk-sw-upgrade-sentinel",
     ]) {
       assert.equal(mod.parseFinalShellGeneration(name), null, name);
       assert.equal(mod.parseFinalWorkerGeneration(name), null, name);
+      assert.equal(mod.parseRuntimeGeneration(name), null, name);
       assert.equal(mod.parseGenerationMarkerCache(name), null, name);
       assert.equal(mod.parseShellStageGeneration(name), null, name);
       assert.equal(mod.parseWorkerStageGeneration(name), null, name);
@@ -618,11 +624,13 @@ describe("cache naming", () => {
     const obsolete = [
       `TONK_SHELL_${old}`,
       `TONK_WORKER_${old}`,
+      `TONK_RUNTIME_${old}`,
       `TONK_GENERATION_${old}`,
       `TONK_SHELL_STAGE_${old}_${"c".repeat(32)}`,
       `TONK_WORKER_STAGE_${old}_${"c".repeat(32)}`,
       `TONK_SHELL_${oldest}`,
       `TONK_WORKER_${oldest}`,
+      `TONK_RUNTIME_${oldest}`,
       `TONK_GENERATION_${oldest}`,
       `TONK_SHELL_STAGE_${oldest}_${"d".repeat(32)}`,
       `TONK_WORKER_STAGE_${oldest}_${"d".repeat(32)}`,
@@ -689,6 +697,139 @@ describe("cache naming", () => {
 });
 
 describe("immutable generation install", () => {
+  test("a first install activates after verifying only its worker runtime", async () => {
+    const buildId = "first-install-build";
+    const wasm = new Uint8Array([9, 8, 7, 6]);
+    const wasmHash = (await sha256Hex(wasm)).slice(0, 16);
+    const fetches = [];
+    const { self, caches } = withGlobals({
+      registration: { active: null, waiting: null, installing: {}, addEventListener() {} },
+      fetchImpl: async (input, init) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        fetches.push({ path, cache: init?.cache });
+        if (path === "/worker_bg.wasm") {
+          return new Response(wasm, {
+            status: 200,
+            headers: { "content-type": "application/wasm" },
+          });
+        }
+        throw new Error(`the offline asset graph blocked first activation: ${path}`);
+      },
+    });
+    let activationRequests = 0;
+    self.skipWaiting = async () => {
+      activationRequests += 1;
+    };
+    const mod = await loadWith({
+      buildId,
+      wasmHash,
+      exports: ["RUNTIME_CACHE", "WORKER_WASM_URL"],
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.equal(activationRequests, 1);
+    assert.deepEqual(fetches, [{ path: "/worker_bg.wasm", cache: "no-store" }]);
+    const runtime = await caches.open(mod.RUNTIME_CACHE);
+    assert.deepEqual(
+      new Uint8Array(await (await runtime.match(mod.WORKER_WASM_URL)).arrayBuffer()),
+      wasm,
+    );
+  });
+
+  test("a first install refuses an incompatible worker runtime", async () => {
+    const { self, caches } = withGlobals({
+      registration: { active: null, waiting: null, installing: {}, addEventListener() {} },
+      fetchImpl: async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+    });
+    let activationRequests = 0;
+    self.skipWaiting = async () => {
+      activationRequests += 1;
+    };
+    const mod = await loadWith({
+      buildId: "incompatible-runtime",
+      wasmHash: "0000000000000000",
+      exports: ["RUNTIME_CACHE"],
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+
+    await assert.rejects(install, /worker wasm hash mismatch/);
+    assert.equal(activationRequests, 0);
+    assert.equal((await caches.keys()).includes(mod.RUNTIME_CACHE), false);
+  });
+
+  test("a claimed first page stays ready while its offline generation fills", async () => {
+    const buildId = "background-fill-build";
+    const wasm = new Uint8Array([4, 3, 2, 1]);
+    const wasmHash = (await sha256Hex(wasm)).slice(0, 16);
+    const shellBody = "background shell";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(shellBody)) },
+    });
+    const manifestHash = await sha256Hex(utf8(manifestText));
+    let releaseShell;
+    let shellRequested = false;
+    const shellReady = new Promise((resolve) => { releaseShell = resolve; });
+    const { self, caches } = withGlobals({
+      registration: { active: null, waiting: null, installing: {}, addEventListener() {} },
+      fetchImpl: async (input) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        if (path === "/worker_bg.wasm") return new Response(wasm, { status: 200 });
+        if (path === "/asset-manifest.json") return new Response(manifestText, { status: 200 });
+        if (path === "/") {
+          shellRequested = true;
+          await shellReady;
+          return new Response(shellBody, { status: 200 });
+        }
+        return new Response("missing", { status: 404 });
+      },
+    });
+    let claimed = false;
+    self.clients.claim = async () => { claimed = true; };
+    const mod = await loadWith({
+      buildId,
+      wasmHash,
+      assetManifestHash: manifestHash,
+      assetPaths: ["/"],
+      exports: ["SHELL_CACHE", "GENERATION_CACHE"],
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    const pending = [];
+    self.onmessage({
+      data: { type: "claim" },
+      waitUntil: (promise) => pending.push(promise),
+    });
+    for (let turns = 0; !shellRequested && turns < 20; turns += 1) {
+      await new Promise(setImmediate);
+    }
+
+    assert.equal(claimed, true, "control must not wait for the offline shell");
+    assert.equal(shellRequested, true, "claim starts the background fill");
+    assert.equal(
+      await caches.match("/", { cacheName: mod.SHELL_CACHE }),
+      undefined,
+      "a partial background fill must remain unpublished",
+    );
+
+    releaseShell();
+    await Promise.all(pending);
+    assert.equal(
+      await (await caches.match("/", { cacheName: mod.SHELL_CACHE })).text(),
+      shellBody,
+    );
+    assert.ok((await caches.keys()).includes(mod.GENERATION_CACHE));
+  });
+
   test("client discovery cannot stall verified install progress", async () => {
     const { self } = withGlobals();
     self.clients.matchAll = () => new Promise(() => {});
@@ -1567,6 +1708,27 @@ describe("worker wasm verification", () => {
 });
 
 describe("booting from the precached wasm", () => {
+  test("boots from the verified first-install runtime without another fetch", async () => {
+    const bytes = new Uint8Array([6, 5, 4]);
+    let fetches = 0;
+    const { caches } = withGlobals({
+      fetchImpl: async () => {
+        fetches += 1;
+        return new Response("unexpected", { status: 500 });
+      },
+    });
+    const mod = await loadWith({
+      exports: ["workerWasmModule", "RUNTIME_CACHE", "WORKER_WASM_URL"],
+    });
+    await (await caches.open(mod.RUNTIME_CACHE)).put(
+      mod.WORKER_WASM_URL,
+      new Response(bytes),
+    );
+
+    assert.deepEqual(new Uint8Array(await mod.workerWasmModule()), bytes);
+    assert.equal(fetches, 0);
+  });
+
   test("verifies an eviction recovery fetch without backfilling the retained cache", async () => {
     // Storage pressure can evict the entry. The old worker may use live bytes
     // only after proving they still match its stamped glue; it must not mutate
