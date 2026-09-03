@@ -3260,6 +3260,85 @@ mod tests {
         Ok(())
     }
 
+    /// A passkey login from a fresh browser finishes only once the account's
+    /// portable name is available, then returns straight to the complete Hub.
+    /// The ceremony is anchored under the Hub bar, so its terminal action must
+    /// name that destination instead of claiming there is a space behind it.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_returns_a_new_browser_login_to_the_synced_hub(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "return-to-hub@example.com";
+        const NAME: &str = "Jack";
+
+        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&owner, &env, EMAIL).await?;
+        let renamed = post_json(
+            &owner,
+            "/api/account/display-name",
+            serde_json::json!({ "name": NAME }),
+        )
+        .await?;
+        assert_eq!(successful_body("name the account", &renamed)["name"], NAME);
+        successful_body(
+            "publish the account name",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+
+        let (second, _second_authenticator) =
+            second_device_with_same_passkey(&env, &owner, &authenticator).await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        await_register_action(&second, "log in with your passkey").await?;
+        click_register_action(&second).await?;
+        await_settled_row(&second, "passkey").await?;
+
+        // Login success is the boundary: the account branch must already be
+        // hydrated, rather than exposing the fresh profile's petname until a
+        // later background sweep happens to catch up.
+        let summary = get_json(&second, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("read the newly linked account", &summary)["displayName"],
+            NAME
+        );
+        await_register_action(&second, "return to hub").await?;
+
+        enter_hub(&second).await?;
+        wait_for_text(&second, "[data-account-label]", NAME).await?;
+        second.enter_default_frame().await?;
+        click_register_action(&second).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while second.find(By::Css("#tonk-register")).await.is_ok() {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "return to hub left the registration ceremony standing"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        enter_hub(&second).await?;
+        assert!(
+            element(&second, "[data-spaces-view]")
+                .await?
+                .is_displayed()
+                .await?,
+            "return to hub must restore the spaces stack without a second click"
+        );
+        assert_eq!(
+            element(&second, "[data-return-spaces]")
+                .await?
+                .attr("aria-current")
+                .await?
+                .as_deref(),
+            Some("page")
+        );
+        wait_for_text(&second, "[data-account-label]", NAME).await?;
+
+        owner.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
     /// The tap-bound assertion hands clone-safe PRF bytes to the worker,
     /// never `CryptoKey` handles. Keep the real virtual-authenticator
     /// ceremony and intercept only the final service-worker post.

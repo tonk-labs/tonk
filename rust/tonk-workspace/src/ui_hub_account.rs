@@ -25,6 +25,9 @@ const NAME_TAG: &str = "ui-hub-account:name";
 /// The registration subscription tag — the "an account is linked" signal.
 const REGISTERED_TAG: &str = "ui-hub-account:registered";
 
+/// Sent into the sealed guest when its top-page account ceremony is gone.
+const REGISTRATION_CLOSED: &str = "tonk:registration-closed";
+
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
         element.set_text_content(Some(value));
@@ -141,6 +144,7 @@ struct UiHubAccount {
     subscriptions: Rc<RefCell<Vec<Subscription>>>,
     name_reset: Rc<RefCell<Option<FrameClosure>>>,
     name_update: Rc<RefCell<Option<FrameClosure>>>,
+    registration_closed: Option<EventClosure>,
 }
 
 impl CustomElement for UiHubAccount {
@@ -218,6 +222,23 @@ impl CustomElement for UiHubAccount {
         *self.name_update.borrow_mut() = Some(name_update);
 
         subscribe_account_signals(this, self.subscriptions.clone());
+
+        // Registration itself lives in the top page. Its focus-return bridge
+        // sends this terminal event into the guest after the cluster is gone,
+        // including when profile facts replaced the original opener while it
+        // was running. Clear the durable ceremony marker and restore the Hub;
+        // a tab switch uses `suspend_linking` instead and deliberately keeps
+        // both intact.
+        let host = this.clone();
+        let registration_closed: EventClosure =
+            Closure::wrap(Box::new(move |_event: Event| finish_linking(&host)));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                REGISTRATION_CLOSED,
+                registration_closed.as_ref().unchecked_ref(),
+            );
+        }
+        self.registration_closed = Some(registration_closed);
 
         // The bar is inside this sealed guest while its account ceremony is
         // in the top page. Keep their shared viewport anchor live when focus
@@ -489,6 +510,14 @@ impl CustomElement for UiHubAccount {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        }
+        if let Some(registration_closed) = self.registration_closed.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                REGISTRATION_CLOSED,
+                registration_closed.as_ref().unchecked_ref(),
+            );
         }
         if let Some(position_change) = self.position_change.take()
             && let Some(window) = window()
@@ -822,6 +851,36 @@ fn suspend_linking(this: &HtmlElement) {
         let _ = body.set_attribute("data-tonk-hub-tab", "spaces");
     }
     tonk_host::request_registration(&serde_json::json!({ "reason": "suspend" }).to_string());
+    if let Some(trigger) = account_trigger(this) {
+        let _ = trigger.remove_attribute("aria-current");
+    }
+    if let Ok(Some(spaces)) = this.query_selector("[data-return-spaces]") {
+        let _ = spaces.set_attribute("aria-current", "page");
+    }
+    if let Some(root) = this.closest(".hubcol").ok().flatten() {
+        let _ = root.remove_attribute("data-hub-view");
+        if let Ok(Some(stack)) = root.query_selector("[data-spaces-view]")
+            && let Ok(stack) = stack.dyn_into::<HtmlElement>()
+        {
+            stack.set_hidden(false);
+        }
+    }
+}
+
+/// Finish an anchored ceremony and restore the Hub page it replaced.
+///
+/// Unlike [`suspend_linking`], this is terminal: the top-page cluster is
+/// already gone, so retaining `data-tonk-linking` would make every later Hub
+/// render re-enter an account tab that no longer has any content.
+fn finish_linking(this: &HtmlElement) {
+    let _ = this.remove_attribute("data-linking");
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+    {
+        let _ = body.remove_attribute("data-tonk-linking");
+        let _ = body.remove_attribute("data-tonk-hub-tab");
+    }
     if let Some(trigger) = account_trigger(this) {
         let _ = trigger.remove_attribute("aria-current");
     }
@@ -1683,6 +1742,67 @@ mod tests {
                 .get_attribute("disabled")
                 .is_none()
         );
+        hubcol.remove();
+    }
+
+    /// Closing the top-page registration ceremony is a terminal transition,
+    /// not the same thing as temporarily switching to the spaces tab. The
+    /// guest must forget the durable ceremony marker and restore the complete
+    /// Hub in one step; otherwise only the bar remains until `spaces` is
+    /// clicked a second time.
+    #[wasm_bindgen_test]
+    fn it_restores_the_hub_when_the_registration_ceremony_closes() {
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+        let hubcol: HtmlElement = document.create_element("main").unwrap().dyn_into().unwrap();
+        hubcol.set_class_name("hubcol");
+        let host = account_element();
+        let stack: HtmlElement = document
+            .create_element("section")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let _ = stack.set_attribute("data-spaces-view", "");
+        stack.set_inner_html(r#"<button class="snew">create new space</button>"#);
+        hubcol.append_child(&host).unwrap();
+        hubcol.append_child(&stack).unwrap();
+        body.append_child(&hubcol).unwrap();
+
+        super::enter_linking(&host);
+        assert!(
+            stack.hidden(),
+            "the account ceremony replaces the spaces stack"
+        );
+        assert!(body.has_attribute("data-tonk-linking"));
+
+        window()
+            .unwrap()
+            .dispatch_event(&Event::new("tonk:registration-closed").unwrap())
+            .unwrap();
+
+        assert!(
+            !stack.hidden(),
+            "closing registration restores the spaces stack"
+        );
+        assert!(host.get_attribute("data-linking").is_none());
+        assert!(body.get_attribute("data-tonk-linking").is_none());
+        assert!(body.get_attribute("data-tonk-hub-tab").is_none());
+        assert!(
+            host.query_selector("[data-account-trigger]")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-current")
+                .is_none()
+        );
+        assert_eq!(
+            host.query_selector("[data-return-spaces]")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-current")
+                .as_deref(),
+            Some("page")
+        );
+
         hubcol.remove();
     }
 

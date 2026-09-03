@@ -187,7 +187,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     );
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    on_click(&host, DISMISS, return_to_space);
+    on_click(&host, DISMISS, return_to_previous);
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     on_click(&host, DISMISS, close);
     let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
@@ -795,7 +795,7 @@ fn activation_watch_failed(detail: &str) {
         AccountAction::WatchActivation,
         detail,
     ));
-    set_action(RETURN_TO_SPACE, true);
+    set_return_action();
     let problem = user_error::problem_from_diagnostic(AccountAction::WatchActivation, detail);
     ACTIVATION_WATCH.with(|held| {
         if let Some(mut attempt) = held.borrow_mut().take() {
@@ -1229,7 +1229,7 @@ fn submit() {
         .unwrap_or_default();
     match label.trim() {
         COPY_LINK => copy_the_share_link(),
-        RETURN_TO_SPACE => return_to_space(),
+        RETURN_TO_SPACE | RETURN_TO_HUB => return_to_previous(),
         "" => finish_action(),
         _ => run_signup_ceremony(),
     }
@@ -1245,6 +1245,24 @@ const COPY_LINK: &str = "copy share link";
 /// runnable on Enter, the way every step before it is.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const RETURN_TO_SPACE: &str = "return to space";
+
+/// The completion action for a ceremony anchored under the Hub bar.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RETURN_TO_HUB: &str = "return to hub";
+
+/// Offer the destination the ceremony actually replaced.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn set_return_action() {
+    let anchored = host_element().is_some_and(|host| host.has_attribute("data-anchored"));
+    set_action(
+        if anchored {
+            RETURN_TO_HUB
+        } else {
+            RETURN_TO_SPACE
+        },
+        true,
+    );
+}
 
 /// Mint the invite the share was interrupted for, and copy it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1281,7 +1299,7 @@ fn copy_the_share_link() {
                         tonk_analytics::account::AccountOutcome::success(),
                     );
                     set_status("You can use the copied link to invite someone into a space.");
-                    set_action(RETURN_TO_SPACE, true);
+                    set_return_action();
                     focus_action();
                 }
                 Err(error) => {
@@ -2051,7 +2069,7 @@ fn conclude(status: &str) {
             // the ceremony finished and standing, with only the back
             // arrow to leave by.
             set_status(status);
-            set_action(RETURN_TO_SPACE, true);
+            set_return_action();
             focus_action();
         }
     }
@@ -2309,20 +2327,31 @@ const SHARE_RETURN: &str = "tonk-share-return";
 /// [`adopt_stashed_share`] when the linking screen replaced the space page.
 const RETURN_PATH: &str = "data-return-path";
 
-/// Go back to the space the blocked share left, when the ceremony stands
-/// on the linking screen instead of over the space; just close otherwise.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn return_to_space() {
-    let path = web_sys::window()
+/// Return to the surface the ceremony replaced.
+///
+/// A blocked share has an exact space path. An anchored ceremony is a page of
+/// the Hub's account tab, so closing it also returns the route to `/`; on the
+/// Hub itself that navigation is intentionally a no-op and the guest's
+/// terminal close event restores the spaces stack in place.
+fn return_to_previous() {
+    let host = web_sys::window()
         .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|document| document.get_element_by_id(DIALOG_ID));
+    let path = host
+        .as_ref()
         .and_then(|host| host.get_attribute(RETURN_PATH))
         .filter(|path| !path.is_empty());
+    let anchored = host.is_some_and(|host| host.has_attribute("data-anchored"));
     match path {
         Some(path) => {
             if let Some(location) = web_sys::window().map(|window| window.location()) {
                 let _ = location.assign(&path);
             }
+        }
+        None if anchored => {
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
         }
         None => close(),
     }
@@ -2359,7 +2388,7 @@ pub fn describe(payload: &str) {
             move |event: web_sys::KeyboardEvent| {
                 if event.key() == "Escape" {
                     event.prevent_default();
-                    close();
+                    return_to_previous();
                 }
             },
         );
