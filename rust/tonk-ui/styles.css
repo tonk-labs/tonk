@@ -2229,23 +2229,25 @@ ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
 ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
     background: none; border: 0; margin: 0; padding: 0; text-align: right; }
 ui-account-settings .srowd > .cta { flex: none; }
-/* a real input wearing the ceremony email field's coat: no border, no
-   background, no outline — the row it sits in is all the chrome it gets.
-   The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
-   which would otherwise hand a bare input its border back. */
+/* A real input with the chrome's usual field affordance: square,
+   transparent, and underlined. Keep the line bounded to the editable value
+   so it reads as a control rather than as another row divider. The
+   unlayered rules also beat Web Awesome's `@layer wa-native` skin. */
 ui-account-settings .sname-seat {
     flex: 1; min-width: 0;
     display: flex; align-items: center; justify-content: flex-end; }
 ui-account-settings .sname {
     appearance: none; -webkit-appearance: none;
-    background: none; border: 0; outline: none; margin: 0; padding: 0;
+    box-sizing: border-box; background: transparent;
+    border: 0; border-bottom: 1px solid var(--ink); border-radius: 0;
+    outline: none; margin: 0; padding: 0 1px 2px;
     font-family: var(--cond); font-weight: 600; font-size: 13.5px;
-    color: var(--ink); text-align: right;
-    flex: 1; min-width: 6ch; }
-/* The native caret is the focus affordance here; the hub's inset focus ring
-   would box the bare input. There is deliberately no resting block cursor:
-   an unfocused field must read as settled, not as though it is still taking
-   input. */
+    color: var(--ink); caret-color: var(--ink); text-align: right;
+    cursor: text; flex: 0 1 18ch; min-width: 6ch; max-width: 100%; }
+/* The native caret is the active-edit affordance; keep the resting underline
+   stable instead of adding a second ring around it. There is deliberately no
+   resting block cursor: an unfocused field must read as settled, not as
+   though it is still taking input. */
 ui-account-settings .sname:focus-visible { box-shadow: none; }
 /* devices — last seen rides soft beside the remove-access verb */
 ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }

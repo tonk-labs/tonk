@@ -53,6 +53,21 @@ test("account deletion names its confirmation phrase beside a native input", () 
   assert.doesNotMatch(settings, /contenteditable/);
 });
 
+test("the settings display name has visible input affordance", () => {
+  const rule = appStyles.match(/ui-account-settings \.sname \{([\s\S]*?)\}/);
+  assert.ok(rule, "the display-name input must have an authored style rule");
+  assert.match(
+    rule[1],
+    /border-bottom:\s*1px solid var\(--ink\)/,
+    "the editable value must keep the design system's visible field underline",
+  );
+  assert.match(
+    rule[1],
+    /flex:\s*0 1 18ch/,
+    "the underline must read as a bounded input rather than a row divider",
+  );
+});
+
 test("active account fields use a measured two-line row spanning its full width", () => {
   assert.match(
     registration,
