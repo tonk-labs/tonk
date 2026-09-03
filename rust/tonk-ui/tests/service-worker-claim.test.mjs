@@ -244,12 +244,18 @@ class FakeBroadcastChannel {
   close() {}
 }
 
-function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}) {
+function pageHarness({
+  mode,
+  alignmentReload = false,
+  updateFails = false,
+  updatePending = false,
+} = {}) {
   const messages = [];
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
   let updates = 0;
+  let resolveUpdate;
   let resolveReady;
   const incumbent = mode === "cold" ? null : eventTarget({
     state: "activated",
@@ -273,6 +279,9 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
     async update() {
       updates += 1;
       if (updateFails) throw new TypeError("offline");
+      if (updatePending) {
+        await new Promise((resolve) => { resolveUpdate = resolve; });
+      }
     },
   });
   const ready = mode === "cold"
@@ -319,6 +328,7 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
     messages,
     reloads: () => reloads,
     updates: () => updates,
+    releaseUpdate: () => resolveUpdate?.(),
     activateColdWorker() {
       registration.installing = null;
       registration.active = incoming;
@@ -338,7 +348,7 @@ function pageHarness({ mode, alignmentReload = false, updateFails = false } = {}
 }
 
 function multiPageReplacementHarness() {
-  const incumbent = eventTarget({ state: "activated" });
+  const incumbent = eventTarget({ state: "activated", postMessage() {} });
   const incoming = eventTarget({ state: "installing", postMessage() {} });
   const registration = eventTarget({
     active: incumbent,
@@ -486,11 +496,32 @@ test("a cold first install waits for activation, then claims", async () => {
   assert.deepEqual(result.messages.map((message) => message.type), ["claim", "connectivity"]);
 });
 
+test("a controlled page becomes ready while its update continues in the background", async () => {
+  const result = pageHarness({ mode: "warm", updatePending: true });
+  let ready = false;
+  const readiness = result.ready().then(() => { ready = true; });
+  while (result.updates() === 0) await new Promise(setImmediate);
+  await new Promise(setImmediate);
+
+  assert.equal(
+    ready,
+    true,
+    "the current coherent page must not wait for update caching",
+  );
+
+  result.releaseUpdate();
+  await readiness;
+});
+
 test("successor activation replaces the controller and causes one guarded reload", async () => {
   const result = pageHarness({ mode: "warm-update" });
   await new Promise(setImmediate);
   await result.activateWarmWorker();
-  assert.deepEqual(result.messages, []);
+  assert.deepEqual(
+    result.messages.map((message) => message.type),
+    ["connectivity"],
+    "the incumbent page becomes live before its successor finishes",
+  );
   assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
   assert.equal(result.reloads(), 1);
 });

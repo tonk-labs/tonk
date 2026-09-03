@@ -13,14 +13,16 @@ import init, { activate } from "./worker.js";
 //
 // `WORKER_WASM_HASH` is the sha256 prefix of `worker_bg.wasm` as built
 // ALONGSIDE this exact glue. `ASSET_MANIFEST_HASH` is the full sha256 of the
-// publisher-generated UI/guest resource graph. `oninstall` verifies both and
-// every listed asset before making the incoming generation installable.
+// publisher-generated UI/guest resource graph. A first install verifies only
+// its matching worker Wasm before activation; it verifies and publishes the
+// complete offline graph atomically after taking control. Successor workers
+// still complete that graph behind the incumbent before replacing it.
 const BUILD_ID = "dev";
 const WORKER_WASM_HASH = "dev";
 const ASSET_MANIFEST_HASH = "dev";
 // Replaced with the exact publisher-produced resource graph. The dev sentinel
 // preserves Trunk's live-file behavior; a stamped worker serves only members
-// it proved complete during install.
+// it proved complete before publishing an offline generation.
 const ASSET_PATHS = ["dev"];
 const ASSET_PATH_SET = new Set(ASSET_PATHS);
 
@@ -124,6 +126,10 @@ const SHELL_CACHE = `TONK_SHELL_${BUILD_ID}`;
 // Where this worker's own wasm lives. Separate from the shell graph because it
 // is instantiated as bytes rather than returned as an ordinary response.
 const WORKER_CACHE = `TONK_WORKER_${BUILD_ID}`;
+// A first install verifies and pins only the worker's own executable runtime
+// before activation. The complete offline generation is assembled after the
+// page is controlled, then this bootstrap copy is superseded by WORKER_CACHE.
+const RUNTIME_CACHE = `TONK_RUNTIME_${BUILD_ID}`;
 const GENERATION_CACHE = `TONK_GENERATION_${BUILD_ID}`;
 const GENERATION_MARKER_URL = new URL(
     `./.tonk-generation-${BUILD_ID}`,
@@ -136,6 +142,7 @@ const ASSET_MANIFEST_URL = new URL("./asset-manifest.json", self.location.href).
 
 const FINAL_SHELL_CACHE_RE = /^TONK_SHELL_([0-9a-f]{16})$/;
 const FINAL_WORKER_CACHE_RE = /^TONK_WORKER_([0-9a-f]{16})$/;
+const RUNTIME_CACHE_RE = /^TONK_RUNTIME_([0-9a-f]{16})$/;
 const GENERATION_CACHE_RE = /^TONK_GENERATION_([0-9a-f]{16})$/;
 const SHELL_STAGE_CACHE_RE = /^TONK_SHELL_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
 const WORKER_STAGE_CACHE_RE = /^TONK_WORKER_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
@@ -150,6 +157,10 @@ function parseFinalShellGeneration(name) {
 
 function parseFinalWorkerGeneration(name) {
     return parsedBuild(name, FINAL_WORKER_CACHE_RE);
+}
+
+function parseRuntimeGeneration(name) {
+    return parsedBuild(name, RUNTIME_CACHE_RE);
 }
 
 function parseGenerationMarkerCache(name) {
@@ -421,6 +432,7 @@ async function verifiedGenerationResponse(cacheNames, key, expectedHash) {
         try {
             const response = await caches.match(key, { cacheName });
             if (!response) continue;
+            if (expectedHash === "dev") return response;
             const actual = await digestOf(await response.clone().arrayBuffer());
             if (actual.slice(0, expectedHash.length) === expectedHash) {
                 return response;
@@ -430,6 +442,34 @@ async function verifiedGenerationResponse(cacheNames, key, expectedHash) {
         }
     }
     return null;
+}
+
+/// Pin the one generated artifact that must match this service-worker glue
+/// before the worker can safely control a page. Fetch and verify before opening
+/// the cache so a bad deployment cannot leave a new partial runtime behind.
+async function installWorkerRuntime() {
+    if (await verifiedGenerationResponse(
+        [RUNTIME_CACHE],
+        WORKER_WASM_URL,
+        WORKER_WASM_HASH,
+    )) return;
+
+    const names = await caches.keys();
+    const reusable = names.filter(name => {
+        const build = parseFinalWorkerGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const bytes = await fetchVerifiedWorkerWasm(reusable);
+    const runtimeExisted = names.includes(RUNTIME_CACHE);
+    try {
+        const runtime = await caches.open(RUNTIME_CACHE);
+        await runtime.put(WORKER_WASM_URL, new Response(bytes, {
+            headers: { "content-type": "application/wasm" },
+        }));
+    } catch (error) {
+        if (!runtimeExisted) await caches.delete(RUNTIME_CACHE);
+        throw error;
+    }
 }
 
 async function fetchVerifiedAssets(entries, cacheNames = []) {
@@ -635,7 +675,7 @@ async function installGeneration() {
     });
     const [assets, wasmBytes] = await Promise.all([
         fetchVerifiedAssets(entries, reusableShellCaches),
-        fetchVerifiedWorkerWasm(reusableWorkerCaches),
+        fetchVerifiedWorkerWasm([RUNTIME_CACHE, ...reusableWorkerCaches]),
     ]);
 
     const nonce = freshStageNonce();
@@ -695,6 +735,7 @@ async function installGeneration() {
         await Promise.allSettled([
             caches.delete(marker.shellStage),
             caches.delete(marker.workerStage),
+            caches.delete(RUNTIME_CACHE),
         ]);
         await reportInstallProgress("adopted", assets.length, assets.length, true);
     } catch (error) {
@@ -709,6 +750,7 @@ async function installGeneration() {
 function lifecycleCacheBuild(name) {
     return parseFinalShellGeneration(name) ??
         parseFinalWorkerGeneration(name) ??
+        parseRuntimeGeneration(name) ??
         parseGenerationMarkerCache(name) ??
         parseShellStageGeneration(name) ??
         parseWorkerStageGeneration(name);
@@ -738,12 +780,38 @@ async function pruneObsoleteGenerationCaches() {
     });
 }
 
-/// The wasm bytes this worker boots from: the copy precached at
-/// install. If storage pressure evicts that entry, recover only by fetching
-/// with `no-store` and re-verifying against this glue's stamp. The verified
-/// bytes may boot this instance but must not backfill the retained cache.
+let offlineGenerationResolves;
+
+/// Complete offline availability after control without making it a readiness
+/// prerequisite. The shared promise prevents duplicate fills within one worker
+/// lifetime; the durable marker makes later worker instances return cheaply.
+function ensureOfflineGeneration() {
+    if (offlineGenerationResolves == null) {
+        offlineGenerationResolves = (async () => {
+            const marker = await readGenerationMarker();
+            if (marker?.state !== "adopted") await installGeneration();
+            await pruneObsoleteGenerationCaches();
+        })().catch(error => {
+            offlineGenerationResolves = null;
+            log("Offline generation fill failed; it will retry later:", error);
+        });
+    }
+    return offlineGenerationResolves;
+}
+
+function extendOfflineGeneration(event) {
+    if (typeof event.waitUntil !== "function") return;
+    event.waitUntil(ensureOfflineGeneration());
+}
+
+/// The wasm bytes this worker boots from: prefer the complete offline
+/// generation, then the first-install runtime pin. If storage pressure evicts
+/// both entries, recover only by fetching with `no-store` and re-verifying
+/// against this glue's stamp. The verified bytes may boot this instance but
+/// must not backfill the retained cache.
 async function workerWasmModule() {
-    const cached = await caches.match(WORKER_WASM_URL, { cacheName: WORKER_CACHE });
+    const cached = await caches.match(WORKER_WASM_URL, { cacheName: WORKER_CACHE }) ??
+        await caches.match(WORKER_WASM_URL, { cacheName: RUNTIME_CACHE });
     if (cached) return cached.arrayBuffer();
     log("Worker wasm missing from cache — refetching");
     return fetchVerifiedWorkerWasm();
@@ -800,10 +868,15 @@ async function activateWorker() {
 
 self.oninstall = event => {
     event.waitUntil((async () => {
-        // Uncaught by design: a worker becomes installable only after its
-        // provenance-bound UI, lazy, guest, and worker-Wasm graph is complete.
-        // A failed incoming build leaves every retained generation untouched.
-        await installGeneration();
+        // A first page must not wait for the whole offline graph. Pin only the
+        // worker's glue-bound Wasm, then assemble the graph under later
+        // fetch/message lifetimes. An update still fills behind its live
+        // incumbent before takeover, preserving offline-safe replacement.
+        if (self.registration.active == null) {
+            await installWorkerRuntime();
+        } else {
+            await installGeneration();
+        }
         // One-release rollout bridge: pages deployed before this lifecycle
         // protocol never send an `activate` message. A verified successor must
         // therefore activate automatically even when an incumbent exists.
@@ -1307,6 +1380,7 @@ function retireIfSuperseded(event) {
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    if (event.request.mode === "navigate") extendOfflineGeneration(event);
     // A waiting successor means this worker is retiring. Checked on the
     // fetch path because a worker pinned by its own open streams never
     // restarts to run the startup check.
@@ -1409,12 +1483,14 @@ self.onfetch = event => {
 self.onmessage = event => {
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
+        extendOfflineGeneration(event);
         return;
     }
     // Connectivity nudge from the active page on an `online`/`offline`
     // transition. The worker re-reads `navigator.onLine` itself and reconciles;
     // this just wakes it so the overlay updates without waiting for a fetch.
     if (event.data && event.data.type === "connectivity") {
+        extendOfflineGeneration(event);
         event.waitUntil?.(
             (async () => {
                 try {
