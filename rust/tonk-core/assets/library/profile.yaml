@@ -77,6 +77,19 @@ concept!: &space
       the: xyz.tonk.space/provider
       cardinality: one
       as: entity
+    home-address:
+      description: >
+        The sync endpoint this space is served from — the UCAN address
+        `main`'s upstream syncs through. The queryable twin of the
+        `home.address` the space's grants carry in their signed meta,
+        which rides inside the delegation envelope and cannot be
+        queried. Written wherever the mount configuration is mirrored
+        into the directory: attaching an upstream, creating with a
+        remote, and mounting a joined space. Absent for a local-only
+        space.
+      the: xyz.tonk.space/home-address
+      cardinality: one
+      as: text
 
 # The Add Space command. Asserted by the Hub's two create forms (the bar's
 # `new space` rung and the stack's ghost) and by the FAB's `new` row; the

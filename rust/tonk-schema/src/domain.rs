@@ -113,6 +113,16 @@ pub mod space {
     #[cardinality(one)]
     pub struct FoundedAt(pub u64);
 
+    /// The sync endpoint this space is served from — the UCAN address
+    /// `main`'s upstream syncs through. The queryable twin of the
+    /// `home.address` the space's grants carry in their signed meta,
+    /// which rides inside the delegation envelope and cannot be
+    /// queried. Absent for a local-only space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct HomeAddress(pub String);
+
     /// The profile that founded the space.
     ///
     /// The account is already implied — the directory belongs to it —
@@ -1182,11 +1192,10 @@ pub mod authorization {
     #[domain("xyz.tonk.authorization")]
     pub struct Proof(pub String);
 
-    /// The UCAN access-service endpoint for sync — the `&remote=` parameter
-    /// suffix. Never empty: `run_invite` refuses to mint an invite (and so
-    /// never asserts this) for a repository with no shareable remote, since
-    /// one that carried no remote would strand its recipient in a space that
-    /// can never fill.
+    /// Legacy sync-endpoint URL suffix (`&remote=…`). Empty for invites
+    /// minted since the endpoint moved into the delegation chain's signed
+    /// `home.address` meta; the field stays because the seeded
+    /// `tonk:authorization` concept requires it.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.authorization")]
     pub struct Remote(pub String);

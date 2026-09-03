@@ -52,6 +52,9 @@ pub struct CustomerState {
     pub status: Option<CustomerStatus>,
     /// The email this device enrolled with, when it did.
     pub email: Option<String>,
+    /// The provider serving this account, from the registration fact on
+    /// profile main; absent until enrollment records it.
+    pub provider: Option<String>,
 }
 
 /// POST `/api/customer/enroll` → enroll this profile's account as a
@@ -388,10 +391,14 @@ pub async fn get_state(
         Err(HttpError::Upstream(failure)) if failure.status == 404 => None,
         Err(error) => return Err(error.into()),
     };
+    // Read after the probe: the probe is where a device that never
+    // enrolled first records the provider, so this read sees it.
+    let provider = provider_address(&state).await;
     Ok(Json(CustomerState {
         customer: root.to_string(),
         status,
         email: record.map(|record| record.email),
+        provider,
     }))
 }
 

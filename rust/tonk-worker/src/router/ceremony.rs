@@ -311,7 +311,16 @@ async fn authorize_device_inner(
         .parse()
         .map_err(|error| format!("the device DID is invalid: {error:?}"))?;
     let origin = super::customer::service_origin().map_err(|error| error.to_string())?;
-    let remote = format!("{}ucan/", origin);
+    // The sync endpoint the grant's signed `meta` names: the provider
+    // the account registered with, so every attach path hands out the
+    // one recorded address. Only an unattached profile falls back to
+    // the deployment's own endpoint.
+    let remote = {
+        let tonk = state.read().await;
+        super::account::provider(&tonk)
+            .await
+            .unwrap_or_else(|| format!("{}ucan/", origin))
+    };
     let authorized = tonk_identity::ceremony::authorize_device(root, audience, &remote)
         .await
         .map_err(|error| format!("the device grant did not sign: {error:#}"))?;
@@ -337,11 +346,12 @@ async fn authorize_device_inner(
         .to_owned();
     let payload = serde_json::json!({
         "delegationHex": authorized.delegation_hex,
+        // The grant's signed meta is the authoritative address; this
+        // field is the carrier for CLIs from before the meta rode the
+        // delegation, whose schema requires it.
         "remote": remote,
-        "descriptorHex": authorized.descriptor_hex,
         "credentialId": authorized.root_did,
         "attachmentId": attachment_id,
-        "serviceUrl": remote,
     })
     .to_string();
     let encoded = {

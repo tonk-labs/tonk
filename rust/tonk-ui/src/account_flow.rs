@@ -1904,17 +1904,6 @@ mod tests {
         link: CliOutput,
     }
 
-    /// Where the CLI learns which account service the link belongs to.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum AccountService {
-        /// Named on the command line, as staging and local development do.
-        Named,
-        /// Left to the ceremony page. The hidden flag then keeps its
-        /// production default, so anything matched against it instead of
-        /// against what the page delivered names the wrong deployment.
-        FromThePage,
-    }
-
     const LINK_ERROR_DIAGNOSTIC: &str = "tonk:test:link-error";
 
     /// Preserve the account panel's exact LinkCli diagnostic across the
@@ -1977,15 +1966,6 @@ mod tests {
         env: &TestEnvironment,
         register_first: bool,
     ) -> Result<LinkedCli> {
-        link_cli_using(driver, env, register_first, AccountService::Named).await
-    }
-
-    async fn link_cli_using(
-        driver: &WebDriver,
-        env: &TestEnvironment,
-        register_first: bool,
-        service: AccountService,
-    ) -> Result<LinkedCli> {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command_in(env, &profile);
         command.args([
@@ -1997,9 +1977,6 @@ mod tests {
             "--via",
             env.tonk_web.join("settings/link")?.as_str(),
         ]);
-        if service == AccountService::Named {
-            command.args(["--service-url", env.access_service.as_str()]);
-        }
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2120,17 +2097,7 @@ mod tests {
         let output = tokio::time::timeout(
             Duration::from_secs(120),
             tonk_command_in(env, profile)
-                .args([
-                    "account",
-                    "devices",
-                    // The flag is a consistency guard against the account's
-                    // RECORDED provider, which the approving page named:
-                    // the page-origin endpoint, not the direct address the
-                    // harness spawned the service on.
-                    "--service-url",
-                    env.tonk_web.join("ucan")?.as_str(),
-                    "--json",
-                ])
+                .args(["account", "devices", "--json"])
                 .env("TONK_TRACE", "1")
                 .env(
                     "RUST_LOG",
@@ -5053,11 +5020,11 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        // The approving page names the service its deployment uses, and
-        // the CLI records that answer over its own `--service-url` guess
-        // — so the record is the page-origin endpoint Caddy proxies, not
-        // the direct address the harness spawned the service on.
-        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
+        // The approving page names the sync endpoint its deployment
+        // registered — so the record is the page-origin endpoint Caddy
+        // proxies, not the direct address the harness spawned the
+        // service on.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan/")?);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
@@ -5119,19 +5086,17 @@ mod tests {
         Ok(())
     }
 
-    /// Linking without naming the account service records the deployment
-    /// the ceremony actually ran on.
+    /// Linking records the deployment the ceremony actually ran on.
     ///
-    /// The page delivers its own service URL and the CLI attaches to that,
-    /// so the endpoints it discovers must be matched against the same
-    /// value. Matched against the flag instead, every ceremony outside
-    /// production disagrees with its own deployment, because the flag is
-    /// hidden and defaults to production.
+    /// The CLI is never told the account service; the page delivers the
+    /// registered sync endpoint in the grant, and the CLI attaches to
+    /// that. The endpoints it discovers must therefore match the
+    /// deployment the ceremony ran on, not any harness-side address.
     #[dialog_common::test]
     async fn it_links_without_being_told_the_account_service(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
-        let linked = link_cli_using(&driver, &env, false, AccountService::FromThePage).await?;
+        let linked = link_cli(&driver, &env).await?;
 
         let status = run_cli(
             &env,
@@ -5144,9 +5109,9 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        // Same page-named record as the flagged variant above: the
-        // deployment's own endpoint, not the harness's direct address.
-        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
+        // The page-named record: the deployment's own sync endpoint, not
+        // the harness's direct address.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan/")?);
 
         // The endpoints are what `space new` and `space link` need; the
         // registry is where they are read from, and status does not print
@@ -5285,16 +5250,12 @@ mod tests {
         assert_eq!(field, "authorize", "approving must deliver a grant");
 
         // What arrived is what the CLI decodes: base64 over a payload
-        // carrying the delegation, descriptor, exact service attachment, and
-        // provider needed for a crash-safe CLI activation.
+        // carrying the delegation (whose signed meta names the sync
+        // endpoint), the fallback remote for older CLIs, and the exact
+        // service attachment needed for a crash-safe CLI activation.
         let decoded = base64::engine::general_purpose::STANDARD.decode(&value)?;
         let payload: serde_json::Value = serde_json::from_slice(&decoded)?;
-        for field in [
-            "delegationHex",
-            "descriptorHex",
-            "attachmentId",
-            "serviceUrl",
-        ] {
+        for field in ["delegationHex", "remote", "attachmentId"] {
             assert!(
                 payload
                     .get(field)
@@ -5303,6 +5264,10 @@ mod tests {
                 "the authorization must carry {field}: {payload}"
             );
         }
+        // A browser left running keeps writing its profile while the
+        // workspace is being removed — the "Directory not empty"
+        // teardown race every other test avoids by quitting.
+        driver.quit().await?;
         Ok(())
     }
 
@@ -5334,6 +5299,9 @@ mod tests {
             field, "deny",
             "cancelling must report a denial, not leave the CLI waiting"
         );
+        // See the authorize variant: an unquit browser races workspace
+        // removal with its profile writes.
+        driver.quit().await?;
         Ok(())
     }
 
