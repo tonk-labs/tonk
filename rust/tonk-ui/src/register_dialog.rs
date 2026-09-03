@@ -143,14 +143,6 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::account_observability::record_instant_success(
-        AccountAction::OpenRegistration,
-        tonk_analytics::account::Surface::RegistrationDialog,
-        tonk_analytics::account::Trigger::User,
-        tonk_analytics::account::AccountState::Unknown,
-        tonk_analytics::account::Stage::Input,
-    );
     open_with_return(None);
 }
 
@@ -187,6 +179,15 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::account_observability::record_instant_success(
+        AccountAction::OpenRegistration,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Unknown,
+        tonk_analytics::account::Stage::Input,
+    );
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, DISMISS, return_to_space);
