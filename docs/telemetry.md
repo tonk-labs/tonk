@@ -38,7 +38,7 @@ before a profile exists report as `tonk:anonymous`.
 | `sheet_activated` | none |
 | `panic` | `type` (constant `wasm_panic`), repository-relative `location`, and a fingerprint derived only from those static values; the panic message stays in the local console |
 | `account_event` | The same closed account journey schema emitted by the CLI. |
-| `visit` | `schema_version`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
+| `visit` | `schema_version=2`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `source_platform` (the closed list below), `source_detection` (`url_parameter` / `utm` / `referrer` / `direct`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
 | `account_created` | `schema_version`; fired after account creation, configured enrollment, and a best-effort refresh of the hashed profile identity, even though the account journey then waits for email activation |
 | `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
 | `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
@@ -46,16 +46,32 @@ before a profile exists report as `tonk:anonymous`.
 `visit` is captured before the other web events and its reviewed attribution
 properties are registered for the current in-memory PostHog session. That puts
 the same `channel`, `attribution_source`, `entry_type`, `entry_route`, and
-optional `entry_space_id` on subsequent account, space, and sharing events.
-PostHog supplies the event timestamp and session ID. Tonk does not duplicate
-them as custom properties.
+optional `entry_space_id`, plus `source_platform` and `source_detection`, on
+subsequent account, space, and sharing events. PostHog supplies the event
+timestamp and session ID. Tonk does not duplicate them as custom properties.
 
 Campaign links use `tonk_channel=outreach`, `tonk_channel=reshare`, or
 `tonk_channel=clearnet`. Equivalent reviewed UTM values are accepted. Without
 an explicit campaign value, a shared-space or join route is classified as an
 organic re-share and the Tonk network shell as clearnet discovery. Referrers
-are reduced to the `referrer` attribution-source class; their domains and paths
-are never captured.
+are reduced locally; their domains and paths are never captured.
+
+Source-platform links use `tonk_source=email`, `search`, `x`, `linkedin`,
+`instagram`, `facebook`, `reddit`, `discord`, `slack`, `telegram`, `whatsapp`,
+`bluesky`, `mastodon`, `github`, `product_hunt`, or `hacker_news`. Equivalent
+reviewed `utm_source` values are accepted. Without a source parameter, Tonk
+classifies the same allowlist from the external document referrer. Everything
+else becomes `other`; no external source becomes `direct`. `source_detection`
+records which safe input won, never its raw value.
+
+Every Tonk-generated space or invite referral link carries
+`tonk_channel=reshare` and `tonk_space=<16 hex characters>`. The space token is
+the same local SHA-256-derived identifier used by `space_conversion` and
+`space_shared`, so a `/join` visit can be attributed without putting a space
+DID or name in the invite query or event. A visible `/space/{key}` route is
+hashed locally and wins over a query token. Short-link redirects forward only
+public campaign/source tags added to the `@/...` URL; they do not accept
+overrides for the stored invite capability or space token.
 
 ### Account journey schema
 

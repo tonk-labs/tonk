@@ -55,6 +55,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 tonk-account = { workspace = true }
+tonk-analytics = { workspace = true }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }

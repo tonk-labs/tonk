@@ -3,11 +3,12 @@
 //! - `PUT /@[?ttl=<seconds>]` — validate and store a path + query
 //!   target under its blake3 hash with an expiry stamp; respond with
 //!   the base58 hash.
-//! - `GET /@/{hash}` — permanent redirect (301) whose `Location` is
-//!   the stored target, verbatim and relative, so the browser resolves
-//!   it against this origin and carries the original URL's `#fragment`
-//!   over per RFC 7231 fragment inheritance. 404 for missing or
-//!   logically expired shortcuts.
+//! - `GET /@/{hash}` — permanent redirect (301) whose `Location` is the stored
+//!   relative target. Allowlisted public campaign/source query fields on the
+//!   short URL are merged into it; authority and space attribution cannot be
+//!   overridden. The browser resolves it against this origin and carries the
+//!   original URL's `#fragment` over per RFC 7231 fragment inheritance. 404
+//!   for missing or logically expired shortcuts.
 //!
 //! Both are permissionless: the stored half of a link is non-secret by
 //! construction (an invite's seed rides the fragment, which never
@@ -15,7 +16,8 @@
 //! origin. See [`crate::shortcut`] for the validation rules.
 
 use crate::shortcut::{
-    EXPIRES_METADATA_KEY, Shortcut, object_key_for, requested_ttl, unavailable_invite_html,
+    EXPIRES_METADATA_KEY, Shortcut, object_key_for, referral_redirect_target, requested_ttl,
+    unavailable_invite_html,
 };
 use std::collections::HashMap;
 use worker::*;
@@ -95,8 +97,9 @@ async fn put_inner(
 }
 
 /// GET /@/{hash} → permanent redirect to the stored target
-pub async fn handle_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let response = match get_inner(&ctx).await {
+pub async fn handle_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let query = req.url()?.query().map(str::to_owned);
+    let response = match get_inner(&ctx, query.as_deref()).await {
         Ok(response) => response,
         Err((404, _)) => unavailable_response()?,
         Err((status, message)) => Response::error(message, status)?,
@@ -112,7 +115,10 @@ fn unavailable_response() -> Result<Response> {
     Ok(response.with_headers(headers))
 }
 
-async fn get_inner(ctx: &RouteContext<()>) -> std::result::Result<Response, (u16, String)> {
+async fn get_inner(
+    ctx: &RouteContext<()>,
+    request_query: Option<&str>,
+) -> std::result::Result<Response, (u16, String)> {
     let hash = ctx
         .param("hash")
         .ok_or_else(|| (400, "Missing hash".to_string()))?;
@@ -147,6 +153,7 @@ async fn get_inner(ctx: &RouteContext<()>) -> std::result::Result<Response, (u16
     };
     let target = String::from_utf8(bytes)
         .map_err(|_| (500, "Stored shortcut is not valid UTF-8".to_string()))?;
+    let target = referral_redirect_target(&target, request_query);
 
     // `Location` stays relative on purpose (`Response::redirect`
     // demands an absolute URL, so the header is set by hand): the

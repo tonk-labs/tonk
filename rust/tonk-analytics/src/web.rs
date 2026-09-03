@@ -273,6 +273,8 @@ export function read_launch_posthog_fixture() {
         assert_eq!(fixture["events"][3]["event"], crate::event::SPACE_SHARED);
         assert_eq!(fixture["registration"]["channel"], "warm_outreach");
         assert_eq!(fixture["registration"]["entry_type"], "shared_space");
+        assert_eq!(fixture["registration"]["source_platform"], "other");
+        assert_eq!(fixture["registration"]["source_detection"], "referrer");
 
         let outbound = fixture.to_string();
         for sentinel in [raw_space, "PrivateWiki", "private.example", "tonk_channel"] {
