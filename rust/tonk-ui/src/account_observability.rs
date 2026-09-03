@@ -66,6 +66,60 @@ pub(crate) fn take_settle_pending() -> bool {
         })
 }
 
+/// Consume a pending settle on page load. A ceremony parked on the
+/// emailed link is often navigated away — the activation link opens in
+/// this very tab — so the dialog's own convergence never runs; the
+/// marker rides sessionStorage across the detour, and this probe
+/// finishes the journey the way the account dashboard's load once did.
+/// The `/api/customer` read is the probe that also REPLAYS the deferred
+/// account work, so polling it is what settles the account, not merely
+/// what observes it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn spawn_settle_probe() {
+    if !take_settle_pending() {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut attempt = WebAccountAttempt::start(
+            AccountAction::SettleAccount,
+            Surface::Settings,
+            Trigger::Recovery,
+            AccountState::PendingActivation,
+        );
+        for _ in 0..45 {
+            let active = crate::api::customer_state()
+                .await
+                .ok()
+                .and_then(|state| {
+                    state
+                        .get("status")
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                })
+                .is_some_and(|status| status == "Active");
+            if active {
+                attempt.finish(Stage::Complete, AccountOutcome::success());
+                return;
+            }
+            settle_wait_ms(2000).await;
+        }
+        attempt.finish(
+            Stage::AccountSync,
+            AccountOutcome::retryable(FailureKind::Timeout),
+        );
+    });
+}
+
+/// Sleep, for a poll that has no fact to wait on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn settle_wait_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 trait Recorder {
     fn capture(&self, event: AccountEvent);
 }

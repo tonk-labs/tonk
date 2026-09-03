@@ -104,6 +104,10 @@ async fn main() {
         return;
     }
     mount_root();
+    // A signup that parked on the emailed link marks a pending settle;
+    // if the activation happened in this tab (the link navigates it),
+    // the ceremony is gone and this load is where the journey finishes.
+    tonk_ui::spawn_settle_probe();
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

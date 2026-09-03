@@ -10,6 +10,8 @@ pub mod activate;
 pub mod ceremony;
 
 mod account_observability;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use account_observability::spawn_settle_probe;
 
 /// The account panel's registration row, kept live by a subscription to
 /// the fact rather than a fetch, so an activation performed elsewhere
