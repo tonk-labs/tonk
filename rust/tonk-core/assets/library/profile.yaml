@@ -90,6 +90,14 @@ concept!: &space
       the: xyz.tonk.space/home-address
       cardinality: one
       as: text
+    founded-at:
+      description: >
+        When this account created the space. Its presence distinguishes a
+        local-only space made here from a space joined through somebody
+        else's invite; hosted ownership is still decided by `provider`.
+      the: xyz.tonk.space/founded-at
+      cardinality: one
+      as: unsigned-integer
 
 # The Add Space command. Asserted by the Hub's two create forms (the bar's
 # `new space` rung and the stack's ghost) and by the FAB's `new` row; the
@@ -120,12 +128,12 @@ command!: &space/create
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
-# The Remove Space command. Submitting a Hub row's delete-confirm form
-# asserts this transient; the worker's `RemoveSpaceHandler` retracts the
-# replica record from this branch, evicts the space from the reactor
-# (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced space can be rejoined via an invite link; a
-# local-only space is gone for good, which the confirm copy states.
+# The device-local Remove Space command. A joined-space leave or local-only
+# delete submits this transient; the worker's `RemoveSpaceHandler` retracts
+# the replica record from this branch, evicts the space from the reactor
+# (stopping background sync), and deletes its local storage. An owned hosted
+# space does NOT submit it: `<ui-space-remove>` routes that verb through the
+# reviewed account-space deletion flow instead.
 # `subject` reads the form's `data-remove` attribute. Deliberately NOT
 # `data-subject`: `tonk/rename-repository` transients already carry
 # `dataset/subject`, and a remove command matched on that attribute
@@ -203,7 +211,7 @@ view!:
           <div class="sempty">no spaces yet</div>
           <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
                link, so the verbs and the confirm cluster travel with the row
-               while staying outside it: reaching for remove never navigates.
+               while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
           <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
@@ -213,19 +221,20 @@ view!:
                  and a <label for> inside one navigates rather than opening the
                  confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                  so the reveal still follows the row and not just the verbs. -->
-            <ui-space-remove>
+            <ui-space-remove data-space-subject={subject} data-space-name={name}
+              data-space-provider={provider} data-space-founded={founded-at}>
               <span class="verbs">
                 <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
-                <button class="verb-remove" type="button" data-space-remove-open>remove</button>
+                <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
               </span>
-              <tonk-dialog data-space-remove-dialog heading="confirm space removal">
+              <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
                 <form id="remove-{subject}" class="remove-form" onsubmit=space/remove data-remove={subject}>
-                  Remove {name} from this device? A synced space can be rejoined with
-                  a share link; a local-only space is gone for good. Removing it
-                  does not delete other members' copies.
+                  Leave {name}? This removes the space and its local data from this
+                  device. You'll need another invite link to join again. Other
+                  members keep access.
                 </form>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}">remove space</button>
+                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
               </tonk-dialog>
             </ui-space-remove>
           </div>

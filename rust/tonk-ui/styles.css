@@ -3560,6 +3560,7 @@ ui-space-remove { display:contents; }
   text-transform:lowercase; cursor:pointer; }
 .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
   text-decoration:underline; text-underline-offset:3px; }
+.verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
 /* creation is the stack's final, and only, solid ink row */
 .snew-form { display:block; }
 .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;

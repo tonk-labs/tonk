@@ -169,22 +169,28 @@ fn it_defaults_the_space_alias_to_blank_in_core() {
 }
 
 #[test]
-fn it_describes_space_removal_as_device_local() {
+fn it_distinguishes_leaving_from_deleting_a_space() {
     let rendered_words = PROFILE_LIBRARY
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        rendered_words.contains("Remove {name} from this device?"),
-        "the Hub confirmation must name the device-local removal boundary",
+        rendered_words
+            .contains("Leave {name}? This removes the space and its local data from this device."),
+        "the Hub must call a joined-space removal leaving",
     );
     assert!(
-        rendered_words.contains("Removing it does not delete other members' copies."),
-        "the Hub confirmation must preserve independent replicas",
+        rendered_words
+            .contains("You'll need another invite link to join again. Other members keep access."),
+        "the leave confirmation must explain how access is recovered and who keeps it",
     );
     assert!(
-        !rendered_words.contains("from this account, on every"),
-        "the Hub must not imply that local removal erases account or peer copies",
+        rendered_words.contains("data-space-provider={provider}"),
+        "the Hub must expose hosted ownership to the action component",
+    );
+    assert!(
+        rendered_words.contains("data-space-founded={founded-at}"),
+        "the Hub must distinguish a local-only creation from a joined space",
     );
 }
 

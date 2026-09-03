@@ -63,9 +63,9 @@
 <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
   <div class="confirm-body">
     <span data-delete-scope>loading what this deletes&hellip;</span>
-    are you sure you want to delete all data associated with this account?
-    this action is permanent. there is no option to recover your data.
-    your passkey will be asked for.
+    <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
+    <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
+    <span data-delete-passkey>your passkey will be asked for.</span>
     <div class="armrow">
       <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
       <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"

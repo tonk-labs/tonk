@@ -34,7 +34,6 @@ const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
 const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
-const DELETE_SPACE_CONFIRMATION: &str = "delete this space";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -487,17 +486,14 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 /// spaces this account provides, and how many it merely joined.
 fn open_delete_dialog(this: &HtmlElement) {
     let requested = requested_space_deletion();
-    let confirmation = if requested.is_some() {
-        DELETE_SPACE_CONFIRMATION
-    } else {
-        DELETE_ACCOUNT_CONFIRMATION
-    };
+    let deleting_space = requested.is_some();
+    let confirmation = DELETE_ACCOUNT_CONFIRMATION;
     set_text(this, "[data-delete-confirm-label]", confirmation);
     set_text(
         this,
         "[data-delete-submit-label]",
-        if requested.is_some() {
-            "delete this space"
+        if deleting_space {
+            "delete space permanently"
         } else {
             "delete account"
         },
@@ -506,6 +502,43 @@ fn open_delete_dialog(this: &HtmlElement) {
         this,
         "[data-delete-scope]",
         "loading what this deletes\u{2026}",
+    );
+    if let Ok(Some(dialog)) = this.query_selector("[data-delete-account-dialog]") {
+        let _ = dialog.set_attribute(
+            "heading",
+            if deleting_space {
+                "confirm permanent space deletion"
+            } else {
+                "confirm account deletion"
+            },
+        );
+    }
+    set_text(
+        this,
+        "[data-delete-question]",
+        if deleting_space {
+            "are you sure you want to delete this space for every member?"
+        } else {
+            "are you sure you want to delete all data associated with this account?"
+        },
+    );
+    set_text(
+        this,
+        "[data-delete-consequence]",
+        if deleting_space {
+            "this action is permanent. Tonk cannot erase copies already saved on other devices, but they will no longer be able to sync this space with Tonk."
+        } else {
+            "this action is permanent. there is no option to recover your data."
+        },
+    );
+    set_text(
+        this,
+        "[data-delete-passkey]",
+        if deleting_space {
+            ""
+        } else {
+            "your passkey will be asked for."
+        },
     );
     if let Ok(Some(field)) = this.query_selector("[data-delete-confirm]")
         && let Ok(field) = field.dyn_into::<HtmlInputElement>()
@@ -570,12 +603,18 @@ fn open_delete_dialog(this: &HtmlElement) {
         } else {
             format!(": {}", names.join(", "))
         };
+        let confirmation = if requested.is_some() {
+            format!("delete {}", names[0])
+        } else {
+            DELETE_ACCOUNT_CONFIRMATION.to_owned()
+        };
+        set_text(&host, "[data-delete-confirm-label]", &confirmation);
         set_text(
             &host,
             "[data-delete-scope]",
             &if requested.is_some() {
                 format!(
-                    "this deletes the selected owned space{listed} from tonk services. your account and every other space remain."
+                    "this permanently deletes the selected owned space{listed} from Tonk and makes it unavailable to every member. your account and every other space remain."
                 )
             } else {
                 format!(
@@ -587,7 +626,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             },
         );
         let _ = host.set_attribute("data-delete-account-email", &plan.email);
-        let _ = host.set_attribute("data-delete-confirm-expected", confirmation);
+        let _ = host.set_attribute("data-delete-confirm-expected", &confirmation);
         arm_delete(&host);
     });
 }
@@ -1348,6 +1387,50 @@ mod tests {
         );
         assert!(native.open(), "arming never closes the review");
         host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_gives_owned_space_deletion_its_own_consequences() {
+        set_context(
+            "/settings",
+            "?delete-space=did%3Akey%3AzOwned",
+            "#delete-account",
+        );
+        let host = mount();
+        let dialog = host
+            .query_selector("[data-delete-account-dialog]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dialog.get_attribute("heading").as_deref(),
+            Some("confirm permanent space deletion")
+        );
+        assert!(
+            host.query_selector("[data-delete-question]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default()
+                .contains("for every member")
+        );
+        assert!(
+            host.query_selector("[data-delete-consequence]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default()
+                .contains("cannot erase copies already saved")
+        );
+        assert_eq!(
+            host.query_selector("[data-delete-passkey]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("")
+        );
+        host.remove();
+        clear_context();
     }
 
     #[wasm_bindgen_test]
