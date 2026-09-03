@@ -68,6 +68,137 @@ mod tests {
         Ok(())
     }
 
+    /// Read the race probe and the harness's always-on error capture from the
+    /// driver's current browsing context.
+    async fn claimed_subscription_probe(driver: &WebDriver) -> Result<serde_json::Value> {
+        let value = driver
+            .execute(
+                r#"return {
+                    attempts: globalThis.__tonkClaimedSubscriptionRace?.attempts || {},
+                    errors: globalThis.__tonkTestErrors || [],
+                };"#,
+                Vec::new(),
+            )
+            .await?;
+        Ok(value.json().clone())
+    }
+
+    /// Claim the next `view` subscription on the real root display without
+    /// supplying a handle, then select the `race` dictionary facet. Attaching
+    /// directly to the event target makes this independent of the sealed
+    /// srcdoc's document-rewrite lifecycle while still exercising the real
+    /// composed event, host listener, retry helper, and renderer.
+    async fn arm_claimed_view_race(driver: &WebDriver) -> Result<()> {
+        let result = driver
+            .execute(
+                r#"
+                const display = document.querySelector("[data-e2e-restored]")
+                    ?.closest("tonk-display");
+                if (!display) return { error: "no root display" };
+                const attempts = {};
+                globalThis.__tonkClaimedSubscriptionRace = { attempts };
+                globalThis.__tonkClaimedSubscriptionDisplay = display;
+                display.addEventListener("tonk-subscribe", event => {
+                    if (event.detail?.tag !== "view") return;
+                    attempts.view = (attempts.view || 0) + 1;
+                    if (attempts.view !== 1) return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                }, true);
+                display.setAttribute("view", "race");
+                return { ok: true };
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        anyhow::ensure!(
+            result.json()["ok"] == true,
+            "could not arm the real display race: {}",
+            result.json(),
+        );
+        Ok(())
+    }
+
+    async fn await_recovered_view_text(driver: &WebDriver, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let value = driver
+                .execute(
+                    r#"
+                    const display = globalThis.__tonkClaimedSubscriptionDisplay;
+                    const marker = document.querySelector("[data-e2e-race]");
+                    return {
+                        text: marker?.textContent?.trim() || null,
+                        state: display?.getAttribute("data-state") || null,
+                        facet: display?.getAttribute("data-view-facet") || null,
+                        attempts: globalThis.__tonkClaimedSubscriptionRace?.attempts || {},
+                        errors: globalThis.__tonkTestErrors || [],
+                        rendered: display?.textContent?.trim().slice(0, 500) || null,
+                    };
+                    "#,
+                    Vec::new(),
+                )
+                .await?;
+            let last = value.json().clone();
+            if last["text"].as_str() == Some(expected) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the recovered view never rendered {expected:?}; last observation: {last}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn await_settled_sync_status(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let value = driver
+                .execute(
+                    r#"return document.querySelector("tonk-fab")
+                        ?.getAttribute("data-sync-status") || null;"#,
+                    Vec::new(),
+                )
+                .await?;
+            if let Some(status) = value.json().as_str()
+                && matches!(
+                    status,
+                    "sync:idle"
+                        | "sync:local"
+                        | "sync:paused"
+                        | "sync:revoked"
+                        | "sync:conflict"
+                        | "sync:unavailable"
+                        | "sync:offline"
+                )
+            {
+                return Ok(status.to_owned());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let probe = claimed_subscription_probe(driver).await?;
+                return Err(anyhow!(
+                    "the FAB sync status remained pending or unknown; last status={} probe={probe}",
+                    value.json(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn assert_no_subscription_boot_error(context: &str, probe: &serde_json::Value) {
+        let errors = probe["errors"].as_array().cloned().unwrap_or_default();
+        assert!(
+            errors.iter().all(|entry| {
+                let message = entry.as_str().unwrap_or_default();
+                !message.contains("host did not write detail.subscription")
+                    && !message.contains("closure invoked recursively or after being dropped")
+            }),
+            "{context} logged a terminal subscription boot error: {errors:?}",
+        );
+    }
+
     async fn captured_account_events(driver: &WebDriver) -> Result<Vec<serde_json::Value>> {
         let value = driver
             .execute(
@@ -4287,6 +4418,95 @@ mod tests {
             upstream.is_null(),
             "main must track nothing before activation, got {upstream}",
         );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A host can claim a subscription event before it has a handle to return.
+    /// Render a post-migration dictionary view through both sealed frames,
+    /// then inject that incomplete handshake on the real root display and
+    /// require it to recover and remain live without a reload.
+    #[dialog_common::test]
+    async fn it_recovers_a_claimed_subscription_race_in_a_space(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+
+        let key = create_space(&driver, "Claimed Subscription Recovery").await?;
+        driver.enter_default_frame().await?;
+        let seeded = post_yaml(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            r#"concept!: &e2e/space
+  this: e2e:space
+  description: The disposable browser-test root model.
+  with:
+    subject:
+      description: The repository subject rendered by this root model.
+      the: dialog.replica/subject
+      cardinality: one
+      as: entity
+
+view!:
+  this: e2e:space
+  show:
+    ui: |
+      <main data-e2e-restored>Recovered content v1</main>
+    race: |
+      <main data-e2e-race>Recovered handshake v1</main>
+
+name!:
+  this: id:tonk/space
+  entity: e2e:space
+"#,
+        )
+        .await?;
+        successful_body("seed claimed-subscription recovery view", &seeded);
+
+        // Exercise a fresh boot of the post-migration root model.
+        goto(&driver, env.tonk_web.join(&format!("space/{key}"))?).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        enter_guest(&driver).await?;
+        await_settled_sync_status(&driver).await?;
+        let shell_probe = claimed_subscription_probe(&driver).await?;
+        assert_no_subscription_boot_error("space shell", &shell_probe);
+
+        enter_space_view(&driver).await?;
+        wait_for_text(&driver, "[data-e2e-restored]", "Recovered content v1").await?;
+        element(&driver, "tonk-display[data-state=\"ready\"]").await?;
+        arm_claimed_view_race(&driver).await?;
+        await_recovered_view_text(&driver, "Recovered handshake v1").await?;
+        let content_probe = claimed_subscription_probe(&driver).await?;
+        assert!(
+            content_probe["attempts"]["view"]
+                .as_u64()
+                .is_some_and(|attempts| attempts >= 2),
+            "the content display did not retry its consumed view handshake: {content_probe}",
+        );
+        assert_no_subscription_boot_error("space content", &content_probe);
+
+        // Keep the same document and recovered live handle. Re-asserting the
+        // selected dictionary facet must flow through it without reload.
+        driver.enter_default_frame().await?;
+        let updated = post_yaml(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            r#"view!:
+  this: e2e:space
+  show:
+    race: |
+      <main data-e2e-race>Recovered handshake v2</main>
+"#,
+        )
+        .await?;
+        successful_body("update claimed-subscription recovery view", &updated);
+
+        enter_space_view(&driver).await?;
+        await_recovered_view_text(&driver, "Recovered handshake v2").await?;
+        let final_probe = claimed_subscription_probe(&driver).await?;
+        assert_no_subscription_boot_error("updated space content", &final_probe);
 
         driver.quit().await?;
         Ok(())

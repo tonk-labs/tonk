@@ -14,7 +14,7 @@ space whose root model uses a `show: {ui: ...}` dictionary view. Keep the
 branch session in place; this plan does not restore the removed session-swap,
 subscription-rebind, or retained-plan machinery.
 
-**Plan basis:** `ccffaac2755e` on `staging`, inspected 2026-09-02. The affected
+**Plan basis:** `609d42d58` on `staging`, inspected 2026-09-02. The affected
 restored space is `did:key:z6MkgK1sLdYGnRg26r42jtnkZ6X3XnZDsjfiikoTEfeMWNHE`.
 At this revision its CLI branch is synced and `tonk render --space
 tonk-team-restored workspace/sheet` returns the existing artifacts; a browser
@@ -24,16 +24,18 @@ detail.subscription` and the root remains on the empty launchpad. This makes
 subscription establishment—not R2 recovery or stored view migration—the
 remaining boundary.
 
-**Spike result (2026-09-02):** Direction confirmed for the shared subscription
-contract and `tonk-display`. A browser Wasm event test failed before the change
-after one claimed-without-handle dispatch, then passed after the shared helper
-classified that error as a bounded establishment retry. A `tonk-display` test
-now omits the first `view` handle while exercising the real model → dictionary
-view → entity chain; it observes two view attempts, mounts the model-specific
-template, accepts an entity frame, and reaches `data-state="ready"`. The spike
-does not yet move `ui-sync-status` onto the retrying helper, exercise the sealed
-nested-frame browser journey, or verify a deployed build against the restored
-staging space. Those remain Tasks 3 and 4 below.
+**Implementation result (2026-09-03):** The shared subscription contract,
+`tonk-display`, and `ui-sync-status` changes are complete. A browser Wasm event
+test failed before the change after one claimed-without-handle dispatch, then
+passed after the shared helper classified that error as a bounded establishment
+retry. A `tonk-display` test omits the first `view` handle while exercising the
+real model → dictionary view → entity chain; it observes two view attempts,
+mounts the model-specific template, accepts an entity frame, and reaches
+`data-state="ready"`. The real-browser regression creates a disposable space,
+renders its dictionary view through both sealed frames, consumes the first
+`view` handle on the actual root display, observes the retry, and receives a
+live facet update without reloading. The original restored staging space still
+requires a post-deploy check; no test mutates it.
 
 **Constraints:**
 
@@ -98,7 +100,7 @@ staging space. Those remain Tasks 3 and 4 below.
 **Interfaces:**
 
 - Add a private
-  `fn is_retryable_subscribe_establishment_error(error: &ErrorDetail) -> bool`.
+  `fn is_establishment_error(error: &ErrorDetail) -> bool`.
   It returns true only when the message reports either `no host claimed the
   event` or `host did not write detail.subscription`.
 - Keep `subscribe`, `subscribe_with_route`, `subscribe_claimed`, and
@@ -107,25 +109,25 @@ staging space. Those remain Tasks 3 and 4 below.
   attempts, return the last real `ErrorDetail` so diagnostics preserve whether
   the final failure was unclaimed or claimed-without-handle.
 
-- [ ] Add a browser Wasm test that mounts a connected consumer under a fake
+- [x] Add a browser Wasm test that mounts a connected consumer under a fake
   `tonk-subscribe` listener. On dispatch one the listener calls
   `prevent_default()` but omits `detail.subscription`; on dispatch two it
   installs `{ cancel }`. Assert `subscribe_claimed` succeeds, exactly two
   dispatches occurred, and dropping the returned `Subscription` invokes the
   second attempt's cancel function once.
-- [ ] Add pure classifier assertions for both retryable message forms and for
+- [x] Add pure classifier assertions for both retryable message forms and for
   an unrelated network/descriptor message that must remain non-retryable, so a
   wording change cannot silently broaden or remove either boot race from the
   policy.
-- [ ] Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-host)'`; expect the
+- [x] Run
+  `nix develop . -c test:web:debug -E 'package(tonk-host)'`; expect the
   claimed-without-handle test to fail before implementation because only one
   dispatch occurs and the helper returns the generic missing-handle error.
-- [ ] Implement the classifier and use it in
+- [x] Implement the classifier and use it in
   `subscribe_claimed_with_route`. Preserve the current delays—250 ms, 500 ms,
   750 ms, then 1 s capped—and the 12-attempt bound; do not add an unbounded
   loop or retry after a handle has been returned.
-- [ ] Rerun the focused `tonk-host` Wasm command. Expect both retryable races
+- [x] Rerun the focused `tonk-host` Wasm command. Expect both retryable races
   to be classified correctly, the claimed-without-handle fixture to establish
   on its second dispatch, unrelated errors to remain outside the retry policy,
   and cancel to target only the installed handle.
@@ -148,21 +150,21 @@ staging space. Those remain Tasks 3 and 4 below.
 - Production `tonk-display` APIs and lifecycle states remain unchanged; this
   task exercises its existing use of `host_consumer::subscribe_claimed`.
 
-- [ ] Add
+- [x] Add
   `it_recovers_a_dictionary_view_after_a_claimed_subscription_omits_its_handle`.
   Configure the fake host to omit the first `view` handle, auto-deliver the
   model frame, then deliver a `show_rows(..., &[("ui", template)])` frame and
   an entity frame after the retry registers them.
-- [ ] Assert two `view` attempts occurred, the template marker renders with
+- [x] Assert two `view` attempts occurred, the template marker renders with
   the entity value, and `data-state` is `ready` rather than `loading`,
   `default-view`, or `no-entity`. This is the focused reproduction of the
   restored space: the one-shot-compatible data exists, but the first live view
   subscription handshake is incomplete.
-- [ ] Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-display)'`; expect the
+- [x] Run
+  `nix develop . -c test:web:debug -E 'package(tonk-display)'`; expect the
   new test to time out in `loading` before Task 1 because the missing-handle
   error ends the resolve chain.
-- [ ] Complete Task 1, rerun the same command, and expect the regression plus
+- [x] Complete Task 1, rerun the same command, and expect the regression plus
   the existing default-view, no-entity, repeat, and static-sibling tests to
   pass without a production change in `tonk-display`.
 
@@ -187,28 +189,28 @@ staging space. Those remain Tasks 3 and 4 below.
   installed. Otherwise drop the handle immediately so its cancel function
   runs.
 
-- [ ] Expand the Wasm test module with a mounted `ui-sync-status` fixture and a
+- [x] Expand the Wasm test module with a mounted `ui-sync-status` fixture and a
   fake listener that claims the first subscription without a handle, installs
   the second, and sends a `sync:local` reset frame. Assert two attempts occur
   and the element paints `sync--local` instead of remaining
   `sync--syncing`/`sync:pending`.
-- [ ] Add a route-change test: leave attempt one retrying, change `with` from
+- [x] Add a route-change test: leave attempt one retrying, change `with` from
   `main@did:key:zOld` to `main@did:key:zNew`, then allow both attempts to
   settle. Assert only the new route owns a live handle and the old returned
   handle is canceled once.
-- [ ] Add a disconnect test that removes the element during the retry delay and
+- [x] Add a disconnect test that removes the element during the retry delay and
   asserts no late subscription is retained and any late successful handle is
   canceled.
-- [ ] Run
-  `nix develop path:. -c test:web:debug -E 'package(tonk-workspace)'`; expect
+- [x] Run
+  `nix develop . -c test:web:debug -E 'package(tonk-workspace)'`; expect
   the first test to remain pending before implementation and the route-change
   test to expose competing async attempts once `subscribe_claimed` is first
   introduced without the generation guard.
-- [ ] Implement the generation-safe restart and switch to
+- [x] Implement the generation-safe restart and switch to
   `subscribe_claimed`. Log only the final exhausted error; intermediate
   establishment races stay inside the shared helper and must not paint the
   disc offline.
-- [ ] Rerun the focused workspace Wasm command. Expect retry recovery, route
+- [x] Rerun the focused workspace Wasm command. Expect retry recovery, route
   replacement, disconnect cancellation, and the existing modifier-class tests
   to pass.
 
@@ -222,50 +224,45 @@ staging space. Those remain Tasks 3 and 4 below.
 
 **Interfaces:**
 
-- Add test-only `install_claimed_subscription_race_probe(&WebDriver)`. Through
-  `Page.addScriptToEvaluateOnNewDocument`, install an early capture listener in
-  every new document that claims and stops exactly the first
-  `tonk-subscribe` for each of the `view` and `ui-sync-status` tags while
-  deliberately omitting `detail.subscription`. Record per-tag attempt counts
-  on `globalThis` for diagnostics.
-- Add a reusable browser-log reader beside `dump_browser_log`; it uses the
-  existing `/session/{id}/se/log` endpoint and returns entries so the test can
-  reject the final `host did not write detail.subscription` message rather
-  than only printing it on failure.
+- Add test-only `arm_claimed_view_race(&WebDriver)`. It finds the root
+  `tonk-display` that owns the seeded marker, installs a one-shot capture
+  listener on that exact composed-event target, claims the first `view`
+  subscription without a handle, and selects the `race` facet. Record attempt
+  counts and terminal harness errors on `globalThis` for bounded diagnostics.
+- Keep the shell sync assertion observational: the FABB must leave pending,
+  but the deterministic injected race belongs to the content display. A
+  document-global CDP listener is not reliable across the sealed srcdoc
+  document rewrite and can consume a subscription on the wrong display.
 
-- [ ] Add `it_recovers_claimed_subscription_boot_races_in_a_space`. Start with
-  `driver_with_prf`, install the race probe before the first navigation, and
-  create a disposable local space with `create_space`.
-- [ ] Use the existing `post_yaml` helper against
+- [x] Add `it_recovers_a_claimed_subscription_race_in_a_space`. Start with
+  `driver_with_prf` and create a disposable local space with `create_space`.
+- [x] Use the existing `post_yaml` helper against
   `/api/repository/{key}/branch/main/evaluate` to install this minimal root
-  fixture: an `e2e/space` concept with cardinality-one text `title`, a
+  fixture: an `e2e/space` concept with the repository `subject`, a
   `view!` whose `this: e2e/space` has `show: {ui: ...}` containing a stable
   `[data-e2e-restored]` marker, a `name!` that points `id:tonk/space` at
-  `e2e/space`, and an `e2e/space!` instance on the created replica whose title
-  is `Recovered content v1`.
-- [ ] Navigate afresh to `/space/{key}` so all top, shell-guest, and content-
-  guest documents boot under the deterministic race. Use
+  `e2e/space`, with separate `ui` and `race` templates carrying stable test
+  markers.
+- [x] Navigate afresh to `/space/{key}` so all top, shell-guest, and content-
+  guest documents perform a fresh boot. Use
   `enter_space_view`—not `iframe.contentDocument` or `/json` target counting—
   and assert the marker renders `Recovered content v1` with the enclosing
   `tonk-display[data-state="ready"]`. In the first guest, assert the FABB
-  reaches `data-sync-status="sync:local"` rather than retaining the pulsing
-  pending disc.
-- [ ] Run
-  `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_recovers_claimed_subscription_boot_races_in_a_space -- --test-threads=1 --nocapture`;
-  expect the current build to leave the content display loading/defaulted and
-  the sync status pending after the probe consumes their first handles.
-- [ ] After Tasks 1–3, re-run the focused browser command. Without reloading,
-  post a second `e2e/space!` assertion changing the title to `Recovered content
-  v2`; re-enter the content frame and wait for the rendered text to update.
-  Assert the browser log contains neither the final missing-subscription-handle
-  error nor an unhandled `tonk-subscribe` promise rejection.
-- [ ] Run the integration checkpoint:
-  `nix develop path:. -c test:web:debug -E 'package(tonk-host) or package(tonk-display) or package(tonk-workspace)'`,
-  then
-  `nix develop path:. -c cargo fmt --all -- --check`.
-  Run `nix develop path:. -c test:web:debug` once after the focused packages
-  pass; report an interrupted or filtered-away run as incomplete rather than a
-  full-suite pass.
+  reaches a defined non-pending state; a disposable test environment may
+  legitimately be local or offline.
+- [x] Arm the one-shot race on the actual root display, select its `race`
+  facet, and assert at least two `view` attempts before the v1 marker renders.
+  Without reloading, re-assert that facet as v2 and require the same recovered
+  live subscription to render the update. Reject final missing-handle and
+  dropped-closure errors captured by the harness.
+- [x] Run the focused real-browser command:
+  `nix develop . -c test:e2e --no-capture -E 'test(it_recovers_a_claimed_subscription_race_in_a_space)'`.
+  The production UI artifact is built before running the serialized test.
+- [x] Run the integration checkpoint:
+  `nix develop . -c test:web:debug -E 'package(tonk-host) | package(tonk-display) | package(tonk-workspace)'`,
+  then `cargo fmt --all -- --check` and `git diff --check`. The affected
+  package matrix is the scoped checkpoint for this change; the full Web suite
+  remains CI evidence.
 - [ ] After a build containing the fix reaches staging, open
   `https://staging.tonk.xyz/space/did:key:z6MkgK1sLdYGnRg26r42jtnkZ6X3XnZDsjfiikoTEfeMWNHE`
   in the already-linked account. Verify the existing artifact tabs/content
