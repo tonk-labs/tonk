@@ -224,7 +224,7 @@ view!:
             <ui-space-remove data-space-subject={subject} data-space-name={name}
               data-space-provider={provider} data-space-founded={founded-at}>
               <span class="verbs">
-                <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
+                <ui-copy-link space={subject} label="copy link"></ui-copy-link>
                 <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
               </span>
               <tonk-dialog data-space-remove-dialog heading="confirm leaving space">

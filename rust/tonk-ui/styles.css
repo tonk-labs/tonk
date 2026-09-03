@@ -3526,6 +3526,14 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
   opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
 .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
 ui-space-remove { display:contents; }
+.verbs ui-copy-link, .verbs tonk-share { display:contents; }
+.verbs [data-share-copy-label] { display:none; }
+.verbs tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
+.verbs tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
+.verbs tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
+.verbs tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
+.verbs tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
+.verbs tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
 .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
   color:inherit; font:inherit; letter-spacing:inherit;
   text-transform:lowercase; cursor:pointer; }

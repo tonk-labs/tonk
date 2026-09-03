@@ -373,6 +373,32 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
 }
 
 #[test]
+fn it_mints_an_invite_when_copying_a_hub_space_link() {
+    assert!(
+        PROFILE_LIBRARY.contains("<ui-copy-link space={subject}"),
+        "the Hub copy action must name the space whose invite it mints"
+    );
+    assert!(
+        !PROFILE_LIBRARY.contains("ui-copy-link url=\"/space/{subject}\""),
+        "the Hub must not copy its member-only route as though it were an invite"
+    );
+    for (state, label) in [
+        ("idle", "idle"),
+        ("copying", "copying"),
+        ("copied", "copied"),
+        ("blocked", "failed"),
+        ("failed", "failed"),
+    ] {
+        assert!(
+            HUB_STYLES.contains(&format!(
+                "data-share-state=\"{state}\"] [data-share-copy-label=\"{label}\"]"
+            )),
+            "the Hub invite action must display its `{label}` answer in `{state}` state"
+        );
+    }
+}
+
+#[test]
 fn it_separates_the_account_roster_into_independent_blocks() {
     let menu = css_rule(HUB_STYLES, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
