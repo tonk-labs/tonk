@@ -19,7 +19,6 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SW_PATH = join(HERE, "..", "assets", "service_worker.js");
-const WORKER_RS_PATH = join(HERE, "..", "..", "tonk-worker", "src", "worker.rs");
 const CACHE_RS_PATH = join(HERE, "..", "..", "tonk-worker", "src", "cache.rs");
 const source = readFileSync(SW_PATH, "utf8");
 
@@ -334,7 +333,9 @@ describe("exact fetch routing", () => {
   });
 
   test("adds CORS to the JavaScript health shortcut", async () => {
-    const { self } = withGlobals();
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
+    });
     await loadWith({});
     const fetch = fetchEvent(new Request("https://tonk.test/api/health"));
 
@@ -418,6 +419,135 @@ describe("exact fetch routing", () => {
     self.onfetch(guest.event);
     assert.equal(await (await guest.response()).text(), "RUST:guest-client");
   });
+
+  test("looks up one stable top-level client only once", async () => {
+    const { self, caches } = withGlobals();
+    let lookups = 0;
+    self.clients.get = async (clientId) => {
+      lookups += 1;
+      return { id: clientId, frameType: "top-level" };
+    };
+    const paths = ["/one.js", "/two.js", "/three.js"];
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", ...paths],
+      activateSource: 'async () => { throw new Error("top-level asset booted Rust"); }',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    for (const path of paths) {
+      await cache.put(`https://tonk.test${path}`, new Response(path));
+      const fetch = fetchEvent({
+        method: "GET",
+        mode: "cors",
+        cache: "default",
+        url: `https://tonk.test${path}`,
+      }, "stable-top-level");
+      self.onfetch(fetch.event);
+      assert.equal(await (await fetch.response()).text(), path);
+    }
+    assert.equal(lookups, 1);
+  });
+
+  test("looks up one stable nested client only once and always delegates", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
+    });
+    let lookups = 0;
+    self.clients.get = async (clientId) => {
+      lookups += 1;
+      return { id: clientId, frameType: "nested" };
+    };
+    await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/one.js", "/two.js"],
+      activateSource: 'async () => ({ onfetch: async event => new Response(`RUST:${event.request.url}`) })',
+    });
+    for (const path of ["/one.js", "/two.js"]) {
+      const fetch = fetchEvent({
+        method: "GET",
+        mode: "cors",
+        cache: "default",
+        url: `https://tonk.test${path}`,
+      }, "stable-nested");
+      self.onfetch(fetch.event);
+      assert.equal(await (await fetch.response()).text(), `RUST:https://tonk.test${path}`);
+    }
+    assert.equal(lookups, 1);
+  });
+
+  test("unconditional Rust routes perform no client lookup", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
+    });
+    let lookups = 0;
+    self.clients.get = async () => {
+      lookups += 1;
+      return { frameType: "top-level" };
+    };
+    await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/known.js"],
+      activateSource: 'async () => ({ onfetch: async () => new Response("RUST") })',
+    });
+    for (const request of [
+      { method: "GET", mode: "cors", cache: "default", url: "https://tonk.test/api/data" },
+      { method: "POST", mode: "cors", cache: "default", url: "https://tonk.test/known.js" },
+      { method: "GET", mode: "cors", cache: "default", url: "https://tonk.test/unpublished.js" },
+    ]) {
+      const fetch = fetchEvent(request, "unused-client");
+      self.onfetch(fetch.event);
+      assert.equal(await (await fetch.response()).text(), "RUST");
+    }
+    assert.equal(lookups, 0);
+  });
+
+  test("missing and rejected client lookups remain fail-closed and retryable", async () => {
+    for (const first of ["missing", "rejected"]) {
+      const { self, caches } = withGlobals({
+        fetchImpl: async () => new Response(new Uint8Array([0]), { status: 200 }),
+      });
+      let lookups = 0;
+      self.clients.get = async () => {
+        lookups += 1;
+        if (lookups === 1) {
+          if (first === "rejected") throw new Error("lookup unavailable");
+          return null;
+        }
+        return { frameType: "top-level" };
+      };
+      const mod = await loadWith({
+        buildId: "published-build",
+        wasmHash: "dev",
+        assetPaths: ["/", "/known.js"],
+        activateSource: 'async () => ({ onfetch: async () => new Response("RUST") })',
+        exports: ["SHELL_CACHE"],
+      });
+      await (await caches.open(mod.SHELL_CACHE)).put(
+        "https://tonk.test/known.js",
+        new Response("CACHED"),
+      );
+      const request = {
+        method: "GET",
+        mode: "cors",
+        cache: "default",
+        url: "https://tonk.test/known.js",
+      };
+      const firstFetch = fetchEvent(request, `retry-${first}`);
+      self.onfetch(firstFetch.event);
+      assert.equal(await (await firstFetch.response()).text(), "RUST");
+      const secondFetch = fetchEvent(request, `retry-${first}`);
+      self.onfetch(secondFetch.event);
+      assert.equal(await (await secondFetch.response()).text(), "CACHED");
+      const thirdFetch = fetchEvent(request, `retry-${first}`);
+      self.onfetch(thirdFetch.event);
+      assert.equal(await (await thirdFetch.response()).text(), "CACHED");
+      assert.equal(lookups, 2, first);
+    }
+  });
 });
 
 describe("cache naming", () => {
@@ -432,19 +562,129 @@ describe("cache naming", () => {
     assert.notEqual(module.SHELL_CACHE, module.WORKER_CACHE);
   });
 
-  test("activation retains caches owned by older generations", () => {
-    const worker = readFileSync(WORKER_RS_PATH, "utf8");
-    const cache = readFileSync(CACHE_RS_PATH, "utf8");
-    assert.doesNotMatch(
-      worker,
-      /purge_old_caches/,
-      "a newly activated worker cannot know whether retained clients still need an older generation",
+  test("accepts only exact lifecycle-owned cache names", async () => {
+    withGlobals();
+    const mod = await loadWith({
+      exports: [
+        "parseFinalShellGeneration",
+        "parseFinalWorkerGeneration",
+        "parseGenerationMarkerCache",
+        "parseShellStageGeneration",
+        "parseWorkerStageGeneration",
+      ],
+    });
+    const build = "0123456789abcdef";
+    const nonce = "a".repeat(32);
+    assert.equal(mod.parseFinalShellGeneration(`TONK_SHELL_${build}`), build);
+    assert.equal(mod.parseFinalWorkerGeneration(`TONK_WORKER_${build}`), build);
+    assert.equal(mod.parseGenerationMarkerCache(`TONK_GENERATION_${build}`), build);
+    assert.equal(mod.parseShellStageGeneration(`TONK_SHELL_STAGE_${build}_${nonce}`), build);
+    assert.equal(mod.parseWorkerStageGeneration(`TONK_WORKER_STAGE_${build}_${nonce}`), build);
+
+    for (const name of [
+      `TONK_SHELL_${build.toUpperCase()}`,
+      "TONK_SHELL_01234567",
+      `TONK_SHELL_${build}_extra`,
+      `TONK_SHELL_STAGE_${build}_${nonce}_extra`,
+      `TONK_WORKER_STAGE_${build}_short`,
+      `TONK_GENERATIONS_${build}`,
+      "tonk-sw-upgrade-sentinel",
+    ]) {
+      assert.equal(mod.parseFinalShellGeneration(name), null, name);
+      assert.equal(mod.parseFinalWorkerGeneration(name), null, name);
+      assert.equal(mod.parseGenerationMarkerCache(name), null, name);
+      assert.equal(mod.parseShellStageGeneration(name), null, name);
+      assert.equal(mod.parseWorkerStageGeneration(name), null, name);
+    }
+  });
+
+  test("activation prunes obsolete generations and retains current and unrelated caches", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const old = "aaaaaaaaaaaaaaaa";
+    const oldest = "9999999999999999";
+    const { self, caches } = withGlobals();
+    const mod = await loadWith({
+      buildId: build,
+      exports: ["SHELL_CACHE", "WORKER_CACHE", "GENERATION_CACHE"],
+    });
+    await markGenerationAdopted(caches, { buildId: build, manifest: "dev" });
+    await (await caches.open(mod.SHELL_CACHE)).put("/", new Response("current"));
+    await caches.open(mod.WORKER_CACHE);
+    const currentNonce = "b".repeat(32);
+    const currentStages = [
+      `TONK_SHELL_STAGE_${build}_${currentNonce}`,
+      `TONK_WORKER_STAGE_${build}_${currentNonce}`,
+    ];
+    const obsolete = [
+      `TONK_SHELL_${old}`,
+      `TONK_WORKER_${old}`,
+      `TONK_GENERATION_${old}`,
+      `TONK_SHELL_STAGE_${old}_${"c".repeat(32)}`,
+      `TONK_WORKER_STAGE_${old}_${"c".repeat(32)}`,
+      `TONK_SHELL_${oldest}`,
+      `TONK_WORKER_${oldest}`,
+      `TONK_GENERATION_${oldest}`,
+      `TONK_SHELL_STAGE_${oldest}_${"d".repeat(32)}`,
+      `TONK_WORKER_STAGE_${oldest}_${"d".repeat(32)}`,
+    ];
+    await Promise.all([...currentStages, ...obsolete].map((name) => caches.open(name)));
+    const sentinel = await caches.open("tonk-sw-upgrade-sentinel");
+    await sentinel.put("/sentinel", new Response("preserved"));
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    await Promise.all(pending);
+
+    assert.deepEqual(
+      new Set(await caches.keys()),
+      new Set([
+        mod.SHELL_CACHE,
+        mod.WORKER_CACHE,
+        mod.GENERATION_CACHE,
+        ...currentStages,
+        "tonk-sw-upgrade-sentinel",
+      ]),
     );
-    assert.doesNotMatch(
-      cache,
-      /caches\.delete|purge_old_caches/,
-      "automatic generation cleanup risks deleting the only offline copy an older worker can boot",
-    );
+    assert.equal(await (await sentinel.match("/sentinel")).text(), "preserved");
+  });
+
+  test("one failed deletion cannot reject activation or skip other obsolete caches", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const old = "aaaaaaaaaaaaaaaa";
+    const { self, caches, logs } = withGlobals();
+    await loadWith({ buildId: build });
+    await markGenerationAdopted(caches, { buildId: build, manifest: "dev" });
+    const rejected = `TONK_SHELL_${old}`;
+    const deleted = `TONK_WORKER_${old}`;
+    await caches.open(rejected);
+    await caches.open(deleted);
+    const realDelete = caches.delete.bind(caches);
+    caches.delete = async (name) => {
+      if (name === rejected) throw new Error("storage deletion failed");
+      return realDelete(name);
+    };
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    await Promise.all(pending);
+
+    assert.equal(caches.caches.has(rejected), true);
+    assert.equal(caches.caches.has(deleted), false);
+    assert.ok(logs.some((line) => line.includes(rejected) && line.includes("storage deletion failed")));
+  });
+
+  test("activation refuses to prune without an adopted current marker", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const oldCache = "TONK_SHELL_aaaaaaaaaaaaaaaa";
+    const { self, caches } = withGlobals();
+    await loadWith({ buildId: build });
+    await (await caches.open(oldCache)).put("/", new Response("incumbent"));
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    await Promise.all(pending);
+
+    assert.equal(await (await caches.match("/", { cacheName: oldCache })).text(), "incumbent");
   });
 });
 
@@ -661,6 +901,155 @@ describe("immutable generation install", () => {
     assert.equal(await guest.text(), "complete guest glue");
   });
 
+  test("reuses unchanged members without network fetches", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const old = "aaaaaaaaaaaaaaaa";
+    const stable = new Map([
+      ["/", "stable shell"],
+      ["/font.woff2", "stable font"],
+      ["/library/core.yaml", "stable library"],
+    ]);
+    const changedPath = "/ui-new.js";
+    const changedBody = "new ui";
+    const assets = Object.fromEntries(await Promise.all([
+      ...[...stable].map(async ([path, body]) => [path, await sha256Hex(utf8(body))]),
+      Promise.resolve([changedPath, await sha256Hex(utf8(changedBody))]),
+    ]));
+    const manifest = JSON.stringify({ version: 1, build, assets });
+    const wasm = utf8("new worker wasm");
+    const fetches = [];
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input, init) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        fetches.push({ path, cache: init?.cache });
+        if (path === "/asset-manifest.json") return new Response(manifest, { status: 200 });
+        if (path === changedPath) return new Response(changedBody, { status: 200 });
+        if (path === "/worker_bg.wasm") return new Response(wasm, { status: 200 });
+        throw new Error(`unexpected network fetch: ${path}`);
+      },
+    });
+    const oldShell = await caches.open(`TONK_SHELL_${old}`);
+    for (const [path, body] of stable) {
+      await oldShell.put(path === "/" ? path : `https://tonk.test${path}`, new Response(body));
+    }
+    await oldShell.put(`https://tonk.test${changedPath}`, new Response("old ui"));
+    await (await caches.open(`TONK_WORKER_${old}`)).put(
+      "https://tonk.test/worker_bg.wasm",
+      new Response("old worker wasm"),
+    );
+    oldShell.resetMutations();
+    (await caches.open(`TONK_WORKER_${old}`)).resetMutations();
+    await loadWith({
+      buildId: build,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifest)),
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.deepEqual(fetches.map(({ path }) => path).sort(), [
+      "/asset-manifest.json",
+      "/ui-new.js",
+      "/worker_bg.wasm",
+    ]);
+    assert.ok(fetches.every(({ cache }) => cache === "no-store"));
+    assert.deepEqual(oldShell.mutations, []);
+    assert.deepEqual((await caches.open(`TONK_WORKER_${old}`)).mutations, []);
+  });
+
+  test("installs completely offline from digest-verified prior responses after manifest discovery", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const old = "aaaaaaaaaaaaaaaa";
+    const resources = new Map([
+      ["/", "offline shell"],
+      ["/ui.js", "offline ui"],
+    ]);
+    const assets = Object.fromEntries(await Promise.all(
+      [...resources].map(async ([path, body]) => [path, await sha256Hex(utf8(body))]),
+    ));
+    const manifest = JSON.stringify({ version: 1, build, assets });
+    const wasm = utf8("offline worker wasm");
+    const fetched = [];
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        fetched.push(path);
+        if (path === "/asset-manifest.json") return new Response(manifest, { status: 200 });
+        throw new TypeError("offline after manifest discovery");
+      },
+    });
+    const oldShell = await caches.open(`TONK_SHELL_${old}`);
+    for (const [path, body] of resources) {
+      await oldShell.put(path === "/" ? path : `https://tonk.test${path}`, new Response(body));
+    }
+    await (await caches.open(`TONK_WORKER_${old}`)).put(
+      "https://tonk.test/worker_bg.wasm",
+      new Response(wasm),
+    );
+    await loadWith({
+      buildId: build,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifest)),
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.deepEqual(fetched, ["/asset-manifest.json"]);
+  });
+
+  test("rejects bad reuse candidates and leaves them untouched", async () => {
+    const good = "matching response";
+    const hash = await sha256Hex(utf8(good));
+    for (const scenario of ["digest mismatch", "missing", "unreadable", "lookup failure"]) {
+      const cacheName = "TONK_SHELL_aaaaaaaaaaaaaaaa";
+      const { caches } = withGlobals();
+      const candidate = await caches.open(cacheName);
+      if (scenario === "digest mismatch") {
+        await candidate.put("/asset", new Response("wrong response"));
+      } else if (scenario === "unreadable") {
+        candidate.match = async () => ({
+          clone: () => ({ arrayBuffer: async () => { throw new Error("unreadable body"); } }),
+        });
+      } else if (scenario === "lookup failure") {
+        caches.match = async () => { throw new Error("lookup failed"); };
+      }
+      candidate.resetMutations();
+      const mod = await loadWith({ exports: ["verifiedGenerationResponse"] });
+      assert.equal(
+        await mod.verifiedGenerationResponse([cacheName], "/asset", hash),
+        null,
+        scenario,
+      );
+      assert.deepEqual(candidate.mutations, [], scenario);
+    }
+
+    const { caches } = withGlobals();
+    const malformed = await caches.open("TONK_SHELL_aaaaaaaaaaaaaaaa_extra");
+    await malformed.put("/asset", new Response(good));
+    const mod = await loadWith({ exports: ["parseFinalShellGeneration"] });
+    assert.equal(mod.parseFinalShellGeneration("TONK_SHELL_aaaaaaaaaaaaaaaa_extra"), null);
+  });
+
+  test("selects the first digest-matching collision without mutating candidates", async () => {
+    const hash = await sha256Hex(utf8("matching"));
+    const names = ["TONK_SHELL_aaaaaaaaaaaaaaaa", "TONK_SHELL_cccccccccccccccc"];
+    const { caches } = withGlobals();
+    await (await caches.open(names[0])).put("/asset", new Response("wrong"));
+    await (await caches.open(names[1])).put("/asset", new Response("matching"));
+    for (const name of names) (await caches.open(name)).resetMutations();
+    const mod = await loadWith({ exports: ["verifiedGenerationResponse"] });
+
+    for (const order of [names, [...names].reverse()]) {
+      const response = await mod.verifiedGenerationResponse(order, "/asset", hash);
+      assert.equal(await response.text(), "matching");
+    }
+    for (const name of names) assert.deepEqual((await caches.open(name)).mutations, []);
+  });
+
   test("rejects a mismatched asset before opening any generation cache", async () => {
     const buildId = "rejected-build";
     const expectedShell = "expected shell";
@@ -700,6 +1089,42 @@ describe("immutable generation install", () => {
       0,
       "verification must finish before the incoming build mutates CacheStorage",
     );
+  });
+
+  test("a failed incoming install leaves every incumbent lifecycle cache intact", async () => {
+    const build = "bbbbbbbbbbbbbbbb";
+    const old = "aaaaaaaaaaaaaaaa";
+    const manifest = JSON.stringify({
+      version: 1,
+      build,
+      assets: { "/": await sha256Hex(utf8("expected shell")) },
+    });
+    const wasm = utf8("incoming wasm");
+    const { self, caches } = withGlobals({
+      fetchImpl: async (input) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        if (path === "/asset-manifest.json") return new Response(manifest, { status: 200 });
+        if (path === "/worker_bg.wasm") return new Response(wasm, { status: 200 });
+        if (path === "/") return new Response("corrupt incoming shell", { status: 200 });
+        return new Response("missing", { status: 404 });
+      },
+    });
+    const incumbentNames = [
+      `TONK_SHELL_${old}`,
+      `TONK_WORKER_${old}`,
+      `TONK_GENERATION_${old}`,
+    ];
+    for (const name of incumbentNames) await caches.open(name);
+    await loadWith({
+      buildId: build,
+      wasmHash: (await sha256Hex(wasm)).slice(0, 16),
+      assetManifestHash: await sha256Hex(utf8(manifest)),
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await assert.rejects(install, /asset \/ hash mismatch/);
+    assert.deepEqual(new Set(await caches.keys()), new Set(incumbentNames));
   });
 
   test("refuses an incomplete retained generation without repairing or deleting it", async () => {
@@ -1462,7 +1887,14 @@ describe("immutable generation caches", () => {
       });
 
       assert.equal(response.status, 503);
-      assert.match(await response.text(), /retained Tonk version.*reload/i);
+      const html = await response.text();
+      assert.match(html, /checking for a recoverable Tonk version/i);
+      assert.match(html, /registration\.update\(\)/);
+      assert.match(html, /controllerchange/);
+      assert.doesNotMatch(html, /LIVE SHELL|<script[^>]+src=|worker\.js|tonk-ui/);
+      assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
       assert.equal(
         fetches.filter((path) => path === "/").length,
         0,

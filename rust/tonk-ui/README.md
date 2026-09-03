@@ -80,6 +80,42 @@ The load lifecycle has four cases:
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
 
+Every incoming worker still obtains and verifies its own manifest. For each
+manifest member it may reuse a response from an older final Tonk generation,
+but only after hashing a clone against the incoming full SHA-256 digest. Worker
+Wasm uses the same rule with its stamped digest prefix. Missing, unreadable, or
+mismatched responses fall back to the existing verified `no-store` fetch, and
+the selected bytes still pass through the incoming generation's staging,
+publishing, and adopted-marker transaction. Older caches are read-only during
+this process.
+
+After an adopted successor begins activation, it removes obsolete caches only
+when their names exactly match the Tonk final, marker, or staging-cache grammar.
+Current-generation names and unrelated CacheStorage entries are retained, and
+one failed deletion cannot reject activation or prevent the remaining cleanup.
+An install that fails before activation therefore leaves the incumbent and its
+offline data intact.
+
+If storage pressure removes the retained root document, navigation receives a
+small recovery document rather than deployment bytes fetched under the old
+controller. It explicitly calls `registration.update()`, waits for a different
+controller, and performs one session-guarded reload. An unchanged, unavailable,
+redundant, rejected, or timed-out update leaves a visible retry action and does
+not clear local state. A successfully loaded application document consumes the
+recovery guard.
+
+Static-asset routing memoizes a confirmed top-level or nested frame type per
+service-worker client. API and other unconditional Rust routes bypass that
+lookup; missing, unknown, or failed classification is not memoized and continues
+to fail closed through Rust.
+
+The native lifecycle harness keeps browser evidence separate. On 2026-09-02,
+local Chrome runs passed coherent A-to-B adoption, two-tab controller
+replacement, and evicted-root recovery with cache and IndexedDB sentinels
+preserved. The same Safari A-to-B command did not reach navigation because
+SafariDriver timed out creating an automation session, so Safari behavior
+remains unverified rather than inferred from Chrome or the Node harness.
+
 The activate handler does not call `clients.claim()`. Browser activation still
 replaces the active worker for clients already controlled by the registration
 and fires `controllerchange`; `clients.claim()` is needed only to extend control

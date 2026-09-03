@@ -137,6 +137,108 @@ function activationBlock() {
   return blocks[0];
 }
 
+function evictionRecoveryBlock() {
+  const source = readFileSync(SERVICE_WORKER, "utf8");
+  const match = source.match(
+    /function evictionRecoveryResponse\(\)[\s\S]*?<script>\n([\s\S]*?)\n<\/script>/,
+  );
+  assert.ok(match, "the worker must author one executable eviction recovery script");
+  return match[1];
+}
+
+async function evictionRecoveryHarness({ mode, guarded = false } = {}) {
+  const storage = new Map();
+  if (guarded) storage.set("tonk:sw-eviction-reload", "1");
+  const timers = new Map();
+  let nextTimer = 1;
+  let reloads = 0;
+  let reloadedBeforeReplacement = false;
+  let updates = 0;
+  const retry = eventTarget({ hidden: true });
+  const status = { textContent: "" };
+  const incumbent = {};
+  const successor = {};
+  let serviceWorkers;
+  const candidate = eventTarget({ state: "installing" });
+  const registration = eventTarget({
+    active: incumbent,
+    installing: null,
+    waiting: null,
+    async update() {
+      updates += 1;
+      if (mode === "rejected") throw new TypeError("offline");
+      if (mode === "success") {
+        registration.installing = candidate;
+        await registration.dispatch("updatefound");
+        registration.installing = null;
+        registration.active = successor;
+        candidate.state = "activated";
+        serviceWorkers.controller = successor;
+        await serviceWorkers.dispatch("controllerchange");
+        return;
+      }
+      if (mode === "redundant") {
+        registration.installing = candidate;
+        await registration.dispatch("updatefound");
+        candidate.state = "redundant";
+        await candidate.dispatch("statechange");
+        return;
+      }
+      if (mode === "timeout") {
+        registration.installing = candidate;
+        await registration.dispatch("updatefound");
+      }
+    },
+  });
+  serviceWorkers = eventTarget({
+    controller: incumbent,
+    async getRegistration() {
+      return mode === "unavailable" ? null : registration;
+    },
+  });
+  vm.runInNewContext(
+    evictionRecoveryBlock(),
+    {
+      navigator: { serviceWorker: serviceWorkers },
+      document: {
+        getElementById(id) { return id === "retry" ? retry : status; },
+      },
+      sessionStorage: {
+        getItem(key) { return storage.get(key) ?? null; },
+        setItem(key, value) { storage.set(key, String(value)); },
+        removeItem(key) { storage.delete(key); },
+      },
+      location: {
+        reload() {
+          reloads += 1;
+          reloadedBeforeReplacement ||= serviceWorkers.controller !== successor;
+        },
+      },
+      setTimeout(callback) {
+        const id = nextTimer++;
+        timers.set(id, callback);
+        return id;
+      },
+      clearTimeout(id) { timers.delete(id); },
+    },
+    { filename: SERVICE_WORKER },
+  );
+  await new Promise(setImmediate);
+  return {
+    retry,
+    status,
+    storage,
+    reloads: () => reloads,
+    reloadedBeforeReplacement: () => reloadedBeforeReplacement,
+    updates: () => updates,
+    fireTimeouts() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach((callback) => callback());
+    },
+  };
+}
+
 class FakeBroadcastChannel {
   addEventListener() {}
   close() {}
@@ -409,6 +511,33 @@ test("the alignment reload consumes its guard without another update check", asy
   assert.equal(result.storage.has("tonk:sw-upgrade-reload"), false);
   assert.equal(result.updates(), 0);
   assert.equal(result.reloads(), 0);
+});
+
+test("eviction recovery reloads once only after controller replacement", async () => {
+  const result = await evictionRecoveryHarness({ mode: "success" });
+  assert.equal(result.updates(), 1);
+  assert.equal(result.reloads(), 1);
+  assert.equal(result.reloadedBeforeReplacement(), false);
+  assert.equal(result.storage.get("tonk:sw-eviction-reload"), "1");
+});
+
+test("eviction recovery exposes retry without destructive fallback", async () => {
+  for (const mode of ["unchanged", "rejected", "redundant", "unavailable", "timeout"]) {
+    const result = await evictionRecoveryHarness({ mode });
+    if (mode === "timeout") result.fireTimeouts();
+    assert.equal(result.reloads(), 0, mode);
+    assert.equal(result.retry.hidden, false, mode);
+    assert.match(result.status.textContent, /check your connection and try again/i, mode);
+    assert.equal(result.storage.has("tonk:sw-eviction-reload"), false, mode);
+  }
+});
+
+test("eviction recovery consumes a prior reload guard without another update", async () => {
+  const result = await evictionRecoveryHarness({ mode: "success", guarded: true });
+  assert.equal(result.updates(), 0);
+  assert.equal(result.reloads(), 0);
+  assert.equal(result.storage.has("tonk:sw-eviction-reload"), false);
+  assert.equal(result.retry.hidden, false);
 });
 
 test("an offline load-time update check keeps the active worker", async () => {
