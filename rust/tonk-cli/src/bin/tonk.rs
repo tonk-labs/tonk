@@ -505,7 +505,11 @@ enum AccountCommand {
     ///
     /// Read commands answer instantly from what this device already
     /// knows; this is the one that fetches what other devices changed.
-    Sync,
+    Sync {
+        /// Print each step of the sync as it happens, naming the remote.
+        #[arg(long)]
+        verbose: bool,
+    },
 
     /// Sign in to your account with a synced passkey in the browser
     ///
@@ -519,14 +523,6 @@ enum AccountCommand {
         /// Override the automatically generated OS/version device name.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Account service base URL (for staging or local development).
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_SERVICE_URL,
-            hide = true
-        )]
-        service_url: String,
         /// Print the approval URL without asking the OS to open it.
         #[arg(long)]
         no_open: bool,
@@ -577,9 +573,6 @@ enum AccountCommand {
     /// List the devices linked to this profile's account
     #[command(after_help = "Examples:\n  tonk account devices\n  tonk account devices --json")]
     Devices {
-        /// Account service base URL; defaults to the linked provider.
-        #[arg(long, value_name = "URL", hide = true)]
-        service_url: Option<String>,
         /// Emit versioned camelCase JSON.
         #[arg(long)]
         json: bool,
@@ -595,14 +588,6 @@ enum AccountCommand {
         /// DID of the device to revoke (see `tonk account devices`).
         #[arg(value_name = "DID")]
         did: String,
-        /// Account service base URL (for staging or local development).
-        #[arg(
-            long,
-            value_name = "URL",
-            default_value = account::DEFAULT_SERVICE_URL,
-            hide = true
-        )]
-        service_url: String,
     },
 }
 
@@ -1087,7 +1072,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                     Some(AccountSpaceCommand::Pull { .. }) => "space-pull",
                     Some(AccountSpaceCommand::Delete { .. }) => "space-delete",
                 },
-                Some(AccountCommand::Sync) => "sync",
+                Some(AccountCommand::Sync { .. }) => "sync",
                 Some(AccountCommand::Devices { .. }) => "devices",
                 Some(AccountCommand::Revoke { .. }) => "revoke",
             }),
@@ -1168,7 +1153,7 @@ fn account_command_kind(
             command: Some(AccountSpaceCommand::Delete { .. }),
             ..
         }) => Kind::SpaceDelete,
-        Some(AccountCommand::Sync) => Kind::Sync,
+        Some(AccountCommand::Sync { .. }) => Kind::Sync,
         Some(AccountCommand::Devices { .. }) => Kind::Devices,
         Some(AccountCommand::Revoke { .. }) => Kind::Revoke,
     })
@@ -1226,15 +1211,19 @@ async fn main() {
         }
     }
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
-    // `TONK_TRACE=1` turns on the tracing subscriber, filtered by
-    // `RUST_LOG`, on stderr. This is the diagnostic for "the remote did
-    // not answer": hyper, reqwest, and dialog's remote layer all emit
-    // at debug, so a stalled command explains itself in a log rather
-    // than in a bounded timeout.
+    // `TONK_TRACE=1` turns on the tracing subscriber on stderr. This is
+    // the diagnostic for "the remote did not answer": hyper and reqwest
+    // emit request-level events, so a stalled command explains itself in
+    // a log rather than in a bounded timeout. `RUST_LOG` overrides the
+    // filter; without it everything logs at debug — a trace that needs a
+    // second variable to say anything is a trap.
     if std::env::var_os("TONK_TRACE").is_some_and(|value| !value.is_empty() && value != "0") {
         let _ = tracing_log::LogTracer::init();
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+            )
             .with_writer(std::io::stderr)
             .with_target(true)
             .try_init();
@@ -1697,7 +1686,6 @@ impl CustomerState {
 async fn link_account(
     store: &tonk_cli::space::SpaceStore,
     name: Option<String>,
-    service_url: String,
     no_open: bool,
     via: Option<String>,
     mut observer: Option<&mut tonk_cli::account_observability::CliAccountAttempt>,
@@ -1733,7 +1721,6 @@ async fn link_account(
         .clone()
         .unwrap_or_else(|| account::DEFAULT_LINK_PAGE.to_owned());
     let options = account::LinkOptions {
-        service_url: service_url.clone(),
         device_name: name.unwrap_or_else(account::default_device_name),
         open_browser: !no_open,
         via,
@@ -1951,22 +1938,8 @@ async fn account_op(
         Ok(store) => store,
         Err(error) => return print_failure(error),
     };
-    if let AccountCommand::Login {
-        name,
-        service_url,
-        no_open,
-        via,
-    } = command
-    {
-        return link_account(
-            &store,
-            name,
-            service_url,
-            no_open,
-            via,
-            observer.as_deref_mut(),
-        )
-        .await;
+    if let AccountCommand::Login { name, no_open, via } = command {
+        return link_account(&store, name, no_open, via, observer.as_deref_mut()).await;
     }
     if matches!(command, AccountCommand::Space { .. }) && matches!(store.account(), Ok(None)) {
         return print_error("no account is signed in; run `tonk account login`".to_owned());
@@ -2159,62 +2132,65 @@ async fn account_op(
                 Err(error) => print_failure(error),
             },
         },
-        AccountCommand::Devices { service_url, json } => {
-            match account::devices_in(&profile, &store, service_url.as_deref()).await {
-                Ok(rows) => {
-                    let own = profile.did().to_string();
-                    if json {
-                        let rows: Vec<_> = rows
-                            .into_iter()
-                            .map(|row| DeviceRow {
-                                status: "active".to_owned(),
-                                name: row.name,
-                                did: row.did.clone(),
-                                this_device: row.did == own,
-                            })
-                            .collect();
-                        return print_json(&account_devices_report(rows));
+        AccountCommand::Devices { json } => match account::devices_in(&profile, &store).await {
+            Ok(rows) => {
+                let own = profile.did().to_string();
+                if json {
+                    let rows: Vec<_> = rows
+                        .into_iter()
+                        .map(|row| DeviceRow {
+                            status: "active".to_owned(),
+                            name: row.name,
+                            did: row.did.clone(),
+                            this_device: row.did == own,
+                        })
+                        .collect();
+                    return print_json(&account_devices_report(rows));
+                }
+                let mut listing = Listing::new(
+                    &["STATUS", "NAME", "DID", "THIS"],
+                    "no devices are linked to this account",
+                );
+                for row in &rows {
+                    listing.push([
+                        "active".to_owned(),
+                        row.name.clone(),
+                        row.did.clone(),
+                        if row.did == own { "yes" } else { "no" }.to_owned(),
+                    ]);
+                }
+                println!("{}", listing.render());
+                ExitCode::Success
+            }
+            Err(error) => print_failure(error),
+        },
+        AccountCommand::Sync { verbose } => {
+            if verbose {
+                tonk_cli::account_state::enable_progress();
+            }
+            match account::sync(&profile).await {
+                Ok(outcome) => {
+                    if let Some(warning) = outcome.warning {
+                        if let Some(observer) = observer.as_deref_mut() {
+                            observer
+                                .degraded(tonk_analytics::account::DegradationKind::AccountSync);
+                        }
+                        eprintln!("warning: {warning}");
                     }
-                    let mut listing = Listing::new(
-                        &["STATUS", "NAME", "DID", "THIS"],
-                        "no devices are linked to this account",
-                    );
-                    for row in &rows {
-                        listing.push([
-                            "active".to_owned(),
-                            row.name.clone(),
-                            row.did.clone(),
-                            if row.did == own { "yes" } else { "no" }.to_owned(),
-                        ]);
-                    }
-                    println!("{}", listing.render());
+                    println!("account: {:?}", outcome.status);
                     ExitCode::Success
                 }
                 Err(error) => print_failure(error),
             }
         }
-        AccountCommand::Sync => match account::sync(&profile).await {
-            Ok(outcome) => {
-                if let Some(warning) = outcome.warning {
-                    if let Some(observer) = observer.as_deref_mut() {
-                        observer.degraded(tonk_analytics::account::DegradationKind::AccountSync);
-                    }
-                    eprintln!("warning: {warning}");
-                }
-                println!("account: {:?}", outcome.status);
-                ExitCode::Success
-            }
-            Err(error) => print_failure(error),
-        },
-        AccountCommand::Revoke { did, service_url } => {
-            let options = account::RevokeOptions { service_url };
+        AccountCommand::Revoke { did } => {
             let mut noop = tonk_cli::account_observability::NoopAccountObserver;
             let observed: &mut dyn tonk_cli::account_observability::CliAccountObserver =
                 match observer.as_deref_mut() {
                     Some(observer) => observer,
                     None => &mut noop,
                 };
-            match account::revoke_in_observed(&profile, &store, &options, &did, observed).await {
+            match account::revoke_in_observed(&profile, &store, &did, observed).await {
                 Ok(account::RevokeOutcome::Revoked) => {
                     if let Some(observer) = observer.as_deref_mut() {
                         observer.finish(

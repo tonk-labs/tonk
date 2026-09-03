@@ -31,7 +31,7 @@ use dialog_varsig::{Did, Principal};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience, shortcut::ShortcutRequest};
+use tonk_invite::{Invite, InviteAudience, home_address_meta, shortcut::ShortcutRequest};
 use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept};
 use url::Url;
 
@@ -144,15 +144,6 @@ pub async fn create_invite(
         }
     };
 
-    let delegation: UcanDelegation = tonk
-        .profile
-        .access()
-        .claim(Subject::from(repository.did()).attenuate(Use))
-        .delegate(audience_did.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
-
     let remote = match resolve_remote_url(&tonk, &repository).await? {
         RemoteRequirement::Ready(remote) => remote,
         RemoteRequirement::Refused(reason) => {
@@ -164,6 +155,18 @@ pub async fn create_invite(
             )));
         }
     };
+
+    // The leaf is signed with the space's upstream in its `home.address`
+    // meta, so the endpoint rides inside the signed grant.
+    let delegation: UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(Subject::from(repository.did()).attenuate(Use))
+        .delegate(audience_did.clone())
+        .meta(home_address_meta(&remote.access_url))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
     let invite = Invite::new(
         delegation.into_chain(),
@@ -787,6 +790,14 @@ mod tests {
         // The claimer-side derivation from the URL matches the record.
         let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
         let expected = Invitation::from_chain(&parsed.chain).unwrap();
+
+        // The minted leaf names the space's upstream in its signed meta,
+        // so the endpoint survives without the `remote=` parameter.
+        let embedded = tonk_invite::home_address(&parsed.chain).unwrap();
+        assert_eq!(
+            embedded.map(String::from),
+            Some("https://sync.example.test/ucan/".to_owned())
+        );
 
         let invitations = content_invitations(&state, &key).await;
         assert_eq!(invitations.len(), 1, "exactly the minted invitation");

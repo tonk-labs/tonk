@@ -49,6 +49,7 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 mod account;
 mod account_deletion;
+mod ceremony;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;
@@ -205,7 +206,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/delete", post(account_deletion::delete))
         .route(
             "/api/account/spaces/delete",
             post(account_deletion::delete_space),
@@ -1796,15 +1796,16 @@ pub mod tests {
         // assert the transient, read back the invitation keyed by subject.
         let minted = mint_invite_for(&app, &repo, &subject).await;
 
-        assert!(
-            minted.remote.contains("&remote="),
-            "a synced repo's invitation must carry a &remote= suffix, got {:?}",
-            minted.remote,
+        assert_eq!(
+            minted.remote, "",
+            "the endpoint rides inside the signed chain, not the URL suffix",
         );
-        assert!(
-            minted.remote.contains("sync.example.test"),
-            "the &remote= suffix must point at the attached endpoint, got {:?}",
-            minted.remote,
+        let chain_bytes = bs58::decode(&minted.access).into_vec().unwrap();
+        let chain = dialog_ucan_core::DelegationChain::try_from(chain_bytes.as_slice()).unwrap();
+        assert_eq!(
+            tonk_invite::home_address(&chain).unwrap().map(String::from),
+            Some(endpoint.to_owned()),
+            "the minted chain must name the attached endpoint in its meta",
         );
     }
 

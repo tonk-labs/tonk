@@ -98,7 +98,6 @@
                flips after the fade so the shell can't intercept clicks
                it no longer visually owns. */
             body:has(tonk-site) #tonk-boot,
-            body:has(tonk-account) #tonk-boot,
             body:has(tonk-activate) #tonk-boot {
                 opacity: 0;
                 visibility: hidden;
@@ -675,7 +674,7 @@
                 const booted = () =>
                     !!navigator.serviceWorker.controller &&
                     !!document.querySelector(
-                        "tonk-site, tonk-account, tonk-activate",
+                        "tonk-site, tonk-activate",
                     );
 
                 // A worker whose install is advancing is a live boot even

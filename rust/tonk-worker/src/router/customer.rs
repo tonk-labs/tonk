@@ -52,6 +52,9 @@ pub struct CustomerState {
     pub status: Option<CustomerStatus>,
     /// The email this device enrolled with, when it did.
     pub email: Option<String>,
+    /// The provider serving this account, from the registration fact on
+    /// profile main; absent until enrollment records it.
+    pub provider: Option<String>,
 }
 
 /// POST `/api/customer/enroll` → enroll this profile's account as a
@@ -388,10 +391,14 @@ pub async fn get_state(
         Err(HttpError::Upstream(failure)) if failure.status == 404 => None,
         Err(error) => return Err(error.into()),
     };
+    // Read after the probe: the probe is where a device that never
+    // enrolled first records the provider, so this read sees it.
+    let provider = provider_address(&state).await;
     Ok(Json(CustomerState {
         customer: root.to_string(),
         status,
         email: record.map(|record| record.email),
+        provider,
     }))
 }
 
@@ -1043,6 +1050,11 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
     {
         log!("account activation not recorded: {error}");
     }
+    // Activation is what the deferred work was waiting on: the custody
+    // publish the ceremony pre-signed, and any space provisioned while
+    // the gate still refused. Nothing polls a status endpoint any more,
+    // so the sweep that noticed is the one that replays it.
+    drain_pending(state).await;
 }
 
 /// Read how far this account got through registering.
@@ -1489,6 +1501,7 @@ pub(crate) async fn record_test_customer(
     record_customer_status(state, status, EMAIL, provider).await
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn clear_customer(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {

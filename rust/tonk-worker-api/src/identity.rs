@@ -81,7 +81,12 @@ pub struct WebAuthnRequest {
     /// with the handles so the handoff carries its own reason. Only
     /// [`WebAuthnKind::Custody`] sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enrollment: Option<Enrollment>,
+    pub intent: Option<CustodyIntent>,
+    /// The account's own passkey, hex credential id, when the worker
+    /// knows it: the prompt is pinned to it so a browser holding several
+    /// passkeys for this origin cannot answer with another account's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
 }
 
 /// What a custody handoff should do once it holds the handles.
@@ -91,6 +96,12 @@ pub struct WebAuthnRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CustodyIntent {
+    /// Purge the account this passkey holds: sign `/void/customer/purge`
+    /// with the recovered root, present it, and clear this device.
+    PurgeAccount(AccountPurge),
+    /// Delegate the account this passkey holds to a waiting process,
+    /// and send the page to its callback with the grant.
+    AuthorizeDevice(DeviceAuthorization),
     /// Register an existing account as a customer of the access
     /// service.
     Enroll(Enrollment),
@@ -102,6 +113,27 @@ pub enum CustodyIntent {
     /// either can open it. Needs two ceremonies, so the handoff carries
     /// two sets of handles.
     AddPasskey(PasskeyAddition),
+}
+
+/// The purge [`CustodyIntent::PurgeAccount`] carries. Empty: the worker
+/// already checked the retyped address when the command arrived, and
+/// the root the passkey recovers is checked against the linked account
+/// before anything is signed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPurge {}
+
+/// The device authorization [`CustodyIntent::AuthorizeDevice`] carries:
+/// what the waiting process asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthorization {
+    /// The device DID the grant is addressed to.
+    pub audience: String,
+    /// The loopback URL the waiting process listens on.
+    pub callback: String,
+    /// The name the waiting process gave itself.
+    pub name: String,
 }
 
 impl Default for CustodyIntent {

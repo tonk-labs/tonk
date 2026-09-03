@@ -13,7 +13,13 @@
 //! uses — because event-to-command delegation belongs to `tonk-display`
 //! templates, and this panel's markup is injected after preprocessing.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use custom_elements::CustomElement;
+use js_sys::{Function, JSON, Reflect};
+use tonk_host::consumer::{self, Subscription};
+use tonk_schema::{ceremony, ceremony_state};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -21,6 +27,12 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
+type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
+
+/// The routing context the ceremony status lives in: the profile branch.
+const PROFILE_WITH: &str = "main@profile:tonk";
+/// The tag the ceremony-status subscription's frames arrive under.
+const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -33,7 +45,12 @@ struct UiAccountSettings {
     click: Option<EventClosure>,
     change: Option<EventClosure>,
     keydown: Option<EventClosure>,
+    input: Option<EventClosure>,
     dialog_open: Option<EventClosure>,
+    /// The live ceremony-status subscription, held while connected.
+    subscription: Rc<RefCell<Option<Subscription>>>,
+    /// The frame delegates the host calls by name off the element.
+    frames: Vec<FrameClosure>,
 }
 
 impl CustomElement for UiAccountSettings {
@@ -83,6 +100,23 @@ impl CustomElement for UiAccountSettings {
             {
                 event.prevent_default();
                 revoke_device(&host, &verb);
+                return;
+            }
+            let hit = |selector: &str| target.closest(selector).ok().flatten().is_some();
+            if hit("[data-delete-account-open]") {
+                open_delete_dialog(&host);
+            } else if hit("[data-delete-account-submit]") {
+                submit_delete(&host);
+            } else if hit("[data-sign-out-open]") {
+                show_dialog(&host, "[data-sign-out-dialog]");
+            } else if hit("[data-sign-out-submit]") {
+                sign_out(&host);
+            } else if hit("[data-add-passkey]") {
+                add_passkey(&host);
+            } else if hit("[data-link-approve]") {
+                approve_link(&host);
+            } else if hit("[data-link-decline]") {
+                decline_link(&host);
             }
         }));
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
@@ -118,6 +152,7 @@ impl CustomElement for UiAccountSettings {
         // A plain text input does not commit on Enter by itself. End the edit
         // so the browser emits the same `change` event as a pointer blur and
         // the one save path above handles both gestures.
+        let host_enter = this.clone();
         let keydown: EventClosure = Closure::wrap(Box::new(move |event: Event| {
             let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
                 return;
@@ -125,9 +160,22 @@ impl CustomElement for UiAccountSettings {
             if key.key() != "Enter" {
                 return;
             }
-            let Some(input) = event
+            let Some(target) = event
                 .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+                .and_then(|target| target.dyn_into::<HtmlElement>().ok())
+            else {
+                return;
+            };
+            // Enter in the arming field submits when armed, and never
+            // breaks the line.
+            if target.has_attribute("data-delete-email") {
+                key.prevent_default();
+                submit_delete(&host_enter);
+                return;
+            }
+            let Some(input) = target
+                .dyn_into::<HtmlInputElement>()
+                .ok()
                 .filter(|input| input.has_attribute("data-settings-name"))
             else {
                 return;
@@ -137,6 +185,19 @@ impl CustomElement for UiAccountSettings {
         }));
         let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
         self.keydown = Some(keydown);
+        // Every keystroke in the arming field re-judges the verb.
+        let host = this.clone();
+        let input: EventClosure = Closure::wrap(Box::new(move |event: Event| {
+            let in_field = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|target| target.has_attribute("data-delete-email"));
+            if in_field {
+                arm_delete(&host);
+            }
+        }));
+        let _ = this.add_event_listener_with_callback("input", input.as_ref().unchecked_ref());
+        self.input = Some(input);
 
         // A `<tonk-dialog>` seat re-raises this panel long after connect;
         // the dialog's own `fabb-open` is the "fill it freshly" signal. The
@@ -159,11 +220,28 @@ impl CustomElement for UiAccountSettings {
             );
         }
         self.dialog_open = Some(dialog_open);
+        // The ceremony status is a row on the profile overlay; the host
+        // calls `reset` (snapshot) and `update` (delta) by name off this
+        // element for every frame, so both delegates hang off it.
+        let host = this.clone();
+        let reset: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
+            on_ceremony_snapshot(&host, payload);
+        }));
+        let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
+        let host = this.clone();
+        let update: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
+            on_ceremony_delta(&host, payload);
+        }));
+        let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
+        self.frames = vec![reset, update];
+        subscribe_ceremony(this, self.subscription.clone());
 
         refresh(this);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        self.subscription.borrow_mut().take();
+        self.frames.clear();
         if let Some(click) = self.click.take() {
             let _ =
                 this.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
@@ -175,6 +253,10 @@ impl CustomElement for UiAccountSettings {
         if let Some(keydown) = self.keydown.take() {
             let _ = this
                 .remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+        }
+        if let Some(input) = self.input.take() {
+            let _ =
+                this.remove_event_listener_with_callback("input", input.as_ref().unchecked_ref());
         }
         if let Some(dialog_open) = self.dialog_open.take()
             && let Some(document) = window().and_then(|window| window.document())
@@ -198,13 +280,16 @@ impl CustomElement for UiAccountSettings {
 
 /// Show one pane and mark its rail tab current.
 fn set_pane(this: &HtmlElement, pane: &str) {
+    // The link approval is a page of the account tab: the tab stays
+    // current and fused to the body while it is up.
+    let tab_for = if pane == "link" { "account" } else { pane };
     if let Ok(tabs) = this.query_selector_all(".s-rail [data-pane]") {
         for index in 0..tabs.length() {
             if let Some(tab) = tabs
                 .item(index)
                 .and_then(|node| node.dyn_into::<Element>().ok())
             {
-                let current = tab.get_attribute("data-pane").as_deref() == Some(pane);
+                let current = tab.get_attribute("data-pane").as_deref() == Some(tab_for);
                 let _ = tab.class_list().toggle_with_force("cur", current);
             }
         }
@@ -226,10 +311,562 @@ fn set_pane(this: &HtmlElement, pane: &str) {
 /// The rows load AFTER the panel appears — a view that shows instantly and
 /// fills in beats one that waits on two fetches.
 pub(crate) fn refresh(this: &HtmlElement) {
-    set_pane(this, "account");
+    // `/settings/link?audience=&callback=&name=` is a terminal asking
+    // for access; `/settings#devices` lands on the devices pane.
+    match link_request() {
+        Some(request) => {
+            set_text(this, "[data-link-name]", &request.name);
+            set_text(this, "[data-link-did]", &request.audience);
+            set_pane(this, "link");
+        }
+        None => {
+            let location = page_location();
+            set_pane(
+                this,
+                if location.hash == "#devices" {
+                    "devices"
+                } else {
+                    "account"
+                },
+            );
+            // `tonk account delete` and `tonk account spots delete` open
+            // this page with the review already asked for.
+            if location.hash == "#delete-account" {
+                open_delete_dialog(this);
+            }
+        }
+    }
     prefill_name(this);
     load_summary(this);
     load_devices(this);
+}
+
+/// The one space `?delete-space=` names, when this page was opened to
+/// delete one owned hosted space rather than the account.
+fn requested_space_deletion() -> Option<String> {
+    let location = page_location();
+    let params = web_sys::UrlSearchParams::new_with_str(&location.search).ok()?;
+    params
+        .get("delete-space")
+        .filter(|subject| !subject.trim().is_empty())
+}
+
+/// The page's real location, as the host forwards it into the guest.
+///
+/// A sealed guest's own `window.location` is `about:srcdoc`; the host
+/// injects the real one into `window.tonk.context`. The top-page seat
+/// (tests) falls back to `window.location`.
+struct PageLocation {
+    origin: String,
+    path: String,
+    search: String,
+    hash: String,
+}
+
+fn page_location() -> PageLocation {
+    let context = window()
+        .and_then(|win| Reflect::get(&win, &"tonk".into()).ok())
+        .and_then(|tonk| Reflect::get(&tonk, &"context".into()).ok())
+        .filter(|context| !context.is_undefined() && !context.is_null());
+    let field = |key: &str| -> Option<String> {
+        Reflect::get(context.as_ref()?, &key.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    match field("origin").filter(|origin| !origin.is_empty()) {
+        Some(origin) => PageLocation {
+            origin,
+            path: field("path").unwrap_or_default(),
+            search: field("search").unwrap_or_default(),
+            hash: field("hash").unwrap_or_default(),
+        },
+        None => {
+            let location = window().map(|win| win.location());
+            let read = |value: Option<Result<String, JsValue>>| value.and_then(Result::ok);
+            PageLocation {
+                origin: read(location.as_ref().map(|l| l.origin())).unwrap_or_default(),
+                path: read(location.as_ref().map(|l| l.pathname())).unwrap_or_default(),
+                search: read(location.as_ref().map(|l| l.search())).unwrap_or_default(),
+                hash: read(location.as_ref().map(|l| l.hash())).unwrap_or_default(),
+            }
+        }
+    }
+}
+
+/// What a waiting terminal asked for, when this is its approval page.
+struct LinkRequest {
+    audience: String,
+    callback: String,
+    name: String,
+}
+
+fn link_request() -> Option<LinkRequest> {
+    let location = page_location();
+    if location.path != "/settings/link" {
+        return None;
+    }
+    let params = web_sys::UrlSearchParams::new_with_str(&location.search).ok()?;
+    let audience = params.get("audience")?;
+    let callback = params.get("callback")?;
+    let name = params
+        .get("name")
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "terminal".to_string());
+    Some(LinkRequest {
+        audience,
+        callback,
+        name,
+    })
+}
+
+/// Raise one of this panel's `<tonk-dialog>` clusters, the confirm.
+fn show_dialog(this: &HtmlElement, selector: &str) {
+    let Some(dialog) = this.query_selector(selector).ok().flatten() else {
+        return;
+    };
+    if let Some(show) = Reflect::get(dialog.as_ref(), &"show".into())
+        .ok()
+        .and_then(|show| show.dyn_into::<Function>().ok())
+    {
+        let _ = show.call0(dialog.as_ref());
+    }
+}
+
+fn close_dialog(this: &HtmlElement, selector: &str) {
+    let Some(dialog) = this.query_selector(selector).ok().flatten() else {
+        return;
+    };
+    if let Some(close) = Reflect::get(dialog.as_ref(), &"close".into())
+        .ok()
+        .and_then(|close| close.dyn_into::<Function>().ok())
+    {
+        let _ = close.call0(dialog.as_ref());
+    }
+}
+
+/// What the arming field holds: a `contenteditable` span, so its text.
+fn typed_address(this: &HtmlElement) -> String {
+    this.query_selector("[data-delete-email]")
+        .ok()
+        .flatten()
+        .and_then(|field| field.text_content())
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// Arm the solid verb only while the typed address is the account's.
+fn arm_delete(this: &HtmlElement) {
+    let expected = this
+        .get_attribute("data-delete-email-expected")
+        .unwrap_or_default();
+    let armed = !expected.is_empty() && typed_address(this) == expected;
+    if let Ok(Some(verb)) = this.query_selector("[data-delete-account-submit]") {
+        if armed {
+            let _ = verb.remove_attribute("disabled");
+        } else {
+            let _ = verb.set_attribute("disabled", "");
+        }
+    }
+}
+
+fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
+    if let Ok(Some(element)) = this.query_selector(selector)
+        && let Ok(element) = element.dyn_into::<HtmlElement>()
+    {
+        element.set_hidden(hidden);
+    }
+}
+
+/// Show the reviewed scope, then the confirmation.
+///
+/// The plan is read from the account db by the worker: which listed
+/// spaces this account provides, and how many it merely joined.
+fn open_delete_dialog(this: &HtmlElement) {
+    set_text(
+        this,
+        "[data-delete-scope]",
+        "loading what this deletes\u{2026}",
+    );
+    set_text(this, "[data-delete-email]", "");
+    let _ = this.remove_attribute("data-delete-email-expected");
+    arm_delete(this);
+    show_dialog(this, "[data-delete-account-dialog]");
+    if let Ok(Some(field)) = this.query_selector("[data-delete-email]")
+        && let Ok(field) = field.dyn_into::<HtmlElement>()
+    {
+        let _ = field.focus();
+    }
+    let host = this.clone();
+    spawn_local(async move {
+        let plan: Option<tonk_worker_api::AccountDeletionPlan> =
+            match tonk_host::get_json("/api/account/deletion/plan").await {
+                Ok(body) => serde_json::from_str(&body).ok(),
+                Err(_) => None,
+            };
+        let Some(plan) = plan else {
+            set_text(
+                &host,
+                "[data-delete-scope]",
+                "The deletion scope could not be loaded. Check your connection and try again.",
+            );
+            return;
+        };
+        let requested = requested_space_deletion();
+        let spaces: Vec<_> = plan
+            .spaces
+            .iter()
+            .filter(|space| {
+                requested
+                    .as_deref()
+                    .is_none_or(|subject| space.subject == subject)
+            })
+            .collect();
+        if let Some(subject) = &requested
+            && spaces.is_empty()
+        {
+            set_text(
+                &host,
+                "[data-delete-scope]",
+                &format!("{subject} is not an owned hosted space of this account."),
+            );
+            return;
+        }
+        let _ = host.set_attribute(
+            "data-delete-space",
+            requested.as_deref().unwrap_or_default(),
+        );
+        set_text(
+            &host,
+            "[data-delete-submit-label]",
+            if requested.is_some() {
+                "delete this space"
+            } else {
+                "delete account"
+            },
+        );
+        let owned = spaces.len();
+        let names: Vec<&str> = spaces
+            .iter()
+            .map(|space| space.name.as_deref().unwrap_or(&space.subject))
+            .collect();
+        let listed = if names.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", names.join(", "))
+        };
+        set_text(
+            &host,
+            "[data-delete-scope]",
+            &if requested.is_some() {
+                format!(
+                    "this deletes the selected owned space{listed} from tonk services. your account and every other space remain."
+                )
+            } else {
+                format!(
+                    "{owned} owned hosted space{} will be deleted{listed}. {} joined space{} will be left intact.",
+                    if owned == 1 { "" } else { "s" },
+                    plan.joined_spaces,
+                    if plan.joined_spaces == 1 { "" } else { "s" },
+                )
+            },
+        );
+        set_text(&host, "[data-delete-email-expected-label]", &plan.email);
+        let _ = host.set_attribute("data-delete-email-expected", &plan.email);
+        arm_delete(&host);
+    });
+}
+
+/// Assert `tonk:delete-account`. The worker checks the address against
+/// the account, asks the page for the passkey, and reports through the
+/// ceremony row this panel watches.
+fn submit_delete(this: &HtmlElement) {
+    let email = typed_address(this);
+    let expected = this
+        .get_attribute("data-delete-email-expected")
+        .unwrap_or_default();
+    // The verb is off until the address matches; a submit that arrives
+    // anyway (keyboard, script) is answered the same way.
+    if expected.is_empty() || email != expected {
+        arm_delete(this);
+        return;
+    }
+    close_dialog(this, "[data-delete-account-dialog]");
+    if let Some(subject) = this
+        .get_attribute("data-delete-space")
+        .filter(|subject| !subject.is_empty())
+    {
+        // One hosted space is deprovisioning: the worker signs
+        // `/provider/remove` with this device's own authority, and no
+        // passkey is involved.
+        show_status(this, "Deleting the selected space\u{2026}");
+        let host = this.clone();
+        spawn_local(async move {
+            let body = serde_json::json!({ "subject": subject }).to_string();
+            match tonk_host::post_json("/api/account/spaces/delete", &body).await {
+                Ok(_) => show_status(
+                    &host,
+                    "Owned space deleted from Tonk services. Your account and other spaces remain.",
+                ),
+                Err(error) => show_status(
+                    &host,
+                    &format!("The space was not deleted: {}", error.message),
+                ),
+            }
+        });
+        return;
+    }
+    show_status(this, "Waiting for your passkey\u{2026}");
+    transact(
+        this,
+        &claim(
+            "Delete this account from every service and this device.",
+            serde_json::json!({
+                "email": { "the": "xyz.tonk.delete-account/email", "as": "Text" }
+            }),
+            serde_json::json!({ "email": email }),
+        ),
+    );
+}
+
+/// Sign this device out: the account stays, this browser forgets it.
+fn sign_out(this: &HtmlElement) {
+    close_dialog(this, "[data-sign-out-dialog]");
+    show_status(this, "Signing out\u{2026}");
+    let host = this.clone();
+    spawn_local(async move {
+        match tonk_host::delete_json("/api/account").await {
+            // The worker's whole state changed hands; rebuilding the
+            // page is what drops the subscriptions the old account owned.
+            Ok(_) => tonk_host::reload_page(),
+            Err(error) => show_status(
+                &host,
+                &format!("This device could not be signed out: {}", error.message),
+            ),
+        }
+    });
+}
+
+/// Assert `tonk:add-passkey`: the worker asks the page for the passkey
+/// that holds the account, then for the new one.
+fn add_passkey(this: &HtmlElement) {
+    show_status(this, "Waiting for your passkey\u{2026}");
+    transact(
+        this,
+        &claim(
+            "Seal the account under another passkey.",
+            serde_json::json!({
+                "marker": { "the": "dom.event.current-target.dataset/add-passkey", "as": "Entity" }
+            }),
+            serde_json::json!({ "marker": "tonk:add-passkey" }),
+        ),
+    );
+}
+
+/// Assert `tonk:authorize-device` for the terminal named in the URL.
+fn approve_link(this: &HtmlElement) {
+    let Some(request) = link_request() else {
+        return;
+    };
+    show_status(this, "Waiting for your passkey\u{2026}");
+    transact(
+        this,
+        &claim(
+            "Delegate the account to a waiting terminal.",
+            serde_json::json!({
+                "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
+                "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
+                "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
+            }),
+            serde_json::json!({
+                "audience": request.audience,
+                "callback": bs58::encode(request.callback.as_bytes()).into_string(),
+                "name": request.name,
+            }),
+        ),
+    );
+}
+
+/// Tell the waiting terminal no, and come back here.
+fn decline_link(this: &HtmlElement) {
+    let Some(request) = link_request() else {
+        return;
+    };
+    let redirect = format!("{}/settings", page_location().origin);
+    match tonk_worker_api::callback::delivery_url(
+        &request.callback,
+        &[("deny", "declined in the browser"), ("redirect", &redirect)],
+    ) {
+        Ok(target) => tonk_host::navigate_to(&target),
+        Err(error) => show_status(this, &error),
+    }
+}
+
+fn show_status(this: &HtmlElement, text: &str) {
+    set_text(this, "[data-ceremony-status]", text);
+    set_hidden(this, "[data-ceremony-status]", text.is_empty());
+}
+
+/// A transient claim for `window.tonk.transact`: the concept inline,
+/// so the worker decodes the same attributes the handler matches on.
+fn claim(
+    description: &str,
+    with: serde_json::Value,
+    parameters: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": { "description": description, "with": with }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+/// Call `window.tonk.transact(request)`: routeless, so the claim lands on
+/// the profile branch this guest is mounted with. A refusal is shown
+/// where the ask was made: a command that never committed reports
+/// nothing else.
+fn transact(this: &HtmlElement, request: &serde_json::Value) {
+    let Ok(text) = serde_json::to_string(request) else {
+        return;
+    };
+    let Some((tonk, transact)) = window()
+        .and_then(|win| Reflect::get(&win, &"tonk".into()).ok())
+        .and_then(|tonk| {
+            Reflect::get(&tonk, &"transact".into())
+                .ok()
+                .and_then(|f| f.dyn_into::<Function>().ok())
+                .map(|f| (tonk, f))
+        })
+    else {
+        show_status(this, "This page cannot reach the worker.");
+        return;
+    };
+    let Ok(body) = JSON::parse(&text) else {
+        return;
+    };
+    let host = this.clone();
+    spawn_local(async move {
+        let outcome = match transact.call1(&tonk, &body) {
+            Ok(answer) => match answer.dyn_into::<js_sys::Promise>() {
+                Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map(|_| ()),
+                Err(_) => Ok(()),
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = outcome {
+            let reason = Reflect::get(&error, &"message".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .or_else(|| error.as_string())
+                .unwrap_or_else(|| format!("{error:?}"));
+            tonk_common::log!("ui-account-settings: transact refused: {reason}");
+            show_status(&host, &format!("The worker refused the request: {reason}"));
+        }
+    });
+}
+
+/// Subscribe to the ceremony-status row on the profile overlay.
+fn subscribe_ceremony(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        if host.get_attribute("with").is_none() {
+            let _ = host.set_attribute("with", PROFILE_WITH);
+        }
+        let consumer: Element = host.clone().into();
+        let body = r#"{
+          "predicate": { "with": {
+            "ceremony": { "the": "xyz.tonk.ceremony/ceremony", "as": "Text", "cardinality": "one" },
+            "state": { "the": "xyz.tonk.ceremony/state", "as": "Text", "cardinality": "one" },
+            "detail": { "the": "xyz.tonk.ceremony/detail", "as": "Text", "cardinality": "one" }
+          } },
+          "terms": {
+            "this": "state:ceremony",
+            "ceremony": { "?": { "name": "ceremony" } },
+            "state": { "?": { "name": "state" } },
+            "detail": { "?": { "name": "detail" } }
+          }
+        }"#;
+        let Ok(body) = JSON::parse(body) else {
+            return;
+        };
+        let tag = JsValue::from_str(CEREMONY_TAG);
+        match consumer::subscribe(&consumer, &body, Some(&tag)) {
+            Ok(sub) => {
+                tonk_common::log!("ui-account-settings: watching the ceremony status");
+                *subscription.borrow_mut() = Some(sub)
+            }
+            Err(error) => tonk_common::log!("ui-account-settings: subscribe failed: {error:?}"),
+        }
+    });
+}
+
+/// A snapshot frame: the row as it stands, or nothing yet.
+fn on_ceremony_snapshot(this: &HtmlElement, payload: JsValue) {
+    let rows = js_sys::Array::from(&payload);
+    if rows.length() > 0 {
+        render_ceremony(this, &rows.get(rows.length() - 1));
+    }
+}
+
+/// A delta frame: `{ asserted, retracted }`, the newest asserted row wins.
+fn on_ceremony_delta(this: &HtmlElement, payload: JsValue) {
+    let asserted = Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    if rows.length() > 0 {
+        render_ceremony(this, &rows.get(rows.length() - 1));
+    }
+}
+
+/// Say where the ceremony got to, in words that say what to do next.
+fn render_ceremony(this: &HtmlElement, row: &JsValue) {
+    let field = |name: &str| {
+        Reflect::get(row, &"fields".into())
+            .ok()
+            .and_then(|fields| Reflect::get(&fields, &name.into()).ok())
+            .and_then(|value| value.as_string())
+            .unwrap_or_default()
+    };
+    let (which, state, detail) = (field("ceremony"), field("state"), field("detail"));
+    tonk_common::log!("ui-account-settings: ceremony {which} {state} {detail}");
+    let subject = match which.as_str() {
+        ceremony::DELETE_ACCOUNT => "Deleting the account",
+        ceremony::AUTHORIZE_DEVICE => "Approving the terminal",
+        ceremony::ADD_PASSKEY => "Adding the passkey",
+        _ => return,
+    };
+    let text = match state.as_str() {
+        ceremony_state::PENDING_CEREMONY => format!("{subject}: waiting for your passkey\u{2026}"),
+        ceremony_state::WORKING => format!("{subject}\u{2026}"),
+        ceremony_state::DONE => match which.as_str() {
+            ceremony::DELETE_ACCOUNT => "Account deleted.".to_string(),
+            ceremony::AUTHORIZE_DEVICE => {
+                "Approved. Handing the terminal its access\u{2026}".to_string()
+            }
+            _ => "Done.".to_string(),
+        },
+        ceremony_state::REFUSED | ceremony_state::FAILED => {
+            format!("{subject} did not finish: {detail}")
+        }
+        _ => return,
+    };
+    let _ = this.set_attribute("data-ceremony", &which);
+    let _ = this.set_attribute("data-ceremony-state", &state);
+    show_status(this, &text);
+    if state == ceremony_state::DONE && which == ceremony::ADD_PASSKEY {
+        load_summary(this);
+    }
 }
 
 /// Seed the display-name editable with what the roster resolved, so the
@@ -445,6 +1082,33 @@ pub(crate) fn register() {
         .is_undefined()
     {
         UiAccountSettings::define("ui-account-settings");
+        install_frame_shim(&win);
+    }
+}
+
+/// Install `reset` / `update` / `error` on the element prototype,
+/// forwarding to the per-instance closures. The host calls them by name
+/// off the element for every subscription frame; on the prototype (not
+/// each instance) so `this`-binding is correct, the same pattern
+/// `<ui-sync-status>` uses.
+fn install_frame_shim(win: &web_sys::Window) {
+    let constructor = win.custom_elements().get("ui-account-settings");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    for (method, delegate) in [
+        ("reset", "__tonkReset"),
+        ("update", "__tonkUpdate"),
+        ("error", "__tonkError"),
+    ] {
+        let forward = Function::new_with_args(
+            "payload, opts",
+            &format!("if (typeof this.{delegate} === 'function') this.{delegate}(payload, opts);"),
+        );
+        let _ = Reflect::set(&proto, &method.into(), &forward);
     }
 }
 
@@ -493,6 +1157,175 @@ mod tests {
         assert!(account_pane.hidden());
         assert!(devices_tab.class_list().contains("cur"));
 
+        host.remove();
+    }
+
+    fn mount() -> HtmlElement {
+        tonk_fab::register();
+        super::register();
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document
+            .create_element("ui-account-settings")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+        host
+    }
+
+    fn set_context(path: &str, search: &str, hash: &str) {
+        let window = window().unwrap();
+        let tonk = js_sys::Object::new();
+        let context = js_sys::Object::new();
+        for (key, value) in [
+            ("origin", "https://tonk.test"),
+            ("path", path),
+            ("search", search),
+            ("hash", hash),
+        ] {
+            js_sys::Reflect::set(&context, &key.into(), &value.into()).unwrap();
+        }
+        js_sys::Reflect::set(&tonk, &"context".into(), &context).unwrap();
+        js_sys::Reflect::set(&window, &"tonk".into(), &tonk).unwrap();
+    }
+
+    fn clear_context() {
+        js_sys::Reflect::set(
+            &window().unwrap(),
+            &"tonk".into(),
+            &wasm_bindgen::JsValue::UNDEFINED,
+        )
+        .unwrap();
+    }
+
+    fn pane(host: &HtmlElement, name: &str) -> HtmlElement {
+        host.query_selector(&format!(".s-body [data-pane=\"{name}\"]"))
+            .unwrap()
+            .expect("pane")
+            .dyn_into()
+            .unwrap()
+    }
+
+    /// `/settings#devices` lands on the devices pane: a tab is a place.
+    #[wasm_bindgen_test]
+    fn it_lands_on_the_pane_the_fragment_names() {
+        set_context("/settings", "", "#devices");
+        let host = mount();
+        assert!(
+            !pane(&host, "devices").hidden(),
+            "the fragment picks the pane"
+        );
+        assert!(pane(&host, "account").hidden());
+        host.remove();
+        clear_context();
+    }
+
+    /// `/settings/link?audience=&callback=&name=` is a terminal asking:
+    /// the page shows who, and offers approve or decline.
+    #[wasm_bindgen_test]
+    fn it_shows_the_terminal_asking_for_access() {
+        set_context(
+            "/settings/link",
+            "?audience=did%3Akey%3Az6MkTerminal&callback=http%3A%2F%2F127.0.0.1%3A4321%2F&name=e2e%20terminal",
+            "",
+        );
+        let host = mount();
+        assert!(!pane(&host, "link").hidden(), "the approval pane leads");
+        assert!(pane(&host, "account").hidden());
+        assert_eq!(
+            host.query_selector("[data-link-name]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default(),
+            "e2e terminal"
+        );
+        assert_eq!(
+            host.query_selector("[data-link-did]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default(),
+            "did:key:z6MkTerminal"
+        );
+        assert!(
+            host.query_selector("[data-link-approve]")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            host.query_selector("[data-link-decline]")
+                .unwrap()
+                .is_some()
+        );
+        host.remove();
+        clear_context();
+    }
+
+    /// The deletion verb stays off until the account's address is typed
+    /// into the arming field, and comes on the moment it is.
+    #[wasm_bindgen_test]
+    fn it_arms_the_deletion_only_once_the_address_is_typed() {
+        clear_context();
+        let host = mount();
+        host.query_selector("[data-delete-account-open]")
+            .unwrap()
+            .expect("the delete row")
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        let dialog: HtmlElement = host
+            .query_selector("[data-delete-account-dialog]")
+            .unwrap()
+            .expect("the deletion dialog")
+            .dyn_into()
+            .unwrap();
+        let native: web_sys::HtmlDialogElement = dialog
+            .shadow_root()
+            .expect("dialog shadow root")
+            .query_selector("dialog")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(native.open(), "the row raises the review");
+        let verb: HtmlElement = host
+            .query_selector("[data-delete-account-submit]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(
+            verb.has_attribute("disabled"),
+            "nothing typed, nothing armed"
+        );
+
+        // The plan names the address; the field must match it.
+        host.set_attribute("data-delete-email-expected", "goner@example.com")
+            .unwrap();
+        let field: HtmlElement = host
+            .query_selector("[data-delete-email]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let typed = |text: &str| {
+            field.set_text_content(Some(text));
+            let init = web_sys::EventInit::new();
+            init.set_bubbles(true);
+            let event = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
+            field.dispatch_event(&event).unwrap();
+        };
+        typed("someone-else@example.com");
+        assert!(verb.has_attribute("disabled"), "a wrong address stays off");
+        typed("goner@example.com");
+        assert!(!verb.has_attribute("disabled"), "the right address arms it");
+        typed("goner@example.co");
+        assert!(
+            verb.has_attribute("disabled"),
+            "and editing it away disarms"
+        );
+        assert!(native.open(), "arming never closes the review");
         host.remove();
     }
 

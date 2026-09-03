@@ -294,6 +294,37 @@ pub async fn build_provider_remove_invocation(
     .await
 }
 
+/// Build the `/void/customer/purge` invocation, signed by the account
+/// root itself: proofless and self-subjected, the way a passkey ceremony
+/// that has just recovered the root can sign. The service verifies the
+/// chain, and the root's own signature is the whole chain.
+///
+/// Under `/void` deliberately: that is the destructive level of the
+/// capability hierarchy, which no `/use` grant reaches.
+pub async fn build_purge_invocation(root: impl Into<Signer>) -> Result<Vec<u8>> {
+    use dialog_varsig::Principal as _;
+
+    let root: Signer = root.into();
+    let root_did = root.did();
+    let invocation = InvocationBuilder::new()
+        .issuer(root)
+        .audience(&root_did)
+        .subject(&root_did)
+        .command(PURGE_COMMAND.map(str::to_string).to_vec())
+        .proofs(vec![])
+        .issue_now()
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .context("failed to sign the purge invocation")?;
+    InvocationChain::new(invocation, HashMap::new())
+        .to_bytes()
+        .context("failed to serialize the purge invocation")
+}
+
+/// The command [`build_purge_invocation`] signs.
+pub const PURGE_COMMAND: [&str; 3] = ["void", "customer", "purge"];
+
 /// Build the `/customer/resend` invocation: ask the service to mail the
 /// activation link again.
 ///
@@ -386,5 +417,32 @@ mod tests {
                 "put".to_string()
             ],
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_builds_a_root_signed_purge_the_service_verifies() {
+        let root = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
+        let root_did = root.did();
+        let bytes = build_purge_invocation(root).await.unwrap();
+
+        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
+        chain
+            .verify(&dialog_ucan_core::verification::VerificationContext::new(
+                &dialog_ucan_core::verification::Environment::new(
+                    chain.proof_store(),
+                    dialog_credentials::DidKeyResolver,
+                    dialog_ucan_core::revocation::UnverifiedRevocations,
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(chain.issuer(), &root_did);
+        assert_eq!(chain.subject(), &root_did);
+        assert!(
+            chain.proofs().is_empty(),
+            "the root's signature is the chain"
+        );
+        assert_eq!(chain.command().0, PURGE_COMMAND.map(str::to_string));
+        assert!(chain.invocation.expiration().is_some());
     }
 }

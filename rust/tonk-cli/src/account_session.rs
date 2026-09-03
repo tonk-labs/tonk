@@ -9,7 +9,6 @@ use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
-use tonk_account::detach::SignedDetachIntent;
 
 use crate::space::SpaceStore;
 
@@ -124,8 +123,6 @@ pub enum PendingLogin {
 /// Exact account grant authorized for current remote use.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveAccount {
-    /// Provider service URL.
-    pub provider: String,
     /// Passkey credential identifier.
     pub credential_id: String,
     /// Account root DID.
@@ -311,12 +308,11 @@ async fn projected_active(
         return Ok(None);
     };
     Ok(Some(ActiveAccount {
-        provider: provider.provider().to_string(),
         credential_id: root.credential_id,
         root_did: root.root_did,
         delegation_cid: root.delegation_cid.clone(),
         delegation_hex: root.delegation_hex,
-        remote: provider.remote().map(ToOwned::to_owned),
+        remote: Some(provider.address().to_owned()),
         attachment_id: root.delegation_cid,
         attached_at: provider.attached_at().unwrap_or_default(),
     }))
@@ -452,38 +448,6 @@ pub async fn logout_transition_for_store(
     Ok(detached)
 }
 
-/// Tell `account`'s provider this attachment ended: one signed POST,
-/// no retry. See [`logout_transition_for_store`] for why failure is tolerable.
-pub async fn deliver_detach(profile: &Profile, account: &ActiveAccount, now: u64) -> Result<()> {
-    let root: Did = account
-        .root_did
-        .parse()
-        .context("active root DID is invalid")?;
-    let intent = SignedDetachIntent::sign(
-        profile.signer(),
-        &root,
-        &account.attachment_id,
-        &account.delegation_cid,
-        now,
-    )
-    .await
-    .context("failed to sign account detach intent")?;
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/devices/detach",
-            account.provider.trim_end_matches('/')
-        ))
-        .json(&intent)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .context("failed to reach the account provider")?;
-    if !response.status().is_success() {
-        anyhow::bail!("provider answered {}", response.status());
-    }
-    Ok(())
-}
-
 #[cfg(feature = "integration-tests")]
 pub(crate) async fn install_for_integration_test(
     profile: &Profile,
@@ -533,7 +497,6 @@ mod tests {
 
     fn active_account(attachment_id: &str) -> ActiveAccount {
         ActiveAccount {
-            provider: "https://accounts.example".to_string(),
             credential_id: "credential".to_string(),
             root_did: "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX".to_string(),
             delegation_cid: "bafk-delegation".to_string(),

@@ -12,8 +12,6 @@ use tonk_account::{AccountProviderRecord, AccountStateStatus};
 use tonk_analytics::account::{DegradationKind, Stage};
 use url::Url;
 
-/// Production account API used unless explicitly overridden.
-pub const DEFAULT_SERVICE_URL: &str = "https://accounts.tonk.xyz";
 /// Production account page, where the revoke ceremony runs.
 pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
 /// Production link ceremony page: it reads `?audience=` and `?callback=`
@@ -186,8 +184,6 @@ pub fn sign_in_phase(store: &crate::space::SpaceStore) -> Result<SignInPhase> {
 /// Inputs controlling a browser handoff.
 #[derive(Debug, Clone)]
 pub struct LinkOptions {
-    /// Account API base URL.
-    pub service_url: String,
     /// Human-readable name displayed for browser confirmation.
     pub device_name: String,
     /// Whether to ask the OS to open the handoff URL.
@@ -224,13 +220,6 @@ pub struct LinkOutcome {
     pub account_state: AccountStateStatus,
     /// Diagnostic when the persisted link remains unhydrated.
     pub warning: Option<String>,
-    /// Account service this device attached to.
-    ///
-    /// The page's own deployment when it named one, and only otherwise the
-    /// flag — the same precedence the attachment itself was recorded under,
-    /// so a caller matching endpoints against a provider matches the one
-    /// this device actually uses.
-    pub service_url: String,
 }
 
 async fn decode_provider(
@@ -347,20 +336,8 @@ async fn logout_with_operator_in_observed(
     store: &crate::space::SpaceStore,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<()> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let accounts =
-        crate::account_session::logout_transition_for_store(profile, operator, store).await?;
+    crate::account_session::logout_transition_for_store(profile, operator, store).await?;
     observer.checkpoint(tonk_analytics::account::Stage::LocalCommit);
-    for account in accounts {
-        if let Err(error) = crate::account_session::deliver_detach(profile, &account, now).await {
-            eprintln!(
-                "warning: logged out locally; the provider was not notified                  and may list this device until it is revoked: {error:#}"
-            );
-        }
-    }
     Ok(())
 }
 
@@ -396,15 +373,11 @@ pub async fn status_in(
             device_did,
         }),
         Some(provider) => {
-            let account_state = if provider.remote().is_some() {
-                crate::account_state::status_in(profile, store).await?
-            } else {
-                AccountStateStatus::Unconfigured
-            };
+            let account_state = crate::account_state::status_in(profile, store).await?;
             Ok(AccountStatus::Registered {
                 root_did: root.root_did,
                 device_did,
-                provider: provider.provider().to_owned(),
+                provider: provider.address().to_owned(),
                 account_state,
             })
         }
@@ -447,7 +420,6 @@ pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<D
 /// checkpointed and replayed after a crash. This performs no local writes.
 async fn account_from_callback(
     profile: &Profile,
-    options: &LinkOptions,
     authorization: CallbackAuthorization,
 ) -> Result<crate::account_session::ActiveAccount> {
     let grant_bytes = hex::decode(&authorization.delegation_hex)
@@ -458,18 +430,21 @@ async fn account_from_callback(
     if attachment_id.is_empty() {
         bail!("authorization is missing its service attachment generation");
     }
-    let provider_url = Some(authorization.service_url.trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&options.service_url);
-    let remote = authorization.remote.trim().to_owned();
+    // The grant's signed meta names where the account syncs; the payload's
+    // `remote` stands in for grants minted before the meta rode the
+    // delegation.
+    let remote = tonk_invite::home_address(&chain)
+        .context("authorization grant names an unusable sync endpoint")?
+        .map(String::from)
+        .or_else(|| Some(authorization.remote.trim().to_owned()).filter(|value| !value.is_empty()))
+        .context("authorization names no sync endpoint")?;
     let attached_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let provider = AccountProviderRecord::attach(provider_url, &remote, attached_at)
+    AccountProviderRecord::attach(&remote, attached_at)
         .context("authorization returned an unusable provider")?;
     Ok(crate::account_session::ActiveAccount {
-        provider: provider.provider().to_owned(),
         credential_id: authorization.credential_id,
         root_did: account_did.to_string(),
         delegation_cid: chain.proof_cids()[0].to_string(),
@@ -511,11 +486,8 @@ async fn project_staged_account(
         .parse()
         .context("staged account root DID is invalid")?;
     let remote = account.remote.as_deref().unwrap_or_default();
-    let provider = AccountProviderRecord::attach(&account.provider, remote, account.attached_at)
+    let provider = AccountProviderRecord::attach(remote, account.attached_at)
         .context("staged account provider is unusable")?;
-    if provider.provider() != account.provider {
-        bail!("staged account provider is not canonical");
-    }
 
     profile
         .access()
@@ -583,7 +555,6 @@ async fn hydrate_activated_account(
         device_did: profile.did().to_string(),
         account_state: ensured.status,
         warning: ensured.warning,
-        service_url: account.provider.clone(),
     })
 }
 
@@ -648,7 +619,7 @@ async fn link_via_callback(
     observer.checkpoint(Stage::DelegationValidate);
     let authorization: CallbackAuthorization =
         serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
-    let account = account_from_callback(profile, options, authorization).await?;
+    let account = account_from_callback(profile, authorization).await?;
     observer.checkpoint(Stage::ActivationStage);
     complete_staged_account(profile, operator, store, &account).await?;
     hydrate_activated_account(profile, operator, store, &account, url, observer).await
@@ -663,6 +634,9 @@ async fn link_via_callback(
 #[serde(rename_all = "camelCase")]
 struct CallbackAuthorization {
     delegation_hex: String,
+    /// Where the account syncs, for grants minted before the address rode
+    /// the delegation's signed meta; the meta wins when both are present.
+    #[serde(default)]
     remote: String,
     #[serde(default)]
     credential_id: String,
@@ -671,11 +645,6 @@ struct CallbackAuthorization {
     /// the exact service row rather than guessing from the delegation CID.
     #[serde(default)]
     attachment_id: String,
-    /// The account service the approving page's deployment uses. Absent
-    /// from pages that predate it; the `--service-url` flag (or its
-    /// production default) stands in then.
-    #[serde(default)]
-    service_url: String,
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.
@@ -786,17 +755,14 @@ pub struct DeviceRow {
 
 /// Authenticated provider attachment used by account-scoped CLI modules.
 pub(crate) struct AccountConnection {
-    pub(crate) service_url: String,
     pub(crate) root_did: Did,
     pub(crate) link: DelegationChain,
 }
 
 async fn connection_from_provider(
     profile: &Profile,
-    provider: AccountProviderRecord,
     store: &crate::space::SpaceStore,
 ) -> Result<AccountConnection> {
-    let service_url = provider.provider().to_string();
     let root = crate::identity::local_root_in(profile, store)
         .await?
         .context("the provider attachment has no local root")?;
@@ -804,11 +770,7 @@ async fn connection_from_provider(
     let link = DelegationChain::try_from(bytes.as_slice())
         .context("stored local-root delegation is invalid")?;
     let root_did = link.issuer().clone();
-    Ok(AccountConnection {
-        service_url,
-        root_did,
-        link,
-    })
+    Ok(AccountConnection { root_did, link })
 }
 
 pub(crate) async fn optional_connection_in(
@@ -816,29 +778,29 @@ pub(crate) async fn optional_connection_in(
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountConnection>> {
     #[cfg(feature = "integration-tests")]
-    if let Some((service_url, link, _)) = integration_connections()
+    if let Some((link, _)) = integration_connections()
         .lock()
         .expect("integration connection registry")
         .get(profile.did().as_ref())
         .cloned()
     {
         return Ok(Some(AccountConnection {
-            service_url,
             root_did: link.issuer().clone(),
             link,
         }));
     }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    let Some(provider) = stored_provider_in(profile, &operator, store).await? else {
+    if stored_provider_in(profile, &operator, store)
+        .await?
+        .is_none()
+    {
         return Ok(None);
-    };
-    Ok(Some(
-        connection_from_provider(profile, provider, store).await?,
-    ))
+    }
+    Ok(Some(connection_from_provider(profile, store).await?))
 }
 
 #[cfg(feature = "integration-tests")]
-type IntegrationConnection = (String, DelegationChain, crate::site::SiteConfig);
+type IntegrationConnection = (DelegationChain, crate::site::SiteConfig);
 #[cfg(feature = "integration-tests")]
 type IntegrationConnections =
     std::sync::Mutex<std::collections::HashMap<String, IntegrationConnection>>;
@@ -855,7 +817,7 @@ pub(crate) fn integration_site_config(profile: &Profile) -> Option<crate::site::
         .lock()
         .expect("integration connection registry")
         .get(profile.did().as_ref())
-        .map(|(_, _, config)| config.clone())
+        .map(|(_, config)| config.clone())
 }
 
 #[cfg(feature = "integration-tests")]
@@ -865,7 +827,6 @@ pub async fn attach_for_integration_test(
     profile: &Profile,
     operator: &crate::account_authority::AccountBoundOperator,
     config: crate::site::SiteConfig,
-    service_url: &str,
     credential_id: &str,
     link: DelegationChain,
     remote: &str,
@@ -891,7 +852,6 @@ pub async fn attach_for_integration_test(
         .perform(operator)
         .await?;
     let provider = AccountProviderRecord::attach(
-        service_url,
         remote,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -907,7 +867,6 @@ pub async fn attach_for_integration_test(
     let session = crate::account_session::AccountSessionState {
         version: 1,
         active: Some(crate::account_session::ActiveAccount {
-            provider: service_url.trim_end_matches('/').to_string(),
             credential_id: credential_id.to_string(),
             root_did: root_did.to_string(),
             delegation_cid: record.delegation_cid.clone(),
@@ -925,42 +884,31 @@ pub async fn attach_for_integration_test(
     integration_connections()
         .lock()
         .expect("integration connection registry")
-        .insert(
-            profile.did().to_string(),
-            (service_url.to_string(), link, config),
-        );
+        .insert(profile.did().to_string(), (link, config));
     Ok(())
 }
 
 /// List the devices authorized under this profile's account, from the
-/// account branch's own facts. The recorded provider is authoritative; a
-/// `service_url` names one only to cross-check it against the active
-/// account.
+/// account branch's own facts.
 ///
 /// Fresh by default, never hostage to the remote: a tightly bounded
 /// account pull runs first, and a remote that is slow or unanswering
 /// degrades to a stderr note over local facts rather than a hang. Set
 /// `TONK_OFFLINE=1` to skip the pull entirely. One row per device — a
 /// device described more than once keeps its earliest link time.
-pub async fn devices(profile: &Profile, service_url: Option<&str>) -> Result<Vec<DeviceRow>> {
+pub async fn devices(profile: &Profile) -> Result<Vec<DeviceRow>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
-    devices_in(profile, &store, service_url).await
+    devices_in(profile, &store).await
 }
 
 /// List devices through one explicit account profile store.
 pub async fn devices_in(
     profile: &Profile,
     store: &crate::space::SpaceStore,
-    service_url: Option<&str>,
 ) -> Result<Vec<DeviceRow>> {
-    let connection = optional_connection_in(profile, store)
+    let _connection = optional_connection_in(profile, store)
         .await?
         .context("no active account; run `tonk account login`")?;
-    if let Some(service_url) = service_url
-        && connection.service_url.trim_end_matches('/') != service_url.trim_end_matches('/')
-    {
-        bail!("requested provider does not match the active account");
-    }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     freshen_account(profile, &operator, store, "listing local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
@@ -1005,12 +953,21 @@ pub async fn sync_in(
     store: &crate::space::SpaceStore,
 ) -> Result<crate::account_state::EnsureOutcome> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    // Ten minutes, not the background freshen's tight bound: an explicit
+    // sync may be forwarding a large diverged subtree one block roundtrip
+    // at a time, and a bound it can never finish inside turns real
+    // progress into a guaranteed error. Interrupting early is Ctrl-C.
     tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_secs(600),
         crate::account_state::ensure_with_operator_and_store(profile, operator, store.clone()),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("the account remote did not answer in time"))?
+    .map_err(|_| match crate::account_state::last_progress() {
+        Some(step) => anyhow::anyhow!(
+            "the account remote did not answer in time; last step: {step} (rerun with TONK_TRACE=1 for wire-level detail)"
+        ),
+        None => anyhow::anyhow!("the account remote did not answer in time"),
+    })?
 }
 
 /// Sync the account best-effort, under the same hard deadline the link
@@ -1081,10 +1038,8 @@ async fn publish_revocation(
     use dialog_remote_ucan_s3::UcanAddress;
 
     let mut endpoints = std::collections::BTreeSet::new();
-    if let Some(provider) = stored_provider_in(profile, operator, store).await?
-        && let Some(remote) = provider.remote()
-    {
-        endpoints.insert(UcanAddress::new(remote).endpoint().to_string());
+    if let Some(provider) = stored_provider_in(profile, operator, store).await? {
+        endpoints.insert(UcanAddress::new(provider.address()).endpoint().to_string());
     }
     endpoints.extend(
         tonk_schema::directory::access_endpoints(branch, operator)
@@ -1173,12 +1128,6 @@ fn login_url(base: &str, audience: &str, callback: &str, name: &str) -> String {
     )
 }
 
-/// Inputs for revoking a device.
-pub struct RevokeOptions {
-    /// Account service base URL, cross-checked against the active account.
-    pub service_url: String,
-}
-
 /// How a revocation request resolved. The caller owns the messaging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
@@ -1204,40 +1153,31 @@ pub enum RevokeOutcome {
 /// would be a lie. For this device itself the retraction and its push
 /// come first, because a device that has just revoked itself can no
 /// longer push anything.
-pub async fn revoke(
-    profile: &Profile,
-    options: &RevokeOptions,
-    did: &str,
-) -> Result<RevokeOutcome> {
+pub async fn revoke(profile: &Profile, did: &str) -> Result<RevokeOutcome> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
-    revoke_in(profile, &store, options, did).await
+    revoke_in(profile, &store, did).await
 }
 
 /// Revoke a device through one explicit account profile store.
 pub async fn revoke_in(
     profile: &Profile,
     store: &crate::space::SpaceStore,
-    options: &RevokeOptions,
     did: &str,
 ) -> Result<RevokeOutcome> {
     let mut observer = crate::account_observability::NoopAccountObserver;
-    revoke_in_observed(profile, store, options, did, &mut observer).await
+    revoke_in_observed(profile, store, did, &mut observer).await
 }
 
 /// [`revoke_in`] with the publication boundary exposed to CLI telemetry.
 pub async fn revoke_in_observed(
     profile: &Profile,
     store: &crate::space::SpaceStore,
-    options: &RevokeOptions,
     did: &str,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<RevokeOutcome> {
     let connection = optional_connection_in(profile, store)
         .await?
         .context("no active account; run `tonk account login`")?;
-    if connection.service_url.trim_end_matches('/') != options.service_url.trim_end_matches('/') {
-        bail!("requested provider does not match the active account");
-    }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     let link = connection.link.clone();
 
@@ -1369,14 +1309,8 @@ mod tests {
             .unwrap();
         let delegation_cid = link.proof_cids()[0].to_string();
         let delegation_hex = hex::encode(link.to_bytes().unwrap());
-        let provider = AccountProviderRecord::attach(
-            "https://accounts.example",
-            "https://content.example/ucan/",
-            1,
-        )
-        .unwrap();
+        let provider = AccountProviderRecord::attach("https://content.example/ucan/", 1).unwrap();
         let account = crate::account_session::ActiveAccount {
-            provider: provider.provider().to_owned(),
             credential_id: "credential".to_owned(),
             root_did: root_did.to_string(),
             delegation_cid,
@@ -1529,7 +1463,7 @@ mod tests {
             delegation_hex: "00".to_string(),
         };
         let local_root_bytes = serde_json::to_vec(&local_root).unwrap();
-        let provider = AccountProviderRecord::attach("https://accounts.example", "", 1)
+        let provider = AccountProviderRecord::attach("https://accounts.example", 1)
             .unwrap()
             .encode()
             .unwrap();
@@ -1730,20 +1664,11 @@ mod tests {
 
         let error = account_from_callback(
             &profile,
-            &LinkOptions {
-                service_url: service_url.clone(),
-                device_name: "generation test".to_owned(),
-                open_browser: false,
-                store: None,
-                announce: None,
-                via: None,
-            },
             CallbackAuthorization {
                 delegation_hex: authorized.delegation_hex,
                 remote: "https://accounts.example/ucan/".to_owned(),
                 credential_id: authorized.root_did,
                 attachment_id: "  ".to_owned(),
-                service_url,
             },
         )
         .await
@@ -1761,7 +1686,6 @@ mod tests {
         profile_dir: dialog_effects::storage::Directory,
         profile_name: String,
         account_dir: std::path::PathBuf,
-        service_url: String,
         account: crate::account_session::ActiveAccount,
     }
 
@@ -1802,7 +1726,6 @@ mod tests {
                 .await
                 .unwrap();
             let account = crate::account_session::ActiveAccount {
-                provider: service_url.trim_end_matches('/').to_owned(),
                 credential_id: authorized.root_did,
                 root_did: grant.issuer().to_string(),
                 delegation_cid: grant.proof_cids()[0].to_string(),
@@ -1818,7 +1741,6 @@ mod tests {
                     profile_dir,
                     profile_name,
                     account_dir,
-                    service_url,
                     account,
                 },
                 profile,
@@ -1852,7 +1774,6 @@ mod tests {
             announce: Option<tokio::sync::mpsc::UnboundedSender<String>>,
         ) -> LinkOptions {
             LinkOptions {
-                service_url: self.service_url.clone(),
                 device_name: "recovery test".to_owned(),
                 open_browser: false,
                 store: Some(self.store.clone()),

@@ -4,26 +4,6 @@
 //! It is compiled to Wasm by Trunk as configured in [`index.html`](../../../index.html)
 //! (see the `data-bin="ui"` link tag).
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-fn canonical_account_url(path: &str, search: &str) -> Option<String> {
-    if path == "/account" || path.starts_with("/account/") {
-        return Some(format!("{path}{search}"));
-    }
-    // `/settings` belongs to the hub now (a real route: the settings page
-    // per the wireframes). The account panel — the WebAuthn and
-    // destructive ceremonies — lives at `/account`; old deep links
-    // (`/settings/link`, `/settings?add=1`) redirect to it, while the bare
-    // path falls through to the routed page.
-    if path == "/settings" && search.is_empty() {
-        return None;
-    }
-    if path == "/settings" {
-        return Some(format!("/account{search}"));
-    }
-    path.strip_prefix("/settings/")
-        .map(|suffix| format!("/account/{suffix}{search}"))
-}
-
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::{JsCast, prelude::*};
 
@@ -111,7 +91,6 @@ async fn main() {
         tonk_ui::register_dialog::describe(reason);
         tonk_ui::register_dialog::adopt_stashed_share();
     });
-    tonk_ui::account::register();
     tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
@@ -187,36 +166,12 @@ fn render_root(shell: &web_sys::Element) {
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
-    let search = window.location().search().unwrap_or_default();
-    let canonical_account = canonical_account_url(&path, &search);
-    // Redirect the OLD panel addresses onto their /account home; render the
-    // panel when we are already there.
-    let here = format!("{path}{search}");
-    if let Some(canonical) = canonical_account.as_ref()
-        && canonical != &here
-    {
-        let _ = window.location().replace(canonical);
-        return;
-    }
-    let account_route = canonical_account.is_some();
     let activate_route = path == "/activate" || path.starts_with("/activate/");
     let current = shell.first_element_child();
 
-    if account_route {
-        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACCOUNT") {
-            shell.set_inner_html("");
-            if let Some(document) = shell.owner_document()
-                && let Ok(account) = document.create_element("tonk-account")
-            {
-                let _ = shell.append_child(&account);
-            }
-        }
-        return;
-    }
-
     // The activation email lands here on any device, signed in or not,
-    // so the page bypasses sealed guests exactly as the account page
-    // does.
+    // so the page bypasses sealed guests. Everything else, the account's
+    // settings included, renders inside the routed site.
     if activate_route {
         if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACTIVATE") {
             shell.set_inner_html("");
@@ -283,32 +238,3 @@ fn inject_hot_swap() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {}
-
-#[cfg(test)]
-mod tests {
-    use super::canonical_account_url;
-
-    #[test]
-    fn it_canonicalizes_account_routes_without_losing_query_parameters() {
-        // The account panel's home is /account; legacy /settings deep
-        // links redirect there. Bare /settings is the routed page now.
-        assert_eq!(canonical_account_url("/settings", ""), None);
-        assert_eq!(
-            canonical_account_url("/settings", "?next=%2Fspace%2Fone"),
-            Some("/account?next=%2Fspace%2Fone".into())
-        );
-        assert_eq!(
-            canonical_account_url("/settings/link", "?callback=http%3A%2F%2Flocalhost"),
-            Some("/account/link?callback=http%3A%2F%2Flocalhost".into())
-        );
-        assert_eq!(
-            canonical_account_url("/account", "?revoke=did%3Akey%3Aone"),
-            Some("/account?revoke=did%3Akey%3Aone".into())
-        );
-        assert_eq!(
-            canonical_account_url("/account/link", "?audience=did%3Akey%3Acli"),
-            Some("/account/link?audience=did%3Akey%3Acli".into())
-        );
-        assert_eq!(canonical_account_url("/space/one", ""), None);
-    }
-}
