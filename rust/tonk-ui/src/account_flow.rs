@@ -568,12 +568,8 @@ mod tests {
     /// consent card in the TOP document, and its button runs the
     /// assertion the virtual authenticator answers.
     async fn use_passkey_consent(driver: &WebDriver) -> Result<()> {
-        // The prompt opens on the worker's ask without a further click:
-        // the guest's own click activated the top document too. The
-        // card is a fallback for a prompt the browser refused, so it
-        // is pressed only when it appears.
         driver.enter_default_frame().await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while tokio::time::Instant::now() < deadline {
             if let Ok(button) = driver.find(By::Css("#tonk-custody-continue")).await {
                 button.click().await?;
@@ -581,7 +577,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Ok(())
+        Err(anyhow!("the worker never raised its passkey consent card"))
     }
 
     /// A second browser holding the same passkey: a different device, the
