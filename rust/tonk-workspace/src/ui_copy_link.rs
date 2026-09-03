@@ -142,10 +142,11 @@ fn say(this: &HtmlElement, word: &str) {
 fn absolute(this: &HtmlElement) -> Option<String> {
     let raw = this.get_attribute("url").filter(|url| !url.is_empty())?;
     let base = window()?.location().href().ok()?;
-    web_sys::Url::new_with_base(&raw, &base)
+    let resolved = web_sys::Url::new_with_base(&raw, &base)
         .ok()
         .map(|url| url.href())
-        .or(Some(raw))
+        .unwrap_or(raw);
+    Some(tonk_analytics::launch::space_route_referral_url(&resolved).unwrap_or(resolved))
 }
 
 fn copy(this: &HtmlElement, revert: &Rc<RefCell<Option<i32>>>) {
@@ -192,5 +193,40 @@ pub(crate) fn register() {
     };
     if win.custom_elements().get("ui-copy-link").is_undefined() {
         UiCopyLink::define("ui-copy-link");
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn copied_space_link_carries_organic_and_hashed_space_attribution() {
+        let document = window().unwrap().document().unwrap();
+        let host: HtmlElement = document
+            .create_element("ui-copy-link")
+            .unwrap()
+            .unchecked_into();
+        let raw_space = "did:key:z6MkCopiedSpace";
+        host.set_attribute("url", &format!("https://tonk.network/space/{raw_space}"))
+            .unwrap();
+
+        let copied = absolute(&host).expect("space link resolves");
+        let url = web_sys::Url::new(&copied).unwrap();
+        assert_eq!(
+            url.search_params()
+                .get(tonk_analytics::launch::CHANNEL_PARAMETER)
+                .as_deref(),
+            Some("reshare")
+        );
+        assert_eq!(
+            url.search_params()
+                .get(tonk_analytics::launch::SPACE_PARAMETER)
+                .as_deref(),
+            Some(tonk_analytics::anonymize(raw_space).as_str())
+        );
     }
 }

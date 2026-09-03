@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
 tonk-common = { workspace = true }
+tonk-analytics = { workspace = true }
 tonk-host = { workspace = true }
 tonk-worker-api = { workspace = true }
 bs58 = { workspace = true }

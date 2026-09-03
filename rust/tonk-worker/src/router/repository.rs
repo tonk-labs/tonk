@@ -1168,7 +1168,7 @@ async fn run_invite(
     // concatenated in the view template so there is exactly one definition
     // of an invite URL, and so it can be shortened — an async round-trip a
     // template can't make.
-    let link = invite_url(&proof, &remote, &seed).await;
+    let link = invite_url(&proof, &remote, &seed, repo_name).await;
 
     let authorization = Authorization {
         this: subject_entity.clone(),
@@ -1341,13 +1341,13 @@ async fn publish_share_blocked(
 /// Assemble the invite URL a recipient opens, shortened when the
 /// shortcut service answers.
 ///
-/// The long form is `{origin}/join?access={proof}{remote}#{seed}`, where
-/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
-/// empty: a repo with no shareable remote is refused before any of this
-/// runs, because an invite that carries no remote strands its recipient in
-/// a space that can never fill. This is the shape the share view used to
-/// concatenate from three overlay fields; building it here gives it one
-/// definition and lets it be shortened.
+/// The long form is
+/// `{origin}/join?access={proof}{remote}&tonk_channel=reshare&tonk_space={hash}#{seed}`.
+/// `remote` is the legacy ready-to-append `&remote=…` suffix and is empty when
+/// the signed delegation carries the endpoint itself. The share pipeline has
+/// already refused a space with no usable remote. This is the shape the share
+/// view used to concatenate from three overlay fields; building it here gives
+/// it one definition and lets it be shortened.
 ///
 /// Shortening is best-effort: a failed `PUT /@` (offline, no service
 /// deployed, a non-2xx) logs and yields the long URL, which is fully
@@ -1359,8 +1359,8 @@ async fn publish_share_blocked(
 /// taken from the page because a sealed guest's `window.location.origin` is
 /// the opaque `"null"`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn invite_url(proof: &str, remote: &str, seed: &str) -> String {
-    let long = long_invite_url(worker_origin().as_deref(), proof, remote, seed);
+async fn invite_url(proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
+    let long = long_invite_url(worker_origin().as_deref(), proof, remote, seed, space_key);
 
     match super::create_invite::shorten(&long).await {
         Ok(short) => short,
@@ -1389,19 +1389,24 @@ pub(super) fn worker_origin() -> Option<String> {
 
 /// Assemble the long (un-shortened) invite URL.
 ///
-/// With an origin: `{origin}/join?access={proof}{remote}#{seed}`. Without
-/// one there is no worker scope to read (and so no service to shorten
-/// against either), so it falls back to the same base the HTTP mint path
-/// defaults to — still a well-formed, redeemable invite.
+/// With an origin, the capability URL is built there; without one there is no
+/// worker scope to read (and so no service to shorten against either), so it
+/// falls back to the same base the HTTP mint path defaults to. Both forms then
+/// receive an organic channel and hashed space token before being returned.
 ///
-/// `remote` is already a ready-to-append `&remote=…` suffix. It is never
-/// empty: `run_invite` refuses to mint at all when the repository has no
-/// shareable remote (see `RemoteRefusal`), so by the time this runs the
-/// repo has one. The seed is the fragment and never the query: it must not
+/// `remote` is already a ready-to-append `&remote=…` suffix and is empty for a
+/// modern delegation whose signed metadata names the shareable remote (see
+/// `RemoteRefusal`). The seed is the fragment and never the query: it must not
 /// reach a server, and the shortcut service is handed only the path + query.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn long_invite_url(origin: Option<&str>, proof: &str, remote: &str, seed: &str) -> String {
-    match origin {
+fn long_invite_url(
+    origin: Option<&str>,
+    proof: &str,
+    remote: &str,
+    seed: &str,
+    space_key: &str,
+) -> String {
+    let base = match origin {
         Some(origin) => format!("{origin}/join?access={proof}{remote}#{seed}"),
         None => {
             log!("invite: no worker origin; using the default base");
@@ -1409,6 +1414,15 @@ fn long_invite_url(origin: Option<&str>, proof: &str, remote: &str, seed: &str) 
                 "{}?access={proof}{remote}#{seed}",
                 tonk_invite::DEFAULT_BASE_URL
             )
+        }
+    };
+    match tonk_analytics::launch::space_referral_url(&base, space_key) {
+        Ok(url) => url,
+        Err(error) => {
+            // Referral metadata must never turn a valid authority grant into
+            // a failed share. The base above is still a complete invite.
+            log!("invite: could not add referral attribution: {error}");
+            base
         }
     }
 }
@@ -7769,13 +7783,33 @@ block/insert!:
             "PROOF",
             "&remote=https%3A%2F%2Fhub%2Fucan%2F",
             "SEED",
+            "did:key:zSpace",
         );
 
+        let parsed = url::Url::parse(&url).expect("invite URL parses");
         assert_eq!(
-            url,
-            "https://tonk.example/join\
-             ?access=PROOF&remote=https%3A%2F%2Fhub%2Fucan%2F#SEED",
+            parsed.origin().ascii_serialization(),
+            "https://tonk.example"
         );
+        assert_eq!(parsed.path(), "/join");
+        assert_eq!(parsed.fragment(), Some("SEED"));
+        assert!(
+            parsed
+                .query_pairs()
+                .any(|(key, value)| { key == "access" && value == "PROOF" })
+        );
+        assert!(
+            parsed
+                .query_pairs()
+                .any(|(key, value)| { key == "remote" && value == "https://hub/ucan/" })
+        );
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize("did:key:zSpace")
+        }));
 
         // The secret is the fragment, never the query — everything before
         // `#` is what a shortcut PUT would upload.
@@ -7793,8 +7827,17 @@ block/insert!:
     /// to append *nothing*.
     #[dialog_common::test]
     async fn it_omits_the_remote_for_a_local_only_repo() {
-        let url = super::long_invite_url(Some("https://tonk.example"), "PROOF", "", "SEED");
-        assert_eq!(url, "https://tonk.example/join?access=PROOF#SEED");
+        let url = super::long_invite_url(
+            Some("https://tonk.example"),
+            "PROOF",
+            "",
+            "SEED",
+            "did:key:zSpace",
+        );
+        assert!(url.starts_with("https://tonk.example/join?access=PROOF&"));
+        assert!(url.ends_with("#SEED"));
+        assert!(url.contains("tonk_channel=reshare"));
+        assert!(url.contains("tonk_space="));
         assert!(!url.contains("remote="));
     }
 
@@ -7803,7 +7846,7 @@ block/insert!:
     /// base — still well-formed and redeemable, never a broken link.
     #[dialog_common::test]
     async fn it_falls_back_to_the_default_base_without_an_origin() {
-        let url = super::long_invite_url(None, "PROOF", "", "SEED");
+        let url = super::long_invite_url(None, "PROOF", "", "SEED", "did:key:zSpace");
         assert!(
             url.starts_with(tonk_invite::DEFAULT_BASE_URL),
             "expected the default base, got {url}",

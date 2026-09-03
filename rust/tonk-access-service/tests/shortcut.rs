@@ -140,6 +140,33 @@ mod http {
             .unwrap_or_default();
         assert_eq!(location, target);
 
+        // Public campaign tags added to the short URL survive expansion;
+        // capability and space-attribution overrides do not.
+        let response = client
+            .get(format!(
+                "{}/@/{hash}?tonk_source=reddit&tonk_channel=outreach&access=EVIL&tonk_space=EVIL",
+                env.access_service_url
+            ))
+            .send()
+            .await?;
+        assert_eq!(response.status(), 301);
+        let location = response
+            .headers()
+            .get("Location")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let redirected = url::Url::parse(&format!("https://tonk.invalid{location}"))?;
+        let query_value = |name: &str| {
+            redirected
+                .query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.into_owned())
+        };
+        assert_eq!(query_value("access").as_deref(), Some("abc123"));
+        assert_eq!(query_value("tonk_source").as_deref(), Some("reddit"));
+        assert_eq!(query_value("tonk_channel").as_deref(), Some("outreach"));
+        assert_eq!(query_value("tonk_space"), None);
+
         // Unknown (well-formed) hash → 404; malformed → 400.
         let missing = Shortcut::new(b"/never-stored").unwrap().hash_str();
         let response = client

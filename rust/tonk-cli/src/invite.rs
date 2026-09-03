@@ -22,6 +22,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
+use tonk_schema::prelude::DidExt;
 use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
 use url::Url;
 
@@ -272,6 +273,8 @@ async fn mint_for(
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
         .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?;
+    let url = tonk_analytics::launch::space_referral_url(&url, site.repository.did().repo_key())
+        .map_err(|e| InviteError::Io(format!("failed to add invite referral attribution: {e}")))?;
 
     // Record the invitation on the repo's meta branch — the durable,
     // secret-free half of the invite (the seed stays in the URL).

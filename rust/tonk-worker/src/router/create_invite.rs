@@ -12,6 +12,8 @@
 //! `base_url` controls the minted URL's prefix — typically
 //! `<window.origin>/join` from the UI so links open against the minting
 //! deployment rather than production.
+//! Every returned link also carries the organic channel and a hashed space
+//! token used by the page-side, closed PostHog attribution schema.
 
 use ::axum::{
     Extension, Json,
@@ -212,6 +214,10 @@ pub async fn create_invite(
     let url_str = invite
         .to_url(base_url.as_str())
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
+    let url_str =
+        tonk_analytics::launch::space_referral_url(&url_str, &repo_name).map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to add invite referral attribution: {e}"))
+        })?;
 
     // Shorten against the link's own origin — the only origin that can
     // serve the relative redirect back — when the caller supplied it
@@ -786,6 +792,13 @@ mod tests {
             .await
             .unwrap();
         let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(minted.url().query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(minted.url().query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize(&key)
+        }));
 
         // The claimer-side derivation from the URL matches the record.
         let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
