@@ -130,6 +130,13 @@ describe("boot script contract", () => {
     );
   });
 
+  test("a normal application document consumes the eviction recovery guard", () => {
+    const lifecycle = moduleBlockContaining("serviceWorker.register");
+    const consume = lifecycle.indexOf("sessionStorage.removeItem(EVICTION_RELOAD)");
+    const register = lifecycle.indexOf("navigator.serviceWorker.register");
+    assert.ok(consume >= 0 && consume < register);
+  });
+
   test("keeps deferred account safety and remote withdrawal out of production", () => {
     const html = readFileSync(INDEX, "utf8");
     assert.doesNotMatch(html, /tonk-update-safety-v1|account-setup-critical|kill-switch\.json/);

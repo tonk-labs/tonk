@@ -203,6 +203,14 @@ mod tests {
         Ok(build.to_owned())
     }
 
+    fn cache_belongs_to_build(name: &str, build: &str) -> bool {
+        name == format!("TONK_SHELL_{build}")
+            || name == format!("TONK_WORKER_{build}")
+            || name == format!("TONK_GENERATION_{build}")
+            || name.starts_with(&format!("TONK_SHELL_STAGE_{build}_"))
+            || name.starts_with(&format!("TONK_WORKER_STAGE_{build}_"))
+    }
+
     #[derive(Debug)]
     struct GenerationContract {
         build: String,
@@ -544,6 +552,7 @@ mod tests {
                             waiting: registration?.waiting?.state || null,
                             mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
                             guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
+                            evictionGuard: sessionStorage.getItem("tonk:sw-eviction-reload"),
                             testErrors: globalThis.__tonkTestErrors || [],
                             testInstallProgress: (globalThis.__tonkTestInstallProgress || []).slice(-5),
                             documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
@@ -747,11 +756,14 @@ mod tests {
             "{state}"
         );
         assert!(state["guard"].is_null(), "{state}");
+        assert!(state["evictionGuard"].is_null(), "{state}");
         assert!(
-            state["cacheNames"].as_array().is_some_and(|names| names
-                .iter()
-                .any(|name| name == &format!("TONK_SHELL_{build_a}"))),
-            "the incumbent generation cache must be retained: {state}"
+            state["cacheNames"]
+                .as_array()
+                .is_some_and(|names| names.iter().all(|name| !name
+                    .as_str()
+                    .is_some_and(|name| cache_belongs_to_build(name, build_a)))),
+            "the incumbent lifecycle caches must be pruned: {state}"
         );
         assert!(
             state["cacheNames"].as_array().is_some_and(|names| names
@@ -761,6 +773,108 @@ mod tests {
         );
         fetched_asset_digests(&driver, &generation_b.probes).await?;
 
+        let sentinels = state_sentinels(&driver).await?;
+        assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
+        assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reloads_every_update_aware_tab_after_controller_replacement(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
+        let first_tab = driver.window().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        create_state_sentinels(&driver).await?;
+
+        let second_tab = driver.new_tab().await?;
+        driver.switch_to_window(second_tab.clone()).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+
+        promote_second_generation(&env)?;
+        driver.switch_to_window(first_tab.clone()).await?;
+        driver.refresh().await?;
+        let first = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        assert_eq!(first["documents"], 3, "{first}");
+        assert_eq!(first["roots"]["1"], true, "{first}");
+        assert_eq!(first["roots"]["2"], false, "{first}");
+        assert_eq!(first["roots"]["3"], true, "{first}");
+
+        driver.switch_to_window(second_tab).await?;
+        let second = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        assert_eq!(second["documents"], 2, "{second}");
+        assert_eq!(second["roots"]["1"], true, "{second}");
+        assert_eq!(second["roots"]["2"], true, "{second}");
+        assert!(second["guard"].is_null(), "{second}");
+        assert!(second["evictionGuard"].is_null(), "{second}");
+        assert!(
+            second["cacheNames"]
+                .as_array()
+                .is_some_and(|names| names.iter().all(|name| !name
+                    .as_str()
+                    .is_some_and(|name| cache_belongs_to_build(name, &generation_a.build)))),
+            "the incumbent lifecycle caches must be pruned: {second}"
+        );
+        fetched_asset_digests(&driver, &generation_b.probes).await?;
+        let sentinels = state_sentinels(&driver).await?;
+        assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
+        assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
+
+        driver.switch_to_window(first_tab).await?;
+        let first_after = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        assert_eq!(first_after["documents"], 3, "{first_after}");
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_recovers_an_evicted_root_into_the_current_generation(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        create_state_sentinels(&driver).await?;
+        let removed = driver
+            .execute_async(
+                r#"
+                const cacheName = arguments[0];
+                const done = arguments[arguments.length - 1];
+                caches.open(cacheName)
+                    .then(cache => cache.delete("/"))
+                    .then(removed => done({ removed }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![format!("TONK_SHELL_{}", generation_a.build).into()],
+            )
+            .await?;
+        ensure!(
+            removed.json()["removed"] == true,
+            "root eviction failed: {removed:?}"
+        );
+
+        promote_second_generation(&env)?;
+        driver.refresh().await?;
+        let state = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        assert_eq!(state["documents"], 2, "{state}");
+        assert_eq!(state["roots"]["1"], true, "{state}");
+        assert_eq!(state["roots"]["2"], true, "{state}");
+        assert!(state["guard"].is_null(), "{state}");
+        assert!(state["evictionGuard"].is_null(), "{state}");
+        assert!(
+            state["cacheNames"]
+                .as_array()
+                .is_some_and(|names| names.iter().all(|name| !name
+                    .as_str()
+                    .is_some_and(|name| cache_belongs_to_build(name, &generation_a.build)))),
+            "the evicted incumbent lifecycle caches must be pruned: {state}"
+        );
+        fetched_asset_digests(&driver, &generation_b.probes).await?;
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
         assert_eq!(sentinels["cache"], "preserved", "{sentinels}");
