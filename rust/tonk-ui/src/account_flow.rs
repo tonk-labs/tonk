@@ -580,6 +580,29 @@ mod tests {
         Err(anyhow!("the worker never raised its passkey consent card"))
     }
 
+    /// Content-safe state for locating a stalled command ceremony. This says
+    /// whether WebAuthn was still pending, failed visibly, or the card had
+    /// already gone; it carries no credential, account, or request values.
+    async fn custody_consent_diagnostic(driver: &WebDriver) -> Value {
+        if driver.enter_default_frame().await.is_err() {
+            return Value::String("could not enter the top document".to_owned());
+        }
+        driver
+            .execute(
+                r##"const card = document.querySelector("#tonk-custody-consent");
+                   const actions = card?.querySelector("#tonk-custody-actions");
+                   return {
+                     present: !!card,
+                     message: card?.querySelector("#tonk-custody-text")?.textContent?.trim() || null,
+                     awaitingChoice: !!actions,
+                   };"##,
+                vec![],
+            )
+            .await
+            .map(|result| result.json().clone())
+            .unwrap_or_else(|error| Value::String(format!("could not read consent state: {error}")))
+    }
+
     /// A second browser holding the same passkey: a different device, the
     /// same person.
     ///
@@ -2166,9 +2189,10 @@ mod tests {
             driver.enter_default_frame().await?;
             let url = driver.current_url().await?;
             let diagnostic = link_error_diagnostic(driver).await.unwrap_or_default();
+            let consent = custody_consent_diagnostic(driver).await;
             let status = get_json(driver, "/api/account").await?;
             return Err(wait_error).context(format!(
-                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}"
+                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}; consent={consent}"
             ));
         }
 
@@ -4877,7 +4901,10 @@ mod tests {
         // The purge retires this profile and rotates onto a fresh one;
         // the top page leaves for the Hub, which offers to link an
         // account again.
-        await_url_path(&driver, "/").await?;
+        if let Err(error) = await_url_path(&driver, "/").await {
+            let consent = custody_consent_diagnostic(&driver).await;
+            return Err(error).context(format!("deletion consent={consent}"));
+        }
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
         driver.enter_default_frame().await?;

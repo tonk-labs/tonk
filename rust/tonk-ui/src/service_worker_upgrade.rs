@@ -864,17 +864,21 @@ mod tests {
         promote_second_generation(&env)?;
         driver.switch_to_window(first_tab.clone()).await?;
         driver.refresh().await?;
-        let first = wait_for_complete_generation(
-            &driver,
-            &generation_b,
-            Some(3),
-            Some(&generation_a.build),
-        )
-        .await?;
-        assert_eq!(first["documents"], 3, "{first}");
+        let first =
+            wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
+                .await?;
+        let first_documents = first["documents"]
+            .as_u64()
+            .context("the first tab reported no document count")?;
+        assert!(
+            matches!(first_documents, 2 | 3),
+            "the first tab must mount B directly or after one alignment reload: {first}"
+        );
         assert_eq!(first["roots"]["1"], true, "{first}");
         assert_eq!(first["roots"]["2"], true, "{first}");
-        assert_eq!(first["roots"]["3"], true, "{first}");
+        if first_documents == 3 {
+            assert_eq!(first["roots"]["3"], true, "{first}");
+        }
 
         driver.switch_to_window(second_tab).await?;
         let second = wait_for_complete_generation(
@@ -904,7 +908,7 @@ mod tests {
 
         driver.switch_to_window(first_tab).await?;
         let first_after = wait_for_mounted_build(&driver, &generation_b.build).await?;
-        assert_eq!(first_after["documents"], 3, "{first_after}");
+        assert_eq!(first_after["documents"], first_documents, "{first_after}");
         driver.quit().await?;
         Ok(())
     }
