@@ -6591,10 +6591,10 @@ block/insert!:
         assert_eq!(upstream.branch, "main");
     }
 
-    /// After attach, a minted invite carries the `remote=` endpoint —
-    /// the whole point of the opt-in remote, so `tonk join` has
-    /// something to pull from. Before attach the repo is remote-less
-    /// and the invite carries no remote.
+    /// After attach, a minted invite names the endpoint — the whole
+    /// point of the opt-in remote, so `tonk join` has something to
+    /// pull from. It rides inside the signed chain's `home.address`
+    /// meta, not a `remote=` URL parameter.
     #[dialog_common::test]
     async fn it_mints_an_invite_with_a_remote_after_attach() {
         let (app, _state, repo) = fresh_repo("test-attach-then-invite").await;
@@ -6632,11 +6632,18 @@ block/insert!:
         let invite: CreateInviteResponse =
             serde_json::from_slice(&body).unwrap_or_else(|e| panic!("decode invite: {e}"));
 
-        let has_remote = invite.url().query_pairs().any(|(key, _)| key == "remote");
         assert!(
-            has_remote,
-            "invite minted after attach must embed a remote= param; url was {}",
+            !invite.url().query_pairs().any(|(key, _)| key == "remote"),
+            "the endpoint rides inside the signed chain, not the URL; url was {}",
             invite.url(),
+        );
+        let parsed = tonk_invite::Invite::parse_url(invite.url().as_str())
+            .await
+            .expect("minted invite URL parses");
+        assert_eq!(
+            parsed.remote_url.map(String::from).as_deref(),
+            Some("https://example.test/ucan/"),
+            "the chain's home.address must name the attached endpoint",
         );
     }
 

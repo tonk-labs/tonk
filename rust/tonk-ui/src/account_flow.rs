@@ -2690,17 +2690,7 @@ mod tests {
         let output = tokio::time::timeout(
             Duration::from_secs(120),
             tonk_command_in(env, profile)
-                .args([
-                    "account",
-                    "devices",
-                    // The flag is a consistency guard against the account's
-                    // RECORDED provider, which the approving page named:
-                    // the page-origin endpoint, not the direct address the
-                    // harness spawned the service on.
-                    "--service-url",
-                    env.tonk_web.join("ucan")?.as_str(),
-                    "--json",
-                ])
+                .args(["account", "devices", "--json"])
                 .env("TONK_TRACE", "1")
                 .env(
                     "RUST_LOG",
@@ -5706,11 +5696,11 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("account service: "))
             .context("status output omitted the account service")?;
-        // The approving page names the service its deployment uses, and
-        // the CLI records that answer over its own `--service-url` guess
-        // — so the record is the page-origin endpoint Caddy proxies, not
-        // the direct address the harness spawned the service on.
-        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan")?);
+        // The approving page names the sync endpoint its deployment
+        // registered — so the record is the page-origin endpoint Caddy
+        // proxies, not the direct address the harness spawned the
+        // service on.
+        assert_eq!(url::Url::parse(provider)?, env.tonk_web.join("ucan/")?);
         assert!(linked.link.stdout.contains("signed in"));
 
         // The approving page describes the terminal's row and pushes the
@@ -5956,6 +5946,10 @@ mod tests {
                 "the authorization must carry {field}: {payload}"
             );
         }
+        // A browser left running keeps writing its profile while the
+        // workspace is being removed — the "Directory not empty"
+        // teardown race every other test avoids by quitting.
+        driver.quit().await?;
         Ok(())
     }
 
@@ -5989,6 +5983,9 @@ mod tests {
             field, "deny",
             "cancelling must report a denial, not leave the CLI waiting"
         );
+        // See the authorize variant: an unquit browser races workspace
+        // removal with its profile writes.
+        driver.quit().await?;
         Ok(())
     }
 
