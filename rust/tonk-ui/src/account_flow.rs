@@ -583,9 +583,9 @@ mod tests {
     /// Content-safe state for locating a stalled command ceremony. This says
     /// whether WebAuthn was still pending, failed visibly, or the card had
     /// already gone; it carries no credential, account, or request values.
-    async fn custody_consent_diagnostic(driver: &WebDriver) -> Value {
+    async fn custody_consent_diagnostic(driver: &WebDriver) -> serde_json::Value {
         if driver.enter_default_frame().await.is_err() {
-            return Value::String("could not enter the top document".to_owned());
+            return serde_json::Value::String("could not enter the top document".to_owned());
         }
         driver
             .execute(
@@ -600,7 +600,9 @@ mod tests {
             )
             .await
             .map(|result| result.json().clone())
-            .unwrap_or_else(|error| Value::String(format!("could not read consent state: {error}")))
+            .unwrap_or_else(|error| {
+                serde_json::Value::String(format!("could not read consent state: {error}"))
+            })
     }
 
     /// A second browser holding the same passkey: a different device, the
