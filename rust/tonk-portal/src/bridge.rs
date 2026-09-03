@@ -429,12 +429,37 @@ const BOOTSTRAP_JS: &str = r#"(function(){
             // entities (retract matches the changed tuple) are unaffected.
             var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
             var drifted={};for(var i=0;i<rej.length;i++){drifted[rej[i].this]=true;}
-            var asserts={};for(var i=0;i<add.length;i++){asserts[add[i].this]=true;}
+            // Slot identity mirrors tonk-display's row_slots: each field,
+            // refined by the entry key when the value is a single-entry
+            // object (keyed collections arrive one row per entry). The
+            // heal replaces a drifted row only when an asserted row for
+            // the same entity claims one of ITS slots, so a superseded
+            // show{directory} never takes the sibling show{ui} with it.
+            var slotsOf=function(r){
+              var out={};var f=r.fields||{};
+              for(var k in f){ if(k==="this") continue;
+                var v=f[k];var entry=null;
+                if(v&&typeof v==="object"&&!Array.isArray(v)){
+                  var ks=Object.keys(v); if(ks.length===1) entry=ks[0];
+                }
+                out[k+"\u001e"+(entry===null?"":entry)]=true;
+              }
+              return out;
+            };
+            var asserts={};
+            for(var i=0;i<add.length;i++){
+              var t=add[i].this; var slots=asserts[t]||(asserts[t]={});
+              var s2=slotsOf(add[i]); for(var k2 in s2) slots[k2]=true;
+            }
             next=prev.filter(function(r){
               if(gone[keyOf(r)]){ delete drifted[r.this]; return false; }
               return true;
             }).filter(function(r){
-              return !(drifted[r.this] && asserts[r.this]);
+              if(!drifted[r.this]) return true;
+              var slots=asserts[r.this]; if(!slots) return true;
+              var mine=slotsOf(r);
+              for(var k3 in mine){ if(slots[k3]) return false; }
+              return true;
             }).concat(add);
           }else{
             next=env.rows||[];

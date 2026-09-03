@@ -608,15 +608,53 @@ fn apply_delta(
         }
     });
 
-    // Entities the delta asserts a fresh row-set for. A drifted base
-    // row for one of these is superseded by the assert.
-    let asserted_entities: BTreeSet<&str> = asserted.iter().map(|c| c.this.as_str()).collect();
+    // Slot-scoped heal: a drifted entity's stale row falls only to an
+    // asserted row that claims one of the SAME slots. A slot is a
+    // field, refined by the entry key when the value is a single-entry
+    // map — the wire's one-row-per-entry form for keyed collections —
+    // so a superseded `show{directory}` replaces the stale directory
+    // row while the entity's `show{ui}` sibling survives. A plain
+    // drifted field (the counter case) still falls to its fresh
+    // assert, and an entity whose asserted rows share no slot with a
+    // base row leaves that row alone.
+    let mut asserted_slots: BTreeMap<&str, BTreeSet<(String, Option<String>)>> = BTreeMap::new();
+    for row in asserted {
+        asserted_slots
+            .entry(row.this.as_str())
+            .or_default()
+            .extend(row_slots(row));
+    }
     rows.retain(|row| {
-        !(drifted.contains(&row.this) && asserted_entities.contains(row.this.as_str()))
+        if !drifted.contains(&row.this) {
+            return true;
+        }
+        let Some(slots) = asserted_slots.get(row.this.as_str()) else {
+            return true;
+        };
+        !row_slots(row).iter().any(|slot| slots.contains(slot))
     });
 
     rows.extend(asserted.iter().cloned());
     rows
+}
+
+/// The slots one conclusion row occupies: each field, refined by the
+/// keyed-collection entry key when the field's value is a single-entry
+/// map (the wire delivers one row per entry). The projected `this`
+/// term is the group key, not a slot, so it never makes two rows of
+/// one entity read as replacements for each other.
+fn row_slots(row: &Conclusion) -> BTreeSet<(String, Option<String>)> {
+    row.fields
+        .iter()
+        .filter(|(field, _)| field.as_str() != "this")
+        .map(|(field, value)| {
+            let entry = match value {
+                Ipld::Map(entries) if entries.len() == 1 => entries.keys().next().cloned(),
+                _ => None,
+            };
+            (field.clone(), entry)
+        })
+        .collect()
 }
 
 /// Read `payload[field]` as a `Vec<Conclusion>` for a delta frame.
@@ -918,11 +956,15 @@ async fn start_downstream(
     // self-rendering display skips only the VIEW flow (no view
     // subscription, no facet fallback) and keeps the entity
     // subscription; `handle_entity_frame` mounts the notation dump.
-    let self_render = renders_itself(host, &model_entity);
-
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
+    let intended_facet = view.as_deref().unwrap_or(if directory {
+        DIRECTORY_FACET
+    } else {
+        DETAIL_FACET
+    });
+    let self_render = renders_itself(host, &model_entity, intended_facet);
 
     // The `view` attribute names a FACET — a `show` entry key of the
     // model's view instance (`ui`, `directory`, `label`, `title`, …)
@@ -1341,7 +1383,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         {
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
-        if let Some(new_slide) = mount_view_slide(host, &mut s, &display, &name) {
+        if let Some(new_slide) = mount_view_slide(host, &mut s, &display, &name, &facet) {
             call_render(&new_slide.view_el, &cached_detail);
             s.slides.insert(name, new_slide);
         }
@@ -1453,7 +1495,8 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 let _: Result<Node, _> = parent.remove_child(&slide.item);
             }
         }
-        if let Some(slide) = mount_view_slide(&host, &mut s, &display, DEFAULT_MODEL) {
+        let facet = effective_facet(&s);
+        if let Some(slide) = mount_view_slide(&host, &mut s, &display, DEFAULT_MODEL, &facet) {
             // Replay the whole cached frame (directory mode has one
             // conclusion per instance; a single replay would drop all
             // but the first).
@@ -2212,15 +2255,27 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// nested notebook and a bare name as each frame replaced the last.
 ///
 /// Only self-recursion is refused. A different model nested inside this one
-/// is left alone however deep it goes.
-fn renders_itself(host: &Element, model: &str) -> bool {
-    model_chain(host).iter().any(|seen| seen == model)
+/// is left alone however deep it goes — and so is the same model rendered
+/// through a DIFFERENT facet: a directory template mounting a detail card
+/// per instance of its own model is the canonical repeat pattern, not a
+/// cycle. The hazard is re-entering the same (owner, facet) template —
+/// notebook's `ui` mounting notebook's `ui` forever — so a chain entry
+/// blocks only the facet it recorded. A bare entry with no facet (an
+/// older stamp, or a test's hand-written chain) stays a blanket block.
+fn renders_itself(host: &Element, model: &str, facet: &str) -> bool {
+    model_chain(host)
+        .iter()
+        .any(|seen| match seen.split_once('\u{1e}') {
+            Some((owner, seen_facet)) => owner == model && seen_facet == facet,
+            None => seen == model,
+        })
 }
 
-/// Record `model` as rendered, for the displays mounted inside `view_el`.
-fn stamp_model_chain(host: &Element, view_el: &Element, model: &str) {
+/// Record `(owner, facet)` as rendered, for the displays mounted inside
+/// `view_el`.
+fn stamp_model_chain(host: &Element, view_el: &Element, model: &str, facet: &str) {
     let mut chain = model_chain(host);
-    chain.push(model.to_owned());
+    chain.push(format!("{model}\u{1e}{facet}"));
     let _ = view_el.set_attribute(MODEL_CHAIN, &chain.join("\u{1f}"));
 }
 
@@ -2263,6 +2318,7 @@ fn mount_view_slide(
     inner: &mut Inner,
     display: &str,
     owner: &str,
+    facet: &str,
 ) -> Option<Slide> {
     let document = window()?.document()?;
 
@@ -2289,7 +2345,7 @@ fn mount_view_slide(
     // the model being rendered: a counter card inside the DEFAULT
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
-    stamp_model_chain(host, &view_el, owner);
+    stamp_model_chain(host, &view_el, owner, facet);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -2628,7 +2684,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "tonk:notebook"),
+            !renders_itself(&inner, "tonk:notebook", "ui"),
             "a different model nested inside one is ordinary nesting"
         );
     }
@@ -2649,8 +2705,35 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook"),
+            renders_itself(&inner, "tonk:notebook", "ui"),
             "a model already being rendered above must not render again"
+        );
+    }
+
+    /// The same model through a DIFFERENT facet is the repeat pattern,
+    /// not a cycle: a model's own `directory` template mounts one detail
+    /// card per instance of that same model. Only re-entering the same
+    /// (owner, facet) template loops. Regression: the owner-only chain
+    /// cut every todo card inside todo's directory off the view flow,
+    /// and each card fell to the default notice.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_allows_detail_cards_inside_the_models_own_directory() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        let middle = document.create_element("div").expect("middle");
+        outer.append_child(&middle).expect("append");
+        stamp_model_chain(&middle, &middle, "concept:todo", "directory");
+        let inner = document.create_element("div").expect("inner");
+        middle.append_child(&inner).expect("append");
+
+        assert!(
+            !renders_itself(&inner, "concept:todo", "ui"),
+            "a detail card inside its model's directory template is nesting, not a cycle"
+        );
+        assert!(
+            renders_itself(&inner, "concept:todo", "directory"),
+            "re-entering the SAME facet is still the cycle"
         );
     }
 
@@ -2665,16 +2748,16 @@ mod tests {
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
         // A board rendered inside the notebook extends the chain.
-        stamp_model_chain(&middle, &middle, "tonk:board");
+        stamp_model_chain(&middle, &middle, "tonk:board", "ui");
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook"),
+            renders_itself(&inner, "tonk:notebook", "ui"),
             "the notebook is still above, two levels up"
         );
         assert!(
-            !renders_itself(&inner, "tonk:workspace"),
+            !renders_itself(&inner, "tonk:workspace", "ui"),
             "an unrelated model is unaffected"
         );
     }
@@ -2793,6 +2876,45 @@ mod tests {
             vec![tag_row("e", "x"), tag_row("e", "z"), tag_row("e", "w")],
             "a multi-valued entity keeps its untouched tuples; only the \
              superseded tuple is replaced"
+        );
+    }
+
+    fn show_row(this: &str, facet: &str, template: &str) -> Conclusion {
+        let mut entries = BTreeMap::new();
+        entries.insert(facet.to_owned(), Ipld::String(template.to_owned()));
+        let mut fields = BTreeMap::new();
+        fields.insert("show".to_owned(), Ipld::Map(entries));
+        fields.insert("this".to_owned(), Ipld::String(this.to_owned()));
+        Conclusion {
+            this: this.to_owned(),
+            fields,
+        }
+    }
+
+    /// Keyed collections arrive one row per entry. A drifted delta on
+    /// ONE entry (retract misses by value, assert replaces it) must
+    /// heal only that entry's slot — the entity's sibling entries are
+    /// not stale and must survive. Regression: the whole-entity heal
+    /// dropped the `ui` entry whenever a `directory` supersession
+    /// drifted, and every card fell to the default notice.
+    #[dialog_common::test]
+    fn it_keeps_keyed_siblings_when_a_drifted_entry_supersedes() {
+        let retained = vec![
+            show_row("m", "directory", "old"),
+            show_row("m", "ui", "card"),
+        ];
+        let merged = apply_delta(
+            retained,
+            &[show_row("m", "directory", "new")],
+            vec![show_row("m", "directory", "older")],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                show_row("m", "ui", "card"),
+                show_row("m", "directory", "new")
+            ],
+            "the ui entry survives; only the drifted directory slot is replaced"
         );
     }
 
@@ -3072,8 +3194,14 @@ mod tests {
             }"#
             .to_owned(),
         );
-        mount_view_slide(&host, &mut inner, "<a path=\"{rest}\">x</a>", "tonk:test")
-            .expect("slide mounts");
+        mount_view_slide(
+            &host,
+            &mut inner,
+            "<a path=\"{rest}\">x</a>",
+            "tonk:test",
+            "ui",
+        )
+        .expect("slide mounts");
         let view = host
             .query_selector("tonk-view")
             .unwrap()
@@ -3482,6 +3610,18 @@ mod tests {
                 let _ = reset.call2(&consumer, conclusions, &opts);
             }
 
+            fn push_update(&self, tag: &str, delta: &JsValue) {
+                let consumer = self.state.borrow().subs.get(tag).cloned();
+                let Some(consumer) = consumer else { return };
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &JsValue::from_str(tag));
+                let update: Function = Reflect::get(&consumer, &"update".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = update.call2(&consumer, delta, &opts);
+            }
+
             fn subscribe_tags(&self) -> Vec<String> {
                 self.state.borrow().subscribe_tags.clone()
             }
@@ -3622,6 +3762,93 @@ mod tests {
             assert_eq!(
                 host.subscribe_tags(),
                 vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
+            );
+        }
+
+        /// A load-time delta supersedes ONE dictionary entry. The
+        /// worker's per-entity diff can carry a retract whose row shape
+        /// drifted from the retained snapshot row (field projection
+        /// differences across frames), so the value-equality retract
+        /// misses — and the drift heal must not take the entity's OTHER
+        /// facet entries down with the stale row. Regression: it did,
+        /// and every card lost its `ui` entry to the first such delta.
+        #[dialog_common::test]
+        async fn it_keeps_sibling_facets_through_a_drifted_delta() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let wire = r#"[
+                {"this":"did:key:zModel","fields":{"show":{"directory":"<i>dir</i>"},"this":"did:key:zModel"}},
+                {"this":"did:key:zModel","fields":{"show":{"ui":"<p>{count}</p>"},"this":"did:key:zModel"}}
+            ]"#;
+            let frame = js_sys::JSON::parse(wire).expect("wire rows parse");
+            host.push_frame("view", &frame);
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the ui facet resolves from the snapshot",
+            );
+
+            // The delta retracts the directory entry with a DRIFTED row
+            // (no trailing `this` field, so value equality misses) and
+            // asserts its replacement. The ui row is untouched by the
+            // delta and must survive the heal.
+            let delta = r#"{
+                "asserted": [{"this":"did:key:zModel","fields":{"show":{"directory":"<i>dir2</i>"}}}],
+                "retracted": [{"this":"did:key:zModel","fields":{"show":{"directory":"<i>dir</i>"}}}]
+            }"#;
+            let delta = js_sys::JSON::parse(delta).expect("delta parses");
+            host.push_update("view", &delta);
+            sleep(50).await;
+
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_some(),
+                "the ui slide survives a drifted delta on a sibling facet",
+            );
+            assert!(
+                display
+                    .query_selector("wa-callout[variant=warning]")
+                    .unwrap()
+                    .is_none(),
+                "no default-view notice after the delta",
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_folds_split_rows() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let wire = r#"[
+                {"this":"did:key:zModel","fields":{"show":{"directory":"<i>dir</i>"},"this":"did:key:zModel"}},
+                {"this":"did:key:zModel","fields":{"show":{"ui":"<p>{count}</p>"},"this":"did:key:zModel"}}
+            ]"#;
+            let frame = js_sys::JSON::parse(wire).expect("wire rows parse");
+            host.push_frame("view", &frame);
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "split dictionary rows must fold; the ui facet resolves",
+            );
+            assert!(
+                display
+                    .query_selector("wa-callout[variant=warning]")
+                    .unwrap()
+                    .is_none(),
+                "no default-view notice when the ui entry is on the wire",
             );
         }
 
