@@ -143,14 +143,6 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::account_observability::record_instant_success(
-        AccountAction::OpenRegistration,
-        tonk_analytics::account::Surface::RegistrationDialog,
-        tonk_analytics::account::Trigger::User,
-        tonk_analytics::account::AccountState::Unknown,
-        tonk_analytics::account::Stage::Input,
-    );
     open_with_return(None);
 }
 
@@ -164,6 +156,19 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
     }
+    // Every raise records here, in the one funnel both entries share —
+    // recording only in `open()` left the sealed-guest path (the hub's
+    // register button, which arrives via `open_with_return_focus`)
+    // opening the journey without its `open_registration` event. After
+    // the already-open guard, so a re-show never double-records.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::account_observability::record_instant_success(
+        AccountAction::OpenRegistration,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Unknown,
+        tonk_analytics::account::Stage::Input,
+    );
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         OPEN.with(|open| open.set(false));
         return;
@@ -1583,6 +1588,7 @@ pub(crate) fn run_signup_ceremony() {
                     tonk_analytics::account::Stage::ActivationWait,
                     problem.outcome,
                 );
+                crate::account_observability::mark_settle_pending();
                 tonk_common::log!("register: the account awaits its email confirmation");
                 hide_action();
                 add_row(
@@ -1666,6 +1672,7 @@ pub(crate) fn run_signup_ceremony() {
                             tonk_analytics::account::FailureKind::AwaitingActivation,
                         ),
                     );
+                    crate::account_observability::mark_settle_pending();
                     // What happens next arrives as facts: the emailed
                     // link lands `AccountCustomer`, and the subscription
                     // renders it. Nothing here polls for it.
@@ -1974,6 +1981,25 @@ pub(crate) fn finish_ceremony() {
                 );
             }
         });
+        // The settle the pre-hub account dashboard used to record on its
+        // post-activation load: the account that was waiting on the
+        // emailed link has converged into a working one. The marker rides
+        // sessionStorage across the activation-page detour; consuming it
+        // here puts the journey's terminal event on the page that
+        // actually finished.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if crate::account_observability::take_settle_pending() {
+            let mut attempt = crate::account_observability::WebAccountAttempt::start(
+                AccountAction::SettleAccount,
+                tonk_analytics::account::Surface::RegistrationDialog,
+                tonk_analytics::account::Trigger::Recovery,
+                tonk_analytics::account::AccountState::PendingActivation,
+            );
+            attempt.finish(
+                tonk_analytics::account::Stage::Complete,
+                tonk_analytics::account::AccountOutcome::success(),
+            );
+        }
     }
 
     // Only REGISTRATION asks. A login reaches an account that already
