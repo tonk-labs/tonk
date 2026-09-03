@@ -2628,6 +2628,22 @@ async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
+    let tonk = state.write().await;
+    enable_sync_for_repository(&tonk, key, remote).await
+}
+
+/// Attach the account provider to one existing repository.
+///
+/// This is the lock-free core shared by the form handler and the
+/// post-reconcile local-space sweep. The caller must already know that an
+/// account is ready before using it as an automatic transition; the form path
+/// remains explicitly callable and reports the provider's refusal.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn enable_sync_for_repository(
+    tonk: &TonkState,
+    key: &str,
+    remote: &str,
+) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
         log!("enable sync '{}': empty remote, nothing to attach", key);
@@ -2635,7 +2651,6 @@ async fn enable_sync_inner(
     }
     let configuration = space_config(remote)?;
 
-    let tonk = state.write().await;
     // A missing repository is a no-op, not an error — defensive against a
     // stale key (e.g. an enable-sync form whose hidden repo field didn't
     // populate). The create path always runs `create_space_inner` first,
@@ -2674,7 +2689,7 @@ async fn enable_sync_inner(
     // to an upstream that refuses every presign terminally: the sync
     // loop hammers it forever and a link handed out against it answers
     // "you don't have this space". That refusal fails the attach.
-    match provision_space_consumer(&tonk, &repository.did()).await {
+    match provision_space_consumer(tonk, &repository.did()).await {
         Ok(()) => {}
         Err(error) if remote_is_own_service(remote) && !super::customer::is_retryable(&error) => {
             return Err(RepositoryError::Internal(format!(
@@ -2688,16 +2703,96 @@ async fn enable_sync_inner(
         }
     }
 
-    let effective = ensure_remote_config(&tonk, &repository, key, &configuration).await?;
+    let effective = ensure_remote_config(tonk, &repository, key, &configuration).await?;
 
     // Mirror the EFFECTIVE mount configuration into the account
     // directory so other devices adopt what this device actually
     // syncs against: an already-configured upstream is preserved, so
     // the request's (possibly repair-supplied) address must not
     // overwrite it there.
-    record_space_mount(&tonk, &repository.did(), &effective, None).await;
+    record_space_mount(tonk, &repository.did(), &effective, None).await;
 
     Ok(())
+}
+
+/// Attach `remote` only when `key` is genuinely local-only: its replica meta
+/// names no remote at all.
+///
+/// A branch with no upstream is not sufficient evidence — a repository may
+/// already carry a foreign or partially configured remote. The account sweep
+/// must leave every such repository untouched. Returns whether this call made
+/// the local-only -> account-hosted transition.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn attach_account_remote_if_local(
+    tonk: &TonkState,
+    key: &str,
+    remote: &str,
+) -> Result<bool, RepositoryError> {
+    let repository = match tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(error) => {
+            log!(
+                "account remote reconcile '{}': repository not present, skipping ({})",
+                key,
+                error
+            );
+            return Ok(false);
+        }
+    };
+    if repository_has_any_remote(tonk, &repository, key).await? {
+        return Ok(false);
+    }
+
+    enable_sync_for_repository(tonk, key, remote).await?;
+    Ok(true)
+}
+
+/// Whether the repository's local meta branch names any remote, regardless of
+/// whether a content branch currently tracks it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn repository_has_any_remote<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    key: &str,
+) -> Result<bool, RepositoryError>
+where
+    C: Principal + Clone,
+{
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!(
+                "Failed to open meta branch for repository '{key}': {error}"
+            ))
+        })?;
+    let replica = Replica::new(tonk.profile.did(), repository.did());
+    let remotes: Vec<Remote> = meta
+        .query()
+        .select(Query::<Remote> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(replica.this().clone()),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!(
+                "Failed to read remotes for repository '{key}': {error:?}"
+            ))
+        })?;
+    Ok(!remotes.is_empty())
 }
 
 /// Spawn the background seed + status flip for a freshly created
@@ -3549,6 +3644,24 @@ impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
     }
 }
 
+/// Mirror one repository-authored display name into the account directory.
+///
+/// Joined spaces can become visible before their content (and therefore their
+/// name) has downloaded. The account sweep calls this after later pulls so an
+/// initially nameless Hub row repairs itself without remounting the space.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_name: &str) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::SpaceName::new(subject, display_name));
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("record space name for '{subject}': {error}");
+    }
+}
+
 /// Mirror a space's remote/branch configuration — and optionally its
 /// display name — into the account directory as plain facts on
 /// directory-anchored entities, so any device can rebuild the full
@@ -4014,6 +4127,22 @@ async fn repository_label<R>(tonk: &TonkState, repository: &Repository<R>, key: 
 where
     R: Principal + Clone,
 {
+    repository_display_name(tonk, repository, key)
+        .await
+        .unwrap_or_else(|| key.to_string())
+}
+
+/// Read the repository-authored display name without inventing a routing-key
+/// fallback. Account-directory reconciliation uses absence to mean "content
+/// has not hydrated far enough yet" and retries after later pulls.
+pub(super) async fn repository_display_name<R>(
+    tonk: &TonkState,
+    repository: &Repository<R>,
+    key: &str,
+) -> Option<String>
+where
+    R: Principal + Clone,
+{
     let content = match repository
         .branch(CONTENT_BRANCH)
         .open()
@@ -4028,7 +4157,7 @@ where
                 key,
                 e
             );
-            return key.to_string();
+            return None;
         }
     };
 
@@ -4042,14 +4171,10 @@ where
         .try_vec()
         .await
     {
-        Ok(rows) => rows
-            .into_iter()
-            .next()
-            .map(|row| row.name.0)
-            .unwrap_or_else(|| key.to_string()),
+        Ok(rows) => rows.into_iter().next().map(|row| row.name.0),
         Err(e) => {
             log!("tonk/repository label query failed for '{}': {:?}", key, e);
-            key.to_string()
+            None
         }
     }
 }
@@ -4494,7 +4619,7 @@ where
 /// Generic over the credential type for the same reason as
 /// [`record_repository_meta`]: the operator/profile authority signs
 /// the commits, not the repository credential.
-async fn ensure_remote_config<C>(
+pub(super) async fn ensure_remote_config<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
     name: &str,
@@ -7214,6 +7339,42 @@ block/insert!:
         assert!(
             address.contains("https://access.example.test/ucan/"),
             "a second attach must not repoint the remote, got {address}",
+        );
+    }
+
+    /// The account sweep's eligibility boundary is "no remote at all", not
+    /// merely "main has no upstream". Any existing remote may represent a
+    /// non-default or partially configured deployment and must be preserved.
+    #[dialog_common::test]
+    async fn it_does_not_auto_attach_over_any_existing_remote() {
+        use dialog_repository::RepositoryExt as _;
+
+        let (app, state, repo) = fresh_repo("test-account-reconcile-preserves-remote").await;
+        let _ = post_remote(&app, &repo, "https://existing.example.test/ucan/", None).await;
+
+        let tonk = state.read().await;
+        assert!(
+            !super::attach_account_remote_if_local(
+                &tonk,
+                &repo,
+                "https://account.example.test/ucan/",
+            )
+            .await
+            .unwrap(),
+            "a repository with any remote is ineligible for automatic attachment",
+        );
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let info = super::build_repository_info(&tonk, &repo, &repository).await;
+        let address = serde_json::to_string(&info.remote["origin"].address).unwrap();
+        assert!(
+            address.contains("https://existing.example.test/ucan/"),
+            "the existing remote must survive account reconciliation: {address}",
         );
     }
 

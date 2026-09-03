@@ -4643,17 +4643,18 @@ mod tests {
         Ok(())
     }
 
-    /// A space created before activation becomes syncable once the user
-    /// asks for it, and not before.
+    /// A space created before activation becomes syncable once the account
+    /// has fully reconciled, and not before.
     ///
-    /// The opt-in half of the local-only gate: creation withholds the
-    /// remote, and an explicit enable-sync is what provisions the space
-    /// and attaches one. Provisioning at attach time is what makes this
-    /// work — before, `enable_sync` attached without ever calling
-    /// `/provider/add`, so the upstream pointed at a subject the service
-    /// refused.
+    /// Creation still withholds the remote while the service would refuse
+    /// provisioning. Once activation is observed and the account pull has
+    /// converged, the worker scans local replicas, provisions every one with
+    /// zero remotes, and attaches the account provider without another user
+    /// action.
     #[dialog_common::test]
-    async fn it_syncs_a_local_only_space_once_sync_is_enabled(env: TestEnvironment) -> Result<()> {
+    async fn it_syncs_a_local_only_space_once_the_account_reconciles(
+        env: TestEnvironment,
+    ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         let email = "optin@example.com";
         enroll_only(&driver, &env, email).await?;
@@ -4680,35 +4681,21 @@ mod tests {
             "Active"
         );
 
-        // Still local: activation does not retroactively sync spaces
-        // created before it. The user opts in per space.
-        //
-        // No settling wait is needed to make this meaningful. The
-        // handler's attach step, had it run, would have run before
-        // `create_space` returned — and the navigation, the whole
-        // activation ceremony, and the panel wait have all happened
-        // since. An absent remote here is a decision, not a race.
-        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        let info = successful_body("read the space configuration", &info);
-        assert!(
-            info["remote"]
-                .as_object()
-                .is_none_or(serde_json::Map::is_empty),
-            "activation must not retroactively attach a remote, got {}",
-            info["remote"],
-        );
-
-        // Opting in attaches and provisions, so the space can now push.
-        let attached = post_json(
-            &driver,
-            &format!("/api/repository/{key}/remote"),
-            serde_json::json!({
-                "remote": { "origin": { "address": { "Ucan": { "endpoint": env.tonk_web.join("ucan/")? } } } },
-                "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } },
-            }),
-        )
-        .await?;
-        successful_body("attach the remote", &attached);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the space configuration", &info);
+            if info["remote"]["origin"].is_object()
+                && info["branch"]["main"]["upstream"]["remote"].as_str() == Some("origin")
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "account reconciliation did not attach origin/main: {info}",
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
