@@ -87,10 +87,11 @@ may need to converge. Removing a row before publication is complete would
 misrepresent authority.
 
 Hosted-space deletion crosses a remote destructive boundary for exactly one
-repository subject. Whole-account deletion crosses the boundary after the
-passkey proves the current root and the final request carries the reviewed plan.
-Its result may contain multiple per-space outcomes; success cannot be inferred
-from the first deletion alone.
+repository subject. Whole-account deletion crosses the boundary once: the
+passkey recovers the current root, the root signs a single purge, and the
+service denies every space the account provides in one write before removing
+anything. A purge that stops partway leaves nothing servable and resumes when
+presented again.
 
 Adding a passkey crosses a WebAuthn and repository-fact boundary. A new
 credential is not useful until its root/custody relationship and shared fact are

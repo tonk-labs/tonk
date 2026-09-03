@@ -334,28 +334,6 @@ async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
     Ok(result.into())
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VerifyPasskeyInput {
-    credential_id: String,
-}
-
-/// A user-verification assertion against the account's own passkey,
-/// with nothing derived and nothing signed: destructive account
-/// invocations sign with the device's delegated authority, and this
-/// ceremony only proves a human holding the passkey is present.
-async fn verify_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let input: VerifyPasskeyInput = serde_wasm_bindgen::from_value(input)
-        .map_err(|_| JsValue::from_str("malformed passkey verification input"))?;
-    let credential_id = hex::decode(&input.credential_id)
-        .map_err(|_| JsValue::from_str("malformed passkey credential id"))?;
-    crate::passkey::verify_custody_passkey(&credential_id)
-        .await
-        .map_err(js_error)?;
-    // The bridge decodes this into `()`, which maps to `undefined`.
-    Ok(JsValue::UNDEFINED)
-}
-
 /// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
 /// one assertion — pinned to `credentialId` (hex) when the root record
 /// carries one — and the account's X25519 recipient. The page saves it
@@ -451,16 +429,6 @@ pub fn install() {
     );
     sign_revocation.forget();
 
-    let verify_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(verify_passkey(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"verifyPasskey".into(),
-        verify_passkey.as_ref().unchecked_ref(),
-    );
-    verify_passkey.forget();
-
     let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(create_passkey(input))
     });
@@ -510,7 +478,6 @@ mod tests {
             "addPasskey",
             "authorizeDevice",
             "signRevocation",
-            "verifyPasskey",
         ] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");

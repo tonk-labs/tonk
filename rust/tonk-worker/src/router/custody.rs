@@ -139,7 +139,8 @@ pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) 
     if let Err(error) = super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
-        Some(enrollment),
+        Some(tonk_worker_api::CustodyIntent::Enroll(enrollment)),
+        None,
     )
     .await
     {
@@ -283,7 +284,53 @@ async fn perform(
                 .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
             add_passkey(&state, &custodian, &holder, addition).await
         }
+        // Both answer with where the page goes next: the guest that
+        // asked is on a page the outcome retires (a purged profile, or
+        // a handoff to a waiting process), and the page is what
+        // navigates.
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => {
+            super::account_deletion::purge(&state, &custodian).await?;
+            navigate_reply("/")
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+            let target =
+                super::ceremony::authorize_device(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
     }
+}
+
+/// A custody reply telling the page where to go: `{ navigate: href }`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn navigate_reply(href: &str) -> Result<wasm_bindgen::JsValue, String> {
+    let reply = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &reply,
+        &wasm_bindgen::JsValue::from_str("navigate"),
+        &wasm_bindgen::JsValue::from_str(href),
+    )
+    .map_err(|_| "the reply could not be built".to_string())?;
+    Ok(reply.into())
+}
+
+/// The account this passkey holds, opened from its custody cell at this
+/// deployment's own `/ucan/`: what every root-signed ceremony the worker
+/// runs on the page's behalf starts from.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn held_account(
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<tonk_identity::account::Account, String> {
+    let endpoint = super::customer::ucan_endpoint(
+        &super::customer::service_origin().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    custodian
+        .account()
+        .load(endpoint.to_string())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| refusal("the custody cell did not open", &error))?
+        .ok_or_else(|| "this passkey holds no account".to_string())
 }
 
 /// Seal the account a first passkey holds under a second one.
