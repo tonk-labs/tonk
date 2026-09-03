@@ -105,9 +105,10 @@ function healthResponse() {
 //
 // Both caches are named per BUILD, not per schema version. Two workers
 // from different builds therefore never read or write the same cache:
-// an install populates its OWN cache. No generation is purged automatically:
-// retained caches may still be the sole offline copy of a coherent release,
-// and lifecycle-safe pruning is outside this installation transaction.
+// an install populates its OWN cache. An incoming install may read a member
+// from an older final Tonk cache only after hashing it against the incoming
+// manifest. Once the verified successor is active, it removes obsolete cache
+// names that are proved to belong to this lifecycle protocol.
 // Separate names still make an install atomic — a half-populated incoming
 // cache can't be observed by the still-serving old worker,
 // which previously could hand out the new shell beside the old build's
@@ -115,9 +116,9 @@ function healthResponse() {
 //
 // The Rust side derives its shell name from the build id handed to it at
 // activate time (see `cache.rs`), so the name is injected once here rather
-// than hand-synced across two languages. Browser storage pressure remains the
-// only automatic eviction policy; future cleanup needs proof that no retained
-// client or worker can still reference a generation.
+// than hand-synced across two languages. Browser storage pressure may evict
+// entries at any time; protocol cleanup begins only after the successor is the
+// active, adopted generation.
 const SHELL_CACHE = `TONK_SHELL_${BUILD_ID}`;
 
 // Where this worker's own wasm lives. Separate from the shell graph because it
@@ -132,6 +133,36 @@ const SHELL_STAGE_PREFIX = `TONK_SHELL_STAGE_${BUILD_ID}_`;
 const WORKER_STAGE_PREFIX = `TONK_WORKER_STAGE_${BUILD_ID}_`;
 const WORKER_WASM_URL = new URL("./worker_bg.wasm", self.location.href).href;
 const ASSET_MANIFEST_URL = new URL("./asset-manifest.json", self.location.href).href;
+
+const FINAL_SHELL_CACHE_RE = /^TONK_SHELL_([0-9a-f]{16})$/;
+const FINAL_WORKER_CACHE_RE = /^TONK_WORKER_([0-9a-f]{16})$/;
+const GENERATION_CACHE_RE = /^TONK_GENERATION_([0-9a-f]{16})$/;
+const SHELL_STAGE_CACHE_RE = /^TONK_SHELL_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
+const WORKER_STAGE_CACHE_RE = /^TONK_WORKER_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
+
+function parsedBuild(name, pattern) {
+    return pattern.exec(name)?.[1] ?? null;
+}
+
+function parseFinalShellGeneration(name) {
+    return parsedBuild(name, FINAL_SHELL_CACHE_RE);
+}
+
+function parseFinalWorkerGeneration(name) {
+    return parsedBuild(name, FINAL_WORKER_CACHE_RE);
+}
+
+function parseGenerationMarkerCache(name) {
+    return parsedBuild(name, GENERATION_CACHE_RE);
+}
+
+function parseShellStageGeneration(name) {
+    return parsedBuild(name, SHELL_STAGE_CACHE_RE);
+}
+
+function parseWorkerStageGeneration(name) {
+    return parsedBuild(name, WORKER_STAGE_CACHE_RE);
+}
 
 let tonkServiceWorkerResolves;
 
@@ -241,7 +272,13 @@ async function fetchVerified(url, expectedHash, label, onChunk = null) {
     return { bytes, response };
 }
 
-async function fetchVerifiedWorkerWasm() {
+async function fetchVerifiedWorkerWasm(cacheNames = []) {
+    const cached = await verifiedGenerationResponse(
+        cacheNames,
+        WORKER_WASM_URL,
+        WORKER_WASM_HASH,
+    );
+    if (cached) return cached.arrayBuffer();
     let firstChunk = true;
     return (await fetchVerified(
         WORKER_WASM_URL,
@@ -379,7 +416,23 @@ async function reportInstallProgress(phase, completed, total, force = false) {
     }
 }
 
-async function fetchVerifiedAssets(entries) {
+async function verifiedGenerationResponse(cacheNames, key, expectedHash) {
+    for (const cacheName of cacheNames) {
+        try {
+            const response = await caches.match(key, { cacheName });
+            if (!response) continue;
+            const actual = await digestOf(await response.clone().arrayBuffer());
+            if (actual.slice(0, expectedHash.length) === expectedHash) {
+                return response;
+            }
+        } catch (error) {
+            log(`Unable to verify reusable response from ${cacheName}:`, error);
+        }
+    }
+    return null;
+}
+
+async function fetchVerifiedAssets(entries, cacheNames = []) {
     const results = new Array(entries.length);
     let next = 0;
     let completed = 0;
@@ -388,6 +441,17 @@ async function fetchVerifiedAssets(entries) {
             const index = next++;
             const [path, hash] = entries[index];
             const url = new URL(path, self.location.origin).href;
+            const cached = await verifiedGenerationResponse(
+                cacheNames,
+                assetCacheKey(path),
+                hash,
+            );
+            if (cached) {
+                results[index] = { path, response: cached };
+                completed += 1;
+                await reportInstallProgress("verify", completed, entries.length);
+                continue;
+            }
             let firstChunk = true;
             const { response } = await fetchVerified(
                 url,
@@ -561,9 +625,17 @@ async function installGeneration() {
         throw new Error("retained generation cache has no adoption provenance");
     }
 
+    const reusableShellCaches = [...names].filter(name => {
+        const build = parseFinalShellGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const reusableWorkerCaches = [...names].filter(name => {
+        const build = parseFinalWorkerGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
     const [assets, wasmBytes] = await Promise.all([
-        fetchVerifiedAssets(entries),
-        fetchVerifiedWorkerWasm(),
+        fetchVerifiedAssets(entries, reusableShellCaches),
+        fetchVerifiedWorkerWasm(reusableWorkerCaches),
     ]);
 
     const nonce = freshStageNonce();
@@ -632,6 +704,38 @@ async function installGeneration() {
         }
         throw error;
     }
+}
+
+function lifecycleCacheBuild(name) {
+    return parseFinalShellGeneration(name) ??
+        parseFinalWorkerGeneration(name) ??
+        parseGenerationMarkerCache(name) ??
+        parseShellStageGeneration(name) ??
+        parseWorkerStageGeneration(name);
+}
+
+/// Remove only obsolete names owned by the immutable-generation protocol.
+/// Activation is the first point at which the browser has made this worker
+/// the registration's active worker, so install failure can never prune the
+/// incumbent that still serves existing documents.
+async function pruneObsoleteGenerationCaches() {
+    const marker = await readGenerationMarker();
+    if (marker?.state !== "adopted") {
+        log("Skipping generation cache cleanup without an adopted current marker");
+        return;
+    }
+
+    const names = await caches.keys();
+    const obsolete = names.filter(name => {
+        const build = lifecycleCacheBuild(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const results = await Promise.allSettled(obsolete.map(name => caches.delete(name)));
+    results.forEach((result, index) => {
+        if (result.status === "rejected") {
+            log(`Failed to delete obsolete generation cache ${obsolete[index]}:`, result.reason);
+        }
+    });
 }
 
 /// The wasm bytes this worker boots from: the copy precached at
@@ -729,6 +833,11 @@ self.onactivate = event => {
             log("onactivate dispatch failed:", err);
         }
     })();
+    event.waitUntil?.(
+        pruneObsoleteGenerationCaches().catch(error => {
+            log("Generation cache cleanup failed:", error);
+        }),
+    );
     log("Activated");
 };
 
@@ -886,7 +995,113 @@ self.addEventListener("online", onConnectivityChange);
 // matches that manifest. The outgoing document's update-aware
 // controller-replacement handoff crosses to the successor; recovery never writes
 // current-deployment bytes into an old cache.
+function evictionRecoveryResponse() {
+    return new Response(
+        `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tonk is checking for an update</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         place-items: center; min-height: 100vh; min-height: 100dvh;
+         background: #111; color: #eee; }
+  main { max-width: 34rem; padding: 2rem; }
+  h1 { font-size: 1.35rem; }
+  button { font: inherit; padding: 0.55rem 1.25rem; border-radius: 8px;
+           border: 1px solid #555; background: #2a2a2e; color: #eee;
+           cursor: pointer; }
+</style></head><body><main>
+<h1>Checking for a recoverable Tonk version</h1>
+<p id="status">A required file is no longer available locally. Tonk is checking for the current version without changing your local data.</p>
+<button id="retry" type="button" hidden>Try again</button>
+</main><script>
+(() => {
+  const key = "tonk:sw-eviction-reload";
+  const serviceWorkers = navigator.serviceWorker;
+  const status = document.getElementById("status");
+  const retry = document.getElementById("retry");
+  let settled = false;
+  let timer = null;
+  let updateFound = false;
+  let attempt = 0;
+
+  const stop = () => {
+    if (timer !== null) clearTimeout(timer);
+    serviceWorkers.removeEventListener("controllerchange", adopted);
+  };
+  const failed = currentAttempt => {
+    if (currentAttempt !== attempt || settled) return;
+    settled = true;
+    stop();
+    status.textContent = "Tonk could not switch to a complete current version. Check your connection and try again.";
+    retry.hidden = false;
+  };
+  const adopted = () => {
+    if (settled) return;
+    settled = true;
+    stop();
+    try { sessionStorage.setItem(key, "1"); } catch {}
+    location.reload();
+  };
+  const observe = (candidate, currentAttempt) => {
+    if (!candidate) return;
+    const changed = () => {
+      if (candidate.state === "redundant") failed(currentAttempt);
+    };
+    changed();
+    candidate.addEventListener?.("statechange", changed);
+  };
+  const check = async () => {
+    const currentAttempt = ++attempt;
+    settled = false;
+    updateFound = false;
+    retry.hidden = true;
+    status.textContent = "A required file is no longer available locally. Tonk is checking for the current version without changing your local data.";
+    serviceWorkers.addEventListener("controllerchange", adopted, { once: true });
+    timer = setTimeout(() => failed(currentAttempt), 30000);
+    try {
+      const before = serviceWorkers.controller;
+      const registration = await serviceWorkers.getRegistration();
+      if (!registration) return failed(currentAttempt);
+      registration.addEventListener?.("updatefound", () => {
+        if (currentAttempt !== attempt) return;
+        updateFound = true;
+        observe(registration.installing, currentAttempt);
+      }, { once: true });
+      await registration.update();
+      if (currentAttempt !== attempt) return;
+      if (serviceWorkers.controller !== before) return adopted();
+      observe(registration.installing || registration.waiting, currentAttempt);
+      if (!updateFound && !registration.installing && !registration.waiting) failed(currentAttempt);
+    } catch {
+      failed(currentAttempt);
+    }
+  };
+
+  retry.addEventListener("click", check);
+  try {
+    if (sessionStorage.getItem(key) === "1") {
+      sessionStorage.removeItem(key);
+      failed(attempt);
+      return;
+    }
+  } catch {}
+  void check();
+})();
+</script></body></html>`,
+        {
+            status: 503,
+            statusText: "Retained Tonk resource unavailable",
+            headers: {
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; worker-src 'self'; base-uri 'none'; form-action 'none'",
+            },
+        },
+    );
+}
+
 function missingGenerationAssetResponse(path) {
+    if (path === "/") return evictionRecoveryResponse();
     return new Response(
         `A resource required by this retained Tonk version is unavailable (${path}). ` +
             "Reload to check for the current version.",
@@ -980,11 +1195,27 @@ async function rustFetch(event) {
 // Rust worker rewrites it into the guest's repository/branch. A missing or
 // failed client lookup is delegated conservatively: cross-serving a top-level
 // asset into an opaque guest is worse than paying the worker boot cost.
+const clientFrameTypes = new Map();
+const CLIENT_FRAME_TYPE_LIMIT = 256;
+
+function rememberClientFrameType(clientId, frameType) {
+    if (!clientFrameTypes.has(clientId) && clientFrameTypes.size >= CLIENT_FRAME_TYPE_LIMIT) {
+        clientFrameTypes.delete(clientFrameTypes.keys().next().value);
+    }
+    clientFrameTypes.set(clientId, frameType);
+}
+
 async function isNestedClientRequest(event) {
     if (!event.clientId) return false;
+    const known = clientFrameTypes.get(event.clientId);
+    if (known) return known === "nested";
     try {
         const client = await self.clients.get(event.clientId);
-        return !client || client.frameType === "nested";
+        if (!client || !["top-level", "nested"].includes(client.frameType)) {
+            return true;
+        }
+        rememberClientFrameType(event.clientId, client.frameType);
+        return client.frameType === "nested";
     } catch (error) {
         log("Client lookup failed; delegating request to Rust:", error);
         return true;
@@ -992,16 +1223,16 @@ async function isNestedClientRequest(event) {
 }
 
 async function routeFetch(event, path) {
-    if (await isNestedClientRequest(event)) {
-        return rustFetch(event);
-    }
-    if (event.request.mode === "navigate" && !path.startsWith("/api/")) {
+    if (event.request.mode === "navigate") {
+        if (path.startsWith("/api/") || await isNestedClientRequest(event)) {
+            return rustFetch(event);
+        }
         return serveNavigation();
     }
-    if (event.request.mode !== "navigate" && isShellCacheable(event.request, path)) {
-        return serveAsset(event);
+    if (!isShellCacheable(event.request, path)) {
+        return rustFetch(event);
     }
-    return rustFetch(event);
+    return await isNestedClientRequest(event) ? rustFetch(event) : serveAsset(event);
 }
 
 // Route navigations straight to the cached shell (bypassing the

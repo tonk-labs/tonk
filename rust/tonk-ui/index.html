@@ -299,9 +299,17 @@
             };
 
             const UPGRADE_RELOAD = "tonk:sw-upgrade-reload";
+            const EVICTION_RELOAD = "tonk:sw-eviction-reload";
             const INSTALL_PROGRESS_CHANNEL =
                 "tonk-sw-install-progress-v1";
             let observingInstallLifecycle = false;
+
+            // A normal application document is the successful end of an
+            // eviction recovery. Consume its one-shot loop guard here; a
+            // second recovery document consumes the same guard itself.
+            try {
+                sessionStorage.removeItem(EVICTION_RELOAD);
+            } catch {}
 
             const noteInstallProgress = (message) => {
                 const wellFormed =
