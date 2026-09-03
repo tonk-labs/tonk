@@ -1463,7 +1463,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "LIFE-15",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated: it_signs_back_into_the_same_account_after_signing_out."
     },
     {
       "claim": "Browser and CLI logout are local-first when provider detach fails (Settle).",
@@ -1474,12 +1474,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Different-account login selects the account's existing profile without rebinding retained local work (Resolve).",
+      "claim": "Sign-out and different-account login select existing profiles without rebinding retained local work (Resolve).",
       "device": "returning-browser + two-actor",
       "file": "verification/accounts.md",
       "id": "LIFE-17",
       "priority": "P1",
-      "result": "Automated: it_signs_into_another_account_without_rebinding_retained_local_spaces."
+      "result": "Automated: it_adds_a_second_account_and_switches_between_disjoint_space_lists and it_signs_into_another_account_without_rebinding_retained_local_spaces."
     },
     {
       "claim": "Two browser accounts switch without leaking spaces or in-flight results (Settle).",
@@ -2221,9 +2221,9 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 2,
+    "other": 3,
     "pass": 1,
-    "unrun": 112
+    "unrun": 111
   },
   "visualCommit": "49a873a23"
 };

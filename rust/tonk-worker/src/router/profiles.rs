@@ -17,7 +17,6 @@ use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_operator::{DeriveOperator as _, Profile};
 use dialog_storage::provider::storage::Storage;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -30,7 +29,6 @@ use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesRespon
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::device::RosterEntry;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::worker::DefaultOperator;
 use crate::worker::{DefaultSpace, TonkState};
 
@@ -102,6 +100,32 @@ async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry
     }
 }
 
+/// Build a switcher row from the profile that owns its facts, without
+/// promoting or booting that profile.
+async fn inspected_entry(
+    profile_name: String,
+    profile: &Profile,
+    operator: &DefaultOperator,
+) -> RosterEntry {
+    let provider = super::account::provider_from(profile, operator).await;
+    let root_did = if provider.is_some() {
+        super::identity::historical_root_did(profile, operator)
+            .await
+            .ok()
+            .flatten()
+            .map(|root| root.to_string())
+    } else {
+        None
+    };
+    RosterEntry {
+        profile_name,
+        root_did,
+        provider,
+        email: None,
+        display_name: super::profile_name::resolve_display_name_from(profile, operator).await,
+    }
+}
+
 /// Refresh the active profile's roster entry from live state.
 ///
 /// Best-effort: every caller is a moment that already succeeded (boot,
@@ -145,25 +169,52 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
     }
 }
 
-/// The roster with the active profile's entry refreshed from live state,
-/// written back so the stored roster converges as a side effect.
-/// Inactive entries are served as-of their profile's last activation.
-async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
+/// Read every switcher row from its owning profile. Opening a profile handle
+/// does not boot or activate it, so labels and attachment state stay current
+/// without changing the active account.
+async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWorkerError> {
     let mut roster = tonk
         .registry
         .read_roster(&tonk.storage, &tonk.operator)
         .await?;
-    // The roster holds only handles, so the active profile's row is built
-    // from live state and spliced over whatever the roster listed.
-    let entry = refreshed_entry(tonk, None).await;
-    try_upsert_active_entry(tonk, None).await?;
-    match roster
-        .iter_mut()
-        .find(|slot| slot.profile_name == entry.profile_name)
-    {
-        Some(slot) => *slot = entry,
-        None => roster.push(entry),
+    for slot in &mut roster {
+        if slot.profile_name == tonk.profile_name {
+            *slot = refreshed_entry(tonk, None).await;
+            continue;
+        }
+        let profile = match tonk
+            .registry
+            .open_profile(&tonk.storage, &slot.profile_name)
+            .await
+        {
+            Ok(profile) => profile,
+            Err(error) => {
+                log!(
+                    "profile roster kept fallback data for unreadable handle {}: {error}",
+                    slot.profile_name
+                );
+                continue;
+            }
+        };
+        let operator = match inspection_operator(&profile, &tonk.storage).await {
+            Ok(operator) => operator,
+            Err(error) => {
+                log!(
+                    "profile roster kept fallback data for unreadable handle {}: {error}",
+                    slot.profile_name
+                );
+                continue;
+            }
+        };
+        *slot = inspected_entry(slot.profile_name.clone(), &profile, &operator).await;
     }
+    Ok(roster)
+}
+
+/// The roster with every profile's live label and account state.
+async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
+    try_upsert_active_entry(tonk, None).await?;
+    let roster = refreshed_roster(tonk).await?;
     Ok(response_from(&tonk.profile_name, roster))
 }
 
@@ -287,6 +338,101 @@ async fn add_profile(
     promote(state, new_state, source).await
 }
 
+/// Sign the current profile out and promote the next signed-in profile. If no
+/// other account is attached, promote an existing rootless local workspace or
+/// create one. The signed-out profile remains in the roster with its root and
+/// spaces intact, but it can no longer leak those spaces into the default hub
+/// landing view.
+pub(crate) async fn sign_out(
+    state: &AppState,
+    source: Option<&super::ClientId>,
+) -> Result<tonk_worker_api::AccountStatus, TonkWorkerError> {
+    let transition = {
+        let tonk = state.read().await;
+        Arc::clone(&tonk.profile_transition)
+    };
+    let _transition = transition.lock().await;
+
+    let (registry, storage, active_name, roster) = {
+        let current = state.read().await;
+        try_upsert_active_entry(&current, None).await?;
+        let roster = current
+            .registry
+            .read_roster(&current.storage, &current.operator)
+            .await?;
+        (
+            current.registry.clone(),
+            current.storage.clone(),
+            current.profile_name.clone(),
+            roster,
+        )
+    };
+
+    // "Next" follows the stable order the switcher renders, wrapping once.
+    let active_index = roster
+        .iter()
+        .position(|entry| entry.profile_name == active_name)
+        .unwrap_or(roster.len());
+    let ordered = roster
+        .iter()
+        .skip(active_index.saturating_add(1))
+        .chain(roster.iter().take(active_index));
+    let mut signed_in = None;
+    let mut local = None;
+    for entry in ordered {
+        let profile = match registry.open_profile(&storage, &entry.profile_name).await {
+            Ok(profile) => profile,
+            Err(error) => {
+                log!(
+                    "sign-out skipped unreadable roster handle {}: {error}",
+                    entry.profile_name
+                );
+                continue;
+            }
+        };
+        let operator = match inspection_operator(&profile, &storage).await {
+            Ok(operator) => operator,
+            Err(error) => {
+                log!(
+                    "sign-out skipped unreadable roster handle {}: {error}",
+                    entry.profile_name
+                );
+                continue;
+            }
+        };
+        if super::account::provider_from(&profile, &operator)
+            .await
+            .is_some()
+        {
+            signed_in = Some((entry.profile_name.clone(), profile));
+            break;
+        }
+        if local.is_none()
+            && matches!(
+                super::identity::historical_root_did(&profile, &operator).await,
+                Ok(None)
+            )
+        {
+            local = Some((entry.profile_name.clone(), profile));
+        }
+    }
+
+    // Prepare the replacement before disconnecting. If a stored profile is
+    // unreadable or cannot boot, the current account remains fully linked.
+    let (name, profile) = match signed_in.or(local) {
+        Some(candidate) => candidate,
+        None => registry.create_profile(&storage).await?,
+    };
+    let new_state = crate::worker::boot_state(storage, name, profile, registry).await?;
+
+    let status = {
+        let current = state.read().await;
+        super::account::disconnect(&current).await?
+    };
+    promote(state, new_state, source).await?;
+    Ok(status)
+}
+
 /// Select and pin the profile that historically owns `root`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn for_account(
@@ -301,20 +447,16 @@ pub(crate) async fn for_account(
     let _transition = transition.lock().await;
 
     let current = state.clone().read_owned().await;
-    match super::identity::historical_root_did(&current.profile, &current.operator).await? {
-        None => {
+    let current_root =
+        super::identity::historical_root_did(&current.profile, &current.operator).await?;
+    match &current_root {
+        Some(historical) if historical == root => {
             return Ok(AccountProfileGuard {
                 tonk: current,
                 disposition: AccountProfileDisposition::Current,
             });
         }
-        Some(historical) if historical == *root => {
-            return Ok(AccountProfileGuard {
-                tonk: current,
-                disposition: AccountProfileDisposition::Current,
-            });
-        }
-        Some(_) => {}
+        Some(_) | None => {}
     }
 
     // Routing must not make the outgoing local workspace unreachable.
@@ -370,6 +512,19 @@ pub(crate) async fn for_account(
         }
     }
 
+    if matched.is_none() && current_root.is_none() {
+        // A genuinely new account keeps the active onboarding/local profile,
+        // but only after proving this browser does not already have a profile
+        // for the discovered root. This is what lets post-sign-out login route
+        // back to the preserved account profile instead of rebinding the
+        // rootless landing profile.
+        let tonk = state.read_owned().await;
+        return Ok(AccountProfileGuard {
+            tonk,
+            disposition: AccountProfileDisposition::Current,
+        });
+    }
+
     let (new_state, disposition) = match matched {
         Some((name, profile)) => (
             crate::worker::boot_state(storage, name, profile, registry).await?,
@@ -390,7 +545,6 @@ pub(crate) async fn for_account(
     Ok(AccountProfileGuard { tonk, disposition })
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn inspection_operator(
     profile: &Profile,
     storage: &Storage<DefaultSpace>,
@@ -435,27 +589,15 @@ async fn promote(
     }
     let name = new_state.profile_name.clone();
     let registry = new_state.registry.clone();
-    let mut roster = registry
-        .read_roster(&new_state.storage, &new_state.operator)
+    registry
+        .upsert_roster(
+            &new_state.storage,
+            &new_state.operator,
+            &new_state.profile.did(),
+            &name,
+        )
         .await?;
-    let entry = refreshed_entry(&new_state, None).await;
-    {
-        registry
-            .upsert_roster(
-                &new_state.storage,
-                &new_state.operator,
-                &new_state.profile.did(),
-                &name,
-            )
-            .await?;
-    }
-    match roster
-        .iter_mut()
-        .find(|slot| slot.profile_name == entry.profile_name)
-    {
-        Some(slot) => *slot = entry,
-        None => roster.push(entry),
-    }
+    let roster = refreshed_roster(&new_state).await?;
     let response = response_from(&name, roster);
 
     // The roster and candidate are durable before the pointer changes. From
@@ -522,6 +664,127 @@ mod tests {
             "an attached profile names its account root"
         );
         assert!(active.display_name.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_an_inactive_profiles_current_display_name_and_account_state() {
+        use tonk_schema::{ProfileName, prelude::DidExt as _};
+
+        let state = Arc::new(RwLock::new(test_state().await));
+        let first = {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(tonk_account::MAIN_BRANCH)
+                .transaction()
+                .assert(ProfileName::new(tonk.profile.did().this(), "jack".into()))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            tonk.profile_name.clone()
+        };
+        let _ = add(State(state.clone()), None).await.unwrap();
+
+        let Json(response) = list(State(state)).await.unwrap();
+        let inactive = response
+            .profiles
+            .iter()
+            .find(|entry| entry.profile_name == first)
+            .expect("the first profile remains in the roster");
+        assert!(!inactive.active);
+        assert_eq!(inactive.display_name.as_deref(), Some("jack"));
+        assert_eq!(inactive.provider.as_deref(), Some(TEST_ACCOUNT_REMOTE));
+        assert!(inactive.root_did.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_signs_out_to_the_next_signed_in_profile() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let first = state.read().await.profile_name.clone();
+        let _ = add(State(state.clone()), None).await.unwrap();
+        let second = {
+            let tonk = state.read().await;
+            persist_test_root(&tonk).await;
+            super::super::account::attach_test_account(&tonk)
+                .await
+                .unwrap();
+            tonk.profile_name.clone()
+        };
+        let _ = activate(
+            State(state.clone()),
+            None,
+            Json(ActivateProfileRequest { profile: first }),
+        )
+        .await
+        .unwrap();
+
+        let status = sign_out(&state, None).await.unwrap();
+
+        assert!(matches!(
+            status,
+            tonk_worker_api::AccountStatus::Unregistered { .. }
+        ));
+        let tonk = state.read().await;
+        assert_eq!(tonk.profile_name, second);
+        assert_eq!(
+            super::super::account::provider(&tonk).await.as_deref(),
+            Some(TEST_ACCOUNT_REMOTE)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_signs_out_to_an_existing_rootless_local_profile() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let first = state.read().await.profile_name.clone();
+        let Json(before) = add(State(state.clone()), None).await.unwrap();
+        let local = before.active;
+        let count = before.profiles.len();
+        let _ = activate(
+            State(state.clone()),
+            None,
+            Json(ActivateProfileRequest { profile: first }),
+        )
+        .await
+        .unwrap();
+
+        sign_out(&state, None).await.unwrap();
+
+        let tonk = state.read().await;
+        assert_eq!(tonk.profile_name, local);
+        assert!(
+            super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            tonk.registry
+                .read_roster(&tonk.storage, &tonk.operator)
+                .await
+                .unwrap()
+                .len(),
+            count,
+            "an existing local landing profile must be reused"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_creates_a_rootless_local_profile_when_signing_out_alone() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let first = state.read().await.profile_name.clone();
+
+        sign_out(&state, None).await.unwrap();
+
+        let tonk = state.read().await;
+        assert_ne!(tonk.profile_name, first);
+        assert!(
+            super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(super::super::account::provider(&tonk).await.is_none());
     }
 
     #[dialog_common::test]
@@ -668,6 +931,36 @@ mod tests {
 
         assert_eq!(guard.profile_name, before);
         assert_eq!(guard.disposition, AccountProfileDisposition::Current);
+    }
+
+    #[dialog_common::test]
+    async fn it_routes_a_rootless_sign_out_landing_back_to_the_matching_profile() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let (account_profile, root) = {
+            let tonk = state.read().await;
+            (
+                tonk.profile_name.clone(),
+                super::super::identity::local_root(&tonk)
+                    .await
+                    .unwrap()
+                    .root_did,
+            )
+        };
+        sign_out(&state, None).await.unwrap();
+        {
+            let tonk = state.read().await;
+            assert!(
+                super::super::identity::load_record(&tonk)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        let guard = for_account(state, &root, None).await.unwrap();
+
+        assert_eq!(guard.profile_name, account_profile);
+        assert_eq!(guard.disposition, AccountProfileDisposition::Existing);
     }
 
     #[dialog_common::test]

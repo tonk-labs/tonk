@@ -563,6 +563,30 @@ mod tests {
         }
     }
 
+    /// Wait until a profile-changing action has rebuilt the top document.
+    async fn wait_for_top_reload(
+        driver: &WebDriver,
+        before: &serde_json::Value,
+        action: &str,
+    ) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await
+                .is_ok_and(|current| current.json() != before)
+            {
+                wait_for_service_worker(driver).await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("timed out waiting for {action} to reload the page"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Answer the worker's ask for a passkey: the custody relay raises a
     /// consent card in the TOP document, and its button runs the
     /// assertion the virtual authenticator answers.
@@ -1744,10 +1768,27 @@ mod tests {
 
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-sign-out-open]").await?;
-        click(&driver, "[data-sign-out-submit]").await?;
-        // Signing out rebuilds the page on the unlinked profile: the Hub
-        // offers to link an account again.
         driver.enter_default_frame().await?;
+        let before_sign_out = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-submit]").await?;
+        // Signing out rebuilds the page on a rootless local profile so the
+        // signed-out account's spaces are preserved but no longer displayed.
+        wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        assert_ne!(
+            successful_body("profiles immediately after sign-out", &profiles)["active"],
+            active_before,
+            "sign-out must leave the retained account profile inactive"
+        );
+        assert!(
+            !space_keys(&driver).await?.contains(&retained),
+            "the post-sign-out Hub must not display the account profile's spaces"
+        );
         raise_cluster_from_hub(&driver, &env).await?;
 
         run_cluster_login(&driver, EMAIL).await?;
@@ -5335,6 +5376,9 @@ mod tests {
             space_keys(successful_body("relist first account's spaces", &listed)).contains(&key),
             "switching back must restore the first account's space list"
         );
+        enter_hub(&driver).await?;
+        click(&driver, "[data-account-trigger]").await?;
+        wait_for_text_containing(&driver, "[data-account-menu]", "Second Hub").await?;
 
         driver.quit().await?;
         Ok(())
@@ -5389,8 +5433,41 @@ mod tests {
         goto(&driver, env.tonk_web.as_str()).await?;
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-sign-out-open]").await?;
-        click(&driver, "[data-sign-out-submit]").await?;
         driver.enter_default_frame().await?;
+        let before_sign_out = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-submit]").await?;
+        wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
+
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let profiles = successful_body("profiles after first sign-out", &profiles);
+        assert_eq!(
+            profiles["active"], second_profile,
+            "signing out must switch directly to the next signed-in account"
+        );
+        assert_eq!(
+            profiles["profiles"]
+                .as_array()
+                .context("profile roster is not an array")?
+                .len(),
+            profile_count,
+            "sign-out to an existing account must not create another profile"
+        );
+
+        // The signed-out profile remains explicitly reachable for its local
+        // work, but is no longer the default Hub landing view.
+        let switched = post_json(
+            &driver,
+            "/api/profiles/activate",
+            serde_json::json!({ "profile": first_profile.clone() }),
+        )
+        .await?;
+        successful_body("open signed-out first profile", &switched);
+        goto(&driver, env.tonk_web.as_str()).await?;
 
         let retained = create_space_awaiting_remote(&driver, "Retained Draft", false).await?;
         let repository = get_json(&driver, &format!("/api/repository/{retained}")).await?;

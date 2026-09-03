@@ -37,17 +37,10 @@ pub const REGISTRY_PROFILE: &str = "tonk";
 /// name as UTF-8.
 const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 
-/// Branch of the registry profile's repository holding the roster of
-/// every profile this browser knows, one [`RosterProfile`] entity per
-/// storage name with its attachment and email as stamps.
-///
-/// A switcher menu has to describe profiles it has not opened, and
-/// opening each one just to render a row would cost key-material load
-/// and credential reads per profile per render. The roster is maintained
-/// by the worker at the moments it already has the facts in hand (boot,
-/// link, unlink, rename, switch). Facts rather than one serialized blob:
-/// concurrent refreshes merge per entity instead of racing a
-/// read-modify-write of the whole roster.
+/// Branch of the registry profile's repository holding the roster of every
+/// profile this browser knows. It stores only the stable profile DID and
+/// storage handle; the switcher reads mutable labels and account attachment
+/// state from the profile that owns them.
 ///
 /// Never upstreamed, so it stays on this device: the registry profile's
 /// `main` is an account branch that syncs, and the roster is not the
@@ -56,10 +49,9 @@ const ROSTER_BRANCH: &str = "roster";
 
 /// One profile this browser knows about, as the switcher renders it.
 ///
-/// Inactive entries are as-of their profile's last activation; only the
-/// active profile's entry is refreshed from live state. A display name
-/// renamed on another device converges the next time that account's
-/// profile is activated here.
+/// The registry supplies a deterministic fallback name. The profile router
+/// replaces it with the live display name and attachment facts before serving
+/// the switcher response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RosterEntry {
     /// Storage name the profile opens under.
@@ -282,13 +274,9 @@ impl Registry {
         let mut roster: Vec<RosterEntry> = profiles
             .into_iter()
             .map(|profile| {
-                // The row is keyed on the profile's DID, and the default
-                // display name is the deterministic petname of that DID —
-                // so an inactive profile keeps its name in the switcher
-                // without being opened. A user-chosen rename or the
-                // account email still only shows while the profile is
-                // active, when the live splice reads them from where
-                // they live.
+                // Keep a deterministic fallback for an unreadable profile.
+                // Ordinary switcher reads replace it with the name stored in
+                // this profile's own repository.
                 let display_name = profile
                     .this()
                     .as_str()

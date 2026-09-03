@@ -330,6 +330,12 @@ identity or stable join key to PostHog.
   occurs in the new profile even if the account never attached.
 - A same-account active server row may remain after local logout. Relogin should
   reuse the same attachment safely; it must never enable a different account.
+- Browser logout leaves the signed-out profile and its local spaces intact but
+  promotes the next signed-in account. With no other signed-in account it lands
+  on a rootless local profile, so account spaces are never the default
+  post-logout Hub view.
+- Account switcher rows resolve their display name from each profile's own
+  current profile branch; inactive rows must not regress to generated petnames.
 - A different-account login after sign-out must retain local-only spaces under
   the old profile and must not attach or expose them from the selected account.
 - Account creation can commit remotely and lose the response. Login must recover

@@ -315,7 +315,7 @@ async fn purge_inner(
             .map_err(|error| error.to_string())?;
         tonk.profile.did()
     };
-    let _ = super::account::unlink(State(state.clone()))
+    let _ = super::account::unlink(State(state.clone()), source.cloned().map(Extension))
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
     // Finish on a fresh profile so the released email can immediately

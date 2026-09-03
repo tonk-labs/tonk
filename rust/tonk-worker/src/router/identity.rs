@@ -127,7 +127,6 @@ async fn load_record_from(
 /// Return the verified historical account root for an explicit profile.
 /// A missing record is a rootless profile; a malformed or misaddressed grant
 /// is an unreadable profile and is never treated as a match.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn historical_root_did(
     profile: &Profile,
     operator: &DefaultOperator,
@@ -533,16 +532,28 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_different_root_on_a_previously_linked_profile() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let previous_root = {
+        let (profile_name, previous_root) = {
             let state = state.read().await;
-            local_root(&state).await.unwrap().root_did
+            (
+                state.profile_name.clone(),
+                local_root(&state).await.unwrap().root_did,
+            )
         };
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
 
-        let _ = super::super::account::unlink(State(state.clone()))
+        let _ = super::super::account::unlink(State(state.clone()), None)
             .await
             .unwrap();
+        let _ = super::super::profiles::activate(
+            State(state.clone()),
+            None,
+            Json(tonk_worker_api::ActivateProfileRequest {
+                profile: profile_name,
+            }),
+        )
+        .await
+        .unwrap();
         let error = save(State(state.clone()), Json(replacement))
             .await
             .unwrap_err();
@@ -605,9 +616,18 @@ mod tests {
             encryption_key: None,
         };
 
-        let _ = super::super::account::unlink(State(state.clone()))
+        let _ = super::super::account::unlink(State(state.clone()), None)
             .await
             .unwrap();
+        let _ = super::super::profiles::activate(
+            State(state.clone()),
+            None,
+            Json(tonk_worker_api::ActivateProfileRequest {
+                profile: profile_name,
+            }),
+        )
+        .await
+        .unwrap();
         let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();
 
         assert!(matches!(

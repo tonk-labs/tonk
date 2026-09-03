@@ -8,15 +8,18 @@ rebinding retained local spaces to the wrong account.
 
 The minimum completed behavior is:
 
-1. Signing out disconnects account services but preserves the current browser
+1. Signing out disconnects account services and preserves that browser
    profile, its historical account root, every local space, and every local
-   commit.
+   commit, while making it inactive.
 2. Signing back into the same account reuses that profile and device identity.
 3. Signing into an account already represented by another browser profile
    activates that profile before creating the account-to-device grant.
 4. Signing into or creating an account not represented locally creates a fresh
    profile and leaves the signed-out profile untouched.
-5. Every open tab is prevented from sending profile-scoped work through a
+5. Sign-out promotes the next signed-in roster profile, or a rootless local
+   profile when no other account is signed in, so the Hub cannot continue to
+   display the signed-out account's spaces.
+6. Every open tab is prevented from sending profile-scoped work through a
    stale UI after the service worker changes the active profile.
 
 This plan completes the repository's current profile-per-account model. It is
@@ -35,7 +38,10 @@ storage.
 - invalidate the hidden account-repository routing keys;
 - retain the local root record, device/profile signer, certificates, profile
   replica catalogue, space databases, passkeys, and unsynced commits;
-- do not rotate profiles;
+- do not rebind, delete, or mutate the signed-out profile's identity;
+- promote the next signed-in profile in stable roster order, wrapping once;
+- when no other account is signed in, reuse a rootless local profile or create
+  one as the Hub landing profile;
 - do not revoke the account's device grant remotely; that remains the separate
   Devices -> remove-access operation;
 - do not delete any browser storage.
@@ -57,7 +63,8 @@ Resolve the target with this matrix:
 
 | Active profile state | Discovered account root | Target |
 | --- | --- | --- |
-| No historical root | Any root | Keep the active profile. This preserves first-account onboarding and attaches its existing local spaces in place. |
+| No historical root | Root already represented in the roster | Activate the first matching profile. This lets the rootless post-sign-out landing route back to the account profile that retained its spaces. |
+| No historical root | Root not represented in the roster | Keep the active profile. This preserves first-account onboarding and attaches its existing local spaces in place. |
 | Historical root equals discovered root | Same account | Keep the active profile and refresh the existing grant. |
 | Historical root differs; one or more roster profiles have the discovered root | Existing account on this browser | Activate the first matching profile in the roster's stable name order. Retain any duplicate same-root profiles unchanged and report only a content-free diagnostic. |
 | Historical root differs; no readable roster profile matches | New account on this browser | Create and activate a fresh profile. |
@@ -82,9 +89,9 @@ each profile's replica catalogue and authority checks.
 The currently active local-only reconciliation work in
 `router/account_state.rs`, `router/adopt.rs`, `router/repository.rs`, and its
 `account_flow.rs` regression is adjacent work, not disposable scaffolding.
-Preserve it. The new end-to-end regression creates its unbacked-up space after
-sign-out so account reconciliation cannot attach a remote before the profile
-transition is exercised.
+Preserve it. The end-to-end regression explicitly reopens the preserved,
+signed-out profile before creating its unbacked-up space, because the default
+post-sign-out landing profile must not expose that account's spaces.
 
 ## Approach
 
@@ -207,7 +214,8 @@ retry on that target.
 
 **Behavior**
 
-- Keep `account::unlink` as a provider/account-replica disconnection.
+- Keep account unlinking as a provider/account-replica disconnection, then
+  atomically promote the next signed-in or rootless local profile.
 - Add a worker regression,
   `it_signs_out_without_deleting_the_root_or_local_spaces`, which attaches a
   test account, creates a zero-remote local space, records the root and profile
@@ -215,8 +223,9 @@ retry on that target.
   - provider status is absent;
   - account replicas and hidden account-key routing are unavailable;
   - the root record is byte-for-byte unchanged;
-  - profile name and profile DID are unchanged;
-  - the local space remains listed and loadable;
+  - the signed-out profile name and DID remain unchanged in the roster;
+  - the active rootless local profile does not list the account's spaces;
+  - explicitly switching back makes the local space listed and loadable;
   - its remote map remains empty.
 - Change the settings structure to separate sections:
   - `sign out`: `disconnect this account; keep local spaces on this device`
@@ -429,8 +438,9 @@ Add
    profile name and first virtual-authenticator credential ID.
 2. Use the existing Add Account path to sign up B; record B's profile and the
    newly added credential ID.
-3. Switch back to A and sign out through Settings.
-4. While A is provider-free, create `Retained Draft` with
+3. Switch back to A and sign out through Settings. Assert B becomes active
+   immediately without changing profile cardinality.
+4. Explicitly reopen provider-free A, then create `Retained Draft` with
    `create_space_awaiting_remote(..., false)`. Assert the space is listed and
    its remote map is empty.
 5. Remove only A's credential from the test virtual authenticator with
@@ -497,7 +507,8 @@ Extend the primary regression or add
 Fresh evidence after the last production change must show:
 
 - sign-out leaves the root, profile identity, local space list, and zero-remote
-  local space intact;
+  local space intact under the inactive profile, while the landing profile
+  cannot display those spaces;
 - same-account re-login retains the profile and device row;
 - different-account login selects an existing matching profile or creates one
   fresh profile, never rebinds the old root, and never copies the old space;
