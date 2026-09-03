@@ -145,6 +145,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1", features = ["fs"] }
 saphyr = "0.0.6"
 saphyr-parser = "0.0.6"
 semver = "1"

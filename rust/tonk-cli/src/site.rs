@@ -737,6 +737,31 @@ pub async fn mount_delegated_at(
     }
     std::fs::create_dir_all(root)
         .with_context(|| format!("failed to create {}", root.display()))?;
+    mount_delegated_in_empty(root, chain, config).await
+}
+
+/// Mount into an empty directory already owned by a caller-side staging guard.
+///
+/// Unlike [`mount_delegated_at`], this internal adapter accepts the directory's
+/// existence but still refuses to adopt or overwrite any content in it.
+pub(crate) async fn mount_delegated_in_empty(
+    root: &Path,
+    chain: DelegationChain,
+    config: SiteConfig,
+) -> Result<TonkSite> {
+    let metadata = std::fs::symlink_metadata(root)
+        .with_context(|| format!("failed to inspect staged site {}", root.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!("staged site is not a real directory: {}", root.display());
+    }
+    if std::fs::read_dir(root)
+        .with_context(|| format!("failed to read staged site {}", root.display()))?
+        .next()
+        .transpose()?
+        .is_some()
+    {
+        anyhow::bail!("staged site is not empty: {}", root.display());
+    }
     let root = root
         .canonicalize()
         .with_context(|| format!("could not canonicalize {}", root.display()))?;

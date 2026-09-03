@@ -171,6 +171,7 @@ futures-util = { workspace = true }
 # The workspace enables `rustls-tls-native-roots` (see workspace Cargo.toml), so
 # those downloads trust the OS CA store and work behind TLS-intercepting proxies.
 reqwest = { workspace = true }
+rustix = { workspace = true }
 ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 os_info = { workspace = true }

@@ -3407,9 +3407,9 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 /// after the claim succeeds, against a registry freshly reloaded
 /// at that point — a concurrent `tonk space new`/`use`/`rm` while
 /// the claim is in flight is re-checked, never silently reverted.
-/// A failed join never leaves a dangling registry entry (a
-/// partial site dir may remain; re-running with the same name
-/// reports it).
+/// A failed join never leaves a dangling registry entry or partial canonical
+/// site. A process killed before publication may leave only a marked sibling;
+/// a post-publication registry failure reports the complete site for adoption.
 async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode {
     if let Err(err) = tonk_cli::space::validate_name(&name) {
         return print_failure(err);

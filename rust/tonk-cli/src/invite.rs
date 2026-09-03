@@ -28,6 +28,7 @@ use url::Url;
 use crate::ExitCode;
 use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
 use crate::site::{self, SiteConfig, TonkSite};
+use crate::staged_directory::StagedDirectory;
 use crate::sync;
 
 /// Default base URL for minted invites. Mirrors
@@ -353,9 +354,8 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 ///    clobber existing site storage.
 /// 2. Parse the URL via [`Invite::parse_url`]; reject malformed
 ///    invites before touching disk.
-/// 3. Stand up the on-disk site directory and build a tonk
-///    operator rooted there, opening (or creating) the local
-///    profile.
+/// 3. Stand up a hidden sibling directory and build a tonk operator rooted
+///    there, opening (or creating) the local profile.
 /// 4. Claim the invite to the profile's DID and persist the
 ///    resulting chain so the operator can present it on
 ///    subsequent push/pull operations.
@@ -369,6 +369,8 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
 ///    fast-forward into the freshly-created branch, so the joiner
 ///    starts from the upstream's state rather than an empty branch
 ///    that would diverge on the first local write.
+/// 7. Drop repository handles and publish the completed sibling at `root` with
+///    one rename.
 pub async fn claim(
     root: &Path,
     invite_url: &str,
@@ -403,13 +405,21 @@ pub async fn claim(
         },
     );
 
-    std::fs::create_dir_all(root)
-        .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
-    let root = root
-        .canonicalize()
-        .map_err(|e| InviteError::Io(format!("could not canonicalize {}: {e}", root.display())))?;
+    let stage = StagedDirectory::beside(root, "join").map_err(|error| {
+        InviteError::Io(format!(
+            "failed to stage joined site for {}: {error:#}",
+            root.display()
+        ))
+    })?;
+    let staged_root = stage.path().canonicalize().map_err(|error| {
+        InviteError::Io(format!(
+            "could not canonicalize join stage {} for destination {}: {error}",
+            stage.path().display(),
+            root.display()
+        ))
+    })?;
 
-    let (profile, operator) = site::build_profile_and_operator(&root, &config)
+    let (profile, operator) = site::build_profile_and_operator(&staged_root, &config)
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
 
@@ -458,7 +468,7 @@ pub async fn claim(
     // Install only the reusable root-ending authority and verifier-backed
     // repository. Invite-specific roster/provenance writes remain below.
     let chain = claimed.chain.clone();
-    let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
+    let joined = site::mount_delegated_with(&staged_root, profile, operator, claimed.chain, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
     retain_claim_authority(&joined, chain).await;
@@ -515,6 +525,15 @@ pub async fn claim(
              run `tonk push` so the space's other members can see you"
         );
     }
+
+    joined.reactor.shutdown();
+    drop(joined);
+    stage.publish().map_err(|error| {
+        InviteError::Io(format!(
+            "joined site was completed in a stage, but publication at {root} did not settle cleanly: {error:#}; if {root} is absent, retry the invite; if it is present, never overwrite or delete it merely to retry—verify its repository subject and adopt it only if it is the expected joined site with `tonk space new <available-name> --site {root}`",
+            root = root.display()
+        ))
+    })?;
 
     Ok(ClaimOutcome {
         subject,

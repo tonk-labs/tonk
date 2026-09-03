@@ -733,6 +733,41 @@ mod when_minting_and_claiming_an_invite {
     }
 
     #[dialog_common::test]
+    async fn it_removes_an_unpublished_site_when_claiming_for_the_wrong_recipient() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+        let other = common::TestSite::new().await?;
+        let invite_outcome = invite::mint_targeted(
+            &inviter.site,
+            None,
+            None,
+            other.site.repository.did().as_ref(),
+        )
+        .await?;
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_root = claimer_parent.join("joined-site");
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+
+        let first = invite::claim(&claimer_root, &invite_outcome.url, claimer_config.clone())
+            .await
+            .expect_err("the invite targets a different recipient");
+        assert!(matches!(first, InviteError::InvalidInvite(_)), "{first:?}");
+        assert!(
+            !claimer_root.exists(),
+            "failed claim work is never published at the canonical target"
+        );
+
+        let retry = invite::claim(&claimer_root, &invite_outcome.url, claimer_config)
+            .await
+            .expect_err("the same wrong recipient remains invalid on retry");
+        assert!(
+            matches!(retry, InviteError::InvalidInvite(_)),
+            "retry must reach claim validation, not a stale-site collision: {retry:?}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_uses_the_default_base_url_when_unspecified() -> Result<()> {
         let inviter = common::TestSite::new().await?;
         let outcome = invite::mint(&inviter.site, None, None).await?;
@@ -1378,6 +1413,34 @@ mod when_migrating_from_carry {
         assert_eq!(outcome.repo_did, original_did.to_string());
         assert!(!parent.join(".carry").exists());
         assert!(parent.join(SITE_DIRNAME).is_dir());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_preserves_the_move_source_when_destination_verification_fails() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let parent = tmp.path().canonicalize()?;
+        let source = parent.join(".carry");
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("only-copy"), b"irreplaceable bytes")?;
+
+        let error = migrate::run_with(&parent, None, Mode::Move, common::isolated_config(&parent)?)
+            .await
+            .expect_err("a corrupt source must fail verification before publication");
+
+        assert_eq!(
+            std::fs::read(source.join("only-copy"))?,
+            b"irreplaceable bytes",
+            "the source remains the only valid copy"
+        );
+        assert!(
+            !parent.join(SITE_DIRNAME).exists(),
+            "an unverified destination is never published"
+        );
+        assert!(
+            format!("{error:#}").contains("verification failed before publication"),
+            "{error:#}"
+        );
         Ok(())
     }
 }
