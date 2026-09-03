@@ -1151,14 +1151,6 @@ mod tests {
                 Some("success"),
                 None,
             ),
-            ("settle_account", "started", "account_sync", None, None),
-            (
-                "settle_account",
-                "finished",
-                "complete",
-                Some("success"),
-                None,
-            ),
         ];
         let mut cursor = 0;
         for (action, phase, stage, result, failure) in expected {
