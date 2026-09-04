@@ -2220,10 +2220,17 @@ mod tests {
 
     const LINK_ERROR_DIAGNOSTIC: &str = "tonk:test:link-error";
 
-    /// Preserve the account panel's exact LinkCli diagnostic across the
-    /// activation detour. The visible copy is deliberately safe/generic; this
-    /// test-only probe makes a failed real-browser run identify which async
-    /// boundary failed without changing production UI or logging broadly.
+    /// Preserve the exact ceremony diagnostic across a navigation. The
+    /// visible copy is deliberately safe/generic; this test-only probe makes
+    /// a failed real-browser run identify which async boundary failed without
+    /// changing production UI or logging broadly.
+    ///
+    /// Two prefixes, because a stalled ceremony can fail on either side of
+    /// the worker handoff. `account LinkCli failed:` is the panel's own
+    /// report; `custody:` is `custody_relay::report`, which warns rather
+    /// than errors — a custody refusal was invisible here until it was
+    /// added, which is why a stuck approval used to arrive with an empty
+    /// diagnostic.
     async fn install_link_error_probe(driver: &WebDriver) -> Result<()> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools
@@ -2234,28 +2241,78 @@ mod tests {
                         (() => {
                             if (globalThis.__tonkLinkErrorProbe) return;
                             globalThis.__tonkLinkErrorProbe = true;
-                            const original = console.error.bind(console);
-                            console.error = (...args) => {
+                            const capture = (args) => {
                                 try {
                                     const message = args[0];
                                     if (
                                         typeof message === "string" &&
-                                        message.startsWith("account LinkCli failed:")
+                                        (message.startsWith("account LinkCli failed:") ||
+                                            message.startsWith("custody:"))
                                     ) {
                                         const scrubbed = message
                                             .replace(/\b[A-Za-z0-9+/_=-]{48,}\b/g, "[redacted]")
                                             .slice(0, 1000);
-                                        sessionStorage.setItem("tonk:test:link-error", scrubbed);
+                                        const key = "tonk:test:link-error";
+                                        const seen = sessionStorage.getItem(key);
+                                        sessionStorage.setItem(
+                                            key,
+                                            seen ? `${seen} | ${scrubbed}` : scrubbed,
+                                        );
                                     }
                                 } catch {}
-                                original(...args);
                             };
+                            for (const level of ["error", "warn"]) {
+                                const original = console[level].bind(console);
+                                console[level] = (...args) => {
+                                    capture(args);
+                                    original(...args);
+                                };
+                            }
                         })();
                     "#,
                 }),
             )
             .await?;
         Ok(())
+    }
+
+    /// The worker's own account of the ceremony, from the service worker
+    /// log ring `/api/health` exposes.
+    ///
+    /// `ceremony::report` writes each transition through `log!`, so this
+    /// carries `authorize-device: working|done|failed <detail>` even when
+    /// the page's console says nothing — which is exactly the case a
+    /// silent stall produces. `/api/health` is answered from the worker's
+    /// glue rather than its wasm, so it stays readable when the worker
+    /// itself cannot answer.
+    async fn ceremony_log(driver: &WebDriver) -> String {
+        if driver.enter_default_frame().await.is_err() {
+            return "could not enter the top document".to_owned();
+        }
+        let health = match get_json(driver, "/api/health").await {
+            Ok(health) => health,
+            Err(error) => return format!("health unreachable: {error}"),
+        };
+        let lines = health["body"]["log"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["message"].as_str())
+                    .filter(|message| {
+                        message.contains("ceremony")
+                            || message.contains("authorize-device")
+                            || message.contains("custody")
+                            || message.contains("delete-account")
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if lines.is_empty() {
+            return "no ceremony lines in the worker log".to_owned();
+        }
+        lines.join(" | ")
     }
 
     async fn link_error_diagnostic(driver: &WebDriver) -> Option<String> {
@@ -2325,9 +2382,9 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
-        if register_first {
-            install_link_error_probe(driver).await?;
-        }
+        // Both paths can stall in the custody handoff, so the probe goes
+        // in whether or not this run registers first.
+        install_link_error_probe(driver).await?;
 
         if register_first {
             // A browser with no account yet registers before approving:
@@ -2354,9 +2411,15 @@ mod tests {
             let url = driver.current_url().await?;
             let diagnostic = link_error_diagnostic(driver).await.unwrap_or_default();
             let consent = custody_consent_diagnostic(driver).await;
+            // The worker's own account of the ceremony. An empty page-side
+            // diagnostic means the relay reported no failure, which cannot
+            // by itself separate "the worker never answered with a
+            // navigate" from "the ceremony never started".
+            let ceremony = ceremony_log(driver).await;
+            driver.enter_default_frame().await?;
             let status = get_json(driver, "/api/account").await?;
             return Err(wait_error).context(format!(
-                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}; consent={consent}"
+                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}; consent={consent}; ceremony={ceremony:?}"
             ));
         }
 
@@ -5060,6 +5123,7 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
+        install_link_error_probe(&driver).await?;
         let email = "goner@example.com";
         sign_up(&driver, &env, email).await?;
 
@@ -5126,7 +5190,26 @@ mod tests {
         // account again.
         if let Err(error) = await_url_path(&driver, "/").await {
             let consent = custody_consent_diagnostic(&driver).await;
-            return Err(error).context(format!("deletion consent={consent}"));
+            // The consent card is gone by now either way — it is removed
+            // on success and four seconds after a failure — so the card
+            // alone cannot say which happened. The probe's captured
+            // refusal is what distinguishes them.
+            let diagnostic = link_error_diagnostic(&driver).await.unwrap_or_default();
+            // Whether the purge itself landed: 404 means the account is
+            // gone and only the page's navigation was lost, while a plan
+            // that still loads means the ceremony failed before finishing.
+            // Without this the two are indistinguishable, and they have
+            // opposite fixes.
+            let ceremony = ceremony_log(&driver).await;
+            driver.enter_default_frame().await?;
+            let plan = get_json(&driver, "/api/account/deletion/plan")
+                .await
+                .map(|plan| plan["status"].clone())
+                .unwrap_or(serde_json::Value::Null);
+            return Err(error).context(format!(
+                "deletion consent={consent}; diagnostic={diagnostic:?}; \
+                 planStatus={plan}; ceremony={ceremony:?}"
+            ));
         }
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
