@@ -440,20 +440,20 @@
                     try {
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
-                    await sendConnectivity();
-                    markServiceWorkerReady();
-                    // A first install has the newest worker already and has
-                    // nothing to update to. An unclaimed document joining an
-                    // EXISTING deployment does: it adopts the controller the
-                    // claim just won and carries on into the update check, so
-                    // a later successor still reaches it. Returning here left
-                    // such a tab with no `updatefound` listener, no
+                    // A document that never gained a controller has nothing
+                    // to be update-aware ABOUT, so it still stops here.
+                    // One that did adopts the controller the claim just won
+                    // and carries on into the update check, so a later
+                    // successor still reaches it. Returning unconditionally
+                    // left such a tab with no `updatefound` listener, no
                     // `retire-if-superseded`, and a permanent
                     // `controllerchange` listener disarmed by its own null
                     // guard — deaf until the person reloaded by hand.
                     priorController = navigator.serviceWorker.controller;
                     if (!priorController) {
                         observingInstallLifecycle = false;
+                        await sendConnectivity();
+                        markServiceWorkerReady();
                         return;
                     }
                 }
