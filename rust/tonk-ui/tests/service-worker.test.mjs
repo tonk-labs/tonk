@@ -830,6 +830,48 @@ describe("immutable generation install", () => {
     assert.ok((await caches.keys()).includes(mod.GENERATION_CACHE));
   });
 
+  test("a waiting successor never runs the deferred fill", async () => {
+    // The deferred fill is reached from `onfetch` and `onmessage`, and
+    // both of those reach a worker that is still WAITING — the page goes
+    // on posting `claim` and `connectivity` while the successor sits
+    // behind the incumbent. A successor owns no generation yet: its fill
+    // duplicates the one `oninstall` already runs, and its prune deletes
+    // the caches the incumbent is still serving from. An incumbent that
+    // loses its wasm can no longer retire, which strands the successor
+    // in `waiting` for good.
+    const successor = {};
+    const { self } = withGlobals({
+      // The browser names someone else as active: this instance waits.
+      registration: {
+        active: {},
+        waiting: successor,
+        installing: null,
+        addEventListener() {},
+      },
+    });
+    self.serviceWorker = successor;
+    const mod = await loadWith({
+      buildId: "successor-build",
+      exports: ["extendOfflineGeneration"],
+    });
+
+    let extended = false;
+    mod.extendOfflineGeneration({ waitUntil: () => { extended = true; } });
+    assert.equal(extended, false, "a waiting successor must not fill or prune");
+
+    // The same worker once the browser makes it the incumbent.
+    self.registration.active = successor;
+    mod.extendOfflineGeneration({ waitUntil: () => { extended = true; } });
+    assert.equal(extended, true, "the active incumbent still completes its generation");
+
+    // A first install has no incumbent to displace, so it still fills
+    // even before the browser names it the active worker.
+    extended = false;
+    self.registration.active = null;
+    mod.extendOfflineGeneration({ waitUntil: () => { extended = true; } });
+    assert.equal(extended, true, "a first install still completes its generation");
+  });
+
   test("client discovery cannot stall verified install progress", async () => {
     const { self } = withGlobals();
     self.clients.matchAll = () => new Promise(() => {});

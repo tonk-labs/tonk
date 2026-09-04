@@ -533,7 +533,22 @@ mod tests {
     }
 
     async fn wait_for_mounted_build(driver: &WebDriver, build: &str) -> Result<Value> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        wait_for_mounted_build_by(
+            driver,
+            build,
+            tokio::time::Instant::now() + Duration::from_secs(90),
+        )
+        .await
+    }
+
+    /// Wait for `build` to be the coherent mounted one, giving up at
+    /// `deadline`. Callers that wait in a loop of their own pass their
+    /// own deadline so the budget is the outer one, not one per turn.
+    async fn wait_for_mounted_build_by(
+        driver: &WebDriver,
+        build: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value> {
         let mut last = Value::Null;
         loop {
             if let Ok(state) = driver
@@ -564,7 +579,28 @@ mod tests {
                         // registration/document state until B is actually the
                         // document, then verify its data plane and manifest.
                         if (documentBuild !== expectedBuild) {
-                            done(lifecycle);
+                            // A stuck handoff otherwise reports only "still
+                            // on the old build", which says nothing about
+                            // why. `caches.keys()` never crosses the fetch
+                            // boundary at all, and `/api/health` is answered
+                            // from the worker's glue rather than its wasm —
+                            // it is readable precisely when the worker
+                            // cannot answer for itself — so its log ring
+                            // shows whether retirement was attempted
+                            // ("Retiring — ...") and whether it completed
+                            // ("Streams are released").
+                            const [names, health] = await Promise.all([
+                                caches.keys(),
+                                fetch("/api/health")
+                                    .then(response => response.json())
+                                    // The ring holds up to 200 entries of
+                                    // 2000 chars; the tail is what matters
+                                    // and the whole of it would swamp the
+                                    // failure message.
+                                    .then(body => ({ ...body, log: (body.log || []).slice(-25) }))
+                                    .catch(error => ({ unreachable: String(error) })),
+                            ]);
+                            done({ ...lifecycle, cacheNames: names, health });
                             return;
                         }
                         const generationCache = `TONK_GENERATION_${expectedBuild}`;
@@ -629,7 +665,7 @@ mod tests {
     ) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         loop {
-            let state = wait_for_mounted_build(driver, &generation.build).await?;
+            let state = wait_for_mounted_build_by(driver, &generation.build, deadline).await?;
             let cache_names = state["cacheNames"].as_array();
             let has_cache = |expected: &str| {
                 cache_names.is_some_and(|names| names.iter().any(|name| name == expected))
