@@ -508,14 +508,7 @@
                     }
                 };
                 const watchIncoming = (worker) => {
-                    if (!worker) return;
-                    if (worker === incoming) {
-                        // `installed` can fire just before the browser exposes
-                        // the same worker as `registration.waiting`. Re-check
-                        // once `update()` has settled so the incumbent retires.
-                        onWorkerState();
-                        return;
-                    }
+                    if (!worker || worker === incoming) return;
                     incoming?.removeEventListener("statechange", onWorkerState);
                     incoming = worker;
                     observingInstallLifecycle = true;

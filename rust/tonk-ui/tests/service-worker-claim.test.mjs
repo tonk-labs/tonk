@@ -249,7 +249,6 @@ function pageHarness({
   alignmentReload = false,
   updateFails = false,
   updatePending = false,
-  updateInstallsBeforeWaiting = false,
 } = {}) {
   const messages = [];
   const storage = new Map();
@@ -282,14 +281,6 @@ function pageHarness({
       if (updateFails) throw new TypeError("offline");
       if (updatePending) {
         await new Promise((resolve) => { resolveUpdate = resolve; });
-      }
-      if (updateInstallsBeforeWaiting) {
-        registration.installing = incoming;
-        await registration.dispatch("updatefound");
-        incoming.state = "installed";
-        await incoming.dispatch("statechange");
-        registration.installing = null;
-        registration.waiting = incoming;
       }
     },
   });
@@ -531,25 +522,6 @@ test("a controlled page becomes ready while its update continues in the backgrou
   );
 
   result.releaseUpdate();
-  await readiness;
-});
-
-test("an update rechecks a candidate that became waiting after its installed event", async () => {
-  const result = pageHarness({ mode: "warm", updateInstallsBeforeWaiting: true });
-  const readiness = result.ready();
-  for (
-    let turns = 0;
-    !result.messages.some((message) => message.type === "retire-if-superseded") && turns < 20;
-    turns += 1
-  ) {
-    await new Promise(setImmediate);
-  }
-
-  assert.deepEqual(
-    result.messages.map((message) => message.type),
-    ["connectivity", "retire-if-superseded"],
-  );
-  await result.activateWarmWorker();
   await readiness;
 });
 
