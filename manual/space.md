@@ -49,16 +49,19 @@ own `Replica` so tonk's and dialog's replica facts co-locate:
 | --- | --- |
 | `xyz.tonk.replica/subject` | the space entity — **not implemented yet** |
 | `xyz.tonk.replica/profile` | this device profile — **not implemented yet** |
+| `xyz.tonk.replica/status` | `tonk:blank`, until the seed finishes |
 
 > **Not implemented yet.** `xyz.tonk.replica/subject` is the durable relation
 > between a device profile and a space it has replicated, cardinality-one. It
 > is what makes "which spaces does this profile hold?" a single query, and it
 > replaces `xyz.tonk.space/local`, which is what exists today.
 >
-> `xyz.tonk.space/status` and `xyz.tonk.replica/status` both go away. Their
-> `tonk:blank` / `tonk:initialized` answers "is this space seeded?" with one
-> bit; the kernel record on the space's own branch answers *which* definitions
-> it is seeded with, which subsumes it. See [Kernel](#kernel).
+> `xyz.tonk.space/status` goes away; `xyz.tonk.replica/status` stays. Seeding
+> is something a *replica* does, and only the creating device ever sees
+> `tonk:blank` — anywhere else the space is either replicated (already seeded,
+> since the content it pulls carries the kernel) or remote. Publishing that
+> device-local transient onto the space entity meant every other device's Hub
+> read a status that was never about it. See [Presence](#presence).
 >
 > `xyz.tonk.replica/kind` goes away entirely. It exists today to tell a real
 > space from the system replicas (the profile's own, the account, the ledger),
@@ -77,22 +80,34 @@ branch for `dialog.replica` returns one row — the profile's own replica — no
 one per space. That is why the relation has to be asserted rather than joined
 through dialog's facts.
 
-### Locality
+### Presence
 
 > **Not implemented yet.** Today this is `xyz.tonk.space/local`, stamped into
-> the profile-main overlay on every mount and at boot.
+> the profile-main overlay on every mount and at boot, alongside a redundant
+> `xyz.tonk.space/status`.
 
-A space listed in the profile db may or may not be replicated on this device.
-The two states are distinguished by the presence of a replica row bearing
-`xyz.tonk.replica/subject`; the Hub renders an unreplicated space as a row it can
-open on demand.
+A space listed in the profile db is in one of three states on this device, and
+the Hub and the FAB render each differently. Both read the profile db, because
+they list spaces whose content branch this device may not hold — so none of
+this can live on the space's own branch.
 
-The fact can go stale — clearing site data drops the storage but not the row —
-and there is no event to observe that: IndexedDB notifies only connections the
-worker holds, and eviction while the worker is stopped is silent. So the row is
-repaired **on load**: enumerate the replicas from the profile db and attempt to
-open each. This works uniformly across browsers, unlike `indexedDB.databases()`
-(absent in Firefox).
+| State | How it reads |
+| --- | --- |
+| **Remote** | no replica row for `(this profile, space)` |
+| **Seeding** | a replica row with `xyz.tonk.replica/status` = `tonk:blank` |
+| **Replicated** | a replica row without it |
+
+Seeding is only ever observed on the device that created the space: the seed
+runs after the create lock is released, so `tonk:blank` is a real transient
+there. Any other device that holds the space pulled its content, and that
+content already carries the kernel.
+
+The replica row can go stale — clearing site data drops the storage but not
+the row — and there is no event to observe that: IndexedDB notifies only
+connections the worker holds, and eviction while the worker is stopped is
+silent. So the row is repaired **on load**: enumerate the replicas from the
+profile db and attempt to open each. This works uniformly across browsers,
+unlike `indexedDB.databases()` (absent in Firefox).
 
 A stale row is cheap: the mount attempt reveals the truth immediately, and the
 space is re-replicable from its upstream — the same recovery path as a space
@@ -103,13 +118,13 @@ this device never held.
 Seeds the kernel into the branch. Runs after the lock is released, since
 seeding is the slow part and holding the lock would stall the page.
 
-Records the kernel version and its components on the space's own content
-branch, in the same transaction as the seed, so the two cannot disagree. See
-[Kernel](#kernel).
+Flips `xyz.tonk.replica/status` to `tonk:initialized` and records the kernel
+version and its components on the space's own content branch, in the same
+transaction as the seed, so the two cannot disagree. See [Kernel](#kernel).
 
-> **Not implemented yet.** Today this flips `xyz.tonk.space/status` and
-> `xyz.tonk.replica/status` from `tonk:blank` to `tonk:initialized` in a
-> separate commit, and records nothing about which kernel was seeded.
+> **Not implemented yet.** Today the flip is a separate commit, also stamps
+> the redundant `xyz.tonk.space/status`, and records nothing about which
+> kernel was seeded.
 
 #### Provision Repository
 
