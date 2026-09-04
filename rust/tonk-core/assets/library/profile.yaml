@@ -37,15 +37,24 @@ concept!: &space
       the: xyz.tonk.space/subject
       cardinality: one
       as: entity
-    status:
+  maybe:
+    presence:
       description: >
-        tonk:blank while the space's content branch is still
-        seeding, tonk:initialized once seeded. The Hub card
-        reflects it via [data-status] (an installing animation).
-      the: xyz.tonk.space/status
+        Where this space stands ON THIS DEVICE: case:seeding while its
+        content branch is still being seeded, case:replicated once it is
+        held here. ABSENT means remote — no replica on this device — so
+        a row without presence renders as a hollow space that
+        replicates on first visit.
+
+        Derived by the rules below from this device's replica rather
+        than stored, so it cannot drift from it. The remote case is the
+        absence of a replica row, which a negated premise cannot express
+        (it may not introduce bindings, and the replica entity is
+        derived from the profile and subject). The Hub card reflects
+        this via [data-presence].
+      the: xyz.tonk.space/presence
       cardinality: one
       as: entity
-  maybe:
     name:
       description: >
         The directory mirror of the space's display name — written at
@@ -54,15 +63,6 @@ concept!: &space
       the: xyz.tonk.space/name
       cardinality: one
       as: text
-    local:
-      description: >
-        Whether THIS device holds a replica. Overlay-only (the worker
-        stamps it at boot and on mount), so it never replicates; a row
-        without it renders as a hollow space that replicates on first
-        visit.
-      the: xyz.tonk.space/local
-      cardinality: one
-      as: boolean
     provider:
       description: >
         The account providing this space with the access service. Its
@@ -214,7 +214,7 @@ view!:
                while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
-          <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
+          <div class="srow-wrap" data-presence={presence} data-id={this}>
             <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
             <!-- Both verbs sit outside the anchor and are laid over it: a
                  <button> inside an <a> is invalid markup the parser reshapes,
@@ -1268,6 +1268,124 @@ concept!: &account/status
       as: entity
 
 # An onboarding account that has not been handed over is interim.
+# ---------------------------------------------------------------
+# PRESENCE — where a space stands on THIS device
+# ---------------------------------------------------------------
+#
+# Derived rather than stored so they cannot drift from the replica they
+# describe.
+#
+# The replica is resolved FORWARD from the session: a replica entity is
+# derived from `(profile, subject)`, so binding the space and the session's
+# profile determines the row. Both rules therefore bind `?replica` in
+# `when:`, which is what lets the second one negate over it — a negated
+# premise may not introduce bindings, its own entity included.
+#
+# There is no `remote` rule for that reason: remote is the ABSENCE of a
+# replica row, and negating it would have to introduce the very entity it
+# is testing for. Absence of `presence` carries that case instead.
+#
+# Seeding is genuinely per-replica: only the device that CREATED a space
+# ever sees it mid-seed, since any other device holding it pulled content
+# that already carries the kernel.
+
+concept!: &db/session:
+  this: concept:session
+  description: Database session information
+  with:
+    profile:
+      description: >
+        Profile entity (as did:key) representing persistent identity on
+        this device.
+      the: dialog.session/profile
+      as: entity
+
+concept!: &replica
+  this: tonk:replica
+  description: A device profile's replica of a space.
+  with:
+    subject:
+      description: The space this replica is a view of.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    profile:
+      description: The device profile holding it.
+      the: xyz.tonk.replica/profile
+      cardinality: one
+      as: entity
+
+concept!: &replica/status
+  this: tonk:replica/status
+  description: A replica's seeding status.
+  with:
+    status:
+      description: '`tonk:blank` while seeding, `tonk:initialized` after.'
+      the: xyz.tonk.replica/status
+      cardinality: one
+      as: entity
+
+concept!: &space/presence
+  this: tonk:space/presence
+  description: Where a space stands on this device.
+  with:
+    presence:
+      description: '`case:remote`, `case:seeding`, or `case:replicated`.'
+      the: xyz.tonk.space/presence
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A replica still seeding its content branch
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: replica/status
+      where:
+        this: ?replica
+        status: tonk:blank
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:seeding
+
+rule!:
+  description: A replica that is no longer seeding is replicated
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicated
+  unless:
+    - assert: replica/status
+      where:
+        this: ?replica
+        status: tonk:blank
+
 rule!:
   description: A live onboarding account is interim
   assert: account/status

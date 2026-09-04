@@ -1423,19 +1423,20 @@ mod member_roster {
 ///
 /// Reads the PROFILE branch's account-level space directory by raw attribute.
 /// Directory mode (`this` unbound), so every convergent space entry returns as
-/// a row. `name` is optional for vintage entries that predate the mirror.
+/// a row. `name` is optional for vintage entries that predate the mirror;
+/// `presence` is optional because its absence IS the remote case.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
             "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
             "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
-            "status":  { "the": "xyz.tonk.space/status",  "as": "Entity", "cardinality": "one" }
+            "presence": { "the": "xyz.tonk.space/presence", "as": "Entity", "cardinality": "one", "optional": true }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
             "subject": { "?": { "name": "subject" } },
             "name":    { "?": { "name": "name" } },
-            "status":  { "?": { "name": "status" } }
+            "presence": { "?": { "name": "presence" } }
         }
     })
     .to_string()
@@ -1465,7 +1466,7 @@ mod space_list {
         let body = space_list_query_body();
         assert!(body.contains("xyz.tonk.space/subject"));
         assert!(body.contains("xyz.tonk.space/name"));
-        assert!(body.contains("xyz.tonk.space/status"));
+        assert!(body.contains("xyz.tonk.space/presence"));
         assert!(
             !body.contains("xyz.tonk.replica/"),
             "the account directory replaced per-device replica rows: {body}"
@@ -1476,6 +1477,10 @@ mod space_list {
         assert_eq!(
             parsed["predicate"]["with"]["name"]["optional"], true,
             "a vintage directory entry without a name must remain listable"
+        );
+        assert_eq!(
+            parsed["predicate"]["with"]["presence"]["optional"], true,
+            "a space with no replica here has no presence, and must still list"
         );
     }
 
