@@ -2276,6 +2276,45 @@ mod tests {
         Ok(())
     }
 
+    /// The worker's own account of the ceremony, from the service worker
+    /// log ring `/api/health` exposes.
+    ///
+    /// `ceremony::report` writes each transition through `log!`, so this
+    /// carries `authorize-device: working|done|failed <detail>` even when
+    /// the page's console says nothing — which is exactly the case a
+    /// silent stall produces. `/api/health` is answered from the worker's
+    /// glue rather than its wasm, so it stays readable when the worker
+    /// itself cannot answer.
+    async fn ceremony_log(driver: &WebDriver) -> String {
+        if driver.enter_default_frame().await.is_err() {
+            return "could not enter the top document".to_owned();
+        }
+        let health = match get_json(driver, "/api/health").await {
+            Ok(health) => health,
+            Err(error) => return format!("health unreachable: {error}"),
+        };
+        let lines = health["body"]["log"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["message"].as_str())
+                    .filter(|message| {
+                        message.contains("ceremony")
+                            || message.contains("authorize-device")
+                            || message.contains("custody")
+                            || message.contains("delete-account")
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if lines.is_empty() {
+            return "no ceremony lines in the worker log".to_owned();
+        }
+        lines.join(" | ")
+    }
+
     async fn link_error_diagnostic(driver: &WebDriver) -> Option<String> {
         driver
             .execute(
@@ -2372,9 +2411,15 @@ mod tests {
             let url = driver.current_url().await?;
             let diagnostic = link_error_diagnostic(driver).await.unwrap_or_default();
             let consent = custody_consent_diagnostic(driver).await;
+            // The worker's own account of the ceremony. An empty page-side
+            // diagnostic means the relay reported no failure, which cannot
+            // by itself separate "the worker never answered with a
+            // navigate" from "the ceremony never started".
+            let ceremony = ceremony_log(driver).await;
+            driver.enter_default_frame().await?;
             let status = get_json(driver, "/api/account").await?;
             return Err(wait_error).context(format!(
-                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}; consent={consent}"
+                "approval never came back at {url}; account={status}; diagnostic={diagnostic:?}; consent={consent}; ceremony={ceremony:?}"
             ));
         }
 
@@ -5155,12 +5200,15 @@ mod tests {
             // that still loads means the ceremony failed before finishing.
             // Without this the two are indistinguishable, and they have
             // opposite fixes.
+            let ceremony = ceremony_log(&driver).await;
+            driver.enter_default_frame().await?;
             let plan = get_json(&driver, "/api/account/deletion/plan")
                 .await
                 .map(|plan| plan["status"].clone())
                 .unwrap_or(serde_json::Value::Null);
             return Err(error).context(format!(
-                "deletion consent={consent}; diagnostic={diagnostic:?}; planStatus={plan}"
+                "deletion consent={consent}; diagnostic={diagnostic:?}; \
+                 planStatus={plan}; ceremony={ceremony:?}"
             ));
         }
         enter_hub(&driver).await?;
