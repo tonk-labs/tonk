@@ -157,11 +157,18 @@ subscribes to — is `system-page-commands.md`.
   the space. Nothing reads a response body.
 - **Local-only is a real state**, not a failure: creation wires no
   remote when there is no active customer.
-- **Not retroactive.** A space made *after* activation attaches
-  automatically. One made *before* stays local until someone shares it —
-  activation records status and nothing walks existing spaces. A device
-  that onboarded, made a few spots, then registered still has those
-  spots local.
+- **Retroactive after reconciliation.** A space made *before* activation stays
+  local while the provider would refuse it. Once an account pull proves the
+  account ready and the customer is served, the reconciliation sweep walks
+  every local replica. A repository with no remote at all is provisioned and
+  attached to the account provider; one carrying any remote is left untouched.
+  The same sweep reapplies newer directory mount facts to replicas already on
+  the device, so a remote/tracking record that arrived after the replica row
+  repairs itself on a later pass.
+- **Names catch up too.** A joined space can be listed before its content (and
+  repository-authored name) has hydrated. Reconciliation mirrors that name
+  into the account directory once it becomes locally readable, replacing the
+  nameless Hub row without remounting or resetting the space.
 
 ## Rough edges
 

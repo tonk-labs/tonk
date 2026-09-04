@@ -2179,28 +2179,12 @@ wa-page::part(drawer) {
     flex: 0 0 auto;
 }
 
-/* ── <ui-account-settings> — the account settings panel (DESIGN.md's
-   rail-over-panel reading). One element, two seats: the Hub's account tab
+/* ── <ui-account-settings> — the account settings panel. One element, two
+   seats: the Hub's account tab
    embeds it in-column, and the space route raises it in a <tonk-dialog>
    from the FAB's settings row — so its styling lives here, where both
-   documents receive it. The rail is a run of boxy tabs above the body; the
-   current rail item is a folder tab, same surface as the body, seam
-   erased by an explicit 1px cover. */
+   documents receive it. */
 ui-account-settings { display: block; }
-ui-account-settings .s-rail { display: flex; gap: 7px; }
-ui-account-settings .s-rail .blk { flex: 1; height: 36px; display: flex;
-    align-items: flex-end; justify-content: flex-end; padding: 0 12px 9px;
-    cursor: pointer; font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
-    text-transform: lowercase; color: var(--ink);
-    background: var(--frost-solid); border: 0;
-    box-shadow: 0 0 0 1px var(--ring); }
-ui-account-settings .s-rail .blk:hover {
-    background: linear-gradient(var(--wash), var(--wash)), var(--frost-solid); }
-ui-account-settings .s-rail .blk.cur { background: var(--panel);
-    box-shadow: none; border: 1px solid var(--ring); border-bottom: 0;
-    position: relative; z-index: 1; cursor: default; }
-ui-account-settings .s-rail .blk.cur::after { content: ""; position: absolute;
-    left: 0; bottom: -1px; width: 100%; height: 1px; background: var(--panel); }
 ui-account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
     max-height: 60vh; overflow: auto; padding: 8px 18px 18px;
     background: var(--panel); border: 1px solid var(--ring);
@@ -2229,44 +2213,30 @@ ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
 ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
     background: none; border: 0; margin: 0; padding: 0; text-align: right; }
 ui-account-settings .srowd > .cta { flex: none; }
-/* a real input wearing the ceremony email field's coat: no border, no
-   background, no outline — the row it sits in is all the chrome it gets.
-   The unlayered resets also beat Web Awesome's `@layer wa-native` skin,
-   which would otherwise hand a bare input its border back. */
+/* A real input with the chrome's usual field affordance: square,
+   transparent, and underlined. Keep the line bounded to the editable value
+   so it reads as a control rather than as another row divider. The
+   unlayered rules also beat Web Awesome's `@layer wa-native` skin. */
 ui-account-settings .sname-seat {
     flex: 1; min-width: 0;
     display: flex; align-items: center; justify-content: flex-end; }
 ui-account-settings .sname {
     appearance: none; -webkit-appearance: none;
-    background: none; border: 0; outline: none; margin: 0; padding: 0;
+    box-sizing: border-box; background: transparent;
+    border: 0; border-bottom: 1px solid var(--ink); border-radius: 0;
+    outline: none; margin: 0; padding: 0 1px 2px;
     font-family: var(--cond); font-weight: 600; font-size: 13.5px;
-    color: var(--ink); text-align: right;
-    flex: 1; min-width: 6ch; }
-/* The native caret is the focus affordance here; the hub's inset focus ring
-   would box the bare input. There is deliberately no resting block cursor:
-   an unfocused field must read as settled, not as though it is still taking
-   input. */
+    color: var(--ink); caret-color: var(--ink); text-align: right;
+    cursor: text; flex: 0 1 18ch; min-width: 6ch; max-width: 100%; }
+/* The native caret is the active-edit affordance; keep the resting underline
+   stable instead of adding a second ring around it. There is deliberately no
+   resting block cursor: an unfocused field must read as settled, not as
+   though it is still taking input. */
 ui-account-settings .sname:focus-visible { box-shadow: none; }
-/* devices — last seen rides soft beside the remove-access verb */
-ui-account-settings .dev-r { display: flex; align-items: baseline; gap: 18px; }
-ui-account-settings .dev-when { font-family: var(--sans); font-weight: 400;
-    color: var(--soft); font-size: 12.5px; white-space: nowrap; }
-/* the current device rides its name as a soft suffix (the mock's d.self) */
-ui-account-settings .dev-self { font-weight: 400; color: var(--soft); }
-/* the device verb surfaces on approach — same law as the spaces rows */
-ui-account-settings [data-settings-devices] .cta { opacity: 0;
-    transition: opacity 0.15s var(--ease); }
-ui-account-settings [data-settings-devices] .srowd:hover .cta,
-ui-account-settings [data-settings-devices] .srowd:focus-within .cta {
-    opacity: 1; }
-@media (hover: none) {
-    ui-account-settings [data-settings-devices] .cta { opacity: 1; }
-}
 /* the confirm clusters — the page dims, the surface never. the body is
    set in the reading face at weight 600, ink on card, like the hub's
-   space-removal confirm; the arming row is the gate: type the address,
-   the block cursor shows where, and the solid verb stays off until it
-   matches. */
+   space-removal confirm; the arming row is the gate: type the displayed
+   phrase, and the solid verb stays off until it matches. */
 /* the confirm is a solid card in the page's own scheme, like the mock's
    modal: the page dims, the surface never, and nothing reads through.
    The cluster element wears the FABB skin, pinned light, so its tokens
@@ -2281,21 +2251,17 @@ ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
 ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
-    letter-spacing: 0.02em; color: var(--soft); }
+    letter-spacing: 0.02em; color: var(--soft);
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 ui-account-settings .armrow b { color: var(--ink); font-weight: 600;
     text-transform: none; }
-ui-account-settings .armfield { display: inline-block; min-width: 6ch;
-    margin-left: 8px; padding: 0 1px 2px; border-bottom: 1.5px solid var(--ink);
-    outline: none; caret-color: transparent; color: var(--ink);
-    text-transform: none; white-space: nowrap; user-select: text; }
+ui-account-settings .armfield { appearance: none; -webkit-appearance: none;
+    display: inline-block; min-width: 14ch; max-width: 100%;
+    margin: 0; padding: 0 1px 2px; border: 0;
+    border-bottom: 1.5px solid var(--ink); border-radius: 0;
+    outline: none; background: transparent; caret-color: var(--ink); color: var(--ink);
+    font: inherit; text-transform: none; white-space: nowrap; }
 ui-account-settings .armfield:focus-visible { box-shadow: none; }
-ui-account-settings .armrow .cur { display: inline-block; width: 7px;
-    height: 13px; background: var(--ink); vertical-align: -1px;
-    animation: hub-hardblink 1.05s steps(1, end) infinite; }
-@keyframes hub-hardblink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-    ui-account-settings .armrow .cur { animation: none; }
-}
 /* an unarmed verb stays visibly off, not merely inert */
 ui-account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
 ui-account-settings .m-go:disabled:hover { background: var(--ink); }
@@ -3100,9 +3066,8 @@ tonk-notebook-index {
  *
  * Written as classes rather than against one element's id: the
  * registration cluster is the first surface built this way, not the
- * only one it suits. `.ed` in particular is the study's editor — a
- * bare input wearing the row's own type, with a block cursor for a
- * seat — and any row that takes a value wants it.
+ * only one it suits. `.ed` in particular is a bare input wearing the
+ * row's own type, and any row that takes a value wants it.
  */
   /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
      page and the surface itself never dims. Each row settles into a
@@ -3135,10 +3100,22 @@ tonk-notebook-index {
      ARE that tab's page, seated in the column one gap under the bar, so
      there is no veil and no head row (the tab is the head). */
   #tonk-register[data-anchored]::backdrop { background: transparent; }
+  /* The Hub bar lives in the routed iframe while this page lives in the top
+     document. A wheel over the only pointer-active part of the dialog (its
+     input column) must not scroll either realm out from under the other.
+     Release the page lock while the ceremony is suspended behind SPACES. */
+  html:has(#tonk-register[data-anchored][open]:not([data-suspended])),
+  body:has(#tonk-register[data-anchored][open]:not([data-suspended])) {
+    overflow: hidden;
+  }
   /* Non-modal and full-viewport, the host would swallow every click —
      including the bar tabs it sits under, which are the way OUT of the
      page. Only the seated column is really here. */
-  #tonk-register[data-anchored] { pointer-events: none; }
+  #tonk-register[data-anchored] {
+    pointer-events: none;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
   #tonk-register[data-anchored] .ocol { pointer-events: auto; }
   #tonk-register[data-anchored] .ocol {
     position: absolute; margin: 0;
@@ -3215,30 +3192,62 @@ tonk-notebook-index {
   .tonk-ceremony .orow .v,
   .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
 
-  /* The editor: inline text, no caret of its own, a block cursor
-     hard-blinking on the tail. The cursor IS the affordance. */
+  /* An active editor opens into a two-line workspace. The noun remains
+     visible at the upper left while the value gets the full row below;
+     settling the answer removes `editing` and restores the compact record. */
+  .tonk-ceremony .orow.editing {
+    box-sizing: border-box;
+    height: 60px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 13px 20px;
+    align-items: stretch;
+    gap: 7px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .tonk-ceremony .orow.editing .k,
+  .tonk-ceremony .orow.editing .v {
+    width: 100%;
+    padding-bottom: 0;
+    margin-bottom: 0;
+  }
+  .tonk-ceremony .orow.editing .k { align-items: flex-start; }
+  .tonk-ceremony .orow.editing .v {
+    align-items: flex-end;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  /* The editor: inline text with the browser's native caret. */
   /* A real `<input>`, not the study's contenteditable span.
      Conditional mediation is the reason: WebAuthn will only offer a
      discoverable passkey through `autocomplete="username webauthn"` on
      an actual form control, so a span could never surface the autofill
      this ceremony is built around. Styled to sit in the row like the
-     study's editor — no chrome, right-aligned, the row's own type. */
-  /* A real input, wearing the study's editor.
-     `caret-color: transparent` hides the native caret so the block
-     cursor over it is the only seat marker — the same trick the study
-     plays on its contenteditable. The trailing padding reserves the
-     seat the block takes when the caret is on the tail. */
+     study's editor — no chrome and wearing the row's own type. */
+  /* A real input wearing the study's editor, with native text-entry
+     behavior and no extra control chrome. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
+    box-sizing: border-box;
     background: none; border: 0; outline: none; margin: 0;
-    padding: 0 8px 0 0;
+    padding: 0;
     font: inherit; letter-spacing: inherit; text-transform: none;
-    color: var(--ink); caret-color: transparent;
+    color: var(--ink); caret-color: var(--ink);
     text-align: right; width: 100%; min-width: 0;
     /* The row is `align-items: flex-end`, so the input has to sit on the
        same baseline as the noun beside it rather than centring itself in
        whatever height it claims. */
     height: 1em; line-height: 1;
+  }
+  .tonk-ceremony .orow.editing .ed {
+    display: block;
+    inline-size: 100%;
+    max-inline-size: none;
+    height: 20px;
+    line-height: 20px;
+    text-align: left;
   }
   .tonk-ceremony .ed::placeholder {
     color: var(--soft); opacity: .55; text-transform: none;
@@ -3250,55 +3259,6 @@ tonk-notebook-index {
   .tonk-ceremony .ed:-webkit-autofill:focus {
     -webkit-text-fill-color: var(--ink);
     box-shadow: 0 0 0 100px var(--card) inset;
-  }
-
-  /* The block cursor: hard-blinking, over the character the caret sits
-     on. Absolute so `follow_caret` (register_dialog.rs) can seat it by
-     its offset from the field's right edge; it rests on the tail until
-     that wiring places it. Hidden while the field is unfocused, since
-     the seat is only meaningful where the typing goes. */
-  .tonk-ceremony .v { position: relative; }
-  /* The blend renders the covered glyph in negative rather than hiding
-     it under the block — the same difference/exclusion pair the FABB
-     skin's terminal cursor wears. */
-  .tonk-ceremony .cur {
-    position: absolute; right: 1px; bottom: 3px;
-    width: 7px; height: 13px;
-    background: var(--ink); pointer-events: none;
-    mix-blend-mode: difference;
-    animation: tonk-register-caret 1.05s steps(1, end) infinite;
-  }
-  :root.wa-dark .tonk-ceremony .cur { mix-blend-mode: exclusion; }
-  .tonk-ceremony .v:not(:focus-within) .cur { visibility: hidden; }
-  @keyframes tonk-register-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
-
-  /* The mirror `follow_caret` measures with: the text after the caret,
-     in the field's own type. `text-transform: none` has to match the
-     field, or a capital measures wider than it renders. */
-  .tonk-ceremony .measure {
-    position: absolute; visibility: hidden; pointer-events: none;
-    white-space: pre; text-transform: none;
-  }
-
-  /* Engines that draw a block caret natively need none of the above:
-     the real caret takes the block shape and the hard blink, and the
-     faked one stands down. `tonk-block-caret` is page-level on purpose —
-     account.css leans on it for the same treatment. */
-  @supports (caret-shape: block) {
-    .tonk-ceremony .ed {
-      caret-shape: block;
-      caret-animation: manual;
-      /* Solid under the animation, so reduced-motion's `animation: none`
-         leaves a visible caret rather than the transparent base. */
-      caret-color: var(--ink);
-      animation: tonk-block-caret 1.05s steps(1, end) infinite;
-    }
-    .tonk-ceremony .ed:not(:focus) { animation: none; }
-    .tonk-ceremony .cur { display: none; }
-  }
-  @keyframes tonk-block-caret {
-    0%, 49% { caret-color: var(--ink); }
-    50%, 100% { caret-color: transparent; }
   }
 
   /* An action step: solid ink, full rung, the word bottom-right. While a
@@ -3369,13 +3329,6 @@ tonk-notebook-index {
       font-size: 16px;
       line-height: 44px;
     }
-    /* The row centres at this size, so the block centres with it — and
-       the mirror has to wear the field's grown type to measure true. */
-    .tonk-ceremony .cur {
-      bottom: calc(50% - 8px);
-      height: 16px;
-    }
-    .tonk-ceremony .measure { font-size: 16px; }
     .tonk-ceremony .ghost {
       min-height: 44px;
       display: flex;
@@ -3389,8 +3342,6 @@ tonk-notebook-index {
     .tonk-ceremony .obtn {
       transition: none;
     }
-    .tonk-ceremony .cur,
-    .tonk-ceremony .ed,
     .tonk-ceremony .obtn.wait,
     .tonk-ceremony .flash {
       animation: none;
@@ -3530,7 +3481,7 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 
 /* ── settings — a page of the account tab (the wireframe's reading):
    the stack steps aside and the section hangs from the same bar.
-   The panel's own styling (rail, body, rows) ships with
+   The panel's own styling (body and rows) ships with
    `<ui-account-settings>` in `tonk-ui/styles.css`, because the FAB
    raises the same panel in a dialog on the space route — only the
    hub seat's geometry lives here. ── */
@@ -3571,15 +3522,24 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
 /* the verbs — soft until approached, left of the row. Soft ink is
    metadata-only, so they take full ink the moment they are live. */
-.verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:22px;
+.verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:18px;
   opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
 .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
 ui-space-remove { display:contents; }
+.verbs ui-copy-link, .verbs tonk-share { display:contents; }
+.verbs [data-share-copy-label] { display:none; }
+.verbs tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
+.verbs tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
+.verbs tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
+.verbs tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
+.verbs tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
+.verbs tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
 .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
   color:inherit; font:inherit; letter-spacing:inherit;
   text-transform:lowercase; cursor:pointer; }
 .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
   text-decoration:underline; text-underline-offset:3px; }
+.verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
 /* creation is the stack's final, and only, solid ink row */
 .snew-form { display:block; }
 .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;

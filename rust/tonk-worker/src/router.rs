@@ -5,6 +5,8 @@ use std::sync::Arc;
 use ::axum::{
     Router,
     extract::{DefaultBodyLimit, State},
+    middleware::{self, Next},
+    response::Response,
     routing::get,
     routing::post,
     routing::put,
@@ -159,6 +161,28 @@ mod wire_compat;
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
+
+fn is_profile_scoped_path(path: &str) -> bool {
+    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+}
+
+async fn profile_context_fence(
+    State(state): State<AppState>,
+    request: ::axum::extract::Request,
+    next: Next,
+) -> Result<Response, crate::TonkWorkerError> {
+    if is_profile_scoped_path(request.uri().path())
+        && let Some(client) = request.extensions().get::<ClientId>()
+    {
+        let tonk = state.read().await;
+        if !session::client_context_is_current(&tonk, client).await {
+            return Err(crate::TonkWorkerError::Conflict(
+                "profile changed; reload required".to_string(),
+            ));
+        }
+    }
+    Ok(next.run(request).await)
+}
 
 /// Root handler that returns a welcome message.
 async fn root(State(_state): State<AppState>) -> &'static str {
@@ -421,7 +445,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
-        .merge(lsp_routes);
+        .merge(lsp_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            profile_context_fence,
+        ));
     (router, lsp_hub)
 }
 
@@ -452,6 +480,59 @@ pub mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    fn client_request(method: &str, uri: &str, client: &str) -> Request<Body> {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::ClientId(client.to_string()));
+        request
+    }
+
+    #[dialog_common::test]
+    async fn it_fences_clients_from_an_old_profile_generation() {
+        use std::sync::atomic::Ordering;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let first = app
+            .clone()
+            .oneshot(client_request("GET", "/api/profile", "old-client"))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        state
+            .read()
+            .await
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
+
+        for (method, uri) in [
+            ("GET", "/api/profile"),
+            ("POST", "/api/profile/branch/main/transact"),
+        ] {
+            let stale = app
+                .clone()
+                .oneshot(client_request(method, uri, "old-client"))
+                .await
+                .unwrap();
+            assert_eq!(stale.status(), StatusCode::CONFLICT);
+            let body = axum::body::to_bytes(stale.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("profile changed; reload required"));
+        }
+
+        let fresh = app
+            .oneshot(client_request("GET", "/api/profile", "new-client"))
+            .await
+            .unwrap();
+        assert_eq!(fresh.status(), StatusCode::OK);
+    }
 
     /// Failure-safe replacement for one service-worker global used by a test.
     pub(crate) struct GlobalPropertyGuard {
@@ -594,6 +675,8 @@ pub mod tests {
             clients: Default::default(),
             account_keys: Default::default(),
             registry,
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         }
     }
 

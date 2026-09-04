@@ -1,13 +1,13 @@
-//! `<ui-account-settings>` — the account settings panel: a rail of panes
-//! over the live account facts.
+//! `<ui-account-settings>` — the account settings panel over live account
+//! facts.
 //!
 //! One panel, two seats. The Hub's account tab embeds it as the in-column
 //! settings page; the space route mounts it inside a `<tonk-dialog>` the
 //! FAB's `settings` row raises. It injects its own markup and fills the
 //! rows imperatively because the values are API reads, not branch facts:
 //! the address is service-owned by design (the uniqueness key is never
-//! mirrored into the account repository) and the device list derives from
-//! delegation chains — a declarative view has nothing to subscribe to.
+//! mirrored into the account repository), so a declarative view has nothing
+//! to subscribe to.
 //! The display name commits imperatively too — `POST
 //! /api/account/display-name`, the same worker route the /account page
 //! uses — because event-to-command delegation belongs to `tonk-display`
@@ -33,6 +33,7 @@ type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
+const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -63,7 +64,7 @@ impl CustomElement for UiAccountSettings {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        if this.query_selector(".s-rail").ok().flatten().is_none() {
+        if this.query_selector(".s-body").ok().flatten().is_none() {
             this.set_inner_html(include_str!("ui_account_settings.html"));
         }
     }
@@ -81,27 +82,6 @@ impl CustomElement for UiAccountSettings {
             else {
                 return;
             };
-            if let Some(pane) = target
-                .closest(".s-rail [data-pane]")
-                .ok()
-                .flatten()
-                .and_then(|button| button.get_attribute("data-pane"))
-            {
-                set_pane(&host, &pane);
-                return;
-            }
-            // Removing a device's access asks in place — the word answers:
-            // the first press arms the verb, the second revokes.
-            if let Some(verb) = target
-                .closest("[data-revoke-device]")
-                .ok()
-                .flatten()
-                .and_then(|verb| verb.dyn_into::<HtmlElement>().ok())
-            {
-                event.prevent_default();
-                revoke_device(&host, &verb);
-                return;
-            }
             let hit = |selector: &str| target.closest(selector).ok().flatten().is_some();
             if hit("[data-delete-account-open]") {
                 open_delete_dialog(&host);
@@ -168,7 +148,7 @@ impl CustomElement for UiAccountSettings {
             };
             // Enter in the arming field submits when armed, and never
             // breaks the line.
-            if target.has_attribute("data-delete-email") {
+            if target.has_attribute("data-delete-confirm") {
                 key.prevent_default();
                 submit_delete(&host_enter);
                 return;
@@ -191,7 +171,7 @@ impl CustomElement for UiAccountSettings {
             let in_field = event
                 .target()
                 .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|target| target.has_attribute("data-delete-email"));
+                .is_some_and(|target| target.has_attribute("data-delete-confirm"));
             if in_field {
                 arm_delete(&host);
             }
@@ -278,22 +258,8 @@ impl CustomElement for UiAccountSettings {
     }
 }
 
-/// Show one pane and mark its rail tab current.
+/// Show one account-flow pane.
 fn set_pane(this: &HtmlElement, pane: &str) {
-    // The link approval is a page of the account tab: the tab stays
-    // current and fused to the body while it is up.
-    let tab_for = if pane == "link" { "account" } else { pane };
-    if let Ok(tabs) = this.query_selector_all(".s-rail [data-pane]") {
-        for index in 0..tabs.length() {
-            if let Some(tab) = tabs
-                .item(index)
-                .and_then(|node| node.dyn_into::<Element>().ok())
-            {
-                let current = tab.get_attribute("data-pane").as_deref() == Some(tab_for);
-                let _ = tab.class_list().toggle_with_force("cur", current);
-            }
-        }
-    }
     if let Ok(panes) = this.query_selector_all(".s-body .pane") {
         for index in 0..panes.length() {
             if let Some(section) = panes
@@ -309,10 +275,10 @@ fn set_pane(this: &HtmlElement, pane: &str) {
 /// Fill every pane from live state, landing on the account pane.
 ///
 /// The rows load AFTER the panel appears — a view that shows instantly and
-/// fills in beats one that waits on two fetches.
+/// fills in beats one that waits on a fetch.
 pub(crate) fn refresh(this: &HtmlElement) {
     // `/settings/link?audience=&callback=&name=` is a terminal asking
-    // for access; `/settings#devices` lands on the devices pane.
+    // for access. Every other settings URL lands on the account pane.
     match link_request() {
         Some(request) => {
             set_text(this, "[data-link-name]", &request.name);
@@ -321,14 +287,7 @@ pub(crate) fn refresh(this: &HtmlElement) {
         }
         None => {
             let location = page_location();
-            set_pane(
-                this,
-                if location.hash == "#devices" {
-                    "devices"
-                } else {
-                    "account"
-                },
-            );
+            set_pane(this, "account");
             // `tonk account delete` and `tonk account spots delete` open
             // this page with the review already asked for.
             if location.hash == "#delete-account" {
@@ -338,7 +297,6 @@ pub(crate) fn refresh(this: &HtmlElement) {
     }
     prefill_name(this);
     load_summary(this);
-    load_devices(this);
 }
 
 /// The one space `?delete-space=` names, when this page was opened to
@@ -444,23 +402,24 @@ fn close_dialog(this: &HtmlElement, selector: &str) {
     }
 }
 
-/// What the arming field holds: a `contenteditable` span, so its text.
-fn typed_address(this: &HtmlElement) -> String {
-    this.query_selector("[data-delete-email]")
+/// What the destructive confirmation field holds.
+fn typed_confirmation(this: &HtmlElement) -> String {
+    this.query_selector("[data-delete-confirm]")
         .ok()
         .flatten()
-        .and_then(|field| field.text_content())
+        .and_then(|field| field.dyn_into::<HtmlInputElement>().ok())
+        .map(|field| field.value())
         .unwrap_or_default()
         .trim()
         .to_owned()
 }
 
-/// Arm the solid verb only while the typed address is the account's.
+/// Arm the solid verb only while the requested destructive phrase is exact.
 fn arm_delete(this: &HtmlElement) {
     let expected = this
-        .get_attribute("data-delete-email-expected")
+        .get_attribute("data-delete-confirm-expected")
         .unwrap_or_default();
-    let armed = !expected.is_empty() && typed_address(this) == expected;
+    let armed = !expected.is_empty() && typed_confirmation(this) == expected;
     if let Ok(Some(verb)) = this.query_selector("[data-delete-account-submit]") {
         if armed {
             let _ = verb.remove_attribute("disabled");
@@ -483,16 +442,72 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 /// The plan is read from the account db by the worker: which listed
 /// spaces this account provides, and how many it merely joined.
 fn open_delete_dialog(this: &HtmlElement) {
+    let requested = requested_space_deletion();
+    let deleting_space = requested.is_some();
+    let confirmation = DELETE_ACCOUNT_CONFIRMATION;
+    set_text(this, "[data-delete-confirm-label]", confirmation);
+    set_text(
+        this,
+        "[data-delete-submit-label]",
+        if deleting_space {
+            "delete space permanently"
+        } else {
+            "delete account"
+        },
+    );
     set_text(
         this,
         "[data-delete-scope]",
         "loading what this deletes\u{2026}",
     );
-    set_text(this, "[data-delete-email]", "");
-    let _ = this.remove_attribute("data-delete-email-expected");
+    if let Ok(Some(dialog)) = this.query_selector("[data-delete-account-dialog]") {
+        let _ = dialog.set_attribute(
+            "heading",
+            if deleting_space {
+                "confirm permanent space deletion"
+            } else {
+                "confirm account deletion"
+            },
+        );
+    }
+    set_text(
+        this,
+        "[data-delete-question]",
+        if deleting_space {
+            "are you sure you want to delete this space for every member?"
+        } else {
+            "are you sure you want to delete all data associated with this account?"
+        },
+    );
+    set_text(
+        this,
+        "[data-delete-consequence]",
+        if deleting_space {
+            "this action is permanent. Tonk cannot erase copies already saved on other devices, but they will no longer be able to sync this space with Tonk."
+        } else {
+            "this action is permanent. there is no option to recover your data."
+        },
+    );
+    set_text(
+        this,
+        "[data-delete-passkey]",
+        if deleting_space {
+            ""
+        } else {
+            "your passkey will be asked for."
+        },
+    );
+    if let Ok(Some(field)) = this.query_selector("[data-delete-confirm]")
+        && let Ok(field) = field.dyn_into::<HtmlInputElement>()
+    {
+        field.set_value("");
+    }
+    let _ = this.remove_attribute("data-delete-confirm-expected");
+    let _ = this.remove_attribute("data-delete-account-email");
+    let _ = this.remove_attribute("data-delete-space");
     arm_delete(this);
     show_dialog(this, "[data-delete-account-dialog]");
-    if let Ok(Some(field)) = this.query_selector("[data-delete-email]")
+    if let Ok(Some(field)) = this.query_selector("[data-delete-confirm]")
         && let Ok(field) = field.dyn_into::<HtmlElement>()
     {
         let _ = field.focus();
@@ -512,7 +527,6 @@ fn open_delete_dialog(this: &HtmlElement) {
             );
             return;
         };
-        let requested = requested_space_deletion();
         let spaces: Vec<_> = plan
             .spaces
             .iter()
@@ -536,15 +550,6 @@ fn open_delete_dialog(this: &HtmlElement) {
             "data-delete-space",
             requested.as_deref().unwrap_or_default(),
         );
-        set_text(
-            &host,
-            "[data-delete-submit-label]",
-            if requested.is_some() {
-                "delete this space"
-            } else {
-                "delete account"
-            },
-        );
         let owned = spaces.len();
         let names: Vec<&str> = spaces
             .iter()
@@ -555,12 +560,18 @@ fn open_delete_dialog(this: &HtmlElement) {
         } else {
             format!(": {}", names.join(", "))
         };
+        let confirmation = if requested.is_some() {
+            format!("delete {}", names[0])
+        } else {
+            DELETE_ACCOUNT_CONFIRMATION.to_owned()
+        };
+        set_text(&host, "[data-delete-confirm-label]", &confirmation);
         set_text(
             &host,
             "[data-delete-scope]",
             &if requested.is_some() {
                 format!(
-                    "this deletes the selected owned space{listed} from tonk services. your account and every other space remain."
+                    "this permanently deletes the selected owned space{listed} from Tonk and makes it unavailable to every member. your account and every other space remain."
                 )
             } else {
                 format!(
@@ -571,8 +582,8 @@ fn open_delete_dialog(this: &HtmlElement) {
                 )
             },
         );
-        set_text(&host, "[data-delete-email-expected-label]", &plan.email);
-        let _ = host.set_attribute("data-delete-email-expected", &plan.email);
+        let _ = host.set_attribute("data-delete-account-email", &plan.email);
+        let _ = host.set_attribute("data-delete-confirm-expected", &confirmation);
         arm_delete(&host);
     });
 }
@@ -581,13 +592,13 @@ fn open_delete_dialog(this: &HtmlElement) {
 /// the account, asks the page for the passkey, and reports through the
 /// ceremony row this panel watches.
 fn submit_delete(this: &HtmlElement) {
-    let email = typed_address(this);
-    let expected = this
-        .get_attribute("data-delete-email-expected")
+    let confirmation = typed_confirmation(this);
+    let expected_confirmation = this
+        .get_attribute("data-delete-confirm-expected")
         .unwrap_or_default();
-    // The verb is off until the address matches; a submit that arrives
+    // The verb is off until the phrase matches; a submit that arrives
     // anyway (keyboard, script) is answered the same way.
-    if expected.is_empty() || email != expected {
+    if expected_confirmation.is_empty() || confirmation != expected_confirmation {
         arm_delete(this);
         return;
     }
@@ -616,6 +627,10 @@ fn submit_delete(this: &HtmlElement) {
         });
         return;
     }
+    let Some(email) = this.get_attribute("data-delete-account-email") else {
+        arm_delete(this);
+        return;
+    };
     show_status(this, "Waiting for your passkey\u{2026}");
     transact(
         this,
@@ -962,115 +977,6 @@ fn load_summary(this: &HtmlElement) {
     });
 }
 
-fn load_devices(this: &HtmlElement) {
-    let host = this.clone();
-    spawn_local(async move {
-        let devices: Vec<tonk_worker_api::AccountDevice> =
-            match tonk_host::get_json("/api/account/devices").await {
-                Ok(body) => serde_json::from_str(&body).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-        // The list is the same on every device; "this device" is a
-        // presentation mark (the wireframe's soft suffix on the name).
-        let own = match tonk_host::get_json("/api/identify").await {
-            Ok(body) => serde_json::from_str::<tonk_worker_api::IdentifyResponse>(&body)
-                .map(|identity| identity.did)
-                .unwrap_or_default(),
-            Err(_) => String::new(),
-        };
-        let Some(list) = host
-            .query_selector("[data-settings-devices]")
-            .ok()
-            .flatten()
-        else {
-            return;
-        };
-        let Some(document) = window().and_then(|window| window.document()) else {
-            return;
-        };
-        list.set_inner_html("");
-        if devices.is_empty() {
-            let Ok(row) = document.create_element("div") else {
-                return;
-            };
-            row.set_class_name("srowd");
-            row.set_text_content(Some("No linked devices to list."));
-            let _ = list.append_child(&row);
-            return;
-        }
-        for device in devices {
-            let Ok(row) = document.create_element("div") else {
-                continue;
-            };
-            row.set_class_name("srowd");
-            let Ok(name) = document.create_element("b") else {
-                continue;
-            };
-            name.set_class_name("lft");
-            name.set_text_content(Some(&device.name));
-            if !own.is_empty() && device.did == own {
-                if let Ok(marker) = document.create_element("span") {
-                    marker.set_class_name("dev-self");
-                    marker.set_text_content(Some(" \u{b7} this device"));
-                    let _ = name.append_child(&marker);
-                }
-            }
-            let _ = row.append_child(&name);
-            let Ok(meta) = document.create_element("span") else {
-                continue;
-            };
-            meta.set_class_name("dev-r");
-            let Ok(when) = document.create_element("span") else {
-                continue;
-            };
-            when.set_class_name("dev-when");
-            let date = js_sys::Date::new(&JsValue::from_f64(device.created_at as f64 * 1000.0))
-                .to_locale_date_string("default", &JsValue::UNDEFINED);
-            when.set_text_content(Some(&format!("linked {}", String::from(date))));
-            let _ = meta.append_child(&when);
-            let Ok(verb) = document.create_element("button") else {
-                continue;
-            };
-            verb.set_class_name("cta");
-            let _ = verb.set_attribute("type", "button");
-            let _ = verb.set_attribute("data-revoke-device", &device.did);
-            verb.set_text_content(Some("remove access"));
-            let _ = meta.append_child(&verb);
-            let _ = row.append_child(&meta);
-            let _ = list.append_child(&row);
-        }
-    });
-}
-
-/// Revoke one device's access, asking in place: the first press arms the
-/// verb ("sure? remove"), the second sends the revocation and re-reads the
-/// list.
-fn revoke_device(this: &HtmlElement, verb: &HtmlElement) {
-    let Some(did) = verb.get_attribute("data-revoke-device") else {
-        return;
-    };
-    if !verb.has_attribute("data-armed") {
-        let _ = verb.set_attribute("data-armed", "");
-        verb.set_text_content(Some("sure? remove"));
-        return;
-    }
-    verb.set_text_content(Some("removing\u{2026}"));
-    let _ = verb.set_attribute("disabled", "");
-    let host = this.clone();
-    let verb = verb.clone();
-    spawn_local(async move {
-        let body = serde_json::json!({ "did": did }).to_string();
-        match tonk_host::post_json("/api/account/devices/revoke", &body).await {
-            Ok(_) => load_devices(&host),
-            Err(_) => {
-                let _ = verb.remove_attribute("disabled");
-                let _ = verb.remove_attribute("data-armed");
-                verb.set_text_content(Some("couldn\u{2019}t remove"));
-            }
-        }
-    });
-}
-
 /// Register `<ui-account-settings>`. Idempotent.
 pub(crate) fn register() {
     let Some(win) = window() else {
@@ -1121,7 +1027,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn it_mounts_the_rail_and_switches_panes() {
+    fn it_mounts_only_account_settings() {
         super::register();
         let document = window().unwrap().document().unwrap();
         let host: HtmlElement = document
@@ -1131,31 +1037,23 @@ mod tests {
             .unwrap();
         document.body().unwrap().append_child(&host).unwrap();
 
-        let devices_tab: HtmlElement = host
-            .query_selector(".s-rail [data-pane=\"devices\"]")
-            .unwrap()
-            .expect("devices tab")
-            .dyn_into()
-            .unwrap();
-        let devices_pane: HtmlElement = host
-            .query_selector(".s-body [data-pane=\"devices\"]")
-            .unwrap()
-            .expect("devices pane")
-            .dyn_into()
-            .unwrap();
         let account_pane: HtmlElement = host
             .query_selector(".s-body [data-pane=\"account\"]")
             .unwrap()
             .expect("account pane")
             .dyn_into()
             .unwrap();
-        assert!(devices_pane.hidden(), "the account pane leads");
         assert!(!account_pane.hidden());
-
-        devices_tab.click();
-        assert!(!devices_pane.hidden(), "the rail switches panes");
-        assert!(account_pane.hidden());
-        assert!(devices_tab.class_list().contains("cur"));
+        assert!(
+            host.query_selector(".s-rail").unwrap().is_none(),
+            "a single account surface needs no section header"
+        );
+        assert!(
+            host.query_selector("[data-pane=\"devices\"]")
+                .unwrap()
+                .is_none(),
+            "settings has no devices tab or pane"
+        );
 
         host.remove();
     }
@@ -1206,16 +1104,17 @@ mod tests {
             .unwrap()
     }
 
-    /// `/settings#devices` lands on the devices pane: a tab is a place.
+    /// Old device-pane links now land safely on the only settings pane.
     #[wasm_bindgen_test]
-    fn it_lands_on_the_pane_the_fragment_names() {
+    fn it_lands_legacy_device_links_on_account_settings() {
         set_context("/settings", "", "#devices");
         let host = mount();
+        assert!(!pane(&host, "account").hidden());
         assert!(
-            !pane(&host, "devices").hidden(),
-            "the fragment picks the pane"
+            host.query_selector("[data-pane=\"devices\"]")
+                .unwrap()
+                .is_none()
         );
-        assert!(pane(&host, "account").hidden());
         host.remove();
         clear_context();
     }
@@ -1262,10 +1161,10 @@ mod tests {
         clear_context();
     }
 
-    /// The deletion verb stays off until the account's address is typed
+    /// The deletion verb stays off until the prompt's phrase is typed
     /// into the arming field, and comes on the moment it is.
     #[wasm_bindgen_test]
-    fn it_arms_the_deletion_only_once_the_address_is_typed() {
+    fn it_arms_the_deletion_only_once_the_prompt_is_typed() {
         clear_context();
         let host = mount();
         host.query_selector("[data-delete-account-open]")
@@ -1300,33 +1199,79 @@ mod tests {
             "nothing typed, nothing armed"
         );
 
-        // The plan names the address; the field must match it.
-        host.set_attribute("data-delete-email-expected", "goner@example.com")
-            .unwrap();
-        let field: HtmlElement = host
-            .query_selector("[data-delete-email]")
+        host.set_attribute(
+            "data-delete-confirm-expected",
+            super::DELETE_ACCOUNT_CONFIRMATION,
+        )
+        .unwrap();
+        let field: HtmlInputElement = host
+            .query_selector("[data-delete-confirm]")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
         let typed = |text: &str| {
-            field.set_text_content(Some(text));
+            field.set_value(text);
             let init = web_sys::EventInit::new();
             init.set_bubbles(true);
             let event = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
             field.dispatch_event(&event).unwrap();
         };
-        typed("someone-else@example.com");
-        assert!(verb.has_attribute("disabled"), "a wrong address stays off");
-        typed("goner@example.com");
-        assert!(!verb.has_attribute("disabled"), "the right address arms it");
-        typed("goner@example.co");
+        typed("delete");
+        assert!(verb.has_attribute("disabled"), "a partial phrase stays off");
+        typed(super::DELETE_ACCOUNT_CONFIRMATION);
+        assert!(!verb.has_attribute("disabled"), "the exact phrase arms it");
+        typed("delete accounts");
         assert!(
             verb.has_attribute("disabled"),
             "and editing it away disarms"
         );
         assert!(native.open(), "arming never closes the review");
         host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_gives_owned_space_deletion_its_own_consequences() {
+        set_context(
+            "/settings",
+            "?delete-space=did%3Akey%3AzOwned",
+            "#delete-account",
+        );
+        let host = mount();
+        let dialog = host
+            .query_selector("[data-delete-account-dialog]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dialog.get_attribute("heading").as_deref(),
+            Some("confirm permanent space deletion")
+        );
+        assert!(
+            host.query_selector("[data-delete-question]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default()
+                .contains("for every member")
+        );
+        assert!(
+            host.query_selector("[data-delete-consequence]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .unwrap_or_default()
+                .contains("cannot erase copies already saved")
+        );
+        assert_eq!(
+            host.query_selector("[data-delete-passkey]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("")
+        );
+        host.remove();
+        clear_context();
     }
 
     #[wasm_bindgen_test]

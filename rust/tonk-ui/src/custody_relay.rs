@@ -113,12 +113,16 @@ fn card() -> Option<Element> {
     web_sys::window()?.document()?.get_element_by_id(CARD_ID)
 }
 
-fn set_card_text(text: &str) {
+fn set_card_message(text: &str) {
     if let Some(card) = card()
         && let Ok(Some(message)) = card.query_selector("#tonk-custody-text")
     {
         message.set_text_content(Some(text));
     }
+}
+
+fn set_card_text(text: &str) {
+    set_card_message(text);
     if let Some(card) = card()
         && let Ok(Some(actions)) = card.query_selector("#tonk-custody-actions")
     {
@@ -147,21 +151,24 @@ fn on_click(card: &Element, selector: &str, callback: impl FnMut() + 'static) {
     closure.forget();
 }
 
+fn mount_card() -> Option<Element> {
+    let document = web_sys::window().and_then(|window| window.document())?;
+    let body = document.body()?;
+    let host = document.create_element("div").ok()?;
+    host.set_id(CARD_ID);
+    host.set_inner_html(CARD_HTML);
+    body.append_child(&host).ok()?;
+    Some(host)
+}
+
 /// Raise the consent card. The continue button runs the assertion inside
 /// the click and reports the outcome on the card; dismissing leaves the
 /// worker's wait to time out, failing the operation that asked.
 fn show_consent() {
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+    let Some(host) = mount_card() else {
         BUSY.with(|busy| busy.set(false));
         return;
     };
-    let (Some(body), Ok(host)) = (document.body(), document.create_element("div")) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-    host.set_id(CARD_ID);
-    host.set_inner_html(CARD_HTML);
-    let _ = body.append_child(&host);
 
     on_click(&host, "#tonk-custody-dismiss", || {
         let mut attempt = crate::account_observability::WebAccountAttempt::start(
@@ -222,30 +229,61 @@ fn show_consent() {
     });
 }
 
-/// Run the passkey ceremony a guest-asserted command needs, now.
+fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
+    match intent {
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => AccountAction::DeleteAccount,
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => AccountAction::LinkCli,
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
+        tonk_worker_api::CustodyIntent::Enroll(_)
+        | tonk_worker_api::CustodyIntent::CreateAccount(_)
+        | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
+    }
+}
+
+/// Raise the top-document consent a guest-asserted command needs.
 ///
-/// The person just pressed the act's own verb in the settings page,
-/// which told them the passkey would be asked for; a card asking the
-/// same question again would be one dialog too many. Progress and
-/// failure are reported where the ask was made: the worker writes the
-/// ceremony row the settings page watches, and a prompt this document
-/// could not finish is logged here and says so in that row through the
-/// worker's own timeout. Pinned to the account's passkey, so a browser
-/// holding several for this origin cannot answer with another
-/// account's.
+/// The command starts in a sealed guest, crosses an asynchronous worker
+/// transaction, and only then reaches this document. The guest's click
+/// activation is not reliable across that boundary, so the assertion is
+/// invoked synchronously by this card's click. The worker still owns the
+/// operation and reports its status in the settings row. The assertion is
+/// pinned to the account's passkey so a browser holding several for this
+/// origin cannot answer with another account's.
 fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        return;
+    }
+    let Some(host) = mount_card() else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    set_card_message("Confirm this account action with your passkey.");
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+
     let method = match &intent {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
         _ => "usePasskey",
     };
-    match begin_with(method, intent, credential_id) {
-        Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-            if let Err(error) = mediation.finish().await {
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        set_card_text("Waiting for your passkey…");
+        match begin_with(method, intent.clone(), credential_id.clone()) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                if let Err(error) = mediation.finish().await {
+                    report(&error.message);
+                    set_card_text(&user_error::ceremony(action, &error));
+                    remove_card_after(4000);
+                } else {
+                    remove_card();
+                }
+            }),
+            Err(error) => {
                 report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(4000);
             }
-        }),
-        Err(error) => report(&error.message),
-    }
+        }
+    });
 }
 
 /// Install the service-worker message listener on the top document.
@@ -310,10 +348,9 @@ pub fn install() {
                     // Enrollment arrives mid-ceremony, on a page whose
                     // gesture is still live.
                     intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
-                    // A command the guest asserted. The click that asked
-                    // activated this document too (activation reaches every
-                    // ancestor), so the prompt runs at once; the card is
-                    // only for a prompt the browser would not open.
+                    // A command the guest asserted. Its async trip through the
+                    // worker cannot carry transient activation, so this page
+                    // asks for one explicit top-document click.
                     intent => run_command_ceremony(intent, message.credential_id),
                 }
             }
@@ -408,6 +445,13 @@ impl Mediation {
             && let Some(window) = web_sys::window()
         {
             let _ = window.location().assign(&href);
+        } else if js_sys::Reflect::get(&answer, &"reload".into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.location().reload();
         }
         Ok(())
     }

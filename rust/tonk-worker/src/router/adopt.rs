@@ -10,6 +10,11 @@
 //! use — the data-plane routes call it when a request names a repo this
 //! device has not mounted.
 //!
+//! Already-mounted replicas are reconciled too. First use and every
+//! successful account sweep re-read the latest mount facts, while a ready,
+//! served account additionally adopts genuinely local-only repositories by
+//! provisioning and attaching its provider.
+//!
 //! Deletion is a retraction: adoption reads asserted rows only, so a
 //! removed space is simply absent — no escrow, no backfill, nothing to
 //! resurrect it.
@@ -21,6 +26,7 @@
 //! [`Branch`]: tonk_schema::Branch
 //! [`TrackingBranch`]: tonk_schema::TrackingBranch
 
+use dialog_repository::RepositoryExt as _;
 use tonk_common::log;
 
 use super::repository::{
@@ -42,9 +48,9 @@ pub(crate) async fn ensure_space_mounted(
     // pages query with the full form. Normalize before parsing, or the
     // full form silently fails the parse and adoption never fires.
     let suffix = key.strip_prefix("did:key:").unwrap_or(key);
-    let subject: dialog_varsig::Did = match format!("did:key:{suffix}").parse() {
-        Ok(did) => did,
-        Err(_) => return Ok(false), // not a space key (e.g. a named repo)
+    let subject = match space_subject(key) {
+        Some(did) => did,
+        None => return Ok(false), // not a space key (e.g. a named repo)
     };
     if super::account_state::is_account_key(tonk, key).await
         || super::account_state::is_account_key(tonk, suffix).await
@@ -52,6 +58,11 @@ pub(crate) async fn ensure_space_mounted(
         return Ok(false);
     }
     if super::join::find_replica_for_subject(tonk, &subject).await? {
+        if let Err(error) =
+            reconcile_mounted_space_from_directory(tonk, subject.as_str(), &subject).await
+        {
+            log!("space adoption: directory reconcile for mounted '{subject}': {error}");
+        }
         return Ok(true);
     }
     let Some(configuration) = directory_configuration(tonk, &subject).await else {
@@ -70,8 +81,209 @@ pub(crate) async fn ensure_space_mounted(
     // requests trigger one) fills the space in promptly instead of
     // waiting for an idle beat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
+    tonk.sync_queue
+        .mark_dirty(subject.as_str(), js_sys::Date::now());
     Ok(true)
+}
+
+/// Parse either the canonical full repository key or the legacy bare suffix.
+fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+    if key.starts_with("did:key:") {
+        key.parse().ok()
+    } else {
+        format!("did:key:{key}").parse().ok()
+    }
+}
+
+/// Apply the account directory's latest mount facts to one replica that is
+/// already present locally. Returns whether a mount record existed.
+async fn reconcile_mounted_space_from_directory(
+    tonk: &TonkState,
+    key: &str,
+    subject: &dialog_varsig::Did,
+) -> Result<bool, crate::TonkWorkerError> {
+    let Some(configuration) = directory_configuration(tonk, subject).await else {
+        return Ok(false);
+    };
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!(
+                "load mounted space '{subject}' for directory reconcile: {error}"
+            ))
+        })?;
+    if mounted_configuration_is_current(tonk, key, &repository, &configuration).await {
+        return Ok(true);
+    }
+    super::repository::ensure_remote_config(tonk, &repository, key, &configuration)
+        .await
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!(
+                "reconcile mounted space '{subject}' from directory: {error}"
+            ))
+        })?;
+    Ok(true)
+}
+
+/// Check both durable replica meta and the reactor's cached branch handles.
+/// The latter matters because sync reads the cache: a durable tracking fact
+/// with a stale cached `None` is exactly the `BranchHasNoUpstream` state this
+/// reconciliation repairs.
+async fn mounted_configuration_is_current<C>(
+    tonk: &TonkState,
+    key: &str,
+    repository: &dialog_repository::Repository<C>,
+    desired: &RepositoryConfiguration,
+) -> bool
+where
+    C: dialog_varsig::Principal + Clone,
+{
+    let current = super::repository::build_repository_info(tonk, key, repository).await;
+    if desired
+        .remote
+        .keys()
+        .any(|name| !current.remote.contains_key(name))
+    {
+        return false;
+    }
+    for (branch_name, branch) in &desired.branch {
+        let Some(upstream) = &branch.upstream else {
+            continue;
+        };
+        let durable_matches = current
+            .branch
+            .get(branch_name)
+            .and_then(|branch| branch.upstream.as_ref())
+            .is_some_and(|current| {
+                current.remote == upstream.remote && current.branch == upstream.branch
+            });
+        if !durable_matches {
+            return false;
+        }
+        let Ok(session) = tonk
+            .reactor
+            .repository(key)
+            .branch(branch_name)
+            .acquire(&tonk.operator)
+            .await
+        else {
+            return false;
+        };
+        if !matches!(
+            session.handle().upstream(),
+            Some(dialog_repository::Upstream::Remote {
+                ref remote,
+                ref branch,
+                ..
+            }) if *remote == upstream.remote && *branch == upstream.branch
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reconcile every local space after the account branch has pulled its latest
+/// facts.
+///
+/// The directory is authoritative for mount configuration. If it has no mount
+/// record and the customer is now served, a repository carrying zero remotes
+/// is the one safe ownership shape we automatically provision and attach.
+/// Every repository is isolated: malformed or temporarily unavailable state
+/// is logged and retried on the next account sweep without blocking siblings.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
+    use std::collections::HashMap;
+
+    let directory_names: Option<HashMap<String, String>> = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => match tonk_schema::directory::spaces(main.handle(), &tonk.operator).await {
+            Ok(rows) => Some(
+                rows.into_iter()
+                    .filter_map(|row| row.name.map(|name| (row.subject.to_string(), name)))
+                    .collect(),
+            ),
+            Err(error) => {
+                log!("space reconcile: read directory names: {error:?}");
+                None
+            }
+        },
+        Err(error) => {
+            log!("space reconcile: open account directory: {error}");
+            None
+        }
+    };
+    let account_remote = if super::customer::is_active(tonk).await {
+        match super::account_state::account_remote(tonk).await {
+            Ok(remote) => Some(remote),
+            Err(error) => {
+                log!("space reconcile: active account has no usable remote: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    for key in super::profile_name::real_space_keys(tonk).await {
+        let subject = match space_subject(&key) {
+            Some(subject) => subject,
+            None => {
+                log!("space reconcile: invalid repository key '{key}'");
+                continue;
+            }
+        };
+
+        let repository = match tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(repository) => repository,
+            Err(error) => {
+                log!("space reconcile: load '{subject}': {error}");
+                continue;
+            }
+        };
+        if let Some(names) = &directory_names
+            && let Some(name) =
+                super::repository::repository_display_name(tonk, &repository, &key).await
+            && names.get(subject.to_string().as_str()) != Some(&name)
+        {
+            super::repository::record_space_name(tonk, &subject, &name).await;
+        }
+
+        match reconcile_mounted_space_from_directory(tonk, &key, &subject).await {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                log!("space reconcile: directory configuration for '{subject}': {error}");
+                continue;
+            }
+        }
+        let Some(remote) = account_remote.as_deref() else {
+            continue;
+        };
+        match super::repository::attach_account_remote_if_local(tonk, &key, remote).await {
+            Ok(true) => {
+                log!("space reconcile: attached account remote to local space '{subject}'");
+                tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+            }
+            Ok(false) => {}
+            Err(error) => log!("space reconcile: attach account remote to '{subject}': {error}"),
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -142,6 +354,87 @@ mod tests {
         let suffix = full.strip_prefix("did:key:").unwrap();
         assert!(ensure_space_mounted(&tonk, suffix).await.unwrap());
     }
+
+    /// A mounted replica is not proof that its configuration is current.
+    /// The account directory may have gained the remote and tracking facts
+    /// after this device first recorded the local replica, so first use must
+    /// reconcile those facts rather than returning early.
+    #[dialog_common::test]
+    async fn it_reconciles_a_mounted_space_from_the_latest_directory_record() {
+        use dialog_repository::{SiteAddress, Upstream};
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "late-directory-remote").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(SiteAddress::from(
+                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                ))
+                .subject(subject.clone()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            super::super::repository::record_space_mount(
+                &tonk,
+                &subject,
+                &configuration,
+                Some("Late Remote"),
+            )
+            .await;
+        }
+
+        let tonk = state.read().await;
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                session.handle().upstream(),
+                Some(Upstream::Remote { ref remote, ref branch, .. })
+                    if remote == "origin" && branch == "main"
+            ),
+            "the mounted replica must adopt the directory's origin/main tracking facts",
+        );
+
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let before = repository
+            .branch(super::super::repository::META_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap()
+            .revision();
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        let after = repository
+            .branch(super::super::repository::META_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap()
+            .revision();
+        assert_eq!(
+            after, before,
+            "a later reconcile over identical facts must not commit again",
+        );
+    }
 }
 
 /// Stamp a space's device-locality into the profile-main OVERLAY so
@@ -173,7 +466,7 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
     for key in super::profile_name::real_space_keys(tonk).await {
-        if let Ok(subject) = format!("did:key:{key}").parse::<dialog_varsig::Did>() {
+        if let Some(subject) = space_subject(&key) {
             stamp_space_locality(tonk, &subject).await;
         }
     }

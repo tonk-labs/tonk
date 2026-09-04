@@ -128,3 +128,45 @@ therefore verify the checked-in bundle without first generating ignored files.
 - [ ] Run `nix --accept-flake-config build --no-link .#tonk-ui`; expect the production UI derivation, including final-output stamp verification, to succeed.
 - [ ] Run `git diff --check`; expect no whitespace errors.
 - [ ] Inspect `git diff -- rust/tonk-ui/index.html rust/tonk-host/src/ready.rs rust/tonk-ui/src/bin/ui.rs rust/tonk-ui/src/service_worker_upgrade.rs rust/tonk-ui/src/lib.rs rust/tonk-ui/src/helpers.rs rust/tonk-ui/scripts/hash-guest.sh rust/tonk-ui/scripts/stamp-service-worker.sh rust/tonk-ui/README.md flake.nix`; confirm the final diff contains no ordinary-flow unregister, CacheStorage deletion, IndexedDB deletion, cache-policy rewrite, unrelated UI change, or lock-file change.
+
+## Immutable-generation lifecycle follow-up contract
+
+The load-time replacement contract above now has four bounded follow-ups:
+
+- An incoming install may read older final Tonk shell and worker caches, but it
+  accepts a response only after hashing a clone against the incoming manifest or
+  stamped worker-Wasm digest. Reuse never writes to the source cache, and every
+  accepted response still enters the incoming staging and adoption transaction.
+- Activation may delete only exact lifecycle-owned cache names for builds other
+  than the adopted current build. It keeps current final and staging caches,
+  ignores Tonk-like and unrelated names, and treats individual deletion failures
+  as cleanup diagnostics rather than activation failures.
+- A missing retained root returns a self-contained recovery page. That page
+  explicitly checks for an update, reloads once only after controller
+  replacement, and otherwise exposes retry without fetching a live shell or
+  changing local application state.
+- Frame classification is cached only after `clients.get()` confirms a stable
+  top-level or nested frame type. Unconditional Rust routes skip classification;
+  missing or failed lookups remain retryable and delegate to Rust.
+
+Verification remains layered. Node tests prove byte selection, exact-name
+cleanup, recovery control flow, and routing counts. Native compilation proves
+the harness builds. Serialized browser scenarios separately prove coherent A to
+B adoption, multi-tab controller replacement, evicted-root recovery, offline
+fallback where the browser supports network control, cache inventory, and
+sentinel preservation. Chrome and Safari results must be recorded separately;
+a WebDriver setup failure is infrastructure evidence, not browser-behavior
+evidence.
+
+### Local follow-up evidence, 2026-09-02
+
+| Layer | Scenario | Result |
+| --- | --- | --- |
+| Node | Reuse, strict pruning, recovery control flow, and routing memoization | Pass |
+| Chrome | Coherent A-to-B adoption | Pass |
+| Chrome | Two update-aware tabs adopt B once each | Pass |
+| Chrome | Evicted root adopts B without state cleanup | Pass |
+| Safari | Coherent A-to-B adoption | Unverified: SafariDriver timed out while creating the automation session before navigation |
+
+The Safari result above is an infrastructure failure only. It does not establish
+whether the lifecycle behavior passes or fails in WebKit.

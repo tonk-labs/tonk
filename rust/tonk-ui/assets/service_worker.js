@@ -13,14 +13,16 @@ import init, { activate } from "./worker.js";
 //
 // `WORKER_WASM_HASH` is the sha256 prefix of `worker_bg.wasm` as built
 // ALONGSIDE this exact glue. `ASSET_MANIFEST_HASH` is the full sha256 of the
-// publisher-generated UI/guest resource graph. `oninstall` verifies both and
-// every listed asset before making the incoming generation installable.
+// publisher-generated UI/guest resource graph. A first install verifies only
+// its matching worker Wasm before activation; it verifies and publishes the
+// complete offline graph atomically after taking control. Successor workers
+// still complete that graph behind the incumbent before replacing it.
 const BUILD_ID = "dev";
 const WORKER_WASM_HASH = "dev";
 const ASSET_MANIFEST_HASH = "dev";
 // Replaced with the exact publisher-produced resource graph. The dev sentinel
 // preserves Trunk's live-file behavior; a stamped worker serves only members
-// it proved complete during install.
+// it proved complete before publishing an offline generation.
 const ASSET_PATHS = ["dev"];
 const ASSET_PATH_SET = new Set(ASSET_PATHS);
 
@@ -105,9 +107,10 @@ function healthResponse() {
 //
 // Both caches are named per BUILD, not per schema version. Two workers
 // from different builds therefore never read or write the same cache:
-// an install populates its OWN cache. No generation is purged automatically:
-// retained caches may still be the sole offline copy of a coherent release,
-// and lifecycle-safe pruning is outside this installation transaction.
+// an install populates its OWN cache. An incoming install may read a member
+// from an older final Tonk cache only after hashing it against the incoming
+// manifest. Once the verified successor is active, it removes obsolete cache
+// names that are proved to belong to this lifecycle protocol.
 // Separate names still make an install atomic — a half-populated incoming
 // cache can't be observed by the still-serving old worker,
 // which previously could hand out the new shell beside the old build's
@@ -115,14 +118,18 @@ function healthResponse() {
 //
 // The Rust side derives its shell name from the build id handed to it at
 // activate time (see `cache.rs`), so the name is injected once here rather
-// than hand-synced across two languages. Browser storage pressure remains the
-// only automatic eviction policy; future cleanup needs proof that no retained
-// client or worker can still reference a generation.
+// than hand-synced across two languages. Browser storage pressure may evict
+// entries at any time; protocol cleanup begins only after the successor is the
+// active, adopted generation.
 const SHELL_CACHE = `TONK_SHELL_${BUILD_ID}`;
 
 // Where this worker's own wasm lives. Separate from the shell graph because it
 // is instantiated as bytes rather than returned as an ordinary response.
 const WORKER_CACHE = `TONK_WORKER_${BUILD_ID}`;
+// A first install verifies and pins only the worker's own executable runtime
+// before activation. The complete offline generation is assembled after the
+// page is controlled, then this bootstrap copy is superseded by WORKER_CACHE.
+const RUNTIME_CACHE = `TONK_RUNTIME_${BUILD_ID}`;
 const GENERATION_CACHE = `TONK_GENERATION_${BUILD_ID}`;
 const GENERATION_MARKER_URL = new URL(
     `./.tonk-generation-${BUILD_ID}`,
@@ -132,6 +139,41 @@ const SHELL_STAGE_PREFIX = `TONK_SHELL_STAGE_${BUILD_ID}_`;
 const WORKER_STAGE_PREFIX = `TONK_WORKER_STAGE_${BUILD_ID}_`;
 const WORKER_WASM_URL = new URL("./worker_bg.wasm", self.location.href).href;
 const ASSET_MANIFEST_URL = new URL("./asset-manifest.json", self.location.href).href;
+
+const FINAL_SHELL_CACHE_RE = /^TONK_SHELL_([0-9a-f]{16})$/;
+const FINAL_WORKER_CACHE_RE = /^TONK_WORKER_([0-9a-f]{16})$/;
+const RUNTIME_CACHE_RE = /^TONK_RUNTIME_([0-9a-f]{16})$/;
+const GENERATION_CACHE_RE = /^TONK_GENERATION_([0-9a-f]{16})$/;
+const SHELL_STAGE_CACHE_RE = /^TONK_SHELL_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
+const WORKER_STAGE_CACHE_RE = /^TONK_WORKER_STAGE_([0-9a-f]{16})_([0-9a-f]{32})$/;
+
+function parsedBuild(name, pattern) {
+    return pattern.exec(name)?.[1] ?? null;
+}
+
+function parseFinalShellGeneration(name) {
+    return parsedBuild(name, FINAL_SHELL_CACHE_RE);
+}
+
+function parseFinalWorkerGeneration(name) {
+    return parsedBuild(name, FINAL_WORKER_CACHE_RE);
+}
+
+function parseRuntimeGeneration(name) {
+    return parsedBuild(name, RUNTIME_CACHE_RE);
+}
+
+function parseGenerationMarkerCache(name) {
+    return parsedBuild(name, GENERATION_CACHE_RE);
+}
+
+function parseShellStageGeneration(name) {
+    return parsedBuild(name, SHELL_STAGE_CACHE_RE);
+}
+
+function parseWorkerStageGeneration(name) {
+    return parsedBuild(name, WORKER_STAGE_CACHE_RE);
+}
 
 let tonkServiceWorkerResolves;
 
@@ -241,7 +283,13 @@ async function fetchVerified(url, expectedHash, label, onChunk = null) {
     return { bytes, response };
 }
 
-async function fetchVerifiedWorkerWasm() {
+async function fetchVerifiedWorkerWasm(cacheNames = []) {
+    const cached = await verifiedGenerationResponse(
+        cacheNames,
+        WORKER_WASM_URL,
+        WORKER_WASM_HASH,
+    );
+    if (cached) return cached.arrayBuffer();
     let firstChunk = true;
     return (await fetchVerified(
         WORKER_WASM_URL,
@@ -379,7 +427,52 @@ async function reportInstallProgress(phase, completed, total, force = false) {
     }
 }
 
-async function fetchVerifiedAssets(entries) {
+async function verifiedGenerationResponse(cacheNames, key, expectedHash) {
+    for (const cacheName of cacheNames) {
+        try {
+            const response = await caches.match(key, { cacheName });
+            if (!response) continue;
+            if (expectedHash === "dev") return response;
+            const actual = await digestOf(await response.clone().arrayBuffer());
+            if (actual.slice(0, expectedHash.length) === expectedHash) {
+                return response;
+            }
+        } catch (error) {
+            log(`Unable to verify reusable response from ${cacheName}:`, error);
+        }
+    }
+    return null;
+}
+
+/// Pin the one generated artifact that must match this service-worker glue
+/// before the worker can safely control a page. Fetch and verify before opening
+/// the cache so a bad deployment cannot leave a new partial runtime behind.
+async function installWorkerRuntime() {
+    if (await verifiedGenerationResponse(
+        [RUNTIME_CACHE],
+        WORKER_WASM_URL,
+        WORKER_WASM_HASH,
+    )) return;
+
+    const names = await caches.keys();
+    const reusable = names.filter(name => {
+        const build = parseFinalWorkerGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const bytes = await fetchVerifiedWorkerWasm(reusable);
+    const runtimeExisted = names.includes(RUNTIME_CACHE);
+    try {
+        const runtime = await caches.open(RUNTIME_CACHE);
+        await runtime.put(WORKER_WASM_URL, new Response(bytes, {
+            headers: { "content-type": "application/wasm" },
+        }));
+    } catch (error) {
+        if (!runtimeExisted) await caches.delete(RUNTIME_CACHE);
+        throw error;
+    }
+}
+
+async function fetchVerifiedAssets(entries, cacheNames = []) {
     const results = new Array(entries.length);
     let next = 0;
     let completed = 0;
@@ -388,6 +481,17 @@ async function fetchVerifiedAssets(entries) {
             const index = next++;
             const [path, hash] = entries[index];
             const url = new URL(path, self.location.origin).href;
+            const cached = await verifiedGenerationResponse(
+                cacheNames,
+                assetCacheKey(path),
+                hash,
+            );
+            if (cached) {
+                results[index] = { path, response: cached };
+                completed += 1;
+                await reportInstallProgress("verify", completed, entries.length);
+                continue;
+            }
             let firstChunk = true;
             const { response } = await fetchVerified(
                 url,
@@ -561,9 +665,17 @@ async function installGeneration() {
         throw new Error("retained generation cache has no adoption provenance");
     }
 
+    const reusableShellCaches = [...names].filter(name => {
+        const build = parseFinalShellGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const reusableWorkerCaches = [...names].filter(name => {
+        const build = parseFinalWorkerGeneration(name);
+        return build != null && build !== BUILD_ID;
+    });
     const [assets, wasmBytes] = await Promise.all([
-        fetchVerifiedAssets(entries),
-        fetchVerifiedWorkerWasm(),
+        fetchVerifiedAssets(entries, reusableShellCaches),
+        fetchVerifiedWorkerWasm([RUNTIME_CACHE, ...reusableWorkerCaches]),
     ]);
 
     const nonce = freshStageNonce();
@@ -623,6 +735,7 @@ async function installGeneration() {
         await Promise.allSettled([
             caches.delete(marker.shellStage),
             caches.delete(marker.workerStage),
+            caches.delete(RUNTIME_CACHE),
         ]);
         await reportInstallProgress("adopted", assets.length, assets.length, true);
     } catch (error) {
@@ -634,12 +747,71 @@ async function installGeneration() {
     }
 }
 
-/// The wasm bytes this worker boots from: the copy precached at
-/// install. If storage pressure evicts that entry, recover only by fetching
-/// with `no-store` and re-verifying against this glue's stamp. The verified
-/// bytes may boot this instance but must not backfill the retained cache.
+function lifecycleCacheBuild(name) {
+    return parseFinalShellGeneration(name) ??
+        parseFinalWorkerGeneration(name) ??
+        parseRuntimeGeneration(name) ??
+        parseGenerationMarkerCache(name) ??
+        parseShellStageGeneration(name) ??
+        parseWorkerStageGeneration(name);
+}
+
+/// Remove only obsolete names owned by the immutable-generation protocol.
+/// Activation is the first point at which the browser has made this worker
+/// the registration's active worker, so install failure can never prune the
+/// incumbent that still serves existing documents.
+async function pruneObsoleteGenerationCaches() {
+    const marker = await readGenerationMarker();
+    if (marker?.state !== "adopted") {
+        log("Skipping generation cache cleanup without an adopted current marker");
+        return;
+    }
+
+    const names = await caches.keys();
+    const obsolete = names.filter(name => {
+        const build = lifecycleCacheBuild(name);
+        return build != null && build !== BUILD_ID;
+    });
+    const results = await Promise.allSettled(obsolete.map(name => caches.delete(name)));
+    results.forEach((result, index) => {
+        if (result.status === "rejected") {
+            log(`Failed to delete obsolete generation cache ${obsolete[index]}:`, result.reason);
+        }
+    });
+}
+
+let offlineGenerationResolves;
+
+/// Complete offline availability after control without making it a readiness
+/// prerequisite. The shared promise prevents duplicate fills within one worker
+/// lifetime; the durable marker makes later worker instances return cheaply.
+function ensureOfflineGeneration() {
+    if (offlineGenerationResolves == null) {
+        offlineGenerationResolves = (async () => {
+            const marker = await readGenerationMarker();
+            if (marker?.state !== "adopted") await installGeneration();
+            await pruneObsoleteGenerationCaches();
+        })().catch(error => {
+            offlineGenerationResolves = null;
+            log("Offline generation fill failed; it will retry later:", error);
+        });
+    }
+    return offlineGenerationResolves;
+}
+
+function extendOfflineGeneration(event) {
+    if (typeof event.waitUntil !== "function") return;
+    event.waitUntil(ensureOfflineGeneration());
+}
+
+/// The wasm bytes this worker boots from: prefer the complete offline
+/// generation, then the first-install runtime pin. If storage pressure evicts
+/// both entries, recover only by fetching with `no-store` and re-verifying
+/// against this glue's stamp. The verified bytes may boot this instance but
+/// must not backfill the retained cache.
 async function workerWasmModule() {
-    const cached = await caches.match(WORKER_WASM_URL, { cacheName: WORKER_CACHE });
+    const cached = await caches.match(WORKER_WASM_URL, { cacheName: WORKER_CACHE }) ??
+        await caches.match(WORKER_WASM_URL, { cacheName: RUNTIME_CACHE });
     if (cached) return cached.arrayBuffer();
     log("Worker wasm missing from cache — refetching");
     return fetchVerifiedWorkerWasm();
@@ -696,10 +868,15 @@ async function activateWorker() {
 
 self.oninstall = event => {
     event.waitUntil((async () => {
-        // Uncaught by design: a worker becomes installable only after its
-        // provenance-bound UI, lazy, guest, and worker-Wasm graph is complete.
-        // A failed incoming build leaves every retained generation untouched.
-        await installGeneration();
+        // A first page must not wait for the whole offline graph. Pin only the
+        // worker's glue-bound Wasm, then assemble the graph under later
+        // fetch/message lifetimes. An update still fills behind its live
+        // incumbent before takeover, preserving offline-safe replacement.
+        if (self.registration.active == null) {
+            await installWorkerRuntime();
+        } else {
+            await installGeneration();
+        }
         // One-release rollout bridge: pages deployed before this lifecycle
         // protocol never send an `activate` message. A verified successor must
         // therefore activate automatically even when an incumbent exists.
@@ -729,6 +906,11 @@ self.onactivate = event => {
             log("onactivate dispatch failed:", err);
         }
     })();
+    event.waitUntil?.(
+        pruneObsoleteGenerationCaches().catch(error => {
+            log("Generation cache cleanup failed:", error);
+        }),
+    );
     log("Activated");
 };
 
@@ -886,7 +1068,113 @@ self.addEventListener("online", onConnectivityChange);
 // matches that manifest. The outgoing document's update-aware
 // controller-replacement handoff crosses to the successor; recovery never writes
 // current-deployment bytes into an old cache.
+function evictionRecoveryResponse() {
+    return new Response(
+        `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tonk is checking for an update</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         place-items: center; min-height: 100vh; min-height: 100dvh;
+         background: #111; color: #eee; }
+  main { max-width: 34rem; padding: 2rem; }
+  h1 { font-size: 1.35rem; }
+  button { font: inherit; padding: 0.55rem 1.25rem; border-radius: 8px;
+           border: 1px solid #555; background: #2a2a2e; color: #eee;
+           cursor: pointer; }
+</style></head><body><main>
+<h1>Checking for a recoverable Tonk version</h1>
+<p id="status">A required file is no longer available locally. Tonk is checking for the current version without changing your local data.</p>
+<button id="retry" type="button" hidden>Try again</button>
+</main><script>
+(() => {
+  const key = "tonk:sw-eviction-reload";
+  const serviceWorkers = navigator.serviceWorker;
+  const status = document.getElementById("status");
+  const retry = document.getElementById("retry");
+  let settled = false;
+  let timer = null;
+  let updateFound = false;
+  let attempt = 0;
+
+  const stop = () => {
+    if (timer !== null) clearTimeout(timer);
+    serviceWorkers.removeEventListener("controllerchange", adopted);
+  };
+  const failed = currentAttempt => {
+    if (currentAttempt !== attempt || settled) return;
+    settled = true;
+    stop();
+    status.textContent = "Tonk could not switch to a complete current version. Check your connection and try again.";
+    retry.hidden = false;
+  };
+  const adopted = () => {
+    if (settled) return;
+    settled = true;
+    stop();
+    try { sessionStorage.setItem(key, "1"); } catch {}
+    location.reload();
+  };
+  const observe = (candidate, currentAttempt) => {
+    if (!candidate) return;
+    const changed = () => {
+      if (candidate.state === "redundant") failed(currentAttempt);
+    };
+    changed();
+    candidate.addEventListener?.("statechange", changed);
+  };
+  const check = async () => {
+    const currentAttempt = ++attempt;
+    settled = false;
+    updateFound = false;
+    retry.hidden = true;
+    status.textContent = "A required file is no longer available locally. Tonk is checking for the current version without changing your local data.";
+    serviceWorkers.addEventListener("controllerchange", adopted, { once: true });
+    timer = setTimeout(() => failed(currentAttempt), 30000);
+    try {
+      const before = serviceWorkers.controller;
+      const registration = await serviceWorkers.getRegistration();
+      if (!registration) return failed(currentAttempt);
+      registration.addEventListener?.("updatefound", () => {
+        if (currentAttempt !== attempt) return;
+        updateFound = true;
+        observe(registration.installing, currentAttempt);
+      }, { once: true });
+      await registration.update();
+      if (currentAttempt !== attempt) return;
+      if (serviceWorkers.controller !== before) return adopted();
+      observe(registration.installing || registration.waiting, currentAttempt);
+      if (!updateFound && !registration.installing && !registration.waiting) failed(currentAttempt);
+    } catch {
+      failed(currentAttempt);
+    }
+  };
+
+  retry.addEventListener("click", check);
+  try {
+    if (sessionStorage.getItem(key) === "1") {
+      sessionStorage.removeItem(key);
+      failed(attempt);
+      return;
+    }
+  } catch {}
+  void check();
+})();
+</script></body></html>`,
+        {
+            status: 503,
+            statusText: "Retained Tonk resource unavailable",
+            headers: {
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; worker-src 'self'; base-uri 'none'; form-action 'none'",
+            },
+        },
+    );
+}
+
 function missingGenerationAssetResponse(path) {
+    if (path === "/") return evictionRecoveryResponse();
     return new Response(
         `A resource required by this retained Tonk version is unavailable (${path}). ` +
             "Reload to check for the current version.",
@@ -980,11 +1268,27 @@ async function rustFetch(event) {
 // Rust worker rewrites it into the guest's repository/branch. A missing or
 // failed client lookup is delegated conservatively: cross-serving a top-level
 // asset into an opaque guest is worse than paying the worker boot cost.
+const clientFrameTypes = new Map();
+const CLIENT_FRAME_TYPE_LIMIT = 256;
+
+function rememberClientFrameType(clientId, frameType) {
+    if (!clientFrameTypes.has(clientId) && clientFrameTypes.size >= CLIENT_FRAME_TYPE_LIMIT) {
+        clientFrameTypes.delete(clientFrameTypes.keys().next().value);
+    }
+    clientFrameTypes.set(clientId, frameType);
+}
+
 async function isNestedClientRequest(event) {
     if (!event.clientId) return false;
+    const known = clientFrameTypes.get(event.clientId);
+    if (known) return known === "nested";
     try {
         const client = await self.clients.get(event.clientId);
-        return !client || client.frameType === "nested";
+        if (!client || !["top-level", "nested"].includes(client.frameType)) {
+            return true;
+        }
+        rememberClientFrameType(event.clientId, client.frameType);
+        return client.frameType === "nested";
     } catch (error) {
         log("Client lookup failed; delegating request to Rust:", error);
         return true;
@@ -992,16 +1296,16 @@ async function isNestedClientRequest(event) {
 }
 
 async function routeFetch(event, path) {
-    if (await isNestedClientRequest(event)) {
-        return rustFetch(event);
-    }
-    if (event.request.mode === "navigate" && !path.startsWith("/api/")) {
+    if (event.request.mode === "navigate") {
+        if (path.startsWith("/api/") || await isNestedClientRequest(event)) {
+            return rustFetch(event);
+        }
         return serveNavigation();
     }
-    if (event.request.mode !== "navigate" && isShellCacheable(event.request, path)) {
-        return serveAsset(event);
+    if (!isShellCacheable(event.request, path)) {
+        return rustFetch(event);
     }
-    return rustFetch(event);
+    return await isNestedClientRequest(event) ? rustFetch(event) : serveAsset(event);
 }
 
 // Route navigations straight to the cached shell (bypassing the
@@ -1061,12 +1365,11 @@ function failurePage() {
 
 /// Release streams if a successor is waiting and we have not already.
 ///
-/// Called from the fetch path because that is the one thing guaranteed
-/// to run. A worker holding an open SSE stream is never killed — the
-/// stream keeps it alive — so it never restarts, never re-evaluates
-/// this script, and never reaches the startup catch-up above. Its only
-/// remaining contact with the outside world is the fetches it serves,
-/// so the check has to live here too.
+/// Called from both the fetch path and an explicit update-aware page nudge. A
+/// worker holding an open SSE stream is never killed — the stream keeps it
+/// alive — so it never restarts, never re-evaluates this script, and never
+/// reaches the startup catch-up above. Either contact can wake it after the
+/// successor becomes durable registration state.
 function retireIfSuperseded(event) {
     if (retired || !self.registration.waiting || !isActiveIncumbent()) return null;
     const attempt = retireActiveIncumbent("a successor is waiting");
@@ -1076,6 +1379,7 @@ function retireIfSuperseded(event) {
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    if (event.request.mode === "navigate") extendOfflineGeneration(event);
     // A waiting successor means this worker is retiring. Checked on the
     // fetch path because a worker pinned by its own open streams never
     // restarts to run the startup check.
@@ -1167,23 +1471,33 @@ self.onfetch = event => {
 // worker's `onmessage` stashes the port against the client id and
 // routes per-envelope dispatch from there.
 //
-// One synchronous early-out: a `{type:"claim"}` message asks the
-// SW to take control of every client in scope. The page sends
-// this on cold-start when it lands on a SW that was activated in
-// a previous session — `onactivate` doesn't refire, so without
-// this nudge the page would stay uncontrolled (and every /api/*
-// fetch would land on the static-asset server as a 405). The
-// claim raises `controllerchange` on the page side, which the
-// shell's `serviceWorkerActivates()` Promise awaits.
+// Synchronous early-outs handle lifecycle nudges before ordinary iframe
+// messages reach Rust. A `{type:"claim"}` message asks the SW to take control
+// of every client in scope. The page sends this on cold-start when it lands on
+// a SW that was activated in a previous session — `onactivate` doesn't refire,
+// so without this nudge the page would stay uncontrolled (and every /api/*
+// fetch would land on the static-asset server as a 405). The claim raises
+// `controllerchange` on the page side, which the shell's
+// `serviceWorkerActivates()` Promise awaits.
 self.onmessage = event => {
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
+        extendOfflineGeneration(event);
+        return;
+    }
+    // An update-aware page observed that a fully-installed successor is
+    // waiting. This reaches an incumbent that stayed alive long enough to miss
+    // `updatefound` and therefore never ran the startup catch-up above. Verify
+    // the registration state here before releasing any streams.
+    if (event.data && event.data.type === "retire-if-superseded") {
+        retireIfSuperseded(event);
         return;
     }
     // Connectivity nudge from the active page on an `online`/`offline`
     // transition. The worker re-reads `navigator.onLine` itself and reconciles;
     // this just wakes it so the overlay updates without waiting for a fetch.
     if (event.data && event.data.type === "connectivity") {
+        extendOfflineGeneration(event);
         event.waitUntil?.(
             (async () => {
                 try {

@@ -33,7 +33,7 @@ mod native {
     use async_trait::async_trait;
     use dialog_common::helpers::{Provider, Service};
     use port_check::free_local_port;
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
     use std::process::{Child, Stdio};
     #[cfg(test)]
     use thirtyfour::extensions::cdp::ChromeDevTools;
@@ -44,6 +44,55 @@ mod native {
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use tonk_worker_api::DeploymentConfig;
     use url::Url;
+
+    fn current_test_name() -> String {
+        std::env::args()
+            .find(|argument| argument.contains("::"))
+            .unwrap_or_else(|| format!("pid-{}", std::process::id()))
+    }
+
+    fn record_diagnostic(event: impl AsRef<str>) {
+        let event = format!("{} {}", current_test_name(), event.as_ref());
+        eprintln!("E2E DIAGNOSTIC: {event}");
+
+        let Ok(directory) = std::env::var("TONK_E2E_DIAGNOSTICS_DIR") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            eprintln!(
+                "E2E DIAGNOSTIC: could not create {}: {error}",
+                directory.display()
+            );
+            return;
+        }
+        let path = directory.join(format!("events-{}.log", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = writeln!(file, "{event}") {
+                    eprintln!("E2E DIAGNOSTIC: could not write timing event: {error}");
+                }
+            }
+            Err(error) => eprintln!("E2E DIAGNOSTIC: could not open timing log: {error}"),
+        }
+    }
+
+    fn diagnostic_route(url: &str) -> &'static str {
+        let Ok(url) = Url::parse(url) else {
+            return "<invalid-url>";
+        };
+        match url.path_segments().and_then(|mut segments| segments.next()) {
+            Some("") | None => "/",
+            Some("account") => "/account",
+            Some("activate") => "/activate",
+            Some("settings") => "/settings",
+            Some(_) => "/<redacted>",
+        }
+    }
 
     /// Reaps a spawned test dependency on every success and failure path.
     struct ManagedChild(Option<Child>);
@@ -212,6 +261,7 @@ mod native {
 
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
+            let started = std::time::Instant::now();
             let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
             let driver = if safari {
                 let mut caps = DesiredCapabilities::safari();
@@ -221,6 +271,10 @@ mod native {
                 let caps = self.chrome_capabilities()?;
                 WebDriver::new(&self.chromedriver.to_string(), caps).await?
             };
+            record_diagnostic(format!(
+                "phase=webdriver-connect elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
             // Bound each navigation well under the suite's patience. The
             // default page-load allowance is five minutes, so one wedged
             // renderer would eat the whole run before `goto` below ever
@@ -270,6 +324,10 @@ mod native {
                     .await?;
             }
             goto(&driver, &self.tonk_web.to_string()).await?;
+            record_diagnostic(format!(
+                "phase=driver-ready elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
             Ok(driver)
         }
     }
@@ -283,6 +341,18 @@ mod native {
                 info.value.message.contains("net::ERR_SSL_PROTOCOL_ERROR")
             }
             _ => false,
+        }
+    }
+
+    fn retryable_navigation_reason(error: &thirtyfour::error::WebDriverErrorInner) -> &'static str {
+        use thirtyfour::error::WebDriverErrorInner;
+
+        match error {
+            WebDriverErrorInner::WebDriverTimeout(_) | WebDriverErrorInner::Timeout(_) => {
+                "page-load-timeout"
+            }
+            WebDriverErrorInner::UnknownError(_) => "tls-handshake",
+            _ => "unexpected",
         }
     }
 
@@ -300,13 +370,34 @@ mod native {
     /// retry crosses that readiness boundary without hiding other failures.
     pub async fn goto(driver: &WebDriver, url: impl AsRef<str>) -> Result<()> {
         let url = url.as_ref();
+        let path = diagnostic_route(url);
+        let started = std::time::Instant::now();
         match driver.goto(url).await {
             Err(error) if retryable_navigation_error(error.as_inner()) => {
-                eprintln!("navigation to {url} failed transiently ({error}); retrying once");
+                record_diagnostic(format!(
+                    "phase=navigation-retry path={path:?} elapsed_ms={} reason={}",
+                    started.elapsed().as_millis(),
+                    retryable_navigation_reason(error.as_inner())
+                ));
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                Ok(driver.goto(url).await?)
+                driver.goto(url).await?;
+                record_diagnostic(format!(
+                    "phase=navigation-recovered path={path:?} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                ));
+                Ok(())
             }
-            other => Ok(other?),
+            Ok(()) => {
+                let elapsed = started.elapsed();
+                if elapsed >= std::time::Duration::from_secs(5) {
+                    record_diagnostic(format!(
+                        "phase=navigation-slow path={path:?} elapsed_ms={}",
+                        elapsed.as_millis()
+                    ));
+                }
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -414,6 +505,7 @@ mod native {
         /// 2. Start Caddy web server with access service port
         /// 3. Start the selected WebDriver server
         pub async fn start() -> Result<(Self, TestEnvironment)> {
+            let started = std::time::Instant::now();
             let workspace = TestWorkspace::new()?;
             let caddy_data = workspace.directory("caddy-data")?;
             let caddy_config = workspace.directory("caddy-config")?;
@@ -434,6 +526,10 @@ mod native {
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
             let access_service_address = access_service.address.clone();
+            record_diagnostic(format!(
+                "phase=access-service-ready elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
 
             // Extract port from access service URL (e.g., "http://127.0.0.1:8090" -> "8090")
             let access_service_port = Url::parse(&access_service_address.access_service_url)?
@@ -562,6 +658,10 @@ mod native {
             // process-wide `SSL_CERT_FILE` makes concurrent runs trust
             // the wrong root and fail to connect.
             let ca_certificate = Some(caddy_root);
+            record_diagnostic(format!(
+                "phase=web-server-ready elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
 
             // Safari has no host-resolver rule equivalent, so its release gate
             // uses the loopback hostname that the same Caddy fixture also
@@ -640,6 +740,10 @@ mod native {
                         Url::parse(&format!("http://127.0.0.1:{chromedriver_port}"))?,
                     )
                 };
+            record_diagnostic(format!(
+                "phase=test-servers-ready elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
 
             Ok((
                 Self {
@@ -729,7 +833,8 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::{
-            ChromeCapabilities, TestEnvironment, TestWorkspace, retryable_navigation_error,
+            ChromeCapabilities, TestEnvironment, TestWorkspace, diagnostic_route,
+            retryable_navigation_error,
         };
         use thirtyfour::error::{WebDriverErrorInfo, WebDriverErrorInner, WebDriverErrorValue};
         use url::Url;
@@ -750,6 +855,22 @@ mod native {
             assert!(!retryable_navigation_error(&unknown_navigation_error(
                 "unknown error: net::ERR_CONNECTION_REFUSED"
             )));
+        }
+
+        #[test]
+        fn it_redacts_values_from_navigation_diagnostics() {
+            assert_eq!(
+                diagnostic_route("https://tonk.network:8443/account?add=1"),
+                "/account"
+            );
+            assert_eq!(
+                diagnostic_route("https://tonk.network:8443/activate/secret-token"),
+                "/activate"
+            );
+            assert_eq!(
+                diagnostic_route("https://tonk.network:8443/space/secret-id"),
+                "/<redacted>"
+            );
         }
 
         #[test]
