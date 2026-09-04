@@ -1336,6 +1336,27 @@ concept!: &space/presence
       as: entity
 
 rule!:
+  description: A space this device holds no replica of is remote
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:remote
+  unless:
+    - assert: replica
+      where:
+        subject: ?subject
+        profile: ?profile
+
+rule!:
   description: A replica still seeding its content branch
   assert: space/presence
   when:
