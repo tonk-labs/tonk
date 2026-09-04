@@ -124,3 +124,18 @@ pub struct Route {
     /// The route model mounted when this path matches.
     pub concept: RoutePathConcept,
 }
+
+/// A route a kernel version seeded, hanging on the kernel version's
+/// entity rather than the route's.
+///
+/// The router reads these to tell a kernel route from one the space
+/// authored: a route named here loses an equal-specificity tie to one
+/// that is not. A kernel upgrade reads the same facts to retract what
+/// the previous version seeded.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KernelRoute {
+    /// The kernel version's entity.
+    pub this: Entity,
+    /// The route this kernel version seeded.
+    pub route: crate::domain::kernel::Route,
+}

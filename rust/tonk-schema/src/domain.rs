@@ -344,6 +344,47 @@ pub mod route {
     pub struct Concept(pub Entity);
 }
 
+/// Attributes recording what a kernel version seeded, one per component
+/// kind, on the kernel version's own entity.
+///
+/// The kinds are split rather than folded into one `component` attribute
+/// because retraction differs by kind — a `view!:` retracts from a pin, a
+/// `concept!:` needs the concept already on the branch, a `rule!:` wants
+/// its effect URI — and the order matters (a concept retracted before the
+/// views naming it would dangle). Separate attributes carry the kind in
+/// the data, so an upgrade never has to re-derive it.
+///
+/// Cardinality-many: one kernel version seeds many components. The values
+/// are the component entities.
+pub mod kernel {
+    use super::{Attribute, Entity};
+
+    /// A concept this kernel version declared.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.kernel")]
+    pub struct Concept(pub Entity);
+
+    /// A view this kernel version declared.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.kernel")]
+    pub struct View(pub Entity);
+
+    /// A rule this kernel version installed.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.kernel")]
+    pub struct Rule(pub Entity);
+
+    /// A route this kernel version seeded.
+    ///
+    /// Also the router's precedence signal: a route named here came from
+    /// the kernel, and one that is not came from the space, which wins an
+    /// equal-specificity tie. Specificity still decides first; this only
+    /// settles what used to fall through to insertion order.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.kernel")]
+    pub struct Route(pub Entity);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers

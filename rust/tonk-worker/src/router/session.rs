@@ -636,6 +636,27 @@ struct MatchedRoute {
     params: tonk_router::Params,
 }
 
+/// Order routes for insertion into the router: the space's own routes first,
+/// then the kernel's, each group by entity URI.
+///
+/// The router preserves insertion order among routes of equal specificity, so
+/// this ordering is what settles those ties. A route the space authored is not
+/// named by any `xyz.tonk.kernel/route` fact and so wins over a kernel route of
+/// the same shape; the URI tiebreak keeps the result deterministic within a
+/// group.
+///
+/// Split out of [`match_route`] so it is testable off-target — `match_route`
+/// itself needs a branch session and so is wasm-only.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn route_order(routes: &mut [tonk_schema::Route], kernel: &std::collections::HashSet<String>) {
+    let from_kernel = |route: &tonk_schema::Route| kernel.contains(&route.this.to_string());
+    routes.sort_by(|a, b| {
+        from_kernel(a)
+            .cmp(&from_kernel(b))
+            .then_with(|| a.this.to_string().cmp(&b.this.to_string()))
+    });
+}
+
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
 /// `tonk:route` table.
 ///
@@ -643,9 +664,9 @@ struct MatchedRoute {
 /// each route's `path` pattern compiles via [`Route::parse_pattern`], paired with
 /// its `(route entity, model)`. [`recognize`](tonk_router::Router::recognize)
 /// matches most-specific-first (static > param > catch-all) and returns the
-/// captured params. Routes are inserted in stable entity-URI order so equal-
-/// specificity ties resolve deterministically. Returns `None` when nothing
-/// matches or a pattern fails to compile.
+/// captured params. Routes are inserted in [`route_order`] so equal-specificity
+/// ties resolve deterministically. Returns `None` when nothing matches or a
+/// pattern fails to compile.
 ///
 /// [`recognize`]: tonk_router::Router::recognize
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -656,7 +677,7 @@ async fn match_route(
 ) -> Option<MatchedRoute> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::Route;
+    use tonk_schema::{KernelRoute, Route};
 
     let mut routes: Vec<Route> = state
         .handle()
@@ -671,9 +692,24 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Stable order by entity URI so equal-specificity ties resolve
-    // deterministically (the table preserves insertion order among equal scores).
-    routes.sort_by(|a, b| a.this.to_string().cmp(&b.this.to_string()));
+    // Which routes the kernel seeded. These hang on the kernel version's
+    // entity, not the route's, so a route the space authored is simply absent
+    // from the set.
+    let kernel: std::collections::HashSet<String> = state
+        .handle()
+        .query()
+        .select(Query::<KernelRoute> {
+            this: Term::var("this"),
+            route: Term::var("route"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| row.route.0.to_string())
+        .collect();
+    route_order(&mut routes, &kernel);
 
     let mut router = tonk_router::Router::new();
     for route in &routes {
@@ -700,5 +736,155 @@ async fn match_route(
             })
         }
         Err(_) => None,
+    }
+}
+
+/// End-to-end: the route table a branch actually holds, resolved through
+/// `match_route`. Complements `route_order_tests`, which pins the ordering
+/// alone — these prove the `KernelRoute` query and the router wiring agree
+/// with it.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod match_route_tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// Seed `body` onto a fresh repo's `main` and resolve `path` against it,
+    /// answering with the matched route's entity.
+    async fn matched_route(body: &str, path: &str) -> Option<String> {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "route-e2e").await;
+        let tonk = state.read().await;
+        crate::router::evaluate::evaluate_body(&tonk, &key, "main", body.to_owned(), true)
+            .await
+            .expect("the route body seeds");
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("main acquires");
+        super::match_route(&tonk, &session, path)
+            .await
+            .map(|matched| matched.route.to_string())
+    }
+
+    /// The collision this whole mechanism exists for: the kernel seeds `/`
+    /// and the space authors its own `/`. The space's must win — resolved
+    /// through the real router, not just the sort.
+    #[dialog_common::test]
+    async fn it_prefers_a_space_route_over_a_kernel_route() {
+        // `id:` entities sort with the kernel's FIRST, so a plain
+        // entity-URI order would pick the kernel route. Only the
+        // `KernelRoute` query demotes it.
+        let body = r#"
+route!:
+  this: id:aaa/kernel-home
+  path: "/"
+  concept: tonk:blank
+
+route!:
+  this: id:zzz/space-home
+  path: "/"
+  concept: tonk:blank
+
+kernel!:
+  this: tonk:kernel/current
+  route: id:aaa/kernel-home
+"#;
+
+        assert_eq!(
+            matched_route(body, "/").await.as_deref(),
+            Some("id:zzz/space-home"),
+            "the space's own route must win the tie against the kernel's"
+        );
+    }
+
+    /// With nothing but kernel routes the kernel still resolves — demoting
+    /// them must not mean dropping them.
+    #[dialog_common::test]
+    async fn it_falls_back_to_a_kernel_route() {
+        let body = r#"
+route!:
+  this: id:aaa/kernel-home
+  path: "/"
+  concept: tonk:blank
+
+kernel!:
+  this: tonk:kernel/current
+  route: id:aaa/kernel-home
+"#;
+
+        assert_eq!(
+            matched_route(body, "/").await.as_deref(),
+            Some("id:aaa/kernel-home"),
+            "a kernel route still resolves when the space authored none"
+        );
+    }
+}
+
+#[cfg(test)]
+mod route_order_tests {
+    use std::collections::HashSet;
+
+    use tonk_schema::Route;
+    use tonk_schema::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
+
+    /// A route row at `uri` matching `path`. The concept is irrelevant to
+    /// ordering, so every row shares one.
+    fn route(uri: &str, path: &str) -> Route {
+        let entity: dialog_artifacts::Entity = uri.parse().expect("route uri parses");
+        let concept: dialog_artifacts::Entity = "tonk:model".parse().expect("concept uri parses");
+        Route {
+            this: entity,
+            path: RouteTablePath(path.to_string()),
+            concept: RoutePathConcept(concept),
+        }
+    }
+
+    fn ordered(routes: &[Route]) -> Vec<String> {
+        routes.iter().map(|route| route.this.to_string()).collect()
+    }
+
+    /// The tie this exists to settle: a space's own route and a kernel route
+    /// on the same path. The space's wins because it carries no layer, and it
+    /// wins regardless of how the URIs sort — which is what the old
+    /// entity-URI-only order got wrong.
+    #[test]
+    fn it_orders_a_space_route_before_a_kernel_route() {
+        let mut routes = vec![route("id:aaa/kernel", "/"), route("id:zzz/space", "/")];
+        let kernel = HashSet::from(["id:aaa/kernel".to_string()]);
+
+        super::route_order(&mut routes, &kernel);
+
+        assert_eq!(
+            ordered(&routes),
+            vec!["id:zzz/space", "id:aaa/kernel"],
+            "the space's own route must precede the kernel's"
+        );
+    }
+
+    /// Within one group the order is by entity URI, so the table a router is
+    /// built from is the same on every device.
+    #[test]
+    fn it_breaks_ties_within_a_group_by_entity_uri() {
+        let mut routes = vec![route("id:zzz", "/"), route("id:aaa", "/")];
+
+        super::route_order(&mut routes, &HashSet::new());
+
+        assert_eq!(ordered(&routes), vec!["id:aaa", "id:zzz"]);
+    }
+
+    /// Two kernel routes still order deterministically between themselves —
+    /// the `/` collision core.yaml and notebook.yaml both declare.
+    #[test]
+    fn it_orders_two_kernel_routes_by_entity_uri() {
+        let mut routes = vec![route("id:zzz/notebook", "/"), route("id:aaa/core", "/")];
+        let kernel = HashSet::from(["id:zzz/notebook".to_string(), "id:aaa/core".to_string()]);
+
+        super::route_order(&mut routes, &kernel);
+
+        assert_eq!(ordered(&routes), vec!["id:aaa/core", "id:zzz/notebook"]);
     }
 }

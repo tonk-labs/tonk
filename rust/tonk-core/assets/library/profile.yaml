@@ -531,6 +531,23 @@ concept!: &route
       cardinality: one
       as: entity
 
+# What a kernel version seeded, one attribute per component kind, on the
+# kernel version's own entity. The kinds are split rather than folded into
+# one `component` because retraction differs by kind (a view retracts from
+# a pin, a concept must already be on the branch, a rule wants its effect
+# URI) and the order matters — a concept retracted before the views naming
+# it would dangle. `route` doubles as the router's precedence signal: a
+# route named here came from the kernel, and one that is not came from the
+# space, which wins an equal-specificity tie.
+concept!: &kernel
+  this: tonk:kernel
+  description: The components a kernel version seeded.
+  with:
+    route:
+      description: A route this kernel version seeded.
+      the: xyz.tonk.kernel/route
+      as: entity
+
 # The profile's only route for now: `/` renders the Hub.
 route!: &route/home
   this: id:tonk:route/home
