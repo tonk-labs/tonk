@@ -8,7 +8,9 @@ use super::AccessServiceAddress;
 use crate::email::{CapturedEmail, EmailError, EmailSender};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
-use crate::shortcut::{Shortcut, object_key_for, requested_ttl, unavailable_invite_html};
+use crate::shortcut::{
+    Shortcut, object_key_for, referral_redirect_target, requested_ttl, unavailable_invite_html,
+};
 use crate::store::Enrollment;
 use crate::store::ingest::{IngestStore, SqliteIngest};
 use crate::store::sqlite::SqliteStore;
@@ -579,7 +581,10 @@ async fn handle_request(
     if req.method() == Method::GET
         && let Some(hash) = req.uri().path().strip_prefix("/@/")
     {
-        return Ok(cors_response(serve_shortcut(hash, shortcuts).await));
+        let query = req.uri().query().map(str::to_owned);
+        return Ok(cors_response(
+            serve_shortcut(hash, query.as_deref(), shortcuts).await,
+        ));
     }
 
     // Only accept POST requests to /ucan/
@@ -654,39 +659,23 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
-    if crate::deletion::is_customer_deletion(&body_bytes) {
-        let response = if crate::deletion::command_for_native_handler(&body_bytes)
-            == crate::deletion::CUSTOMER_PLAN_COMMAND.map(str::to_string)
+    if crate::deletion::is_purge(&body_bytes) {
+        let response = match crate::deletion::purge(
+            &registration.store,
+            &registration.purger,
+            &body_bytes,
+            unix_now(),
+        )
+        .await
         {
-            match crate::deletion::customer_plan(&registration.store, &body_bytes, unix_now()).await
-            {
-                Ok(plan) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&plan).expect("deletion plan serializes"),
-                    )))
-                    .unwrap(),
-                Err(error) => deletion_error_response(error),
-            }
-        } else {
-            match crate::deletion::delete_customer(
-                &registration.store,
-                &registration.purger,
-                &body_bytes,
-                unix_now(),
-            )
-            .await
-            {
-                Ok(receipt) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(
-                        serde_json::to_vec(&receipt).expect("deletion receipt serializes"),
-                    )))
-                    .unwrap(),
-                Err(error) => deletion_error_response(error),
-            }
+            Ok(receipt) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&receipt).expect("purge receipt serializes"),
+                )))
+                .unwrap(),
+            Err(error) => deletion_error_response(error),
         };
         return Ok(cors_response(response));
     }
@@ -1041,6 +1030,7 @@ async fn store_shortcut(
 /// GET /@/{hash} → permanent relative redirect to the stored target.
 async fn serve_shortcut(
     hash: &str,
+    request_query: Option<&str>,
     shortcuts: Shortcuts,
 ) -> Response<http_body_util::Full<bytes::Bytes>> {
     use bytes::Bytes;
@@ -1070,9 +1060,10 @@ async fn serve_shortcut(
             if remaining == 0 {
                 return not_found();
             }
+            let target = referral_redirect_target(target, request_query);
             Response::builder()
                 .status(StatusCode::MOVED_PERMANENTLY)
-                .header(LOCATION, target)
+                .header(LOCATION, &target)
                 .header(
                     CACHE_CONTROL,
                     format!("public, max-age={}", remaining.min(86_400)),

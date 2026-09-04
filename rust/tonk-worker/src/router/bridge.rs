@@ -101,6 +101,14 @@ pub async fn handle_message(
     envelope: serde_json::Value,
     ports: js_sys::Array,
 ) {
+    let current = {
+        let tonk = state.read().await;
+        super::session::client_context_is_current(&tonk, &client).await
+    };
+    if !current {
+        log!("bridge: stale client rejected after profile change");
+        return;
+    }
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,

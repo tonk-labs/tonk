@@ -1,7 +1,3 @@
-<nav class="s-rail" aria-label="settings sections">
-  <button class="blk cur" type="button" data-pane="account">account</button>
-  <button class="blk" type="button" data-pane="devices">devices</button>
-</nav>
 <div class="s-body">
   <div class="pane" data-pane="account">
     <div class="srowd">
@@ -11,8 +7,7 @@
           class="sname"
           data-settings-name
           aria-label="display name"
-        /><i class="cur" aria-hidden="true"></i
-      ></span>
+      /></span>
     </div>
     <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
     <div class="sect">passkeys</div>
@@ -24,21 +19,57 @@
       Your passkey replaces a password and may be saved to a device, browser
       profile, or password manager.
     </p>
+    <div class="srowd">
+      <span>another passkey for this account</span>
+      <button class="cta" type="button" data-add-passkey>add a passkey with the current one</button>
+    </div>
+    <div class="sect">sign out</div>
+    <div class="srowd">
+      <span>disconnect this account; keep local spaces on this device</span>
+      <button class="cta" type="button" data-sign-out-open>sign out on this device</button>
+    </div>
     <div class="sect">delete data</div>
     <div class="srowd">
       <span>delete all data associated with this account</span>
-      <a class="cta" href="/account" data-settings-full>delete account (permanent)</a>
+      <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
     </div>
-    <div class="srowd">
-      <span>remove all data associated with this account from this device</span>
-      <a class="cta" href="/account" data-settings-full>remove this device</a>
-    </div>
+    <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
   </div>
-  <div class="pane" data-pane="devices" hidden>
-    <div data-settings-devices></div>
+  <div class="pane" data-pane="link" hidden data-link-approval>
+    <div class="sect">a terminal is asking for access</div>
+    <div class="srowd"><span>name</span><b data-link-name></b></div>
+    <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
     <p class="expl">
-      Devices holding this account. Removing access clears the account from
-      that device &mdash; spaces stay with their members.
+      approving gives that terminal the same access to your account as this
+      browser: every space, on every device. decline if you did not just run
+      <code>tonk account login</code> yourself.
     </p>
+    <div class="link-foot">
+      <button class="m-cancel" type="button" data-link-decline>decline</button>
+      <button class="m-go" type="button" data-link-approve>approve with passkey</button>
+    </div>
   </div>
 </div>
+<tonk-dialog data-delete-account-dialog heading="confirm account deletion">
+  <div class="confirm-body">
+    <span data-delete-scope>loading what this deletes&hellip;</span>
+    <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
+    <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
+    <span data-delete-passkey>your passkey will be asked for.</span>
+    <div class="armrow">
+      <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
+      <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
+        autocomplete="off" autocapitalize="off" spellcheck="false"
+        aria-label="deletion confirmation" />
+    </div>
+  </div>
+  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+  <button class="m-go" slot="actions" type="button" data-delete-account-submit disabled><span data-delete-submit-label>delete account</span></button>
+</tonk-dialog>
+<tonk-dialog data-sign-out-dialog heading="confirm sign out">
+  <div class="confirm-body">
+    this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+  </div>
+  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+  <button class="m-go" slot="actions" type="button" data-sign-out-submit>sign out</button>
+</tonk-dialog>

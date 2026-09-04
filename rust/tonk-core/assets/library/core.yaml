@@ -241,7 +241,10 @@ concept!: &authorization
       cardinality: one
       as: text
     remote:
-      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      description: >
+        Legacy sync-endpoint URL suffix. Empty for invites minted since
+        the endpoint moved into the delegation chain's signed
+        `home.address` meta.
       the: xyz.tonk.authorization/remote
       cardinality: one
       as: text
@@ -292,7 +295,10 @@ concept!: &invitation
       cardinality: one
       as: text
     remote:
-      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      description: >
+        Legacy sync-endpoint URL suffix. Empty for invites minted since
+        the endpoint moved into the delegation chain's signed
+        `home.address` meta.
       the: xyz.tonk.authorization/remote
       cardinality: one
       as: text
@@ -363,7 +369,10 @@ concept!: &tonk/agent-invite
       cardinality: one
       as: text
     remote:
-      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      description: >
+        Legacy sync-endpoint URL suffix. Empty for invites minted since
+        the endpoint moved into the delegation chain's signed
+        `home.address` meta.
       the: xyz.tonk.authorization/remote
       cardinality: one
       as: text
@@ -517,7 +526,7 @@ view!:
         npx @tonk/cli guide    # how to drive the CLI
         npx @tonk/cli schema   # concepts already on the branch
 
-      Then build."></wa-copy-button>
+      Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home."></wa-copy-button>
         </div>
         <pre class="agent-prompt__pre">You're helping build the "{name}" repo.
 

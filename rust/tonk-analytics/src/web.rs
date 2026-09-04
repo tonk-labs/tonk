@@ -84,6 +84,9 @@ export function ph_init(key, host, version) {
 export function ph_capture(name, props_json) {
     try { window.posthog.capture(name, JSON.parse(props_json)); } catch (e) {}
 }
+export function ph_register(props_json) {
+    try { window.posthog.register(JSON.parse(props_json)); } catch (e) {}
+}
 export function ph_identify(id) {
     try { window.posthog.identify(id); } catch (e) {}
 }
@@ -91,6 +94,7 @@ export function ph_identify(id) {
 extern "C" {
     fn ph_init(key: &str, host: &str, version: &str) -> bool;
     fn ph_capture(name: &str, props_json: &str);
+    fn ph_register(props_json: &str);
     fn ph_identify(id: &str);
 }
 
@@ -108,10 +112,17 @@ pub fn init() -> bool {
 
 /// Forward one event with a JSON-object `properties` value.
 pub fn capture(name: &str, properties: &serde_json::Value) {
-    // Account events may only enter through `capture_account`, whose closed
-    // serializer rejects malformed shapes. This also prevents the generic DOM
-    // event bridge from impersonating the account taxonomy.
-    if name == crate::event::ACCOUNT {
+    // Typed events may only enter through their closed capture functions.
+    // This prevents the generic DOM bridge from impersonating schemas whose
+    // privacy guarantees depend on local hashing and reviewed properties.
+    if matches!(
+        name,
+        crate::event::ACCOUNT
+            | crate::event::VISIT
+            | crate::event::ACCOUNT_CREATED
+            | crate::event::SPACE_CONVERSION
+            | crate::event::SPACE_SHARED
+    ) {
         return;
     }
     capture_unchecked(name, properties);
@@ -146,6 +157,50 @@ pub fn capture_pageview(path: &str) {
     );
 }
 
+/// Register reviewed launch attribution as session super properties.
+///
+/// PostHog is configured with in-memory persistence, so these properties live
+/// only for the current page session and are attached to subsequent funnel
+/// events without retaining raw landing inputs.
+pub fn register_attribution(attribution: &crate::launch::Attribution) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    ph_register(&attribution.properties().to_string());
+}
+
+/// Capture the first launch-funnel step for this browser session.
+pub fn capture_visit(attribution: &crate::launch::Attribution) {
+    capture_unchecked(
+        crate::event::VISIT,
+        &crate::launch::visit_properties(attribution),
+    );
+}
+
+/// Capture a successfully completed account creation.
+pub fn capture_account_created() {
+    capture_unchecked(
+        crate::event::ACCOUNT_CREATED,
+        &crate::launch::account_created_properties(),
+    );
+}
+
+/// Capture a worker-confirmed successful space create or join.
+pub fn capture_space_conversion(conversion: crate::launch::SpaceConversion, space_key: &str) {
+    capture_unchecked(
+        crate::event::SPACE_CONVERSION,
+        &crate::launch::space_conversion_properties(conversion, space_key),
+    );
+}
+
+/// Capture a worker-confirmed successful invite mint.
+pub fn capture_space_shared(space_key: &str) {
+    capture_unchecked(
+        crate::event::SPACE_SHARED,
+        &crate::launch::space_shared_properties(space_key),
+    );
+}
+
 /// Tie this device to the hashed profile identity
 /// (see [`crate::distinct_id`] — pass its output, never a raw DID).
 pub fn identify(distinct_id: &str) {
@@ -153,4 +208,80 @@ pub fn identify(distinct_id: &str) {
         return;
     }
     ph_identify(distinct_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[wasm_bindgen(inline_js = r#"
+let launchEvents = [];
+let launchRegistration = {};
+export function install_launch_posthog_fixture() {
+    launchEvents = [];
+    launchRegistration = {};
+    window.posthog = {
+        capture: (event, properties) => launchEvents.push({ event, properties }),
+        register: (properties) => { launchRegistration = { ...launchRegistration, ...properties }; },
+        identify: () => {},
+    };
+}
+export function read_launch_posthog_fixture() {
+    return JSON.stringify({ events: launchEvents, registration: launchRegistration });
+}
+"#)]
+    extern "C" {
+        fn install_launch_posthog_fixture();
+        fn read_launch_posthog_fixture() -> String;
+    }
+
+    #[dialog_common::test]
+    async fn typed_launch_capture_registers_only_hashed_reviewed_properties() {
+        install_launch_posthog_fixture();
+        ENABLED.store(true, Ordering::Relaxed);
+
+        let raw_space = "did:key:z6MkPrivateSpace";
+        let attribution = crate::launch::Attribution::from_urls(
+            &format!(
+                "https://tonk.network/space/{raw_space}/view/PrivateWiki?tonk_channel=outreach"
+            ),
+            Some("https://private.example/thread"),
+        )
+        .expect("valid landing URL");
+        register_attribution(&attribution);
+        capture_visit(&attribution);
+        capture_account_created();
+        capture_space_conversion(crate::launch::SpaceConversion::Created, raw_space);
+        capture_space_shared(raw_space);
+
+        // Typed names cannot be forged through the generic bridge.
+        capture(
+            crate::event::SPACE_SHARED,
+            &serde_json::json!({ "space_id": raw_space }),
+        );
+        ENABLED.store(false, Ordering::Relaxed);
+
+        let fixture: serde_json::Value =
+            serde_json::from_str(&read_launch_posthog_fixture()).unwrap();
+        assert_eq!(fixture["events"].as_array().unwrap().len(), 4);
+        assert_eq!(fixture["events"][0]["event"], crate::event::VISIT);
+        assert_eq!(fixture["events"][1]["event"], crate::event::ACCOUNT_CREATED);
+        assert_eq!(
+            fixture["events"][2]["event"],
+            crate::event::SPACE_CONVERSION
+        );
+        assert_eq!(fixture["events"][3]["event"], crate::event::SPACE_SHARED);
+        assert_eq!(fixture["registration"]["channel"], "warm_outreach");
+        assert_eq!(fixture["registration"]["entry_type"], "shared_space");
+        assert_eq!(fixture["registration"]["source_platform"], "other");
+        assert_eq!(fixture["registration"]["source_detection"], "referrer");
+
+        let outbound = fixture.to_string();
+        for sentinel in [raw_space, "PrivateWiki", "private.example", "tonk_channel"] {
+            assert!(
+                !outbound.contains(sentinel),
+                "outbound payload leaked {sentinel}"
+            );
+        }
+    }
 }

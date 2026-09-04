@@ -33,23 +33,33 @@ thread_local! {
 const CARD_ID: &str = "tonk-custody-consent";
 
 const CARD_HTML: &str = r#"
-<div style="position:fixed;right:1rem;bottom:1rem;z-index:2147483647;max-width:22rem;
-            background:#1c1c1e;color:#f2f2f4;border:1px solid #3a3a3d;border-radius:12px;
-            padding:1rem 1.25rem;font:14px/1.45 system-ui,sans-serif;
-            box-shadow:0 8px 30px rgba(0,0,0,.45)">
-  <strong style="display:block;margin-bottom:.35rem">Passkey needed</strong>
-  <p id="tonk-custody-text" style="margin:0 0 .8rem">
+<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
+            display:flex;flex-direction:column;gap:7px;
+            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
+            color:var(--ink, #38182a);text-transform:none">
+  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
+              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
+              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
+              letter-spacing:.02em;text-transform:lowercase">passkey needed</div>
+  <p id="tonk-custody-text" style="margin:0;padding:14px 16px;background:var(--card, #fcfbfb);
+            box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font-weight:600">
     Tonk is securing something to your account and needs your passkey to
     unlock the account&rsquo;s custody key on this device.
   </p>
-  <div id="tonk-custody-actions" style="display:flex;gap:.5rem;justify-content:flex-end">
-    <button id="tonk-custody-dismiss"
-            style="background:none;border:none;color:#9a9aa0;cursor:pointer;font:inherit">
-      Not now</button>
-    <button id="tonk-custody-continue"
-            style="background:#4a7dff;border:none;color:white;border-radius:8px;
-                   padding:.4rem .9rem;cursor:pointer;font:inherit">
-      Use passkey</button>
+  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
+    <button id="tonk-custody-dismiss" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
+                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      not now</button>
+    <button id="tonk-custody-continue" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
+                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      use passkey</button>
   </div>
 </div>
 "#;
@@ -72,7 +82,7 @@ pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
     if encryption_key.is_some() {
         return Ok(false);
     }
-    let endpoint = crate::account::proposed_remote()?;
+    let endpoint = crate::ceremony::proposed_remote()?;
     let published = crate::identity_bridge::publish_encryption_key(
         crate::identity_bridge::PublishEncryptionKeyInput {
             endpoint,
@@ -103,12 +113,16 @@ fn card() -> Option<Element> {
     web_sys::window()?.document()?.get_element_by_id(CARD_ID)
 }
 
-fn set_card_text(text: &str) {
+fn set_card_message(text: &str) {
     if let Some(card) = card()
         && let Ok(Some(message)) = card.query_selector("#tonk-custody-text")
     {
         message.set_text_content(Some(text));
     }
+}
+
+fn set_card_text(text: &str) {
+    set_card_message(text);
     if let Some(card) = card()
         && let Ok(Some(actions)) = card.query_selector("#tonk-custody-actions")
     {
@@ -137,21 +151,24 @@ fn on_click(card: &Element, selector: &str, callback: impl FnMut() + 'static) {
     closure.forget();
 }
 
+fn mount_card() -> Option<Element> {
+    let document = web_sys::window().and_then(|window| window.document())?;
+    let body = document.body()?;
+    let host = document.create_element("div").ok()?;
+    host.set_id(CARD_ID);
+    host.set_inner_html(CARD_HTML);
+    body.append_child(&host).ok()?;
+    Some(host)
+}
+
 /// Raise the consent card. The continue button runs the assertion inside
 /// the click and reports the outcome on the card; dismissing leaves the
 /// worker's wait to time out, failing the operation that asked.
 fn show_consent() {
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+    let Some(host) = mount_card() else {
         BUSY.with(|busy| busy.set(false));
         return;
     };
-    let (Some(body), Ok(host)) = (document.body(), document.create_element("div")) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-    host.set_id(CARD_ID);
-    host.set_inner_html(CARD_HTML);
-    let _ = body.append_child(&host);
 
     on_click(&host, "#tonk-custody-dismiss", || {
         let mut attempt = crate::account_observability::WebAccountAttempt::start(
@@ -212,6 +229,63 @@ fn show_consent() {
     });
 }
 
+fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
+    match intent {
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => AccountAction::DeleteAccount,
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => AccountAction::LinkCli,
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
+        tonk_worker_api::CustodyIntent::Enroll(_)
+        | tonk_worker_api::CustodyIntent::CreateAccount(_)
+        | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
+    }
+}
+
+/// Raise the top-document consent a guest-asserted command needs.
+///
+/// The command starts in a sealed guest, crosses an asynchronous worker
+/// transaction, and only then reaches this document. The guest's click
+/// activation is not reliable across that boundary, so the assertion is
+/// invoked synchronously by this card's click. The worker still owns the
+/// operation and reports its status in the settings row. The assertion is
+/// pinned to the account's passkey so a browser holding several for this
+/// origin cannot answer with another account's.
+fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        return;
+    }
+    let Some(host) = mount_card() else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    set_card_message("Confirm this account action with your passkey.");
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+
+    let method = match &intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        _ => "usePasskey",
+    };
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        set_card_text("Waiting for your passkey…");
+        match begin_with(method, intent.clone(), credential_id.clone()) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                if let Err(error) = mediation.finish().await {
+                    report(&error.message);
+                    set_card_text(&user_error::ceremony(action, &error));
+                    remove_card_after(4000);
+                } else {
+                    remove_card();
+                }
+            }),
+            Err(error) => {
+                report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(4000);
+            }
+        }
+    });
+}
+
 /// Install the service-worker message listener on the top document.
 pub fn install() {
     if INSTALLED.with(|installed| installed.replace(true)) {
@@ -267,12 +341,18 @@ pub fn install() {
             }
             WebAuthnKind::Custody => {
                 // One assertion, then the handles go to the worker,
-                // which mints and enrolls. The page builds nothing and
-                // holds nothing; it only supplies the gesture WebAuthn
-                // insists on happening in a window.
-                mediate_custody(tonk_worker_api::CustodyIntent::Enroll(
-                    message.enrollment.unwrap_or_default(),
-                ));
+                // which does the work the intent names. The page builds
+                // nothing and holds nothing; it only supplies the gesture
+                // WebAuthn insists on happening in a window.
+                match message.intent.unwrap_or_default() {
+                    // Enrollment arrives mid-ceremony, on a page whose
+                    // gesture is still live.
+                    intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
+                    // A command the guest asserted. Its async trip through the
+                    // worker cannot carry transient activation, so this page
+                    // asks for one explicit top-document click.
+                    intent => run_command_ceremony(intent, message.credential_id),
+                }
             }
         }
     });
@@ -294,9 +374,10 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
     let method = match &intent {
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
-        tonk_worker_api::CustodyIntent::Enroll(_) | tonk_worker_api::CustodyIntent::Login(_) => {
-            "usePasskey"
-        }
+        tonk_worker_api::CustodyIntent::Enroll(_)
+        | tonk_worker_api::CustodyIntent::Login(_)
+        | tonk_worker_api::CustodyIntent::PurgeAccount(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "usePasskey",
     };
     mediate_with(method, intent);
 }
@@ -342,6 +423,40 @@ pub(crate) async fn mediate_now(
     run(method, intent).await
 }
 
+/// A page ceremony that has already been invoked and now only needs its
+/// asynchronous worker handoff to finish.
+pub(crate) struct Mediation {
+    promise: js_sys::Promise,
+}
+
+impl Mediation {
+    pub(crate) async fn finish(self) -> Result<(), CeremonyError> {
+        let reply = wasm_bindgen_futures::JsFuture::from(self.promise)
+            .await
+            .map_err(|error| CeremonyError::thrown(&error))?;
+        // The worker answers a purge or a device authorization with
+        // where this page goes next: the guest that asked is on a page
+        // the outcome retires, and only the top document can leave it.
+        // The worker's answer rides under `ok` on the reply envelope.
+        let answer = js_sys::Reflect::get(&reply, &"ok".into()).unwrap_or(reply);
+        if let Some(href) = js_sys::Reflect::get(&answer, &"navigate".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.location().assign(&href);
+        } else if js_sys::Reflect::get(&answer, &"reload".into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.location().reload();
+        }
+        Ok(())
+    }
+}
+
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
 /// the passkey is a decision, not a fault.
 fn report(error: &str) {
@@ -356,6 +471,28 @@ async fn run(
     method: &'static str,
     intent: tonk_worker_api::CustodyIntent,
 ) -> Result<(), CeremonyError> {
+    begin(method, intent)?.finish().await
+}
+
+/// Invoke the window ceremony now and return its in-flight promise.
+///
+/// Keeping invocation separate from completion lets a click handler cross the
+/// Rust/JavaScript bridge before returning, which is required for mobile
+/// WebAuthn's transient user activation.
+pub(crate) fn begin(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+) -> Result<Mediation, CeremonyError> {
+    begin_with(method, intent, None)
+}
+
+/// [`begin`], with the assertion pinned to `credential_id` (hex) when
+/// the caller knows which passkey holds the account.
+pub(crate) fn begin_with(
+    method: &'static str,
+    intent: tonk_worker_api::CustodyIntent,
+    credential_id: Option<String>,
+) -> Result<Mediation, CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
 
     let identity = web_sys::window()
@@ -377,13 +514,18 @@ async fn run(
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => Some(creation.email.clone()),
         tonk_worker_api::CustodyIntent::Enroll(enrollment) => enrollment.email.clone(),
         tonk_worker_api::CustodyIntent::AddPasskey(_)
-        | tonk_worker_api::CustodyIntent::Login(_) => None,
+        | tonk_worker_api::CustodyIntent::Login(_)
+        | tonk_worker_api::CustodyIntent::PurgeAccount(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => None,
     };
 
     let request = serde_wasm_bindgen::to_value(&intent)
         .map_err(|error| CeremonyError::said(format!("the request did not serialize: {error}")))?;
     let input = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&input, &"request".into(), &request);
+    if let Some(credential_id) = credential_id {
+        let _ = js_sys::Reflect::set(&input, &"credentialId".into(), &credential_id.into());
+    }
     if let Some(email) = email.filter(|email| !email.trim().is_empty()) {
         let _ = js_sys::Reflect::set(&input, &"name".into(), &email.as_str().into());
         let _ = js_sys::Reflect::set(&input, &"displayName".into(), &email.as_str().into());
@@ -395,10 +537,7 @@ async fn run(
     let promise = answer.dyn_into::<js_sys::Promise>().map_err(|_| {
         CeremonyError::said(format!("tonkIdentity.{method} did not return a promise"))
     })?;
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map(|_| ())
-        .map_err(|error| CeremonyError::thrown(&error))
+    Ok(Mediation { promise })
 }
 
 /// A failure that never reached the service carries no reason from it.

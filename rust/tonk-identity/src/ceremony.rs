@@ -14,8 +14,9 @@ use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
 use ipld_core::cid::Cid;
+use url::Url;
 
-use crate::delegation::mint_device_delegation;
+use crate::delegation::{mint_addressed_device_delegation, mint_device_delegation};
 
 /// Output of a root-authorized account ceremony.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,34 +380,29 @@ pub async fn link_device(
 /// Authorize a CLI device directly, with no account service in the loop.
 ///
 /// The browser mints the `account → device` powerline and returns it for
-/// delivery straight back to the waiting process. The descriptor rides along
-/// so the device learns where the account repository lives — a delegation
-/// says who may act, not where to sync from, and without it the device is
-/// authorized but cannot find the account.
-///
-/// The remote is the account's own, so the descriptor this signs is
-/// byte-identical to the established one: signing is deterministic over
-/// `(version, subject, remote)`, so this reproduces the existing descriptor
-/// rather than minting a competing one.
+/// delivery straight back to the waiting process. The grant carries the
+/// account repository's sync endpoint in its signed `meta` — a delegation
+/// says who may act, and this one also says where to sync from, so the
+/// device that installs it can find the account with nothing riding
+/// alongside.
 pub async fn authorize_device(
     root: Ed25519Signer,
     device_did: dialog_varsig::Did,
     remote: &str,
 ) -> Result<AuthorizedDevice> {
-    let delegation = mint_device_delegation(root.clone(), &device_did).await?;
+    let remote: Url = remote
+        .parse()
+        .context("the account sync endpoint is not a valid URL")?;
+    let delegation = mint_addressed_device_delegation(root.clone(), &device_did, &remote).await?;
     let delegation_hex = hex::encode(
         delegation
             .to_bytes()
             .context("failed to serialize root to device delegation")?,
     );
-    let descriptor = tonk_account::AccountRepositoryDescriptorV1::sign(&root, remote)
-        .await
-        .context("failed to sign the account repository descriptor")?;
     Ok(AuthorizedDevice {
         root_did: root.did().to_string(),
         device_did: device_did.to_string(),
         delegation_hex,
-        descriptor_hex: hex::encode(descriptor.bytes()),
     })
 }
 
@@ -417,11 +413,9 @@ pub struct AuthorizedDevice {
     pub root_did: String,
     /// The device the grant is addressed to.
     pub device_did: String,
-    /// Hex-encoded `account → device` delegation chain.
+    /// Hex-encoded `account → device` delegation chain. Its signed `meta`
+    /// names the account repository's sync endpoint.
     pub delegation_hex: String,
-    /// Exact signed account repository descriptor, so the device knows where
-    /// the account repository lives.
-    pub descriptor_hex: String,
 }
 
 #[cfg(test)]
@@ -433,6 +427,35 @@ mod tests {
         let root = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
         let device = Ed25519Signer::import(&[8u8; 32]).await.unwrap();
         (root, device.did())
+    }
+
+    #[dialog_common::test]
+    async fn it_embeds_the_sync_endpoint_in_the_authorized_grant() {
+        let (root, device) = fixture().await;
+        let expected_root = root.did();
+
+        let authorized = authorize_device(root, device.clone(), "https://sync.example/ucan/")
+            .await
+            .unwrap();
+
+        let bytes = hex::decode(&authorized.delegation_hex).unwrap();
+        let chain = DelegationChain::try_from(bytes.as_slice()).unwrap();
+        assert_eq!(*chain.issuer(), expected_root);
+        assert_eq!(*chain.audience(), device);
+        let remote = tonk_invite::home_address(&chain).unwrap();
+        assert_eq!(
+            remote.map(String::from),
+            Some("https://sync.example/ucan/".to_owned())
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_to_authorize_against_an_invalid_endpoint() {
+        let (root, device) = fixture().await;
+        let error = authorize_device(root, device, "not a url")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a valid URL"), "{error}");
     }
 
     #[dialog_common::test]

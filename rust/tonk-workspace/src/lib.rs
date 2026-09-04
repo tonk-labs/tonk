@@ -36,7 +36,7 @@ mod sheet;
 mod sync;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_account_settings;
-/// `<ui-copy-link>` — a verb that copies a URL and answers in place.
+/// `<ui-copy-link>` — the Hub verb that mints and copies a space invite.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_copy_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -17,6 +17,8 @@
 //! - `tonk:analytics` → generic channel: any element may dispatch
 //!   `CustomEvent("tonk:analytics", { bubbles: true, composed: true,
 //!   detail: { name, props } })` without depending on this crate.
+//! - worker lifecycle messages → typed `space_conversion` / `space_shared`
+//!   events after the corresponding operation succeeds.
 
 // The wasm-bindgen executor needs no initialization: `install()` runs from
 // the ui binary's `main`, which mounts custom elements rather than starting a
@@ -35,6 +37,7 @@ pub fn install() {
     if !tonk_analytics::web::init() {
         return;
     }
+    capture_visit();
     tonk_analytics::web::capture(
         tonk_analytics::event::APP_LOADED,
         &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
@@ -42,6 +45,29 @@ pub fn install() {
     capture_current_pageview();
     attach_listeners();
     spawn_local(identify());
+}
+
+/// Reduce the browser landing URL and referrer to the closed attribution
+/// vocabulary, register it for this in-memory PostHog session, then capture
+/// the first funnel step. Raw URL inputs never enter the event payload.
+fn capture_visit() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(href) = window.location().href() else {
+        return;
+    };
+    let referrer = window
+        .document()
+        .map(|document| document.referrer())
+        .filter(|value| !value.is_empty());
+    let Some(attribution) =
+        tonk_analytics::launch::Attribution::from_urls(&href, referrer.as_deref())
+    else {
+        return;
+    };
+    tonk_analytics::web::register_attribution(&attribution);
+    tonk_analytics::web::capture_visit(&attribution);
 }
 
 /// Console panic reporting (always) plus a content-free `panic` event. The
@@ -171,11 +197,53 @@ fn attach_listeners() {
     let _ = window
         .add_event_listener_with_callback("tonk:analytics", on_custom.as_ref().unchecked_ref());
     on_custom.forget();
+
+    attach_worker_lifecycle_listener();
+}
+
+/// Capture only typed, worker-confirmed lifecycle successes. The worker sends
+/// a local routing key; this boundary hashes it before PostHog can see it.
+fn attach_worker_lifecycle_listener() {
+    let Some(container) = web_sys::window().map(|window| window.navigator().service_worker())
+    else {
+        return;
+    };
+    let listener =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+            let Ok(message) =
+                serde_wasm_bindgen::from_value::<tonk_worker_api::AnalyticsMessage>(event.data())
+            else {
+                return;
+            };
+            if message.message_type != tonk_worker_api::ANALYTICS_MESSAGE {
+                return;
+            }
+            match message.event {
+                tonk_worker_api::AnalyticsEvent::SpaceCreated { space } => {
+                    tonk_analytics::web::capture_space_conversion(
+                        tonk_analytics::launch::SpaceConversion::Created,
+                        &space,
+                    );
+                }
+                tonk_worker_api::AnalyticsEvent::SpaceJoined { space } => {
+                    tonk_analytics::web::capture_space_conversion(
+                        tonk_analytics::launch::SpaceConversion::Joined,
+                        &space,
+                    );
+                }
+                tonk_worker_api::AnalyticsEvent::SpaceShared { space } => {
+                    tonk_analytics::web::capture_space_shared(&space);
+                }
+            }
+        });
+    let _ =
+        container.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
+    listener.forget();
 }
 
 /// Fetch the profile DID from the worker and identify with its hash,
 /// so web and CLI activity from one profile correlate. Best-effort.
-async fn identify() {
+pub(crate) async fn identify() {
     if let Ok(response) = api::identify().await {
         tonk_analytics::web::identify(&tonk_analytics::distinct_id(&response.did));
     }

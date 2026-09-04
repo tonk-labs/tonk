@@ -407,13 +407,7 @@ pub(crate) async fn describe_device_link(
         .acquire(&state.operator)
         .await
         .map_err(|error| format!("open profile branch: {error}"))?;
-    branch
-        .handle()
-        .delegations()
-        .retain(UcanDelegation(chain.clone()))
-        .perform(&state.operator)
-        .await
-        .map_err(|error| format!("retain: {error}"))?;
+    retain_device_delegation(state, &branch, chain).await?;
     let audience = chain.audience().to_string();
     let entities = link_entities(state, branch.handle(), &audience).await?;
     if entities.is_empty() {
@@ -458,6 +452,52 @@ pub(crate) async fn describe_device_link(
         .await
         .map(|_| ())
         .map_err(|error| format!("commit: {error}"))
+}
+
+/// Retain a device powerline through profile main's writer coordination.
+///
+/// Delegation retention commits directly through dialog rather than through a
+/// reactor transaction. Without taking the same per-branch lock, a concurrent
+/// account sweep can advance profile main between retention's snapshot and
+/// publish, leaving browser-to-CLI authorization stranded on its approval
+/// page. Sync deliberately does not take the writer lock, so mirror the
+/// reactor transaction seam: refresh and retry only when the head moved.
+async fn retain_device_delegation(
+    state: &TonkState,
+    branch: &dialog_reactor::BranchSession,
+    chain: &DelegationChain,
+) -> Result<(), String> {
+    const RETRY_LIMIT: usize = 4;
+
+    let _transacting = branch.transactor().lock().await;
+    let mut attempt = 0;
+    loop {
+        match branch
+            .handle()
+            .delegations()
+            .retain(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.to_string().contains("Version mismatch") && attempt < RETRY_LIMIT =>
+            {
+                attempt += 1;
+                log!(
+                    "device-link retain raced (attempt {attempt}); refreshing profile main and retrying"
+                );
+                branch
+                    .handle()
+                    .refresh(&state.operator)
+                    .await
+                    .map_err(|refresh_error| {
+                        format!("retain raced, then profile-main refresh failed: {refresh_error}")
+                    })?;
+            }
+            Err(error) => return Err(format!("retain: {error}")),
+        }
+    }
 }
 
 /// Entities of every retained powerline addressed to `audience`.

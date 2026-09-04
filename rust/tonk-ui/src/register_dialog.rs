@@ -112,20 +112,17 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 /// input's autofill. `wa-input` forwards the attribute to the inner
 /// native input, which is where it has to land.
 ///
-/// `type="text"` rather than `type="email"`, deliberately: the selection
-/// API answers `null` on an email input, and [`follow_caret`] needs
-/// `selectionStart` to seat the block cursor mid-text. `inputmode`
-/// keeps the email keyboard, and [`is_plausible`] gates the lookups.
+/// `type="email"` gives the field its native semantics and mobile keyboard;
+/// [`is_plausible`] still gates lookups while the address is incomplete.
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">link an account</div>
-    <div class="orow mblk" id="tonk-register-email-row">
+    <div class="m-head mblk" id="tonk-register-head">add an account</div>
+    <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
-      <span class="v"><input class="ed" id="tonk-register-email" type="text"
+      <span class="v"><input class="ed" id="tonk-register-email" type="email"
             inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
-            aria-label="email" placeholder="you@example.com"><i class="cur"
-            aria-hidden="true"></i></span>
+            aria-label="email" placeholder="you@example.com"></span>
     </div>
     <!-- Unfolds once the address is committed and the lookup answers:
          "create a passkey" for an address nobody has, "log in with your
@@ -143,14 +140,6 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::account_observability::record_instant_success(
-        AccountAction::OpenRegistration,
-        tonk_analytics::account::Surface::RegistrationDialog,
-        tonk_analytics::account::Trigger::User,
-        tonk_analytics::account::AccountState::Unknown,
-        tonk_analytics::account::Stage::Input,
-    );
     open_with_return(None);
 }
 
@@ -189,7 +178,16 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    on_click(&host, DISMISS, return_to_space);
+    crate::account_observability::record_instant_success(
+        AccountAction::OpenRegistration,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Unknown,
+        tonk_analytics::account::Stage::Input,
+    );
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, DISMISS, return_to_previous);
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     on_click(&host, DISMISS, close);
     let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
@@ -206,8 +204,6 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     commit_on_enter(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     focus_on_row_click(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    follow_caret(&host, EMAIL_INPUT);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -245,7 +241,7 @@ fn open_when_upgraded(host: &Element) {
     raise.forget();
 }
 
-/// Seat the cursor in the address field.
+/// Focus the address field.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_address(host: &Element) {
     let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
@@ -254,99 +250,6 @@ fn focus_address(host: &Element) {
     if let Some(element) = field.dyn_ref::<HtmlElement>() {
         let _ = element.focus();
     }
-}
-
-/// Keep the block cursor on the caret.
-///
-/// The field's native caret is transparent and the `.cur` block beside
-/// it is the visible one (`styles.css`, the ceremony's `.ed`), so the
-/// block has to follow the real insertion point instead of squatting on
-/// the tail. Engines that support `caret-shape: block` draw the block
-/// natively and never show `.cur`, so they skip this wiring entirely.
-///
-/// The field is right-aligned, so the seat is measured from the right
-/// edge: the width of the text after the caret, read off a hidden
-/// mirror span wearing the row's own type. Selection offsets count
-/// UTF-16 code units, so the tail is cut in that encoding rather than
-/// by byte.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn follow_caret(host: &Element, selector: &str) {
-    if web_sys::css::supports_with_value("caret-shape", "block").unwrap_or(false) {
-        return;
-    }
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-        return;
-    };
-    let Some(field) = host.query_selector(selector).ok().flatten() else {
-        return;
-    };
-    let Ok(field) = field.dyn_into::<web_sys::HtmlInputElement>() else {
-        return;
-    };
-    let Some(seat) = field.parent_element() else {
-        return;
-    };
-    let Some(cursor) = seat.query_selector(".cur").ok().flatten() else {
-        return;
-    };
-    let Ok(mirror) = document.create_element("span") else {
-        return;
-    };
-    mirror.set_class_name("measure");
-    let _ = mirror.set_attribute("aria-hidden", "true");
-    if seat.append_child(&mirror).is_err() {
-        return;
-    }
-
-    let target = field.clone();
-    let place = move || {
-        let value = field.value();
-        let units: Vec<u16> = value.encode_utf16().collect();
-        let backward = field
-            .selection_direction()
-            .ok()
-            .flatten()
-            .is_some_and(|direction| direction == "backward");
-        let edge = if backward {
-            field.selection_start()
-        } else {
-            field.selection_end()
-        };
-        let caret = edge
-            .ok()
-            .flatten()
-            .map(|index| index as usize)
-            .unwrap_or(units.len())
-            .min(units.len());
-        let tail = String::from_utf16_lossy(&units[caret..]);
-        mirror.set_text_content(Some(&tail));
-        let offset = mirror.get_bounding_client_rect().width();
-        // The trailing padding the stylesheet reserves is the block's
-        // rightmost seat; clamp so an overflowing value cannot push it
-        // out of the row.
-        let room = (seat.get_bounding_client_rect().width() - 8.0).max(1.0);
-        let right = (offset + 1.0).min(room);
-        // Restart the blink so the block is solid right after a
-        // keystroke, the way a terminal's cursor behaves.
-        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px;animation:none"));
-        if let Some(element) = cursor.dyn_ref::<HtmlElement>() {
-            let _ = element.offset_width();
-        }
-        let _ = cursor.set_attribute("style", &format!("right:{right:.1}px"));
-    };
-
-    let listener = Closure::<dyn FnMut()>::new(place);
-    for event in [
-        "input",
-        "keyup",
-        "click",
-        "focus",
-        "scroll",
-        "selectionchange",
-    ] {
-        let _ = target.add_event_listener_with_callback(event, listener.as_ref().unchecked_ref());
-    }
-    listener.forget();
 }
 
 /// Unfold a row into the stack: appended folded, then released a frame
@@ -369,8 +272,7 @@ fn unfold(row: &Element) {
     release.forget();
 }
 
-/// Settle a row into its record: the noun stays, the value becomes ink,
-/// and the block cursor goes.
+/// Settle a row into its record: the noun stays and the value becomes ink.
 ///
 /// A settled row is the step's receipt. It stays on screen so what you
 /// have already answered is legible above what you are answering now,
@@ -378,6 +280,7 @@ fn unfold(row: &Element) {
 /// sequence of replaced screens.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn settle(row: &Element, noun: &str, value: &str) {
+    let _ = row.class_list().remove_1("editing");
     row.set_inner_html("");
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -428,11 +331,9 @@ fn action_is_offered() -> bool {
         .is_some_and(|action| !action.has_attribute("hidden") && !action.disabled())
 }
 
-/// Clicking anywhere in a row seats the cursor in its editor.
+/// Clicking anywhere in a row focuses its editor.
 ///
-/// The editor is a bare span with a block cursor for a seat, so without
-/// this the only target is the glyph itself. In the study the row owns
-/// the click for the same reason.
+/// The editor is visually bare, so the row owns the larger click target.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_on_row_click(host: &Element) {
     let Some(row) = host.query_selector(EMAIL_ROW).ok().flatten() else {
@@ -557,9 +458,7 @@ pub fn close() {
         // banner never appears. A plain cancel changed nothing, and
         // must not re-read: the re-render would replace the very
         // opener this close is about to restore focus to.
-        if ANNOUNCED.with(|announced| announced.replace(false)) {
-            crate::account::resettle();
-        }
+        ANNOUNCED.with(|announced| announced.set(false));
         finish_action();
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {
@@ -896,7 +795,7 @@ fn activation_watch_failed(detail: &str) {
         AccountAction::WatchActivation,
         detail,
     ));
-    set_action(RETURN_TO_SPACE, true);
+    set_return_action();
     let problem = user_error::problem_from_diagnostic(AccountAction::WatchActivation, detail);
     ACTIVATION_WATCH.with(|held| {
         if let Some(mut attempt) = held.borrow_mut().take() {
@@ -1270,9 +1169,8 @@ pub(crate) fn is_plausible(email: &str) -> bool {
 pub(crate) fn check_email_claim(email: &str) -> serde_json::Value {
     claim("Ask whether an address is registered.", email)
 }
-
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// The `account/register` claim.
+#[cfg(test)]
 pub(crate) fn register_claim(email: &str) -> serde_json::Value {
     let mut claim = claim("Register an account for this address.", email);
     // The marker is what makes this a REGISTRATION and not a lookup.
@@ -1331,7 +1229,7 @@ fn submit() {
         .unwrap_or_default();
     match label.trim() {
         COPY_LINK => copy_the_share_link(),
-        RETURN_TO_SPACE => return_to_space(),
+        RETURN_TO_SPACE | RETURN_TO_HUB => return_to_previous(),
         "" => finish_action(),
         _ => run_signup_ceremony(),
     }
@@ -1347,6 +1245,24 @@ const COPY_LINK: &str = "copy share link";
 /// runnable on Enter, the way every step before it is.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const RETURN_TO_SPACE: &str = "return to space";
+
+/// The completion action for a ceremony anchored under the Hub bar.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RETURN_TO_HUB: &str = "return to hub";
+
+/// Offer the destination the ceremony actually replaced.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn set_return_action() {
+    let anchored = host_element().is_some_and(|host| host.has_attribute("data-anchored"));
+    set_action(
+        if anchored {
+            RETURN_TO_HUB
+        } else {
+            RETURN_TO_SPACE
+        },
+        true,
+    );
+}
 
 /// Mint the invite the share was interrupted for, and copy it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1383,7 +1299,7 @@ fn copy_the_share_link() {
                         tonk_analytics::account::AccountOutcome::success(),
                     );
                     set_status("You can use the copied link to invite someone into a space.");
-                    set_action(RETURN_TO_SPACE, true);
+                    set_return_action();
                     focus_action();
                 }
                 Err(error) => {
@@ -1556,11 +1472,16 @@ pub(crate) fn run_signup_ceremony() {
     } else {
         tonk_analytics::account::Stage::PasskeyCreate
     });
+    // Open an existing-account assertion before this click returns. iOS
+    // passkey providers require the WebAuthn request to consume the tap's
+    // transient user activation synchronously; the worker handoff can finish
+    // later. Account creation still follows its separate preparation path.
+    let login = existing.then(|| crate::ceremony::begin_login_ceremony(set_status));
     wasm_bindgen_futures::spawn_local(async move {
-        let outcome = if existing {
-            crate::account::run_login_ceremony(set_status).await
-        } else {
-            crate::account::run_account_ceremony(&email, set_status).await
+        let outcome = match login {
+            Some(Ok(mediation)) => mediation.finish().await,
+            Some(Err(error)) => Err(error),
+            None => crate::ceremony::run_account_ceremony(&email, set_status).await,
         };
         match outcome {
             // The account exists and registered, but nobody has opened
@@ -1581,7 +1502,6 @@ pub(crate) fn run_signup_ceremony() {
                     tonk_analytics::account::Stage::ActivationWait,
                     problem.outcome,
                 );
-                crate::account_observability::mark_settle_pending();
                 tonk_common::log!("register: the account awaits its email confirmation");
                 hide_action();
                 add_row(
@@ -1665,7 +1585,6 @@ pub(crate) fn run_signup_ceremony() {
                             tonk_analytics::account::FailureKind::AwaitingActivation,
                         ),
                     );
-                    crate::account_observability::mark_settle_pending();
                     // What happens next arrives as facts: the emailed
                     // link lands `AccountCustomer`, and the subscription
                     // renders it. Nothing here polls for it.
@@ -2033,12 +1952,11 @@ fn ask_for_name(host: &Element) {
         return;
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
-    row.set_class_name("orow mblk pre");
+    row.set_class_name("orow mblk pre editing");
     row.set_inner_html(
         r##"<span class="k">display name</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"><i class="cur"
-                  aria-hidden="true"></i></span>"##,
+                  enterkeyhint="go" aria-label="display name"></span>"##,
     );
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
@@ -2051,7 +1969,6 @@ fn ask_for_name(host: &Element) {
     }
     unfold(&row);
     commit_name_on_enter(host);
-    follow_caret(host, "#tonk-register-name");
     if let Some(field) = host
         .query_selector("#tonk-register-name")
         .ok()
@@ -2152,7 +2069,7 @@ fn conclude(status: &str) {
             // the ceremony finished and standing, with only the back
             // arrow to leave by.
             set_status(status);
-            set_action(RETURN_TO_SPACE, true);
+            set_return_action();
             focus_action();
         }
     }
@@ -2260,7 +2177,7 @@ pub struct Request {
     /// finished once an account exists.
     #[serde(default)]
     pub space: String,
-    /// Where to seat the cluster, in page coordinates. The Hub's
+    /// Where to seat the cluster, in viewport coordinates. The Hub's
     /// "link an account" tab sends its bar's rect so the ceremony rows
     /// render IN the column right under it — the tab activates and the
     /// email and instruction rows are simply what its page shows. Absent
@@ -2270,7 +2187,7 @@ pub struct Request {
     pub anchor: Option<Anchor>,
 }
 
-/// A seat for the anchored cluster: the opener bar's box, page coordinates.
+/// A seat for the anchored cluster: the opener bar's viewport box.
 #[derive(Debug, PartialEq, serde::Deserialize)]
 pub struct Anchor {
     /// The bar's left edge — the column's own left.
@@ -2359,6 +2276,28 @@ pub fn resume() {
 /// navigation to the linking screen.
 const SHARE_STASH: &str = "tonk-pending-share";
 
+/// The anchored registration request to reopen after a profile-transition
+/// reload. Session scope keeps it in this tab and removal makes it one-shot.
+const REOPEN_STASH: &str = "tonk-reopen-registration";
+
+/// Park an account-linking request across the reload that gives the promoted
+/// profile a fresh service-worker client context.
+pub fn stash_reopen(payload: &str) {
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
+    {
+        let _ = storage.set_item(REOPEN_STASH, payload);
+    }
+}
+
+/// Consume the account-linking request parked by [`stash_reopen`].
+pub fn take_reopen() -> Option<String> {
+    let storage = web_sys::window()?.session_storage().ok().flatten()?;
+    let payload = storage.get_item(REOPEN_STASH).ok().flatten()?;
+    let _ = storage.remove_item(REOPEN_STASH);
+    Some(payload)
+}
+
 /// Park a blocked share's space so it survives the navigation to
 /// `/settings`, where the linking ceremony picks it up.
 pub fn stash_share(space: &str) {
@@ -2410,20 +2349,31 @@ const SHARE_RETURN: &str = "tonk-share-return";
 /// [`adopt_stashed_share`] when the linking screen replaced the space page.
 const RETURN_PATH: &str = "data-return-path";
 
-/// Go back to the space the blocked share left, when the ceremony stands
-/// on the linking screen instead of over the space; just close otherwise.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn return_to_space() {
-    let path = web_sys::window()
+/// Return to the surface the ceremony replaced.
+///
+/// A blocked share has an exact space path. An anchored ceremony is a page of
+/// the Hub's account tab, so closing it also returns the route to `/`; on the
+/// Hub itself that navigation is intentionally a no-op and the guest's
+/// terminal close event restores the spaces stack in place.
+fn return_to_previous() {
+    let host = web_sys::window()
         .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|document| document.get_element_by_id(DIALOG_ID));
+    let path = host
+        .as_ref()
         .and_then(|host| host.get_attribute(RETURN_PATH))
         .filter(|path| !path.is_empty());
+    let anchored = host.is_some_and(|host| host.has_attribute("data-anchored"));
     match path {
         Some(path) => {
             if let Some(location) = web_sys::window().map(|window| window.location()) {
                 let _ = location.assign(&path);
             }
+        }
+        None if anchored => {
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
         }
         None => close(),
     }
@@ -2460,16 +2410,13 @@ pub fn describe(payload: &str) {
             move |event: web_sys::KeyboardEvent| {
                 if event.key() == "Escape" {
                     event.prevent_default();
-                    close();
+                    return_to_previous();
                 }
             },
         );
         let _ = host.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
         escape.forget();
-        let style = host.style();
-        let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
-        let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
-        let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
+        position_at(&host, anchor);
     }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
@@ -2482,6 +2429,30 @@ pub fn describe(payload: &str) {
     {
         head.set_text_content(Some("confirm your email to share"));
     }
+}
+
+/// Move an already-open anchored ceremony to the guest bar's latest viewport
+/// rectangle. Scroll and resize updates use this without rebuilding the
+/// editor, so the address and focus both survive.
+pub fn reanchor(request: &Request) {
+    let Some(anchor) = &request.anchor else {
+        return;
+    };
+    let Some(host) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    position_at(&host, anchor);
+}
+
+fn position_at(host: &HtmlElement, anchor: &Anchor) {
+    let style = host.style();
+    let _ = style.set_property("--anchor-left", &format!("{}px", anchor.left));
+    let _ = style.set_property("--anchor-top", &format!("{}px", anchor.bottom + 7.0));
+    let _ = style.set_property("--anchor-width", &format!("{}px", anchor.width));
 }
 
 /// Wire `selector`'s click, inside the gesture so a ceremony started

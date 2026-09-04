@@ -1593,6 +1593,14 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             let href = format!("/space/{key}", key = outcome.key);
+            if !outcome.renewed {
+                crate::router::navigate::notify_analytics(
+                    env.client(),
+                    tonk_worker_api::AnalyticsEvent::SpaceJoined {
+                        space: outcome.key.clone(),
+                    },
+                );
+            }
             crate::router::navigate::notify_navigate(env.client(), &href);
             log!(
                 "join: succeeded (subject {}, key {})",

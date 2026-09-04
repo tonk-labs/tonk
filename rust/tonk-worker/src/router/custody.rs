@@ -129,16 +129,18 @@ async fn await_key(
 /// material.
 ///
 /// The worker has no `window`, so the assertion happens on the page
-/// that asked for the enrollment. What comes back is two derivation
-/// handles, not key material, and this enrollment travels with the
-/// request so the handoff knows what it is for.
+/// that asked for the enrollment. What comes back is two transient PRF
+/// byte arrays, and this enrollment travels with the request so the
+/// handoff knows what it is for. The receiver imports worker-owned
+/// derivation handles before doing custody work.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) {
     let enrollment = tonk_worker_api::Enrollment { email };
     if let Err(error) = super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
-        Some(enrollment),
+        Some(tonk_worker_api::CustodyIntent::Enroll(enrollment)),
+        None,
     )
     .await
     {
@@ -148,8 +150,8 @@ pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) 
 
 /// Is this SW-global message a custody handoff?
 ///
-/// Read off the raw `JsValue`: the two handles it carries are
-/// `CryptoKey`s, which do not survive a trip through JSON.
+/// Read off the raw `JsValue`: the two PRF values are typed arrays and
+/// must never pass through JSON.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn is_custody_envelope(data: &wasm_bindgen::JsValue) -> bool {
     js_sys::Reflect::get(data, &wasm_bindgen::JsValue::from_str("type"))
@@ -186,16 +188,20 @@ fn split_refusal(error: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Take the page's derivation handles, do the work that needs them, and
-/// drop them.
+/// Take the page's transient PRF bytes, import derivation handles, do
+/// the work that needs them, and drop them.
 ///
-/// The page mediates WebAuthn and nothing else: it holds no bytes, and
-/// the handles it posts are non-extractable. This is the only place a
+/// The page mediates WebAuthn and nothing else. This is the only place a
 /// custodian exists, and it exists for the length of one request — the
 /// reply goes back over the transferred port, and the custodian is
 /// dropped when this returns.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports: js_sys::Array) {
+pub(crate) async fn receive(
+    state: AppState,
+    source: Option<ClientId>,
+    data: wasm_bindgen::JsValue,
+    ports: js_sys::Array,
+) {
     use wasm_bindgen::{JsCast, JsValue};
 
     let Some(port) = ports.get(0).dyn_into::<web_sys::MessagePort>().ok() else {
@@ -203,9 +209,20 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
         return;
     };
 
-    let answer = match custodian_from(&data) {
-        Ok(custodian) => perform(state, &data, custodian).await,
-        Err(error) => Err(error),
+    let context_current = match source.as_ref() {
+        Some(client) => {
+            let tonk = state.read().await;
+            super::session::client_context_is_current(&tonk, client).await
+        }
+        None => true,
+    };
+    let answer = if !context_current {
+        Err("profile changed; reload required".to_string())
+    } else {
+        match custodian_from(&data).await {
+            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+            Err(error) => Err(error),
+        }
     };
 
     let reply = js_sys::Object::new();
@@ -237,7 +254,7 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
     }
 }
 
-/// Do what the handoff asked for, with the handles it carried.
+/// Do what the handoff asked for, with the handles just imported.
 ///
 /// What the page used to do and no longer can: generate the account
 /// secret, seal it under the passkey's KEK, mint the custody space's
@@ -247,6 +264,7 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn perform(
     state: AppState,
+    source: Option<&ClientId>,
     data: &wasm_bindgen::JsValue,
     custodian: tonk_identity::custodian::Custodian,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -271,18 +289,82 @@ async fn perform(
                 Some(account) => account,
                 None => open(&custodian).await?,
             };
-            enroll(&state, &custodian, &account, enrollment.email, None).await
+            let tonk = state.read().await;
+            enroll(&tonk, &custodian, &account, enrollment.email, None).await
         }
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => {
-            create(&state, &custodian, creation).await
+            create(&state, source, &custodian, creation).await
         }
-        tonk_worker_api::CustodyIntent::Login(link) => login(&state, &custodian, link).await,
+        tonk_worker_api::CustodyIntent::Login(link) => {
+            login(&state, source, &custodian, link).await
+        }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
             let holder = custodian_named(data, "holder")
+                .await?
                 .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
             add_passkey(&state, &custodian, &holder, addition).await
         }
+        // Both answer with where the page goes next: the guest that
+        // asked is on a page the outcome retires (a purged profile, or
+        // a handoff to a waiting process), and the page is what
+        // navigates.
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => {
+            super::account_deletion::purge(&state, source, &custodian).await?;
+            navigate_reply("/")
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+            let target =
+                super::ceremony::authorize_device(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
     }
+}
+
+/// A custody reply telling the page where to go: `{ navigate: href }`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn navigate_reply(href: &str) -> Result<wasm_bindgen::JsValue, String> {
+    let reply = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &reply,
+        &wasm_bindgen::JsValue::from_str("navigate"),
+        &wasm_bindgen::JsValue::from_str(href),
+    )
+    .map_err(|_| "the reply could not be built".to_string())?;
+    Ok(reply.into())
+}
+
+/// A custody reply that reloads the initiating top-level page after the reply
+/// port has delivered success. Sibling tabs are notified separately.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn reload_reply() -> Result<wasm_bindgen::JsValue, String> {
+    let reply = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &reply,
+        &wasm_bindgen::JsValue::from_str("reload"),
+        &wasm_bindgen::JsValue::TRUE,
+    )
+    .map_err(|_| "the reload reply could not be built".to_string())?;
+    Ok(reply.into())
+}
+
+/// The account this passkey holds, opened from its custody cell at this
+/// deployment's own `/ucan/`: what every root-signed ceremony the worker
+/// runs on the page's behalf starts from.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn held_account(
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<tonk_identity::account::Account, String> {
+    let endpoint = super::customer::ucan_endpoint(
+        &super::customer::service_origin().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    custodian
+        .account()
+        .load(endpoint.to_string())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| refusal("the custody cell did not open", &error))?
+        .ok_or_else(|| "this passkey holds no account".to_string())
 }
 
 /// Seal the account a first passkey holds under a second one.
@@ -326,7 +408,8 @@ async fn add_passkey(
         .await
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
-    enroll(state, added, &sealed, None, None).await
+    let tonk = state.read().await;
+    enroll(&tonk, added, &sealed, None, None).await
 }
 
 /// Open the account this passkey holds and link this browser to it.
@@ -337,6 +420,7 @@ async fn add_passkey(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn login(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     link: tonk_worker_api::DeviceLink,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -355,7 +439,7 @@ async fn login(
         Err(error) => {
             // Waiting on the email is the one refusal this handler can
             // outlast ITSELF: the person already touched their passkey,
-            // so keep the assertion's derivation handles and finish the
+            // so keep the imported derivation handles and finish the
             // login here when the gate flips, rather than asking for a
             // second ceremony because an inbox was slow. Best effort —
             // a worker restart drops the handles, and the page's poll
@@ -378,8 +462,13 @@ async fn login(
         "this passkey has published no account yet; create one on the browser that holds it"
             .to_string()
     })?;
-    complete_login(state, custodian, &link, &endpoint, account).await?;
-    Ok(wasm_bindgen::JsValue::UNDEFINED)
+    let profile_changed =
+        complete_login(state, source, custodian, &link, &endpoint, account).await?;
+    if profile_changed {
+        reload_reply()
+    } else {
+        Ok(wasm_bindgen::JsValue::UNDEFINED)
+    }
 }
 
 /// Retry the parked login until the gate serves it, then finish it.
@@ -411,8 +500,17 @@ fn finish_login_once_served(
                 .await
             {
                 Ok(Some(account)) => {
-                    match complete_login(&state, &custodian, &link, &endpoint, account).await {
-                        Ok(()) => log!("custody: the parked login finished on activation"),
+                    match complete_login(
+                        &state,
+                        // The original ceremony already returned an
+                        // activation wait, so it has no reply left to
+                        // consume. Include every tab in any later profile
+                        // change notification, including that origin tab.
+                        None, &custodian, &link, &endpoint, account,
+                    )
+                    .await
+                    {
+                        Ok(_) => log!("custody: the parked login finished on activation"),
                         Err(error) => log!("custody: the parked login could not finish: {error}"),
                     }
                     return;
@@ -445,11 +543,12 @@ fn finish_login_once_served(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn complete_login(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     link: &tonk_worker_api::DeviceLink,
     endpoint: &str,
     account: tonk_identity::account::Account,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     use dialog_varsig::Principal as _;
 
     let dialog_credentials::Signer::Ed25519(root) = account
@@ -457,30 +556,32 @@ async fn complete_login(
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
 
-    let device = {
-        let tonk = state.read().await;
-        tonk.profile.signer().signer().clone()
-    };
+    let tonk = super::profiles::for_account(state.clone(), &root.did(), source)
+        .await
+        .map_err(|error| format!("the account profile could not be selected: {error}"))?;
+    log!(
+        "custody: account profile disposition {:?}",
+        tonk.disposition()
+    );
+    let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
+    let device = tonk.profile.signer().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
             .map_err(|error| format!("the device link did not sign: {error:#}"))?;
 
-    {
-        let tonk = state.read().await;
-        let root_record = tonk_worker_api::SaveRootRequest {
-            credential_id: custodian
-                .credential_id()
-                .map(hex::encode)
-                .unwrap_or_default(),
-            delegation_hex: ceremony.delegation_hex.clone(),
-            passkey: None,
-            encryption_key: Some(account.secret().did().to_string()),
-        };
-        crate::router::identity::persist_root(&tonk, root_record)
-            .await
-            .map_err(|error| format!("the account root was not recorded: {error}"))?;
-    }
+    let root_record = tonk_worker_api::SaveRootRequest {
+        credential_id: custodian
+            .credential_id()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        delegation_hex: ceremony.delegation_hex.clone(),
+        passkey: None,
+        encryption_key: Some(account.secret().did().to_string()),
+    };
+    crate::router::identity::persist_root(&tonk, root_record)
+        .await
+        .map_err(|error| format!("the account root was not recorded: {error}"))?;
 
     // No request: the roster is DeviceLink facts on the account's own
     // branch, and the sweep describes this device's row from the root
@@ -488,7 +589,7 @@ async fn complete_login(
     // keeping a second copy of a list that already syncs.
     //
     link_account(
-        state,
+        &tonk,
         &link.provider,
         &root.did().to_string(),
         &custodian
@@ -500,7 +601,10 @@ async fn complete_login(
         false,
     )
     .await?;
-    Ok(())
+    crate::router::account::finish_link(&tonk)
+        .await
+        .map_err(|error| format!("the account link did not finish: {error}"))?;
+    Ok(profile_changed)
 }
 
 /// Seal a fresh account secret under this custodian.
@@ -580,7 +684,7 @@ async fn recorded_account(
 /// customer.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enroll(
-    state: &AppState,
+    tonk: &crate::worker::TonkState,
     custodian: &tonk_identity::custodian::Custodian,
     account: &tonk_identity::account::Account,
     email: Option<String>,
@@ -603,30 +707,26 @@ async fn enroll(
     // with. Recorded first for the same reason enrollment writes the
     // cell before the customer row: what cannot be recovered must not
     // depend on the step after it succeeding.
-    {
-        let tonk = state.read().await;
-        let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
-            created_at: (js_sys::Date::now() / 1000.0) as u64,
-            created_on,
-        });
-        crate::router::customer::record_custody_cell(
-            &tonk,
-            &material.custody.to_string(),
-            &hex::encode(&material.sealed),
-            passkey,
-            &custodian
-                .credential_id()
-                .map(hex::encode)
-                .unwrap_or_default(),
-            email.as_deref(),
-        )
-        .await
-        .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
-    }
+    let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
+        created_at: (js_sys::Date::now() / 1000.0) as u64,
+        created_on,
+    });
+    crate::router::customer::record_custody_cell(
+        tonk,
+        &material.custody.to_string(),
+        &hex::encode(&material.sealed),
+        passkey,
+        &custodian
+            .credential_id()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        email.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
 
-    let tonk = state.read().await;
     let receipt =
-        crate::router::customer::enroll_customer(&tonk, &origin, email, &material.borrow())
+        crate::router::customer::enroll_customer(tonk, &origin, email, &material.borrow())
             .await
             .map_err(|error| format!("{error}"))?;
 
@@ -683,6 +783,7 @@ async fn custody_material(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     creation: tonk_worker_api::AccountCreation,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -697,10 +798,15 @@ async fn create(
     // signed with the concrete key.
     let dialog_credentials::Signer::Ed25519(root) = root;
 
-    let device = {
-        let tonk = state.read().await;
-        tonk.profile.signer().signer().clone()
-    };
+    let tonk = super::profiles::for_account(state.clone(), &root.did(), source)
+        .await
+        .map_err(|error| format!("the account profile could not be selected: {error}"))?;
+    log!(
+        "custody: account profile disposition {:?}",
+        tonk.disposition()
+    );
+    let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
+    let device = tonk.profile.signer().signer().clone();
     let device_did = device.did();
 
     let ceremony = tonk_identity::ceremony::create_custody_request(
@@ -724,9 +830,8 @@ async fn create(
     // The root record first: it is what every later custody operation
     // resolves the passkey through, and an account created without one
     // is unreachable from a second device.
-    {
-        let tonk = state.read().await;
-        let root_record = tonk_worker_api::SaveRootRequest {
+    let root_record =
+        tonk_worker_api::SaveRootRequest {
             credential_id: ceremony.root.credential_id.clone(),
             delegation_hex: ceremony.root.delegation_hex.clone(),
             passkey: ceremony.root.passkey.as_ref().map(|passkey| {
@@ -737,10 +842,9 @@ async fn create(
             }),
             encryption_key: ceremony.root.encryption_key.clone(),
         };
-        crate::router::identity::persist_root(&tonk, root_record)
-            .await
-            .map_err(|error| format!("the account root was not recorded: {error}"))?;
-    }
+    crate::router::identity::persist_root(&tonk, root_record)
+        .await
+        .map_err(|error| format!("the account root was not recorded: {error}"))?;
 
     // No account-service request: what it did was claim the address in
     // a table of its own, and enrollment claims the same address in the
@@ -752,7 +856,7 @@ async fn create(
     // everything downstream — enrollment included — reports one as
     // missing.
     link_account(
-        state,
+        &tonk,
         &creation.provider,
         &ceremony.root.root_did,
         &ceremony.root.credential_id,
@@ -762,14 +866,23 @@ async fn create(
     )
     .await?;
 
-    enroll(
-        state,
+    let answer = enroll(
+        &tonk,
         custodian,
         &account,
         Some(creation.email),
         creation.created_on,
     )
-    .await
+    .await?;
+    if profile_changed {
+        js_sys::Reflect::set(
+            &answer,
+            &wasm_bindgen::JsValue::from_str("reload"),
+            &wasm_bindgen::JsValue::TRUE,
+        )
+        .map_err(|_| "the reload reply could not be built".to_string())?;
+    }
+    Ok(answer)
 }
 
 /// Record the account the service just accepted, so this profile has
@@ -777,7 +890,7 @@ async fn create(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[allow(clippy::too_many_arguments)]
 async fn link_account(
-    state: &AppState,
+    tonk: &crate::worker::TonkState,
     provider: &str,
     root_did: &str,
     credential_id: &str,
@@ -793,28 +906,34 @@ async fn link_account(
         remote: remote.to_string(),
         initialize_name,
     };
-    let tonk = state.read().await;
-    crate::router::account::persist_link(&tonk, &request)
+    crate::router::account::persist_link(tonk, &request)
         .await
         .map_err(|error| format!("the account link was not saved: {error}"))
 }
 
-/// Rebuild the custodian from the two posted handles.
+/// Rebuild the custodian from the two posted PRF byte arrays.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn custodian_from(
+async fn custodian_from(
     data: &wasm_bindgen::JsValue,
 ) -> Result<tonk_identity::custodian::Custodian, String> {
-    custodian_named(data, "").ok_or_else(|| "the handoff carried no derivation handles".to_string())
+    custodian_named(data, "")
+        .await?
+        .ok_or_else(|| "the handoff carried no primary custodian".to_string())
 }
 
-/// A custodian from one set of posted handles, by field prefix: `""`
-/// for the primary, `"holder"` for the second one an addition carries.
+/// A custodian from one posted byte pair, by field prefix: `""` for the
+/// primary, `"holder"` for the second one an addition carries.
+///
+/// Absence is valid only for an entirely absent optional holder. Any
+/// partial set is an error. Typed arrays are cleared immediately after
+/// copying into zeroizing Rust storage, including wrong-length arrays.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn custodian_named(
+async fn custodian_named(
     data: &wasm_bindgen::JsValue,
     prefix: &str,
-) -> Option<tonk_identity::custodian::Custodian> {
+) -> Result<Option<tonk_identity::custodian::Custodian>, String> {
     use wasm_bindgen::{JsCast, JsValue};
+    use zeroize::Zeroizing;
 
     // `key` / `kek` / `credentialId` for the primary set; `holderKey`
     // and friends for the second one an addition carries.
@@ -825,19 +944,72 @@ fn custodian_named(
             format!("{prefix}{}{}", &name[..1].to_uppercase(), &name[1..])
         }
     };
-    let handle = |name: &str| -> Option<web_sys::CryptoKey> {
-        js_sys::Reflect::get(data, &JsValue::from_str(&field(name)))
-            .ok()
-            .and_then(|value| value.dyn_into::<web_sys::CryptoKey>().ok())
-    };
-    let credential_id = js_sys::Reflect::get(data, &JsValue::from_str(&field("credentialId")))
-        .ok()
-        .and_then(|value| value.as_string())
-        .and_then(|value| hex::decode(&value).ok())?;
+    let credential_field = field("credentialId");
+    let key_field = field("key");
+    let kek_field = field("kek");
+    let fields = [&credential_field, &key_field, &kek_field];
+    let present = fields
+        .iter()
+        .map(|name| {
+            js_sys::Reflect::has(data, &JsValue::from_str(name))
+                .map_err(|_| format!("the handoff could not inspect {name}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !prefix.is_empty() && present.iter().all(|present| !present) {
+        return Ok(None);
+    }
 
-    Some(tonk_identity::custodian::Custodian::Passkey(
-        tonk_identity::webcrypto_kek::Custodian::new(credential_id, handle("key")?, handle("kek")?),
-    ))
+    let value = |name: &str, is_present: bool| -> Result<JsValue, String> {
+        if !is_present {
+            return Err(format!("the handoff carried no {name}"));
+        }
+        js_sys::Reflect::get(data, &JsValue::from_str(name))
+            .map_err(|_| format!("the handoff could not read {name}"))
+    };
+
+    let credential_id = value(&credential_field, present[0]).and_then(|value| {
+        let encoded = value
+            .as_string()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("the handoff carried an invalid {credential_field}"))?;
+        let decoded = hex::decode(encoded)
+            .map_err(|_| format!("the handoff carried an invalid {credential_field}"))?;
+        if decoded.is_empty() {
+            return Err(format!("the handoff carried an invalid {credential_field}"));
+        }
+        Ok(decoded)
+    });
+    let take_prf = |name: &str, is_present: bool| -> Result<Zeroizing<[u8; 32]>, String> {
+        let value = value(name, is_present)?;
+        let array = value
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("the handoff carried a non-Uint8Array {name}"))?;
+        let length = array.length();
+        if length != 32 {
+            array.fill(0, 0, length);
+            return Err(format!(
+                "the handoff carried a {name} with length {length}; expected 32"
+            ));
+        }
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        array.copy_to(bytes.as_mut());
+        array.fill(0, 0, length);
+        Ok(bytes)
+    };
+
+    // Evaluate both byte fields before returning any validation error so
+    // every typed array that reached the worker is cleared.
+    let key = take_prf(&key_field, present[1]);
+    let kek = take_prf(&kek_field, present[2]);
+    let credential_id = credential_id?;
+    let key = key?;
+    let kek = kek?;
+    let custodian = tonk_identity::webcrypto_kek::Custodian::adopt(credential_id, &key, &kek)
+        .await
+        .map_err(|_| "the worker could not import the custody derivation handles".to_string())?;
+    Ok(Some(tonk_identity::custodian::Custodian::Passkey(
+        custodian,
+    )))
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -849,9 +1021,8 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    /// The handoff is recognised before anything parses it, because
-    /// the handles it carries are `CryptoKey`s and reading the envelope
-    /// through `serde_wasm_bindgen` would drop them silently.
+    /// The handoff is recognised before anything parses it, because its
+    /// PRF values are typed arrays and must not pass through JSON.
     #[dialog_common::test]
     fn it_recognises_a_custody_handoff_on_the_raw_value() {
         use wasm_bindgen::JsValue;
@@ -867,38 +1038,158 @@ mod tests {
         assert!(!is_custody_envelope(&JsValue::UNDEFINED));
     }
 
-    /// The two posted handles rebuild the custodian, and a handoff
-    /// missing either is refused rather than half-built.
+    /// The two posted PRF arrays rebuild the same custodian as direct
+    /// import and open the same byte-path envelope.
     #[dialog_common::test]
-    async fn it_rebuilds_the_custodian_from_the_posted_handles() {
-        let custodian =
+    async fn it_rebuilds_the_custodian_from_posted_prf_bytes() {
+        let reference =
             tonk_identity::webcrypto_kek::Custodian::adopt(vec![7], &[11u8; 32], &[22u8; 32])
                 .await
                 .expect("handles import");
-        let (key, kek) = custodian.handles();
 
         let envelope = js_sys::Object::new();
         js_sys::Reflect::set(&envelope, &"type".into(), &"custody".into()).unwrap();
         js_sys::Reflect::set(&envelope, &"credentialId".into(), &"07".into()).unwrap();
-        js_sys::Reflect::set(&envelope, &"key".into(), key).unwrap();
-        js_sys::Reflect::set(&envelope, &"kek".into(), kek).unwrap();
+        let key = js_sys::Uint8Array::from(&[11u8; 32][..]);
+        let kek = js_sys::Uint8Array::from(&[22u8; 32][..]);
+        js_sys::Reflect::set(&envelope, &"key".into(), &key).unwrap();
+        js_sys::Reflect::set(&envelope, &"kek".into(), &kek).unwrap();
         let envelope: wasm_bindgen::JsValue = envelope.into();
 
-        let rebuilt = custodian_from(&envelope).expect("the handoff rebuilds a custodian");
+        let rebuilt = custodian_from(&envelope)
+            .await
+            .expect("the handoff rebuilds a custodian");
         // The custody space it names is what a recovering device
         // resolves against, so a drift here strands the account.
         use dialog_varsig::Principal as _;
         assert_eq!(
             rebuilt.signer().await.unwrap().did(),
-            custodian.signer().await.unwrap().did(),
+            reference.signer().await.unwrap().did(),
         );
 
-        let partial = js_sys::Object::new();
-        js_sys::Reflect::set(&partial, &"credentialId".into(), &"07".into()).unwrap();
-        js_sys::Reflect::set(&partial, &"key".into(), key).unwrap();
+        let secret = zeroize::Zeroizing::new([42u8; 32]);
+        let sealed = tonk_identity::envelope::custody_kek(&[22u8; 32])
+            .seal_seed(&secret, tonk_identity::envelope::KekMethod::Passkey)
+            .expect("the byte path seals");
+        let opener = rebuilt.opener().await.expect("the opener derives");
+        let opened = tonk_identity::webcrypto_kek::open_seed(&opener, &sealed)
+            .await
+            .expect("the imported handle opens the byte-path envelope");
+        assert_eq!(&*opened, &*secret);
+        assert_eq!(key.to_vec(), [0u8; 32]);
+        assert_eq!(kek.to_vec(), [0u8; 32]);
+    }
+
+    /// Invalid and partial envelopes fail explicitly before custody work
+    /// can run, while every typed array they carried is cleared.
+    #[dialog_common::test]
+    async fn it_rejects_invalid_custody_byte_envelopes() {
+        fn base() -> js_sys::Object {
+            let envelope = js_sys::Object::new();
+            js_sys::Reflect::set(&envelope, &"credentialId".into(), &"07".into()).unwrap();
+            js_sys::Reflect::set(
+                &envelope,
+                &"key".into(),
+                &js_sys::Uint8Array::from(&[11u8; 32][..]),
+            )
+            .unwrap();
+            js_sys::Reflect::set(
+                &envelope,
+                &"kek".into(),
+                &js_sys::Uint8Array::from(&[22u8; 32][..]),
+            )
+            .unwrap();
+            envelope
+        }
+
+        let missing = js_sys::Object::new();
+        js_sys::Reflect::set(&missing, &"credentialId".into(), &"07".into()).unwrap();
+        js_sys::Reflect::set(
+            &missing,
+            &"key".into(),
+            &js_sys::Uint8Array::from(&[11u8; 32][..]),
+        )
+        .unwrap();
+        assert!(custodian_from(&missing.into()).await.is_err());
+
+        let non_array = base();
+        js_sys::Reflect::set(&non_array, &"key".into(), &"not bytes".into()).unwrap();
+        assert!(custodian_from(&non_array.into()).await.is_err());
+
+        for length in [31, 33] {
+            let wrong_length = base();
+            let key = js_sys::Uint8Array::new_with_length(length);
+            key.fill(9, 0, length);
+            js_sys::Reflect::set(&wrong_length, &"key".into(), &key).unwrap();
+            let error = custodian_from(&wrong_length.into())
+                .await
+                .err()
+                .expect("wrong-length PRF bytes must be refused");
+            assert!(error.contains("expected 32"), "{error}");
+            assert_eq!(key.to_vec(), vec![0; length as usize]);
+        }
+
+        let malformed_id = base();
+        js_sys::Reflect::set(&malformed_id, &"credentialId".into(), &"zz".into()).unwrap();
+        assert!(custodian_from(&malformed_id.into()).await.is_err());
+
+        let partial_holder = base();
+        js_sys::Reflect::set(
+            &partial_holder,
+            &"holderKey".into(),
+            &js_sys::Uint8Array::from(&[3u8; 32][..]),
+        )
+        .unwrap();
         assert!(
-            custodian_from(&partial.into()).is_err(),
-            "a handoff missing the KEK handle is refused"
+            custodian_named(&partial_holder.into(), "holder")
+                .await
+                .is_err()
+        );
+    }
+
+    /// Add-passkey carries a complete, independent holder byte pair.
+    #[dialog_common::test]
+    async fn it_rebuilds_distinct_added_and_holder_custodians() {
+        let envelope = js_sys::Object::new();
+        for (name, value) in [("credentialId", "07"), ("holderCredentialId", "08")] {
+            js_sys::Reflect::set(&envelope, &name.into(), &value.into()).unwrap();
+        }
+        for (name, byte) in [
+            ("key", 11),
+            ("kek", 22),
+            ("holderKey", 33),
+            ("holderKek", 44),
+        ] {
+            js_sys::Reflect::set(
+                &envelope,
+                &name.into(),
+                &js_sys::Uint8Array::from(&[byte; 32][..]),
+            )
+            .unwrap();
+        }
+        let envelope: wasm_bindgen::JsValue = envelope.into();
+        let added = custodian_from(&envelope).await.expect("added custodian");
+        let holder = custodian_named(&envelope, "holder")
+            .await
+            .expect("valid holder")
+            .expect("holder present");
+        use dialog_varsig::Principal as _;
+        let added_did = added.signer().await.unwrap().did();
+        let holder_did = holder.signer().await.unwrap().did();
+        assert_ne!(added_did, holder_did);
+        assert_eq!(
+            added_did,
+            tonk_identity::envelope::custody_signer(&[11u8; 32])
+                .await
+                .unwrap()
+                .did()
+        );
+        assert_eq!(
+            holder_did,
+            tonk_identity::envelope::custody_signer(&[33u8; 32])
+                .await
+                .unwrap()
+                .did()
         );
     }
 

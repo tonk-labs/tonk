@@ -1,18 +1,16 @@
 name: 'CLI npm'
 
-# Tag-driven: pushing a `v*` tag builds the per-platform tonk binaries
-# and publishes @tonk/cli (plus its platform packages) to npm. The
-# version comes from the tag and must match the Cargo workspace version;
-# nothing publishes on a normal push.
+# Prereleases are dispatched at their immutable `v*` tag and publish to
+# npm's `next` channel. Finals publish to `latest` only when `stable` is
+# fast-forwarded to the exact tagged release commit.
 #
-# Can also be run manually against any ref (`workflow_dispatch`), for
-# re-running a failed publish or shipping without cutting a tag. The
-# version still has to match the Cargo workspace version of the ref you
-# pick, so there is only ever one source of truth.
+# Manual dispatch against a release tag is the recovery path for either
+# lifecycle. The policy below still requires that a final is held by
+# stable; selecting a ref or supplying a version never grants authority.
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - stable
   workflow_dispatch:
     inputs:
       version:
@@ -33,6 +31,9 @@ jobs:
       dist-tag: ${{ steps.resolve.outputs.dist-tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Derive and validate version
         id: resolve
@@ -41,35 +42,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Single source of truth: whatever we publish must match the
-          # Cargo workspace version of the checked-out ref.
+          # Single version source: whatever we publish must match the
+          # Cargo workspace version of the checked-out commit.
           cargo_version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
 
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            # An empty input just means "publish what this ref says".
-            version="${INPUT_VERSION:-$cargo_version}"
-            version="${version#v}"
-            source="requested version $version"
-          else
-            # Tag `v0.4.0` -> version `0.4.0`.
-            version="${GITHUB_REF_NAME#v}"
-            source="tag $GITHUB_REF_NAME"
+          version="$cargo_version"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION:-}" ]]; then
+            requested_version="${INPUT_VERSION#v}"
+            if [[ "$requested_version" != "$cargo_version" ]]; then
+              echo "::error::requested version $requested_version does not match Cargo workspace version $cargo_version"
+              exit 1
+            fi
           fi
 
-          if [[ "$version" != "$cargo_version" ]]; then
-            echo "::error::$source does not match Cargo workspace version $cargo_version"
+          # A tag-based dispatch does not reliably populate the remote
+          # branch ref, so resolve stable explicitly rather than infer it
+          # from the event. Tags were fetched by checkout above.
+          git fetch --no-tags origin \
+            refs/heads/stable:refs/remotes/origin/stable
+
+          checkout_sha="$(git rev-parse HEAD)"
+          if ! tag_sha="$(git rev-parse -q --verify "refs/tags/v$version^{commit}")"; then
+            echo "::error::tag v$version does not exist; every npm publication must use an immutable release tag"
             exit 1
           fi
+          stable_sha="$(git rev-parse 'refs/remotes/origin/stable^{commit}')"
 
-          # Prereleases (e.g. 0.4.1-rc.1) publish under `next`,
-          # releases under `latest`.
-          if [[ "$version" == *-* ]]; then
-            dist_tag="next"
-          else
-            dist_tag="latest"
-          fi
+          dist_tag="$(node rust/tonk-cli/npm/channel-policy.mjs \
+            "$version" "$checkout_sha" "$tag_sha" "$stable_sha")"
 
           echo "version=$version"   >> "$GITHUB_OUTPUT"
           echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
@@ -226,7 +229,7 @@ jobs:
           # point at them, so they must exist before it resolves.
           #
           # npm automatically detects the GitHub Actions OIDC environment
-          # for `npm publish`; no NPM_TOKEN or OTP is required.
+          # for `npm publish`; no npm token or OTP is required.
           #
           # The `./` prefix is required — a bare name like `darwin-arm64`
           # is parsed as a registry package spec, not a local directory.

@@ -14,6 +14,7 @@ dialog-credentials = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+ipld-core = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

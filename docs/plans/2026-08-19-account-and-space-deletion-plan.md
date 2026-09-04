@@ -60,6 +60,6 @@
 - [x] native checks for changed crates
 - [x] wasm checks for `tonk-access-service`, `tonk-account-service`,
       `tonk-worker`, `tonk-ui`, and `tonk-identity`
-- [x] `NEXTEST_TEST_THREADS=4 nix develop path:. -c test:web:debug`
+- [x] `NEXTEST_TEST_THREADS=4 nix develop . -c test:web:debug`
 - [x] `cargo clippy` for the changed native crates
 - [x] `git diff --check`

@@ -40,8 +40,10 @@ profile. Each device sees the same account directory after sync.
 
 Logging out removes provider services from that profile but preserves its DID,
 root, account repository, and all local spaces. A later same-account login
-reattaches the profile rather than creating a duplicate device row. A different
-account requires a different browser profile or an explicit CLI logout first.
+reattaches the profile rather than creating a duplicate device row. A later
+different-account ceremony discovers the account root first, then activates the
+existing profile that owns it or creates a fresh profile. The signed-out
+profile and its local spaces remain unchanged.
 
 ### Settings presentation decision
 
@@ -57,8 +59,13 @@ permanent-delete control is described by both the hosted-data consequence and
 the boundary that spaces created by other people and already-replicated copies
 are not erased.
 
+The display-name field commits when Enter or blur ends the edit. Its normal
+native caret is visible while focused; an unfocused field has no blinking
+cursor, so a settled value does not continue to look editable or active.
+
 This is a source-derived presentation decision for `ACCT-B04`, `ACCT-B14`,
-`ACCT-B15`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to `a3f8657d3`. The
+`ACCT-B15`, `ACCT-B13`, `LIFE-21`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to
+`a3f8657d3` and refined by the focused browser regression on 2026-09-02. The
 production-source fixture images were not recaptured and remain pinned to the
 visual commit in `screens.json`.
 
@@ -71,16 +78,17 @@ stateDiagram-v2
     resolving --> dashboard : provider attached
     choice --> resolving : Back or untouched exit
     choice --> ceremony : Create or Log in submitted
-    ceremony --> local_root : passkey/root saved
+    ceremony --> profile_route : account root discovered
+    profile_route --> local_root : keep, activate, or create profile
     local_root --> attached : account/device accepted and provider saved
     attached --> dashboard : account settles
     attached --> pending_activation : customer awaits email
     pending_activation --> active : activation link accepted
     dashboard --> signed_out : Logout commits locally
-    signed_out --> ceremony : same-account Log in
+    signed_out --> ceremony : Log in to this or another account
     dashboard --> profile_choice : Add or switch account
     ceremony --> recovering : reject, failure, reload, or lost response
-    recovering --> choice : retry or choose a fresh profile
+    recovering --> choice : retry
 ```
 
 ### Resolve
@@ -96,6 +104,13 @@ account status. A registered profile lands on the dashboard regardless of
 whether its account repository is unconfigured, unhydrated, or ready. A
 provider-free profile lands on Create/Log in choice. An unhydrated account shows
 a retry warning and must not allow a name change that assumes current facts.
+
+After a passkey ceremony reveals the target account root, the worker resolves
+the owning browser profile before it reads the device signer or persists any
+account facts. A rootless profile is kept for first-account onboarding; a
+same-root profile is reused; a matching roster profile is activated; and an
+unknown root receives one fresh profile. This routing never moves spaces or
+replaces another profile's historical root.
 
 The CLI resolves account state from its local profile store. Bare `tonk
 account` and `tonk account status` are read-only. They must report missing root,
@@ -134,16 +149,17 @@ action is offered for a state that is not a fact about the address.
 ### Cross a boundary
 
 Create crosses its first non-free boundary when the browser starts the account
-passkey ceremony. On success it can rotate an Add-account profile, derive root
-authority, and persist the root before the remote account insertion settles.
-The remote request then creates the account/device generation, after which the
-browser persists the provider link, enrolls the customer, and queues or
-publishes custody.
+passkey ceremony. Once root authority is derived, the worker selects the
+rootless onboarding profile or creates and pins a fresh profile before building
+the account request. The remote request then creates the account/device
+generation, after which the browser persists the root and provider link,
+enrolls the customer, and queues or publishes custody on that pinned profile.
 
 Login crosses its boundary at the passkey assertion and remote device link. A
 same-root re-login may reuse the locally retained root grant when the server
-still has an active row for this device. Cross-account reuse of a profile is
-refused; a fresh profile is the escape hatch.
+still has an active row for this device. A different-root login activates the
+first matching retained profile in stable roster order, or creates a fresh
+profile when no local match exists, before minting the device grant.
 
 Activation crosses its boundary when the person accepts the signed invocation
 carried by the email link. The link itself authorizes activation, so it works on
@@ -212,15 +228,17 @@ local transition is complete. Local spaces remain selected and writable.
 
 Profile switching settles through a reload into the chosen profile. Account
 and space lists must be disjoint even when two accounts use the same display
-names. A deleted selected profile must rotate away so the deleted authority is
-not silently reconstructed.
+names. Every older top-level client must reload or receive a no-side-effect
+conflict before reading or writing through the new profile. A deleted selected
+profile must rotate away so the deleted authority is not silently
+reconstructed.
 
 ## Modifiers
 
 | Modifier | Set at the start | Changed while in flight |
 | --- | --- | --- |
 | Surface and input | Browser uses route/form/WebAuthn; CLI uses subcommands, exit codes, and possibly browser handoff. | The surface cannot safely change. A browser/CLI handoff is an explicit two-surface journey, not a modifier toggle. |
-| Local account state | `I0` creates or logs in; `I1` may create from an existing root or require a fresh profile for another root; `I2`/`I3` recover; `I4` shows dashboard. | A committed root/provider write changes the recovery path; retry must inspect durable state rather than repeat blindly. |
+| Local account state | `I0` creates or logs in; `I1` reuses its historical account profile, activates another matching profile, or creates a fresh profile for an unknown root; `I2`/`I3` recover; `I4` shows dashboard. | A committed root/provider write changes the recovery path; retry must inspect durable state rather than repeat blindly. |
 | Customer state | `C0` enrolls, `C1` waits/resends, `C2` serves, `C3` withholds service, `CX` preserves local behavior. | Activation or suspension can arrive from another device/service; the page must refresh facts and gate remote work. |
 | Space relationship | Local-only spaces stay local through account creation until ownership/service work explicitly attaches them; owned and joined spaces retain their boundaries. | A concurrent space link/delete must not be inferred from account success; refresh the account directory. |
 | Connectivity and actor | Online enables account mutation; offline still permits local status/logout/work. A second actor may change device/account/customer facts. | Timeouts and concurrent changes produce a reconciled state, not an unconditional replay. |
@@ -247,10 +265,10 @@ browser is validated for audience, open subject, proof, and signature before
 installation. Logout is not revocation.
 
 **Local durability.** Root and provider attachment live locally and must
-survive reload/restart. Browser profile rotation occurs only when a ceremony is
-submitted. Native account transitions use a cross-process lock and versioned
-session state, but the declared pending states are not currently written by the
-login flow.
+survive reload/restart. Browser profile creation and activation occur only
+after a ceremony identifies its target account. Native account transitions use
+a cross-process lock and versioned session state, but the declared pending
+states are not currently written by the login flow.
 
 **Remote service and sync.** Customer activation controls hosting availability;
 account-repository readiness controls local shared facts. Either can lag the
@@ -258,7 +276,8 @@ other. Hydration and custody work must be idempotent after reconnect.
 
 **Concurrency and multi-device.** The account repository is shared, but the
 current profile and its local provider attachment are not. Same-account relogin
-must not duplicate a device; cross-account reuse must not borrow authority.
+must not duplicate a device; cross-account routing must not borrow authority or
+let a stale tab act through the newly active profile.
 
 **Output, errors, and recovery.** Errors must name which stage failed and which
 state remains. “Try again” is unsafe when the remote may have committed;
@@ -311,6 +330,14 @@ identity or stable join key to PostHog.
   occurs in the new profile even if the account never attached.
 - A same-account active server row may remain after local logout. Relogin should
   reuse the same attachment safely; it must never enable a different account.
+- Browser logout leaves the signed-out profile and its local spaces intact but
+  promotes the next signed-in account. With no other signed-in account it lands
+  on a rootless local profile, so account spaces are never the default
+  post-logout Hub view.
+- Account switcher rows resolve their display name from each profile's own
+  current profile branch; inactive rows must not regress to generated petnames.
+- A different-account login after sign-out must retain local-only spaces under
+  the old profile and must not attach or expose them from the selected account.
 - Account creation can commit remotely and lose the response. Login must recover
   the account without creating another one.
 - Local attachment can fail after remote creation. The user needs explicit

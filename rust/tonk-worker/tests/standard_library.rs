@@ -169,22 +169,28 @@ fn it_defaults_the_space_alias_to_blank_in_core() {
 }
 
 #[test]
-fn it_describes_space_removal_as_device_local() {
+fn it_distinguishes_leaving_from_deleting_a_space() {
     let rendered_words = PROFILE_LIBRARY
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        rendered_words.contains("Remove {name} from this device?"),
-        "the Hub confirmation must name the device-local removal boundary",
+        rendered_words
+            .contains("Leave {name}? This removes the space and its local data from this device."),
+        "the Hub must call a joined-space removal leaving",
     );
     assert!(
-        rendered_words.contains("Removing it does not delete other members' copies."),
-        "the Hub confirmation must preserve independent replicas",
+        rendered_words
+            .contains("You'll need another invite link to join again. Other members keep access."),
+        "the leave confirmation must explain how access is recovered and who keeps it",
     );
     assert!(
-        !rendered_words.contains("from this account, on every"),
-        "the Hub must not imply that local removal erases account or peer copies",
+        rendered_words.contains("data-space-provider={provider}"),
+        "the Hub must expose hosted ownership to the action component",
+    );
+    assert!(
+        rendered_words.contains("data-space-founded={founded-at}"),
+        "the Hub must distinguish a local-only creation from a joined space",
     );
 }
 
@@ -367,6 +373,44 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
 }
 
 #[test]
+fn it_mints_an_invite_when_copying_a_hub_space_link() {
+    assert!(
+        PROFILE_LIBRARY.contains("<ui-copy-link space={subject}"),
+        "the Hub copy action must name the space whose invite it mints"
+    );
+    assert!(
+        !PROFILE_LIBRARY.contains("ui-copy-link url=\"/space/{subject}\""),
+        "the Hub must not copy its member-only route as though it were an invite"
+    );
+    for (state, label) in [
+        ("idle", "idle"),
+        ("copying", "copying"),
+        ("copied", "copied"),
+        ("blocked", "failed"),
+        ("failed", "failed"),
+    ] {
+        assert!(
+            HUB_STYLES.contains(&format!(
+                "data-share-state=\"{state}\"] [data-share-copy-label=\"{label}\"]"
+            )),
+            "the Hub invite action must display its `{label}` answer in `{state}` state"
+        );
+    }
+}
+
+#[test]
+fn it_aligns_the_hub_space_actions_in_one_flex_context() {
+    assert!(
+        css_rule(HUB_STYLES, ".verbs ui-copy-link,").contains("display:contents"),
+        "the copy-link host must not offset its button from delete or leave"
+    );
+    assert!(
+        css_rule(HUB_STYLES, ".verbs {").contains("gap:18px"),
+        "desktop Hub actions must remain a close visual group"
+    );
+}
+
+#[test]
 fn it_separates_the_account_roster_into_independent_blocks() {
     let menu = css_rule(HUB_STYLES, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
@@ -395,20 +439,80 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // `/settings` is a real route: the hub chrome with the settings
     // section already open (`view="settings"`), reached by href from the
-    // account menu and the FAB alike. The legacy account panel lives at
-    // /account, where the settings panel's ceremony links point.
+    // account menu and the FAB alike. Every account act lives in this
+    // panel; nothing links out to a top-level page. `/settings/link` is
+    // the same page opened by a terminal asking for access.
     assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
+    assert!(PROFILE_LIBRARY.contains("path: \"/settings/link\""));
     assert!(PROFILE_LIBRARY.contains("<ui-hub-account view=\"settings\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
     assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
     // The panes live in the shared panel — one element, two seats: the
     // Hub's account tab and the FAB's settings dialog on the space route.
+    // Device revocation is no longer a separate settings pane.
     assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"link\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-delete-account-open"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-open"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("<div class=\"sect\">sign out</div>"));
+    assert!(
+        SETTINGS_PANEL_MARKUP.contains("disconnect this account; keep local spaces on this device")
+    );
+    assert!(SETTINGS_PANEL_MARKUP.contains("sign out on this device"));
+    assert!(SETTINGS_PANEL_MARKUP.contains("heading=\"confirm sign out\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains(
+        "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
+    ));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-submit>sign out</button>"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("remove this device"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("confirm device removal"));
+    assert!(
+        !SETTINGS_PANEL_MARKUP
+            .contains("remove all data associated with this account from this device")
+    );
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-add-passkey"));
+    assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
+    assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
+    // Editable settings fields use native text inputs and native carets.
+    let name_row = SETTINGS_PANEL_MARKUP
+        .split("<span>display name</span>")
+        .nth(1)
+        .and_then(|rest| rest.split("</div>").next())
+        .expect("the display-name row");
+    assert!(
+        !name_row.contains("<i class=\"cur\""),
+        "an unfocused display-name field must not draw an editing cursor",
+    );
+    assert!(
+        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm type=\"text\""),
+        "the deletion confirm is a native text input",
+    );
+    assert!(
+        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm-label>delete account</b>"),
+        "the deletion confirm must say exactly what to type",
+    );
+    assert!(
+        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        "settings inputs must not draw terminal-style cursors",
+    );
+}
+
+#[test]
+fn it_displays_and_copies_the_same_agent_prompt() {
+    let ending = "Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.";
+    assert_eq!(
+        STANDARD_LIBRARY.matches(ending).count(),
+        2,
+        "the copy-button value and visible prompt must share the complete ending",
+    );
+    assert!(
+        !STANDARD_LIBRARY.contains("Then build.\"></wa-copy-button>"),
+        "the clipboard prompt must not retain its shorter ending",
+    );
 }
 
 #[test]
@@ -430,8 +534,17 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this share link is closed"));
+    assert!(failure.contains("this share link expired"));
+    assert!(failure.contains("ask the person who shared this space to send you a new link"));
+    assert!(failure.contains("go to home"));
+    assert!(!failure.contains("edge-field edge-field--settled"));
+    assert!(!failure.contains("paste a new link"));
+    assert!(!failure.contains("tonk-join-retry"));
+    assert!(!failure.contains("join this space"));
+    assert!(!failure.contains("start a new space"));
     assert!(route.contains("you do not have access to this space"));
+    assert!(route.contains("start a new space"));
+    assert!(route.contains("join this space"));
     for wall in [("closed", failure), ("no-access", route)] {
         assert_eq!(
             wall.1.matches("class=\"ebtn solid\"").count(),
@@ -439,8 +552,39 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the {} wall must carry exactly one solid ink door",
             wall.0,
         );
-        assert!(wall.1.contains("start a new space"));
-        assert!(wall.1.contains("join this space"));
+    }
+}
+
+#[test]
+fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
+    let route = PROFILE_LIBRARY
+        .split("view!:\n  this: tonk:join/route")
+        .nth(1)
+        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .expect("join route view");
+
+    assert!(
+        css_rule(route, ".edge-statement {").contains("color:var(--edge-ink)"),
+        "join statements must override the global heading colour with local mode ink",
+    );
+    assert!(
+        route.contains(".join-status:has(.edge-wall--closed) .join-opening { display:none; }"),
+        "retained failure content must suppress the opening row even while its display reconnects",
+    );
+
+    let action = css_rule(route, ".ebtn {");
+    for contract in [
+        "height:40px",
+        "border:0",
+        "border-radius:0",
+        "font:inherit",
+        "line-height:1",
+        "white-space:normal",
+    ] {
+        assert!(
+            action.contains(contract),
+            "join actions must normalize links and native buttons with `{contract}`",
+        );
     }
 }
 
@@ -477,7 +621,7 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     }
     for contract in [
         ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
-        ".edge-field, .ebtn, .ebtn.solid button { min-height:44px; }",
+        ".edge-field, .ebtn { height:44px; min-height:44px; }",
         ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
         ".edge-input { min-height:44px; font-size:16px; }",
         ".edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }",

@@ -5,6 +5,8 @@ use std::sync::Arc;
 use ::axum::{
     Router,
     extract::{DefaultBodyLimit, State},
+    middleware::{self, Next},
+    response::Response,
     routing::get,
     routing::post,
     routing::put,
@@ -13,11 +15,43 @@ use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
+/// Whether a newer service worker is installed and WAITING to take over —
+/// i.e. whether this worker is retiring.
+///
+/// This is the browser-side race check. The Rust worker also owns a one-way
+/// retirement latch set only after the successor installs successfully and
+/// stream release begins. Routes consult both: the live slot closes the gap
+/// before the latch is published, while the latch keeps new streams closed
+/// after automatic activation clears `registration.waiting`.
+///
+/// Every route that opens a LONG-LIVED response must consult this. An
+/// SSE body is a fetch event that never settles, and the spec keeps a
+/// worker alive while any of its fetch events are in flight. A stream opened
+/// during the handoff can therefore keep the retired incumbent serving stale
+/// clients after the verified successor has activated.
+///
+/// `false` off-wasm and whenever the registration is unreadable — a
+/// wrongly refused stream would starve consumers, a wrongly opened one
+/// only delays an update.
+pub(crate) fn update_pending() -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
+        return js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .map(|scope| scope.registration().waiting().is_some())
+            .unwrap_or(false);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    false
+}
+
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 mod account;
 mod account_deletion;
+mod ceremony;
 pub(crate) mod customer;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;
@@ -128,6 +162,28 @@ mod wire_compat;
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
+fn is_profile_scoped_path(path: &str) -> bool {
+    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+}
+
+async fn profile_context_fence(
+    State(state): State<AppState>,
+    request: ::axum::extract::Request,
+    next: Next,
+) -> Result<Response, crate::TonkWorkerError> {
+    if is_profile_scoped_path(request.uri().path())
+        && let Some(client) = request.extensions().get::<ClientId>()
+    {
+        let tonk = state.read().await;
+        if !session::client_context_is_current(&tonk, client).await {
+            return Err(crate::TonkWorkerError::Conflict(
+                "profile changed; reload required".to_string(),
+            ));
+        }
+    }
+    Ok(next.run(request).await)
+}
+
 /// Root handler that returns a welcome message.
 async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
@@ -174,7 +230,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/delete", post(account_deletion::delete))
         .route(
             "/api/account/spaces/delete",
             post(account_deletion::delete_space),
@@ -390,7 +445,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
         // the language-server lifetime tied to the worker.
-        .merge(lsp_routes);
+        .merge(lsp_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            profile_context_fence,
+        ));
     (router, lsp_hub)
 }
 
@@ -421,6 +480,59 @@ pub mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    fn client_request(method: &str, uri: &str, client: &str) -> Request<Body> {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(super::ClientId(client.to_string()));
+        request
+    }
+
+    #[dialog_common::test]
+    async fn it_fences_clients_from_an_old_profile_generation() {
+        use std::sync::atomic::Ordering;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let first = app
+            .clone()
+            .oneshot(client_request("GET", "/api/profile", "old-client"))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        state
+            .read()
+            .await
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
+
+        for (method, uri) in [
+            ("GET", "/api/profile"),
+            ("POST", "/api/profile/branch/main/transact"),
+        ] {
+            let stale = app
+                .clone()
+                .oneshot(client_request(method, uri, "old-client"))
+                .await
+                .unwrap();
+            assert_eq!(stale.status(), StatusCode::CONFLICT);
+            let body = axum::body::to_bytes(stale.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("profile changed; reload required"));
+        }
+
+        let fresh = app
+            .oneshot(client_request("GET", "/api/profile", "new-client"))
+            .await
+            .unwrap();
+        assert_eq!(fresh.status(), StatusCode::OK);
+    }
 
     /// Failure-safe replacement for one service-worker global used by a test.
     pub(crate) struct GlobalPropertyGuard {
@@ -555,6 +667,7 @@ pub mod tests {
             session_expires_at: session.expires_at,
             profile_name,
             reactor,
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
@@ -562,6 +675,8 @@ pub mod tests {
             clients: Default::default(),
             account_keys: Default::default(),
             registry,
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
         }
     }
 
@@ -1459,7 +1574,6 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_broadcasts_the_invite_minted_by_profile_routed_enable_sync() {
         use futures_util::FutureExt as _;
-        use http_body_util::BodyExt as _;
 
         let state = test_state().await;
         let (app, state, _lsp) = super::api_router_with_state(state);
@@ -1532,23 +1646,15 @@ pub mod tests {
             1,
             "enable-sync should finish minting the invitation",
         );
-        let mut frame = None;
+        let mut delta = None;
         for _ in 0..10 {
-            if let Some(ready) = body.frame().now_or_never().flatten() {
-                frame = Some(ready.expect("SSE frame should be readable"));
+            if let Some(ready) = read_sse_frame(&mut body).now_or_never() {
+                delta = Some(ready);
                 break;
             }
             wasm_yield().await;
         }
-        let frame = frame.expect("enable-sync mint should broadcast its link");
-        let bytes = frame.into_data().expect("data frame");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        let delta: serde_json::Value = serde_json::from_str(
-            text.strip_prefix("data: ")
-                .and_then(|text| text.strip_suffix("\n\n"))
-                .expect("SSE-framed body"),
-        )
-        .expect("delta is JSON");
+        let delta = delta.expect("enable-sync mint should broadcast its link");
         // An ordinary mint on a quiet handle broadcasts an incremental
         // `asserted` delta; a snapshot (`conclusions`) arrives when a poll
         // serves a pending subscriber instead. The FAB accepts both frame
@@ -1773,15 +1879,16 @@ pub mod tests {
         // assert the transient, read back the invitation keyed by subject.
         let minted = mint_invite_for(&app, &repo, &subject).await;
 
-        assert!(
-            minted.remote.contains("&remote="),
-            "a synced repo's invitation must carry a &remote= suffix, got {:?}",
-            minted.remote,
+        assert_eq!(
+            minted.remote, "",
+            "the endpoint rides inside the signed chain, not the URL suffix",
         );
-        assert!(
-            minted.remote.contains("sync.example.test"),
-            "the &remote= suffix must point at the attached endpoint, got {:?}",
-            minted.remote,
+        let chain_bytes = bs58::decode(&minted.access).into_vec().unwrap();
+        let chain = dialog_ucan_core::DelegationChain::try_from(chain_bytes.as_slice()).unwrap();
+        assert_eq!(
+            tonk_invite::home_address(&chain).unwrap().map(String::from),
+            Some(endpoint.to_owned()),
+            "the minted chain must name the attached endpoint in its meta",
         );
     }
 
@@ -3769,7 +3876,7 @@ employee:
 
     /// Open an SSE subscription and return the open body so the
     /// caller can read frames as they arrive.
-    async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {
+    async fn open_subscription(app: &Router, repo: &str, branch: &str) -> SseReader {
         open_subscription_with_query(app, repo, branch, named_concept_wire_query()).await
     }
 
@@ -3779,7 +3886,7 @@ employee:
         repo: &str,
         branch: &str,
         query: serde_json::Value,
-    ) -> Body {
+    ) -> SseReader {
         let response = app
             .clone()
             .oneshot(
@@ -3801,25 +3908,55 @@ employee:
                 .map(|v| v.to_str().unwrap_or("")),
             Some("text/event-stream"),
         );
-        response.into_body()
+        SseReader::new(response.into_body())
     }
 
-    /// Read one SSE `data: <json>\n\n` frame off `body` and parse
-    /// the JSON payload.
-    async fn read_sse_frame(body: &mut Body) -> serde_json::Value {
-        use http_body_util::BodyExt as _;
-        let frame = body
-            .frame()
+    /// Test-side SSE decoder. HTTP body chunks and SSE event boundaries are
+    /// independent: one chunk may contain several events, and one event may
+    /// span several chunks.
+    struct SseReader {
+        body: Body,
+        buffered: Vec<u8>,
+    }
+
+    impl SseReader {
+        fn new(body: Body) -> Self {
+            Self {
+                body,
+                buffered: Vec::new(),
+            }
+        }
+
+        async fn next_event(&mut self) -> Option<serde_json::Value> {
+            use http_body_util::BodyExt as _;
+
+            loop {
+                if let Some(end) = self.buffered.windows(2).position(|bytes| bytes == b"\n\n") {
+                    let event: Vec<u8> = self.buffered.drain(..end + 2).collect();
+                    let text = std::str::from_utf8(&event[..end]).expect("utf8 SSE event");
+                    let json_text = text.strip_prefix("data: ").expect("SSE data event");
+                    return Some(serde_json::from_str(json_text).expect("SSE payload is JSON"));
+                }
+
+                let Some(frame) = self.body.frame().await else {
+                    assert!(
+                        self.buffered.is_empty(),
+                        "SSE body ended with an incomplete event"
+                    );
+                    return None;
+                };
+                let bytes = frame.expect("frame ok").into_data().expect("data frame");
+                self.buffered.extend_from_slice(&bytes);
+            }
+        }
+    }
+
+    /// Read one SSE `data: <json>\n\n` event and parse its JSON payload.
+    async fn read_sse_frame(reader: &mut SseReader) -> serde_json::Value {
+        reader
+            .next_event()
             .await
-            .expect("at least one frame")
-            .expect("frame ok");
-        let bytes = frame.into_data().expect("data frame");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        let json_text = text
-            .strip_prefix("data: ")
-            .and_then(|s| s.strip_suffix("\n\n"))
-            .expect("SSE-framed body");
-        serde_json::from_str(json_text).expect("snapshot is JSON")
+            .expect("at least one complete SSE event")
     }
 
     /// Open an SSE subscription, read the first event (a
@@ -4195,7 +4332,6 @@ employee:
     /// short-circuit.
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
-        use http_body_util::BodyExt as _;
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
@@ -4228,7 +4364,7 @@ employee:
 
         // Race the next frame against a short sleep. We expect
         // the sleep to win — no frame should arrive.
-        let next_frame = body.frame();
+        let next_frame = body.next_event();
         let timeout = crate::sleep(web_time::Duration::from_millis(200));
         tokio::select! {
             frame = next_frame => panic!("unexpected SSE frame after no-op repoll: {frame:?}"),
@@ -4412,7 +4548,7 @@ employee:
         );
     }
 
-    /// `Reactor::shutdown` must drop every active subscriber's
+    /// Worker retirement must drop every active subscriber's
     /// `mpsc::Sender` so the SSE response body finishes and the SW
     /// can release in-flight fetches.
     ///
@@ -4421,7 +4557,6 @@ employee:
     /// expect the body to end (next frame yields `None`).
     #[dialog_common::test]
     async fn it_releases_sse_subscribers_on_shutdown() {
-        use http_body_util::BodyExt as _;
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
@@ -4440,13 +4575,13 @@ employee:
         // Trigger the shutdown the SW upgrade path runs.
         {
             let guard = app_state.read().await;
-            guard.reactor.shutdown();
+            guard.retire();
         }
 
-        // The body must end — `frame()` returns `None`. Race
+        // The body must end — the next decoded event returns `None`. Race
         // against a timeout so a regression hangs the test rather
         // than passing on a delayed frame.
-        let next_frame = body.frame();
+        let next_frame = body.next_event();
         let timeout = crate::sleep(web_time::Duration::from_millis(500));
         tokio::select! {
             frame = next_frame => assert!(
@@ -4454,6 +4589,47 @@ employee:
                 "expected stream end, got frame: {frame:?}",
             ),
             _ = timeout => panic!("subscription body did not end after shutdown"),
+        }
+
+        // Retirement is terminal for this worker generation. Reopening after
+        // the successor has activated (and `registration.waiting` has become
+        // empty) receives one intentional-drop control frame and immediate
+        // EOF, never a fresh subscription that pins the retiring worker.
+        for attempt in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{repo}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "text/event-stream")
+                        .body(Body::from(named_concept_wire_query().to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/event-stream")
+            );
+            let mut body = SseReader::new(response.into_body());
+            let snapshot = read_sse_frame(&mut body).await;
+            assert_eq!(snapshot["kind"], "snapshot");
+            assert!(snapshot["conclusions"].is_array());
+            assert_eq!(
+                read_sse_frame(&mut body).await,
+                serde_json::json!({ "control": "update-pending" }),
+                "retired query reconnect {attempt} must receive the handoff frame after its snapshot",
+            );
+            assert!(
+                body.next_event().await.is_none(),
+                "retired query reconnect {attempt} must close after the handoff frame",
+            );
         }
     }
 

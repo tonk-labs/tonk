@@ -113,7 +113,7 @@ window.STORYBOOK_DATA = {
       "gaps": "Mount failures, unsafe next, duplicated/malformed query, history/reload.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B01",
-      "title": "Open /settings; redirect legacy /account* without losing the query.",
+      "title": "Open /settings in the hub; /settings/link carries a terminal's request.",
       "variants": "Fresh, linked, add-account, revoke, delete, callback queries."
     },
     {
@@ -205,7 +205,7 @@ window.STORYBOOK_DATA = {
       "variants": "C2, C3, CX; repository ready/unhydrated."
     },
     {
-      "evidence": "Partial DOM keyboard/blur tests; pending-verification browser coverage proves the field remains disabled, and presenter unit tests mask transport details.",
+      "evidence": "Focused browser coverage proves Enter ends the edit through the existing change-save path and the unfocused field has no decorative cursor; pending-verification coverage proves the field remains disabled, and presenter unit tests mask transport details.",
       "gaps": "Ready-state remote reject/conflict, duplicate Enter+blur, response loss, second-device concurrent rename, restart.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B13",
@@ -389,7 +389,7 @@ window.STORYBOOK_DATA = {
       "variants": "All precedence levels; nested/stale/missing binding."
     },
     {
-      "evidence": "Whole CLI process coverage; browser pre-activation flow covers local-first use.",
+      "evidence": "Whole CLI process coverage; browser pre-activation flow covers local-first use, and a focused FABB browser regression keeps post-create renaming active through whitespace.",
       "gaps": "Crash between data/registry/binding, read-only/full disk, concurrent same name.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-03",
@@ -397,7 +397,7 @@ window.STORYBOOK_DATA = {
       "variants": "Canonical/custom site; valid/invalid/colliding name."
     },
     {
-      "evidence": "Partial authority and browser flows.",
+      "evidence": "Partial authority and browser flows; the shared FABB rename regression proves internal whitespace does not commit early.",
       "gaps": "All service states, ownership transaction crash, lost response, retry without duplicate space.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-04",
@@ -549,8 +549,8 @@ window.STORYBOOK_DATA = {
       "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
     },
     {
-      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection.",
-      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility in real browser.",
+      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps the blank-space agent prompt's displayed and copied text identical.",
+      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility and real clipboard parity in a browser.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-02",
       "title": "Define/list a detail, directory, label, or title view.",
@@ -879,9 +879,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -900,9 +899,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -920,9 +918,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -942,9 +939,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "CLI authorization handoff",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs",
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
@@ -966,9 +962,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account settings",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -989,9 +984,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Devices and revocation",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1009,9 +1003,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Deletion review",
       "source_paths": [
-        "rust/tonk-ui/src/account.html",
-        "rust/tonk-ui/src/account.css",
-        "rust/tonk-ui/src/account.rs"
+        "rust/tonk-workspace/src/ui_account_settings.html",
+        "rust/tonk-workspace/src/ui_account_settings.rs"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
@@ -1470,7 +1463,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "LIFE-15",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated: it_signs_back_into_the_same_account_after_signing_out."
     },
     {
       "claim": "Browser and CLI logout are local-first when provider detach fails (Settle).",
@@ -1481,12 +1474,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Different-root login into a used profile is refused without writes (Exit early).",
-      "device": "fresh-browser",
+      "claim": "Sign-out and different-account login select existing profiles without rebinding retained local work (Resolve).",
+      "device": "returning-browser + two-actor",
       "file": "verification/accounts.md",
       "id": "LIFE-17",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated: it_adds_a_second_account_and_switches_between_disjoint_space_lists and it_signs_into_another_account_without_rebinding_retained_local_spaces."
     },
     {
       "claim": "Two browser accounts switch without leaking spaces or in-flight results (Settle).",
@@ -1494,7 +1487,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "LIFE-18",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated in it_signs_into_another_account_without_rebinding_retained_local_spaces plus the worker stale-client regression."
     },
     {
       "claim": "Unconfigured and unhydrated account states are visible and recoverable (Resolve).",
@@ -1745,7 +1738,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Wrong email, unchecked box, Cancel, and passkey rejection delete nothing (Exit early).",
+      "claim": "Wrong confirmation phrase, Cancel, and passkey rejection delete nothing (Exit early).",
       "device": "fresh-browser",
       "file": "verification/accounts.md",
       "id": "AUTH-09",
@@ -2228,9 +2221,9 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 0,
+    "other": 3,
     "pass": 1,
-    "unrun": 114
+    "unrun": 111
   },
   "visualCommit": "49a873a23"
 };

@@ -3,140 +3,79 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const watchdog = [...source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const watchdog = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
   .map((match) => match[1])
   .find((script) => script.includes('const RETRIES = "tonk:boot-retries"'));
+assert.ok(watchdog);
 
-assert.ok(watchdog, "expected to find the boot-watchdog script in index.html");
-
-function bootHarness() {
+function harness({ retries = 0, storageThrows = false } = {}) {
+  const values = new Map();
+  if (retries) values.set("tonk:boot-retries", String(retries));
   const status = {
-    attributes: new Set(),
     textContent: "loading…",
-    setAttribute(name) {
-      this.attributes.add(name);
+    failed: false,
+    setAttribute(name) { if (name === "data-failed") this.failed = true; },
+  };
+  let reloads = 0;
+  const self = {};
+  const storage = {
+    getItem(key) {
+      if (storageThrows) throw new Error("storage unavailable");
+      return values.get(key) ?? null;
+    },
+    setItem(key, value) {
+      if (storageThrows) throw new Error("storage unavailable");
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      if (storageThrows) throw new Error("storage unavailable");
+      values.delete(key);
     },
   };
-  const effects = {
-    cacheDeletes: 0,
-    reloads: 0,
-    unregisters: 0,
-  };
-  const session = new Map([["tonk:boot-retries", "1"]]);
-  const context = {
-    Promise,
-    caches: {
-      async delete() {
-        effects.cacheDeletes += 1;
-      },
-      async keys() {
-        return ["TONK_SHELL_old", "unrelated-cache"];
+  vm.runInNewContext(watchdog, {
+    self,
+    navigator: {
+      serviceWorker: {
+        controller: null,
+        async getRegistration() { return null; },
       },
     },
-    clearInterval() {},
-    console: { error() {}, warn() {} },
     document: {
       querySelector(selector) {
         return selector === "[data-boot-status]" ? status : null;
       },
     },
-    location: {
-      reload() {
-        effects.reloads += 1;
-      },
-    },
-    navigator: {
-      serviceWorker: {
-        controller: {},
-        async getRegistration() {
-          return null;
-        },
-        async getRegistrations() {
-          return [
-            {
-              async unregister() {
-                effects.unregisters += 1;
-              },
-            },
-          ];
-        },
-      },
-    },
-    self: null,
-    sessionStorage: {
-      getItem(key) {
-        return session.get(key) ?? null;
-      },
-      removeItem(key) {
-        session.delete(key);
-      },
-      setItem(key, value) {
-        session.set(key, value);
-      },
-    },
-    setInterval() {
-      return 1;
-    },
-  };
-  context.self = context;
-  vm.runInNewContext(watchdog, context, {
-    filename: "index.html:boot-watchdog",
+    sessionStorage: storage,
+    location: { reload() { reloads += 1; } },
+    console: { warn() {}, error() {} },
+    Date,
+    Number,
+    setInterval() { return 1; },
+    clearInterval() {},
   });
-  return { context, effects, session, status };
+  return { self, status, values, reloads: () => reloads };
 }
 
-test("an explicit readiness failure stops destructive automatic recovery", async () => {
-  const { context, effects, session, status } = bootHarness();
-  const message =
-    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
-
-  context.tonkBootTerminal?.(message);
-  context.tonkBootRecover("a late boot failure");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.deepEqual(
-    {
-      effects,
-      failed: status.attributes.has("data-failed"),
-      message: status.textContent,
-      retryState: session.get("tonk:boot-retries") ?? null,
-      terminalHook: typeof context.tonkBootTerminal,
-    },
-    {
-      effects: { cacheDeletes: 0, reloads: 0, unregisters: 0 },
-      failed: true,
-      message,
-      retryState: null,
-      terminalHook: "function",
-    },
-  );
+test("the first recovery reloads even when browser storage is unavailable", () => {
+  const result = harness({ storageThrows: true });
+  result.self.tonkBootRecover("test stall");
+  assert.equal(result.reloads(), 1);
+  assert.equal(result.status.textContent, "recovering…");
 });
 
-test("the first terminal failure keeps its specific recovery message", async () => {
-  const { context, effects, session, status } = bootHarness();
-  const specific =
-    "This Tonk version was withdrawn. Reload to try the current version.";
-  const generic =
-    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+test("a second stall terminates instead of entering another recovery loop", () => {
+  const result = harness({ retries: 1 });
+  result.self.tonkBootRecover("test stall");
+  assert.equal(result.reloads(), 0);
+  assert.equal(result.status.failed, true);
+  assert.match(result.status.textContent, /local data is safe/i);
+});
 
-  context.tonkBootTerminal(specific);
-  context.tonkBootTerminal(generic);
-  context.tonkBootRecover("a later boot failure");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.deepEqual(
-    {
-      effects,
-      failed: status.attributes.has("data-failed"),
-      message: status.textContent,
-      retryState: session.get("tonk:boot-retries") ?? null,
-    },
-    {
-      effects: { cacheDeletes: 0, reloads: 0, unregisters: 0 },
-      failed: true,
-      message: specific,
-      retryState: null,
-    },
-  );
+test("an explicit terminal failure clears the retry guard", () => {
+  const result = harness({ retries: 1 });
+  result.self.tonkBootTerminal("specific failure");
+  assert.equal(result.status.textContent, "specific failure");
+  assert.equal(result.status.failed, true);
+  assert.equal(result.values.has("tonk:boot-retries"), false);
 });

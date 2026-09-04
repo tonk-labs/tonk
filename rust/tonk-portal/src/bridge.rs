@@ -335,6 +335,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       case "register-focus": {
         var opener=registerFocus.get(env.focusToken);
         registerFocus.delete(env.focusToken);
+        // The top-page ceremony has been torn down. Its opener may have been
+        // replaced by a profile-fact render while the ceremony was running,
+        // so signal the guest window even when that old node can no longer
+        // take focus. Hub chrome uses this terminal event to clear its durable
+        // linking marker and restore the spaces page in one step.
+        window.dispatchEvent(new Event("tonk:registration-closed"));
         if(opener&&opener.isConnected&&!opener.matches(":disabled")){
           window.focus();
           opener.focus({preventScroll:true});

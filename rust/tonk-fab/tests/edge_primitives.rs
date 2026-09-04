@@ -8,7 +8,9 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, Element, HtmlElement, HtmlInputElement, window};
+use web_sys::{
+    CustomEvent, Element, HtmlElement, HtmlInputElement, MouseEvent, MouseEventInit, window,
+};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -75,6 +77,38 @@ fn mount(tag: &str) -> HtmlElement {
         .append_child(&host)
         .expect("mount host");
     host
+}
+
+#[dialog_common::test]
+fn a_space_typed_while_renaming_does_not_commit_the_name() {
+    let bar = mount("tonk-fab");
+    bar.set_attribute("label", "Project").expect("label");
+    let edit_space = js_sys::Reflect::get(&bar, &"editSpace".into())
+        .expect("editSpace member")
+        .dyn_into::<js_sys::Function>()
+        .expect("editSpace function");
+    edit_space.call0(&bar).expect("start rename");
+
+    let cell = shadow(&bar, "[data-cell=space]");
+    let edit = shadow(&bar, ".space .edit");
+    edit.set_text_content(Some("Project "));
+
+    // Browsers synthesize a detail-zero click on a focused button for the
+    // Space key. The editable lives inside that button, so this is the click
+    // that used to commit the name at its first word.
+    let init = MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_composed(true);
+    let click = MouseEvent::new_with_mouse_event_init_dict("click", &init).expect("keyboard click");
+    cell.dispatch_event(&click)
+        .expect("dispatch keyboard click");
+
+    assert!(
+        cell.class_list().contains("editing"),
+        "a Space-key click must leave the rename active",
+    );
+    assert_eq!(edit.text_content().as_deref(), Some("Project "));
+    bar.remove();
 }
 
 fn set_context_origin(value: &str) {

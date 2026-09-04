@@ -447,7 +447,13 @@ mod when_claiming_an_invite_with_a_remote {
         let invite_outcome =
             invite::mint_with_relay(&inviter.site, None, Some(ENDPOINT), Some(REVOCATION_RELAY))
                 .await?;
-        assert!(invite_outcome.url.contains("remote="));
+        // The endpoint rides inside the signed chain, not the URL.
+        assert!(!invite_outcome.url.contains("remote="));
+        let parsed = tonk_invite::Invite::parse_url(&invite_outcome.url).await?;
+        assert_eq!(
+            parsed.remote_url.as_ref().map(url::Url::as_str),
+            Some(ENDPOINT)
+        );
 
         // Claimer joins into a fresh tempdir.
         let claimer_tmp = tempfile::tempdir()?;
@@ -744,6 +750,14 @@ mod when_minting_and_claiming_an_invite {
         let inviter = common::TestSite::new().await?;
         let outcome = invite::mint(&inviter.site, Some("https://example.test/join"), None).await?;
         assert!(outcome.url.starts_with("https://example.test/join"));
+        let url = url::Url::parse(&outcome.url)?;
+        assert!(url.query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(url.query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize(outcome.subject.as_str())
+        }));
         Ok(())
     }
 

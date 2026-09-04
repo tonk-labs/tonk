@@ -28,23 +28,30 @@ pub(crate) struct NavigateListener {
 /// - `{ type: "navigate", href }` — assigns `window.location`.
 /// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
 ///   sync controller pushes immediately instead of waiting for the heartbeat.
+/// - `{ type: "profile-changed" }` — reloads the top-level document so it
+///   receives a fresh service-worker client binding for the active profile.
 ///
 /// Returns `None` when there is no service-worker container (e.g. a
 /// non-secure context or a test stub).
 pub(crate) fn install() -> Option<NavigateListener> {
     let container = service_worker_container()?;
     let closure = Closure::wrap(Box::new(move |event: MessageEvent| {
-        let data = event.data();
-        if let Some(href) = navigate_href(&data) {
-            navigate_to(&href);
-        } else if is_sync_message(&data) {
-            dispatch_committed();
-        }
+        handle_worker_message(&event.data());
     }) as Box<dyn FnMut(MessageEvent)>);
     container
         .add_event_listener_with_callback("message", closure.as_ref().unchecked_ref())
         .ok()?;
     Some(NavigateListener { _closure: closure })
+}
+
+fn handle_worker_message(data: &JsValue) {
+    if let Some(href) = navigate_href(data) {
+        navigate_to(&href);
+    } else if is_sync_message(data) {
+        dispatch_committed();
+    } else if is_profile_changed_message(data) {
+        reload_page();
+    }
 }
 
 /// Read `href` out of a `{ type: "navigate", href }` message, or `None` when
@@ -72,6 +79,15 @@ fn is_sync_message(data: &JsValue) -> bool {
         .and_then(|v| v.as_string())
         .map(|kind| kind == "sync")
         .unwrap_or(false)
+}
+
+/// Return `true` for an identifier-free `{ type: "profile-changed" }`
+/// message from the worker.
+fn is_profile_changed_message(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("type"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .is_some_and(|kind| kind == "profile-changed")
 }
 
 /// Dispatch `tonk:committed` on `window` so the sync controller treats it
@@ -260,6 +276,27 @@ mod tests {
             !is_sync_message(&JsValue::from_str("not an object")),
             "a non-object payload should not be recognised as sync"
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_reloads_for_a_profile_changed_worker_message() {
+        let calls = install_effect_stub("reload");
+
+        handle_worker_message(&message("profile-changed", ""));
+
+        clear_tonk();
+        assert_eq!(calls.length(), 1);
+        assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
+    }
+
+    #[dialog_common::test]
+    async fn it_ignores_unrelated_worker_messages() {
+        let calls = install_effect_stub("reload");
+
+        handle_worker_message(&message("unrelated", ""));
+
+        clear_tonk();
+        assert_eq!(calls.length(), 0);
     }
 
     /// Install a stub `window.tonk[method]` recording its argument. See the

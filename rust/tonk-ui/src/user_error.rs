@@ -3,6 +3,10 @@
 use crate::error::TonkUiError;
 use tonk_analytics::account::{AccountOutcome, FailureKind, HttpStatusClass, ServiceCode};
 
+const CUSTODY_HANDOFF_TIMEOUT: &str =
+    "the service worker did not answer the custody handoff in time";
+const CUSTODY_HANDOFF_RECOVERY: &str = "Your passkey was approved, but this browser did not finish the secure handoff. Reload the page and try again.";
+
 /// One account failure projected into safe presentation and analytics fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AccountProblem {
@@ -59,13 +63,23 @@ pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
     problem_from_diagnostic(action, detail).message
 }
 
-/// Compatibility diagnostics have no typed evidence. Their prose may improve
-/// recovery copy, but analytics always sees `unknown`.
+/// Compatibility diagnostics usually have no typed evidence. Their prose may
+/// improve recovery copy while analytics sees `unknown`; the locally emitted,
+/// stable custody-handoff timeout is the one closed diagnostic classified here.
 pub(crate) fn problem_from_diagnostic(action: AccountAction, detail: &str) -> AccountProblem {
-    AccountProblem::new(
-        diagnostic_message(action, detail),
-        AccountOutcome::retryable(FailureKind::Unknown),
-    )
+    let outcome = if is_custody_handoff_timeout(action, detail) {
+        AccountOutcome::retryable(FailureKind::Timeout)
+    } else {
+        AccountOutcome::retryable(FailureKind::Unknown)
+    };
+    AccountProblem::new(diagnostic_message(action, detail), outcome)
+}
+
+fn is_custody_handoff_timeout(action: AccountAction, detail: &str) -> bool {
+    matches!(
+        action,
+        AccountAction::CreateAccount | AccountAction::LogIn | AccountAction::AddPasskey
+    ) && detail.contains(CUSTODY_HANDOFF_TIMEOUT)
 }
 
 fn diagnostic_message(action: AccountAction, detail: &str) -> String {
@@ -79,6 +93,9 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
         == "Please verify your email using the verification link we sent before changing your display name."
     {
         return original.to_owned();
+    }
+    if is_custody_handoff_timeout(action, original) {
+        return CUSTODY_HANDOFF_RECOVERY.to_owned();
     }
     let detail = detail.to_ascii_lowercase();
     if detail.contains("an account already exists for this email address") {
@@ -188,6 +205,9 @@ pub(crate) fn ceremony_problem(
             diagnostic_message(action, &error.message),
             AccountOutcome::terminal_failure(FailureKind::AccessDenied),
         ),
+        None if is_custody_handoff_timeout(action, &error.message) => {
+            problem_from_diagnostic(action, &error.message)
+        }
         None => {
             let outcome = match error.refusal.unwrap_or(CeremonyRefusal::Other) {
                 CeremonyRefusal::NotAllowed => AccountOutcome::cancelled(),
@@ -285,38 +305,6 @@ pub(crate) fn api_problem(action: AccountAction, error: &TonkUiError) -> Account
         ),
         _ => AccountProblem::new(message, AccountOutcome::retryable(FailureKind::Unknown)),
     }
-}
-
-/// Classify a dispatched destructive mutation. A missing or malformed reply
-/// cannot prove that the service did not commit the mutation.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-pub(crate) fn mutation_api_problem(action: AccountAction, error: &TonkUiError) -> AccountProblem {
-    let problem = api_problem(action, error);
-    if matches!(
-        action,
-        AccountAction::DeleteAccount | AccountAction::DeleteSpace | AccountAction::RevokeDevice
-    ) && matches!(
-        error,
-        TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Network,
-            ..
-        } | TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Decode,
-            status: None | Some(200..=299) | Some(500..=599),
-            ..
-        } | TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Http,
-            status: None | Some(500..=599),
-            ..
-        }
-    ) {
-        let kind = problem
-            .outcome
-            .failure_kind()
-            .unwrap_or(FailureKind::Unknown);
-        return AccountProblem::new(problem.message, AccountOutcome::unknown_commit(kind));
-    }
-    problem
 }
 
 fn fallback(action: AccountAction) -> &'static str {
@@ -431,13 +419,30 @@ mod tests {
             ),
             (
                 AccountAction::DeleteAccount,
-                "identity ceremony verifyPasskey is unavailable",
+                "identity ceremony usePasskey is unavailable",
                 "Passkeys are not available in this browser right now. Reload the page, or try another supported browser or device.",
             ),
         ];
 
         for (action, detail, expected) in cases {
             assert_eq!(diagnostic(action, detail), expected);
+        }
+    }
+
+    #[test]
+    fn custody_handoff_timeout_is_retryable_with_reload_guidance() {
+        for action in [
+            AccountAction::LogIn,
+            AccountAction::CreateAccount,
+            AccountAction::AddPasskey,
+        ] {
+            let problem = problem_from_diagnostic(action, CUSTODY_HANDOFF_TIMEOUT);
+            assert_eq!(problem.message, CUSTODY_HANDOFF_RECOVERY);
+            assert_eq!(problem.outcome.failure_kind(), Some(FailureKind::Timeout));
+            assert_eq!(
+                problem.outcome.result(),
+                tonk_analytics::account::AccountResult::RetryableFailure
+            );
         }
     }
 
@@ -551,62 +556,6 @@ mod tests {
             assert!(!problem.message.contains("did:key"));
             assert!(!problem.message.contains("response body"));
         }
-    }
-
-    #[test]
-    fn destructive_mutations_distinguish_unknown_commit_from_proved_rejection() {
-        for transport_kind in [AccountTransportKind::Network, AccountTransportKind::Decode] {
-            let error = TonkUiError::AccountApi {
-                transport_kind,
-                status: (transport_kind == AccountTransportKind::Decode).then_some(200),
-                service_code: None,
-                diagnostic: "person@example.com response was lost after dispatch".to_owned(),
-            };
-            let problem = mutation_api_problem(AccountAction::DeleteAccount, &error);
-            assert_eq!(
-                problem.outcome.result(),
-                tonk_analytics::account::AccountResult::UnknownCommit
-            );
-            assert!(!problem.message.contains("person@example.com"));
-        }
-
-        let rejected = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Http,
-            status: Some(409),
-            service_code: Some("customer_active".to_owned()),
-            diagnostic: "server proved the deletion did not commit".to_owned(),
-        };
-        let problem = mutation_api_problem(AccountAction::DeleteAccount, &rejected);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::TerminalFailure
-        );
-        assert_eq!(problem.outcome.failure_kind(), Some(FailureKind::Conflict));
-
-        let unreadable_server_response = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Decode,
-            status: Some(503),
-            service_code: None,
-            diagnostic: "server rejected the mutation with an unreadable body".to_owned(),
-        };
-        let problem =
-            mutation_api_problem(AccountAction::DeleteAccount, &unreadable_server_response);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::UnknownCommit
-        );
-
-        let server_failure = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Http,
-            status: Some(503),
-            service_code: Some("upstream_unavailable".to_owned()),
-            diagnostic: "service failed after accepting the mutation".to_owned(),
-        };
-        let problem = mutation_api_problem(AccountAction::RevokeDevice, &server_failure);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::UnknownCommit
-        );
     }
 
     #[test]

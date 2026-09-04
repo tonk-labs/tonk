@@ -9,8 +9,8 @@
 //! - `POST /ucan/` - Authorize a UCAN invocation container
 //! - `PUT /@` - Store a same-origin shortcut target (see the
 //!   [`shortcut`] module)
-//! - `GET /@/{hash}` - Permanent relative redirect to the stored
-//!   target
+//! - `GET /@/{hash}` - Permanent relative redirect to the stored target, with
+//!   allowlisted public referral tags forwarded
 //!
 //! ## Request Format
 //!

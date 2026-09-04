@@ -22,6 +22,7 @@ use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
+use tonk_schema::prelude::DidExt;
 use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
 use url::Url;
 
@@ -228,15 +229,6 @@ async fn mint_for(
         }
     };
 
-    let delegation: UcanDelegation = site
-        .profile
-        .access()
-        .claim(Subject::from(site.repository.did()).attenuate(Use))
-        .delegate(audience.clone())
-        .perform(&site.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to build delegation: {e}")))?;
-
     let parsed_remote = match remote_url {
         Some(raw) => Some(
             Url::parse(raw)
@@ -244,6 +236,23 @@ async fn mint_for(
         ),
         None => None,
     };
+
+    // With a remote, the leaf is signed with the endpoint in its
+    // `home.address` meta so the grant and the address travel together.
+    // A local-only invite has no endpoint to name and delegates plainly.
+    let mut delegate = site
+        .profile
+        .access()
+        .claim(Subject::from(site.repository.did()).attenuate(Use))
+        .delegate(audience.clone());
+    if let Some(remote) = &parsed_remote {
+        delegate = delegate.meta(tonk_invite::home_address_meta(remote));
+    }
+    let delegation: UcanDelegation = delegate
+        .perform(&site.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to build delegation: {e}")))?;
+    let chain = delegation.into_chain();
 
     // A remote with no relay configured is no longer a reason to refuse: a
     // revocation is an ordinary `ucan/revoke` invocation, so it goes to the
@@ -256,7 +265,7 @@ async fn mint_for(
         ),
         None => None,
     };
-    let invite = Invite::new(delegation.into_chain(), invite_audience, parsed_remote)
+    let invite = Invite::new(chain, invite_audience, parsed_remote)
         .await
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
         .with_revocation_url(relay);
@@ -264,6 +273,8 @@ async fn mint_for(
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
         .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?;
+    let url = tonk_analytics::launch::space_referral_url(&url, site.repository.did().repo_key())
+        .map_err(|e| InviteError::Io(format!("failed to add invite referral attribution: {e}")))?;
 
     // Record the invitation on the repo's meta branch — the durable,
     // secret-free half of the invite (the seed stays in the URL).

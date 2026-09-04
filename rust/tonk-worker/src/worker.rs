@@ -2,7 +2,10 @@
 //!
 //! This module defines all JavaScript-visible bindings for the Tonk service worker.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use crate::{
     LspHub,
@@ -306,10 +309,11 @@ fn reject_404() -> Result<JsValue, JsValue> {
 
 /// Pass the request through to the network or the shell cache.
 ///
-/// Cacheable GETs go through stale-while-revalidate against the
-/// shell cache — repeat loads serve from memory instead of
-/// re-downloading Webawesome's chunk graph, Trunk-hashed JS/Wasm,
-/// or the self-hosted font set.
+/// Cacheable GETs read this worker generation's immutable shell cache — repeat
+/// loads serve from memory instead of re-downloading Webawesome's chunk graph,
+/// Trunk-hashed JS/Wasm, or the self-hosted font set. Because install verifies
+/// that complete resource graph, a later miss fails closed rather than using
+/// live stable-name bytes from another deployment.
 ///
 /// Document navigations don't reach this function: the JS shim
 /// serves them directly from the SW cache so navigation TTFB
@@ -317,9 +321,12 @@ fn reject_404() -> Result<JsValue, JsValue> {
 /// the data plane (`/api/*`) on the Rust side without paying
 /// the worker boot cost for the HTML shell.
 ///
-/// Non-cacheable requests (non-GETs, opaque/cross-origin) fall
-/// through to `self.fetch(request)` to hit the network directly.
-/// Such fetches bypass the SW's own `onfetch` handler per spec.
+/// Genuinely non-cacheable requests (non-GETs, data-plane,
+/// opaque/cross-origin, or an unstamped development cache bypass) fall through
+/// to `self.fetch(request)` to hit the network directly. A stamped production
+/// generation never turns a same-origin static request into a live stable-name
+/// fetch merely because authored code supplied a cache-bypass flag. Such
+/// network fetches bypass the SW's own `onfetch` handler per spec.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn passthrough(request: Request, _is_navigation: bool) -> Result<JsValue, JsValue> {
     let path = url::Url::parse(&request.url())
@@ -327,7 +334,7 @@ async fn passthrough(request: Request, _is_navigation: bool) -> Result<JsValue, 
         .unwrap_or_default();
 
     if crate::cache::is_cacheable(&request, &path) {
-        return crate::cache::stale_while_revalidate(&request).await;
+        return crate::cache::immutable_cache_first(&request).await;
     }
 
     let response: Response = JsFuture::from(sw_fetch(&request)).await?.dyn_into()?;
@@ -377,6 +384,10 @@ pub struct TonkState {
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::Reactor,
+    /// Terminal lifecycle latch for this worker generation. Once a verified
+    /// successor installs, no later query reconnect may recreate an SSE stream
+    /// on the outgoing worker, even after `registration.waiting` clears.
+    pub(crate) retiring: Arc<AtomicBool>,
     /// View-iframe bindings keyed by service-worker Client ID.
     /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
@@ -409,6 +420,25 @@ pub struct TonkState {
     /// without re-deriving where the registry lives — and so tests can
     /// point it at a scratch registry instead of the real one.
     pub(crate) registry: crate::device::Registry,
+    /// Serializes every replacement of the active profile, whether explicit
+    /// or selected automatically by an account ceremony.
+    pub(crate) profile_transition: Arc<Mutex<()>>,
+    /// Monotonic active-profile context. Browser clients bind to the value
+    /// they first use and become stale when a profile promotion advances it.
+    pub(crate) context_generation: Arc<AtomicU64>,
+}
+
+impl TonkState {
+    /// Enter the one-way retiring state and release every query stream.
+    pub(crate) fn retire(&self) {
+        self.retiring.store(true, Ordering::Release);
+        self.reactor.shutdown();
+    }
+
+    /// Whether this worker generation has terminally begun retirement.
+    pub(crate) fn is_retiring(&self) -> bool {
+        self.retiring.load(Ordering::Acquire)
+    }
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -638,7 +668,7 @@ mod route_for_tests {
 
     /// A stopped worker refuses every drain — that is the point of the flag: a
     /// worker being replaced must start no new sync work, or it re-arms
-    /// `waitUntil` and pins itself in `waiting`.
+    /// `waitUntil` and keeps the outgoing instance serving stale clients.
     #[dialog_common::test]
     fn it_refuses_every_drain_once_stopped() {
         let s = SyncScheduler::default();
@@ -651,11 +681,10 @@ mod route_for_tests {
         assert!(!s.should_drain(t, SYNC_DEBOUNCE_MS as f64, CLEAN));
     }
 
-    /// ...but `stop()` must not be a ONE-WAY latch. `updatefound` fires on the
-    /// registration, so a newly-installing worker hears it about its own
-    /// arrival and can stop itself; it then activates and serves the page. It
-    /// must sync. `resume()` (called from `onactivate`) is what un-latches it —
-    /// without it that worker refuses every drain for the rest of its life.
+    /// ...but `stop()` must not be a ONE-WAY latch. Activation establishes the
+    /// worker as the serving generation, so `resume()` defensively clears any
+    /// earlier stop before it begins accepting work. Without that reset a
+    /// false-positive retirement would suppress every drain for its lifetime.
     #[dialog_common::test]
     fn it_resumes_when_it_turns_out_to_be_the_serving_worker() {
         let s = SyncScheduler::default();
@@ -1185,8 +1214,8 @@ struct SyncScheduler {
     /// Set once the worker is being replaced. A dying worker must not start
     /// new sync work: the SW spec keeps it alive until every `waitUntil`
     /// settles and every fetch completes, so a drain scheduled (or a loop
-    /// tick fired) after `updatefound` pins the outgoing worker in `waiting`
-    /// — which is why it "won't go away".
+    /// tick fired) after retirement keeps the outgoing worker alive after its
+    /// successor has taken over.
     stopped: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether any window client was visible at the last check. Hidden
     /// pages hold drains to a ramp starting at [`SYNC_HIDDEN_INTERVAL_MS`]
@@ -1738,6 +1767,7 @@ pub(crate) async fn boot_state(
         session_expires_at: session.expires_at,
         profile_name,
         reactor,
+        retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
         commands: crate::router::command_registry(),
@@ -1745,6 +1775,8 @@ pub(crate) async fn boot_state(
         clients: Default::default(),
         account_keys: Default::default(),
         registry,
+        profile_transition: Arc::new(Mutex::new(())),
+        context_generation: Arc::new(AtomicU64::new(0)),
     };
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
@@ -1766,6 +1798,11 @@ pub struct TonkServiceWorker {
     /// (with optional path rewriting) or passed through to the
     /// network.
     state: AppState,
+    /// Lock-free twin of [`TonkState::retiring`]. The JavaScript-facing
+    /// `onupdatefound` callback sets it synchronously, before constructing the
+    /// async drain promise, so a state writer cannot delay the handoff
+    /// decision for a queued query/LSP reconnect.
+    retiring: Arc<AtomicBool>,
     /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
     /// to release in-flight SSE responses when a newer worker
     /// version begins installing — without this the active worker
@@ -1836,6 +1873,7 @@ impl TonkServiceWorker {
         // returns the LSP hub *and* a cloneable `AppState` handle:
         // the worker keeps the latter so `on_fetch` can read the
         // guest-binding map without going through the router.
+        let retiring = Arc::clone(&state.retiring);
         let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
@@ -1875,6 +1913,7 @@ impl TonkServiceWorker {
         Ok(Self {
             router,
             state,
+            retiring,
             lsp,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             sync_scheduler: SyncScheduler::default(),
@@ -1889,21 +1928,24 @@ impl TonkServiceWorker {
     /// `installing` state, this active worker is on its way out.
     /// We use the moment to close every long-lived stream we're
     /// serving — `/api/lsp/events` SSE plus every `/query` SSE
-    /// subscription — so the in-flight fetch events settle and the
-    /// new worker can activate.
+    /// subscription — so the in-flight fetch events settle and the outgoing
+    /// worker can terminate after the successor takes over.
     ///
-    /// Without this the SW spec keeps the active worker alive
-    /// while any of its fetches are open, so a freshly-installed
-    /// worker would sit in `waiting` until every browsing context
-    /// hosting the page closed.
+    /// Without this the SW spec keeps the outgoing worker alive while any of
+    /// its fetches are open, allowing old-client reconnects to keep reaching
+    /// the retired generation after the successor activates.
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
+        // This must precede every await, including acquisition of the shared
+        // state lock. A long-running state writer may delay the drain, but it
+        // must never let a later stream-open observe this generation as live.
+        self.retiring.store(true, Ordering::Release);
         // Stop all sync work FIRST. The spec keeps this worker alive until
         // every in-flight fetch and every `waitUntil` promise settles; a drain
         // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
-        // tick, would keep re-arming that condition and pin the outgoing worker
-        // in `waiting` indefinitely — the "SW won't go away" symptom.
+        // tick, would keep re-arming that condition and preserve the outgoing
+        // worker indefinitely — the "SW won't go away" symptom.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             self.sync_scheduler.stop();
@@ -1912,23 +1954,26 @@ impl TonkServiceWorker {
         let lsp = self.lsp.clone();
         let state = self.state.clone();
         future_to_promise(async move {
+            // Latch query retirement before the first independent await. If
+            // LSP shutdown ran first, the successor could activate and clear
+            // `registration.waiting` while query reconnects still saw this
+            // generation as live. The reactor gate makes the latch and every
+            // active/pending subscriber registration atomic.
+            {
+                let tonk = state.read().await;
+                tonk.retire();
+            }
             lsp.shutdown().await;
-            // Also drain every query subscription. Each carries an
-            // `mpsc::Sender` whose receiver drives an SSE response
-            // body; dropping the sender ends the body so the fetch
-            // settles.
-            let tonk = state.read().await;
-            tonk.reactor.shutdown();
             log!("Streams are released");
             Ok(JsValue::UNDEFINED)
         })
     }
 
-    /// Called from the JS shim's `self.onactivate`. Drops every shell cache
-    /// from older SW versions before this worker serves a controlled fetch.
-    /// Client adoption is page-directed: compatible pages explicitly ask the
-    /// activated worker to claim them, while older pages retain their current
-    /// controller until navigation.
+    /// Called from the JS shim's `self.onactivate` to resume this generation's
+    /// sync scheduler. Client adoption is page-directed: compatible pages ask
+    /// the activated worker to claim them, while older pages retain their
+    /// current controller and may still need that controller's shell and Wasm
+    /// caches. Activation therefore never purges another generation.
     #[wasm_bindgen(js_name = "onactivate")]
     pub fn on_activate(&self) -> Promise {
         // A worker that is activating is the one now serving the page, so it is
@@ -1938,24 +1983,16 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         self.sync_scheduler.resume();
 
-        future_to_promise(async move {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            {
-                if let Err(err) = crate::cache::purge_old_caches().await {
-                    log!("purge_old_caches failed: {:?}", err);
-                }
-            }
-            Ok(JsValue::UNDEFINED)
-        })
+        future_to_promise(async { Ok(JsValue::UNDEFINED) })
     }
 
     /// Handles incoming fetch events from the browser.
     ///
-    /// Called from the JS shim's `self.onfetch` listener for *every*
-    /// request the service worker sees. The Rust side decides
-    /// whether to handle the request itself (via the axum router)
-    /// or pass it through to the network. The shim never
-    /// inspects the URL — all routing policy lives here.
+    /// Called from the JS shim for data-plane/live requests and for every
+    /// request whose initiating client may be a registered guest. Exact
+    /// top-level stamped documents/assets stay in the JS fast path; the Rust
+    /// side decides whether each delegated request belongs in the axum router
+    /// or must pass through to the network.
     ///
     /// Decision rule (see [`route_for`]):
     /// - If the request's path starts with `/api/`, route through
@@ -2071,12 +2108,12 @@ impl TonkServiceWorker {
         let ports = event.ports();
 
         future_to_promise(async move {
-            // A custody envelope carries two `CryptoKey` handles, which
-            // are not JSON: reading it through `serde_wasm_bindgen`
-            // would silently drop them. So it is recognised on the raw
-            // value, before anything parses.
+            // A custody envelope carries two transient PRF typed arrays,
+            // which must not pass through JSON. Recognise it on the raw
+            // value before the ordinary typed protocol parses anything.
             if crate::router::custody::is_custody_envelope(&data) {
-                crate::router::custody::receive(state, data, ports).await;
+                crate::router::custody::receive(state, source_client_id.map(ClientId), data, ports)
+                    .await;
                 return Ok(JsValue::UNDEFINED);
             }
 

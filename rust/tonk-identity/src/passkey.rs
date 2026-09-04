@@ -42,6 +42,39 @@ pub struct CustodyCredential {
     pub evaluation: Option<CustodyEvaluation>,
 }
 
+/// A custody credential whose two PRF outputs are ready for the
+/// service-worker handoff.
+///
+/// Creation may omit extension results on platforms that only evaluate
+/// PRF during an assertion. [`CustodyCredential::into_evaluated`] hides
+/// that platform difference while keeping the outputs as zeroizing Rust
+/// arrays until the page constructs its one structured-clone envelope.
+pub(crate) struct EvaluatedCustodyCredential {
+    /// Raw credential id, as registered with the authenticator.
+    pub id: Vec<u8>,
+    /// The two independent custody PRF outputs.
+    pub evaluation: CustodyEvaluation,
+}
+
+impl CustodyCredential {
+    /// Ensure both custody PRF outputs are present.
+    ///
+    /// Reuse creation's extension results when the authenticator supplied
+    /// them. Otherwise run the existing credential-pinned follow-up
+    /// assertion and keep the original credential id.
+    pub(crate) async fn into_evaluated(self) -> Result<EvaluatedCustodyCredential> {
+        let id = self.id;
+        let evaluation = match self.evaluation {
+            Some(evaluation) => evaluation,
+            None => evaluate_custody_passkey(Some(&id))
+                .await?
+                .evaluation
+                .context("the authenticator returned no PRF outputs")?,
+        };
+        Ok(EvaluatedCustodyCredential { id, evaluation })
+    }
+}
+
 /// Why a passkey ceremony did not produce a credential.
 ///
 /// The browser answers with a `DOMException` whose `name` is the whole
@@ -301,42 +334,6 @@ pub async fn create_custody_passkey(
     Ok(CustodyCredential { id, evaluation })
 }
 
-/// A user-verification gesture bound to the account's own passkey:
-/// `credentials.get` with `allowCredentials` pinned to the stored
-/// credential id and user verification required. No PRF evaluation is
-/// requested, nothing is derived, and no custody cell is touched — the
-/// success of the assertion is the whole result. This is the deletion
-/// checkpoint: the human at the keyboard controls this account's
-/// passkey, while the destructive invocations themselves sign with the
-/// device's delegated authority.
-pub async fn verify_custody_passkey(credential_id: &[u8]) -> Result<()> {
-    let mut challenge = rand::random::<[u8; 32]>();
-    let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
-    options.set_user_verification(UserVerificationRequirement::Required);
-    if let Some(id) = current_rp_id() {
-        options.set_rp_id(id);
-    }
-    let mut credential_id = credential_id.to_vec();
-    let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
-        &mut credential_id,
-        PublicKeyCredentialType::PublicKey,
-    );
-    let allowed = js_sys::Array::new();
-    allowed.push(&descriptor);
-    options.set_allow_credentials(&allowed);
-    let request = CredentialRequestOptions::new();
-    request.set_public_key(&options);
-    let promise = credentials()?
-        .get_with_options(&request)
-        .map_err(|e| ceremony_error("credentials.get was rejected", e))?;
-    let _: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("passkey verification failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
-    Ok(())
-}
-
 /// Evaluate both custody salts via an assertion. One biometric prompt;
 /// must be called during a user gesture.
 ///
@@ -347,6 +344,54 @@ pub async fn verify_custody_passkey(credential_id: &[u8]) -> Result<()> {
 /// (`None`) is only for flows where choosing the passkey IS choosing the
 /// account — login, and a creation chase where the id isn't recorded yet.
 pub async fn evaluate_custody_passkey(credential_id: Option<&[u8]>) -> Result<CustodyCredential> {
+    begin_evaluate_custody_passkey(credential_id)?
+        .finish()
+        .await
+}
+
+/// An assertion opened synchronously while the caller still owns the user
+/// activation that authorized it.
+///
+/// Awaiting the result is deliberately separate from starting it. Mobile
+/// WebAuthn providers may refuse to raise their passkey sheet once the
+/// activating click has returned, even if the deferred work runs immediately
+/// afterwards.
+pub struct PendingCustodyAssertion {
+    promise: js_sys::Promise,
+}
+
+impl PendingCustodyAssertion {
+    /// Finish the assertion and import its PRF outputs.
+    pub async fn finish(self) -> Result<CustodyCredential> {
+        let credential: PublicKeyCredential = JsFuture::from(self.promise)
+            .await
+            .map_err(|e| ceremony_error("custody assertion failed", e))?
+            .dyn_into()
+            .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
+        let id = Uint8Array::new(&credential.raw_id()).to_vec();
+        let evaluation = extract_custody(&credential).ok_or_else(|| {
+            anyhow::Error::from(CeremonyError {
+                context: "custody assertion failed".to_string(),
+                reason: CeremonyRefusal::NoPrf,
+                detail: "the authenticator returned no PRF outputs; this platform cannot unlock \
+                         custody"
+                    .to_string(),
+            })
+        })?;
+        Ok(CustodyCredential {
+            id,
+            evaluation: Some(evaluation),
+        })
+    }
+}
+
+/// Start a custody assertion now, returning the promise that completes it.
+///
+/// This function contains no `await`: `credentials.get()` runs in the caller's
+/// stack, which is the invariant a click-driven ceremony needs on mobile.
+pub fn begin_evaluate_custody_passkey(
+    credential_id: Option<&[u8]>,
+) -> Result<PendingCustodyAssertion> {
     let mut challenge = rand::random::<[u8; 32]>();
     let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
     options.set_user_verification(UserVerificationRequirement::Required);
@@ -369,25 +414,7 @@ pub async fn evaluate_custody_passkey(credential_id: Option<&[u8]>) -> Result<Cu
     let promise = credentials()?
         .get_with_options(&request)
         .map_err(|e| ceremony_error("credentials.get was rejected", e))?;
-    let credential: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("custody assertion failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.get returned a non-public-key credential"))?;
-    let id = Uint8Array::new(&credential.raw_id()).to_vec();
-    let evaluation = extract_custody(&credential).ok_or_else(|| {
-        anyhow::Error::from(CeremonyError {
-            context: "custody assertion failed".to_string(),
-            reason: CeremonyRefusal::NoPrf,
-            detail: "the authenticator returned no PRF outputs; this platform cannot unlock \
-                         custody"
-                .to_string(),
-        })
-    })?;
-    Ok(CustodyCredential {
-        id,
-        evaluation: Some(evaluation),
-    })
+    Ok(PendingCustodyAssertion { promise })
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
