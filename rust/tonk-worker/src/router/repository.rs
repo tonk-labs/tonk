@@ -3002,6 +3002,72 @@ fn seed_version(source: &str) -> String {
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const SEED_NONE: &str = "seed:none";
 
+/// Fetch the standard-library notation document from the served
+/// asset, sidestepping the HTTP cache so an edited library is seen
+/// the moment it's re-copied into the dist (rather than a stale
+/// cached copy). The fetch is issued from the service-worker scope,
+/// so it bypasses the SW's own `onfetch` handler per spec.
+///
+/// A missing or unreadable library is a deployment fault, not a
+/// client fault: surfaced as an internal error so repository
+/// creation fails loudly rather than seeding an empty repo.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestCache, RequestInit, Response};
+
+    let init = RequestInit::new();
+    init.set_cache(RequestCache::NoStore);
+    let request = Request::new_with_str_and_init(url, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("fetch {url}: {e:?}")))?;
+    if !response.ok() {
+        return Err(TonkWorkerError::Internal(format!(
+            "fetch {url} returned HTTP {}",
+            response.status()
+        )));
+    }
+    let text = JsFuture::from(
+        response
+            .text()
+            .map_err(|e| TonkWorkerError::Internal(format!("library text(): {e:?}")))?,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
+    text.as_string()
+        .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
+}
+
+/// Seed a notation document into `branch` by running it through the
+/// evaluate pipeline — the same `parse → analyze → commit` path as
+/// the `/evaluate` route, which commits concept claims and `rule!:`
+/// installs alike. A bad library is a deployment fault, surfaced as
+/// an internal error.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn seed_standard_library(
+    tonk: &TonkState,
+    repo: &str,
+    branch: &str,
+    library: &str,
+) -> Result<(), TonkWorkerError> {
+    super::evaluate::evaluate_body(tonk, repo, branch, library.to_owned(), true)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to seed standard library on branch '{branch}': {e}"
+            ))
+        })
+}
+
 /// Notation recording which routes this seed installed, as
 /// `xyz.tonk.seed/route` facts on the seed version's entity, alongside the
 /// source it came from and the seed it replaces.
@@ -8105,6 +8171,25 @@ block/insert!:
 
 #[cfg(test)]
 mod seed_route_tests {
+    /// The generated seed body must ANALYZE against the library it is
+    /// concatenated to — a malformed head fails the whole seed, which
+    /// takes space creation down with it.
+    #[test]
+    fn it_generates_a_seed_body_that_analyzes() {
+        const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let version = super::seed_version(CORE);
+        let body = super::seed_route_body(CORE, &version, "/library/core.yaml", super::SEED_NONE);
+        assert!(!body.is_empty(), "core.yaml declares routes");
+
+        let source = format!("{CORE}\n{body}");
+        let parsed = tonk_notation::parse(&source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "the seed body must parse: {:#?}",
+            parsed.diagnostics
+        );
+    }
+
     /// Every `route!:` in the seed is named, so adding a route to a
     /// library file needs no companion entry.
     #[test]

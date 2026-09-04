@@ -1447,8 +1447,8 @@ concept!: &route
 # it would dangle. `route` doubles as the router's precedence signal: a
 # route named here came from the seed, and one that is not came from the
 # space, which wins an equal-specificity tie.
-concept!: &seed/route
-  this: tonk:seed
+concept!: &space/seed
+  this: tonk:space/seed
   description: The components a seed version seeded.
   with:
     source:
