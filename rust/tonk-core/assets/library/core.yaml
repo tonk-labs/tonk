@@ -1439,21 +1439,42 @@ concept!: &route
       cardinality: one
       as: entity
 
-# What a kernel version seeded, one attribute per component kind, on the
-# kernel version's own entity. The kinds are split rather than folded into
+# What a seed version seeded, one attribute per component kind, on the
+# seed version's own entity. The kinds are split rather than folded into
 # one `component` because retraction differs by kind (a view retracts from
 # a pin, a concept must already be on the branch, a rule wants its effect
 # URI) and the order matters — a concept retracted before the views naming
 # it would dangle. `route` doubles as the router's precedence signal: a
-# route named here came from the kernel, and one that is not came from the
+# route named here came from the seed, and one that is not came from the
 # space, which wins an equal-specificity tie.
-concept!: &kernel
-  this: tonk:kernel
-  description: The components a kernel version seeded.
+concept!: &seed/route
+  this: tonk:seed
+  description: The components a seed version seeded.
   with:
+    source:
+      description: >
+        Where this seed was fetched from. The entity is the content hash
+        alone, so two devices installing the same bytes converge; the
+        source rides alongside because a custom seed is a different URL
+        at the same shape.
+      the: xyz.tonk.seed/source
+      cardinality: one
+      as: text
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
     route:
-      description: A route this kernel version seeded.
-      the: xyz.tonk.kernel/route
+      description: >
+        A route this seed installed. Cardinality MANY — a seed installs
+        many routes, and one per entry means each supersedes the last,
+        leaving only the final route recorded.
+      the: xyz.tonk.seed/route
+      cardinality: many
       as: entity
 
 

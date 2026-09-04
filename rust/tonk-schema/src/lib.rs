@@ -108,7 +108,7 @@ pub mod space;
 pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path};
 
 pub mod site;
-pub use site::{KernelRoute, Route, Site};
+pub use site::{Route, SeedRoute, Site};
 
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};

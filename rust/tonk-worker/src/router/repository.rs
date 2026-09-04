@@ -2928,10 +2928,17 @@ async fn seed_and_initialize(
             })?;
 
         let name_body = repository_name_body(subject, display_name)?;
-        let kernel_body = kernel_route_body(&scaffold, KERNEL_VERSION);
+        // A fresh space has no predecessor; an upgrade will pass the seed
+        // it replaces.
+        let seed_body = seed_route_body(
+            &scaffold,
+            &seed_version(&scaffold),
+            STANDARD_LIBRARY_URL,
+            SEED_NONE,
+        );
         let tonk = state.read().await;
         for branch_name in branches {
-            let body = format!("{scaffold}\n{kernel_body}\n{name_body}");
+            let body = format!("{scaffold}\n{seed_body}\n{name_body}");
             seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
@@ -2974,103 +2981,52 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
-/// The entity naming the kernel version a space was seeded from.
+/// The entity naming a seed version: `seed:{hash}` over the bytes actually
+/// fetched.
 ///
-/// A placeholder pin until the kernel carries its source URL and content
-/// hash (see `manual/space.md`): the components a kernel seeded hang on
-/// this entity, so an upgrade retracts by naming the version that seeded
-/// them. One value today means one kernel generation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const KERNEL_VERSION: &str = "tonk:kernel/current";
-
-/// Fetch the standard-library notation document from the served
-/// asset, sidestepping the HTTP cache so an edited library is seen
-/// the moment it's re-copied into the dist (rather than a stale
-/// cached copy). The fetch is issued from the service-worker scope,
-/// so it bypasses the SW's own `onfetch` handler per spec.
+/// The hash IS the identity, so two devices installing the same seed derive
+/// the same entity and converge. It is taken over what was fetched rather
+/// than read from a build manifest, so it cannot disagree with the bytes
+/// that were installed.
 ///
-/// A missing or unreadable library is a deployment fault, not a
-/// client fault: surfaced as an internal error so repository
-/// creation fails loudly rather than seeding an empty repo.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestCache, RequestInit, Response};
-
-    let init = RequestInit::new();
-    init.set_cache(RequestCache::NoStore);
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
-
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
-    let response: Response = JsFuture::from(global.fetch_with_request(&request))
-        .await
-        .and_then(|v| v.dyn_into())
-        .map_err(|e| TonkWorkerError::Internal(format!("fetch {url}: {e:?}")))?;
-    if !response.ok() {
-        return Err(TonkWorkerError::Internal(format!(
-            "fetch {url} returned HTTP {}",
-            response.status()
-        )));
-    }
-    let text = JsFuture::from(
-        response
-            .text()
-            .map_err(|e| TonkWorkerError::Internal(format!("library text(): {e:?}")))?,
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
-    text.as_string()
-        .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
+/// The source it came from rides `xyz.tonk.seed/source` alongside, since a
+/// custom seed is a different URL at the same shape.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn seed_version(source: &str) -> String {
+    format!("seed:{}", blake3::hash(source.as_bytes()).to_hex())
 }
 
-/// Seed a notation document into `branch` by running it through the
-/// evaluate pipeline — the same `parse → analyze → commit` path as
-/// the `/evaluate` route, which commits concept claims and `rule!:`
-/// installs alike. A bad library is a deployment fault, surfaced as
-/// an internal error.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn seed_standard_library(
-    tonk: &TonkState,
-    repo: &str,
-    branch: &str,
-    library: &str,
-) -> Result<(), TonkWorkerError> {
-    super::evaluate::evaluate_body(tonk, repo, branch, library.to_owned(), true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to seed standard library on branch '{branch}': {e}"
-            ))
-        })
-}
+/// The entity standing for "no seed yet" — what a first install records as
+/// its predecessor, so `prior` is present on every seed rather than absent
+/// on the first.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const SEED_NONE: &str = "seed:none";
 
-/// Notation recording which routes `kernel` seeded, as `xyz.tonk.kernel/route`
-/// facts on the kernel version's entity.
+/// Notation recording which routes this seed installed, as
+/// `xyz.tonk.seed/route` facts on the seed version's entity, alongside the
+/// source it came from and the seed it replaces.
 ///
 /// Derived from the source rather than hand-written beside each route: which
-/// routes came from the kernel is a property the seeder knows and the library
-/// file cannot state about itself. Writing them by hand meant every new kernel
-/// route needed a companion entry, and a missed one silently let a kernel route
-/// outrank a space's own.
+/// routes came from the seed is a property the installer knows and the
+/// library file cannot state about itself. Writing them by hand meant every
+/// new seed route needed a companion entry, and a missed one silently let a
+/// seed route outrank a space's own.
 ///
-/// The router reads these facts for precedence, and a kernel upgrade reads them
-/// to retract what the previous version seeded.
+/// The router reads these facts for precedence, and an upgrade reads them to
+/// retract what the previous seed installed.
 ///
 /// Scans for `route!:` heads and reads each one's `this:`. A route without a
-/// `this:` is skipped — it has no entity to name. Returns an empty string when
-/// the kernel declares no routes, so the caller can concatenate unconditionally.
+/// `this:` is skipped — it has no entity to name. Returns an empty string
+/// when the seed declares no routes, so the caller can concatenate
+/// unconditionally.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn kernel_route_body(kernel: &str, version: &str) -> String {
-    let routes = kernel_route_entities(kernel);
+fn seed_route_body(seed: &str, version: &str, url: &str, prior: &str) -> String {
+    let routes = seed_route_entities(seed);
     if routes.is_empty() {
         return String::new();
     }
-    let mut body = format!("kernel!:\n  this: {version}\n");
+    let mut body =
+        format!("space/seed!:\n  this: {version}\n  source: \"{url}\"\n  prior: {prior}\n");
     for route in routes {
         body.push_str("  route: ");
         body.push_str(&route);
@@ -3079,11 +3035,11 @@ fn kernel_route_body(kernel: &str, version: &str) -> String {
     body
 }
 
-/// The `this:` entity of every `route!:` head in `kernel`, in source order.
+/// The `this:` entity of every `route!:` head in `seed`, in source order.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn kernel_route_entities(kernel: &str) -> Vec<String> {
+fn seed_route_entities(seed: &str) -> Vec<String> {
     let mut entities = Vec::new();
-    let mut lines = kernel.lines();
+    let mut lines = seed.lines();
     while let Some(line) = lines.next() {
         if !line.starts_with("route!:") {
             continue;
@@ -4084,8 +4040,13 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
     let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    let kernel_body = kernel_route_body(&library, KERNEL_VERSION);
-    let library = format!("{library}\n{kernel_body}");
+    let seed_body = seed_route_body(
+        &library,
+        &seed_version(&library),
+        PROFILE_LIBRARY_URL,
+        SEED_NONE,
+    );
+    let library = format!("{library}\n{seed_body}");
     super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library, true)
         .await
         .map(|_| ())
@@ -8143,12 +8104,12 @@ block/insert!:
 }
 
 #[cfg(test)]
-mod kernel_route_tests {
-    /// Every `route!:` in the kernel is named, so adding a route to a
+mod seed_route_tests {
+    /// Every `route!:` in the seed is named, so adding a route to a
     /// library file needs no companion entry.
     #[test]
-    fn it_names_every_kernel_route() {
-        let kernel = r#"
+    fn it_names_every_seed_route() {
+        let seed = r#"
 route!: &route/space
   this: id:tonk:route/space
   path: "/"
@@ -8163,33 +8124,52 @@ route!:
   concept: tonk:notebook/index-route
 "#;
 
-        let body = super::kernel_route_body(kernel, "tonk:kernel/current");
+        let version = super::seed_version("x");
+        let body = super::seed_route_body(seed, &version, "/library/core.yaml", super::SEED_NONE);
 
         assert_eq!(
             body,
-            r#"kernel!:
-  this: tonk:kernel/current
-  route: id:tonk:route/space
-  route: id:notebook/root
-"#,
+            format!(
+                "space/seed!:\n  this: {version}\n  source: \"/library/core.yaml\"\n  \
+                 prior: seed:none\n  route: id:tonk:route/space\n  \
+                 route: id:notebook/root\n"
+            ),
             "both routes are named and the concept between them is skipped"
         );
     }
 
-    /// A library with no routes contributes nothing — the profile kernel
-    /// and the space kernel share this path, and an empty `kernel!:` head
+    /// A library with no routes contributes nothing — the profile seed
+    /// and the space seed share this path, and an empty `space/seed!:` head
     /// would assert a version with no components.
     #[test]
     fn it_names_nothing_without_routes() {
-        assert!(super::kernel_route_body("concept!:\n  this: tonk:x\n", "tonk:k").is_empty());
+        assert!(
+            super::seed_route_body(
+                "concept!:\n  this: tonk:x\n",
+                "seed:h",
+                "/u",
+                super::SEED_NONE
+            )
+            .is_empty()
+        );
     }
 
     /// A `route!:` with no `this:` has no entity to name, so it is
     /// skipped rather than producing a malformed head.
     #[test]
     fn it_skips_a_route_without_an_entity() {
-        let kernel = "route!:\n  path: \"/\"\n  concept: tonk:x\n";
+        let seed = "route!:\n  path: \"/\"\n  concept: tonk:x\n";
 
-        assert!(super::kernel_route_body(kernel, "tonk:k").is_empty());
+        assert!(super::seed_route_body(seed, "seed:h", "/u", super::SEED_NONE).is_empty());
+    }
+
+    /// The version entity must actually parse as an entity URI — a
+    /// relative path with a fragment is not obviously one.
+    #[test]
+    fn it_builds_a_parseable_version_entity() {
+        for candidate in [super::seed_version("contents"), "seed:none".to_string()] {
+            let parsed: Result<dialog_artifacts::Entity, _> = candidate.parse();
+            assert!(parsed.is_ok(), "{candidate} must parse: {parsed:?}");
+        }
     }
 }

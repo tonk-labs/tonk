@@ -344,8 +344,8 @@ pub mod route {
     pub struct Concept(pub Entity);
 }
 
-/// Attributes recording what a kernel version seeded, one per component
-/// kind, on the kernel version's own entity.
+/// Attributes recording what a seed version seeded, one per component
+/// kind, on the seed version's own entity.
 ///
 /// The kinds are split rather than folded into one `component` attribute
 /// because retraction differs by kind — a `view!:` retracts from a pin, a
@@ -354,34 +354,50 @@ pub mod route {
 /// views naming it would dangle). Separate attributes carry the kind in
 /// the data, so an upgrade never has to re-derive it.
 ///
-/// Cardinality-many: one kernel version seeds many components. The values
+/// Cardinality-many: one seed version seeds many components. The values
 /// are the component entities.
-pub mod kernel {
+pub mod seed {
     use super::{Attribute, Entity};
 
-    /// A concept this kernel version declared.
+    /// Where this seed was fetched from.
+    ///
+    /// The entity is the content hash alone, so two devices installing
+    /// the same bytes converge; the source rides alongside because a
+    /// custom seed is a different URL at the same shape.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.kernel")]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Source(pub String);
+
+    /// The seed this one replaced, or `seed:none` on a first install.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Prior(pub Entity);
+
+    /// A concept this seed version declared.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
     pub struct Concept(pub Entity);
 
-    /// A view this kernel version declared.
+    /// A view this seed version declared.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.kernel")]
+    #[domain("xyz.tonk.seed")]
     pub struct View(pub Entity);
 
-    /// A rule this kernel version installed.
+    /// A rule this seed version installed.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.kernel")]
+    #[domain("xyz.tonk.seed")]
     pub struct Rule(pub Entity);
 
-    /// A route this kernel version seeded.
+    /// A route this seed version seeded.
     ///
     /// Also the router's precedence signal: a route named here came from
-    /// the kernel, and one that is not came from the space, which wins an
+    /// the seed, and one that is not came from the space, which wins an
     /// equal-specificity tie. Specificity still decides first; this only
     /// settles what used to fall through to insertion order.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.kernel")]
+    #[domain("xyz.tonk.seed")]
     pub struct Route(pub Entity);
 }
 

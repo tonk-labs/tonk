@@ -125,17 +125,17 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
-/// A route a kernel version seeded, hanging on the kernel version's
+/// A route a seed version seeded, hanging on the seed version's
 /// entity rather than the route's.
 ///
-/// The router reads these to tell a kernel route from one the space
+/// The router reads these to tell a seed route from one the space
 /// authored: a route named here loses an equal-specificity tie to one
-/// that is not. A kernel upgrade reads the same facts to retract what
+/// that is not. A seed upgrade reads the same facts to retract what
 /// the previous version seeded.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct KernelRoute {
-    /// The kernel version's entity.
+pub struct SeedRoute {
+    /// The seed version's entity.
     pub this: Entity,
-    /// The route this kernel version seeded.
-    pub route: crate::domain::kernel::Route,
+    /// The route this seed version seeded.
+    pub route: crate::domain::seed::Route,
 }
