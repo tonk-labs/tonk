@@ -3091,10 +3091,17 @@ fn seed_route_body(seed: &str, version: &str, url: &str, prior: &str) -> String 
     if routes.is_empty() {
         return String::new();
     }
+    // ONE HEAD PER ROUTE, all keyed on the same entity. A cardinality-many
+    // field cannot ride a single head: the notation collapses duplicate
+    // field keys (last wins, see `it_collapses_duplicate_field_keys`) and
+    // rejects a sequence value outright, so four `route:` lines in one head
+    // recorded only the fourth.
     let mut body =
         format!("space/seed!:\n  this: {version}\n  source: \"{url}\"\n  prior: {prior}\n");
     for route in routes {
-        body.push_str("  route: ");
+        body.push_str("\nspace/seed!:\n  this: ");
+        body.push_str(version);
+        body.push_str("\n  route: ");
         body.push_str(&route);
         body.push('\n');
     }
@@ -8171,6 +8178,91 @@ block/insert!:
 
 #[cfg(test)]
 mod seed_route_tests {
+    /// Seed a branch with a library and read the routes back.
+    ///
+    /// The end-to-end check the unit tests around it kept missing: the
+    /// body can parse, the concept can analyze, the declaration can say
+    /// `cardinality: many` — and a space can still end up holding ONE
+    /// route, because what actually governs the write is the descriptor
+    /// stored on the branch. Only evaluating a real seed against a real
+    /// branch and querying it back proves the whole path.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_every_seeded_route_on_the_branch() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-routes").await;
+
+        // The real library, so the concepts `route!:` needs are present and
+        // the shape under test is the shape that ships.
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let library = LIBRARY;
+
+        let version = super::seed_version(library);
+        let body =
+            super::seed_route_body(library, &version, "/library/probe.yaml", super::SEED_NONE);
+        assert!(!body.is_empty(), "the probe library declares routes");
+
+        {
+            let tonk = state.read().await;
+            let outcome = crate::router::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                "main",
+                format!("{library}\n{body}"),
+                true,
+            )
+            .await;
+            assert!(outcome.is_ok(), "the seed must evaluate: {outcome:?}");
+        }
+
+        let recorded: Vec<String> = {
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("main acquires");
+            let rows: Vec<tonk_schema::SeedRoute> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedRoute> {
+                    this: Term::var("this"),
+                    route: Term::var("route"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("seed route query");
+            let mut routes: Vec<String> = rows
+                .into_iter()
+                .map(|row| row.route.0.to_string())
+                .collect();
+            routes.sort();
+            routes
+        };
+
+        let declared = super::seed_route_entities(library);
+        assert!(
+            declared.len() > 1,
+            "the library must declare several routes for this to mean anything"
+        );
+        let mut expected = declared;
+        expected.sort();
+        assert_eq!(
+            recorded,
+            expected,
+            "every seeded route must be recorded, not just the last; \
+             recorded {} of {}",
+            recorded.len(),
+            expected.len()
+        );
+    }
+
     /// The generated seed body must ANALYZE against the library it is
     /// concatenated to — a malformed head fails the whole seed, which
     /// takes space creation down with it.
@@ -8216,7 +8308,8 @@ route!:
             body,
             format!(
                 "space/seed!:\n  this: {version}\n  source: \"/library/core.yaml\"\n  \
-                 prior: seed:none\n  route: id:tonk:route/space\n  \
+                 prior: seed:none\n\nspace/seed!:\n  this: {version}\n  \
+                 route: id:tonk:route/space\n\nspace/seed!:\n  this: {version}\n  \
                  route: id:notebook/root\n"
             ),
             "both routes are named and the concept between them is skipped"

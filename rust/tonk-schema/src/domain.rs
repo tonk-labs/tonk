@@ -378,16 +378,19 @@ pub mod seed {
     /// A concept this seed version declared.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
+    #[cardinality(many)]
     pub struct Concept(pub Entity);
 
     /// A view this seed version declared.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
+    #[cardinality(many)]
     pub struct View(pub Entity);
 
     /// A rule this seed version installed.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
+    #[cardinality(many)]
     pub struct Rule(pub Entity);
 
     /// A route this seed version seeded.
@@ -398,6 +401,7 @@ pub mod seed {
     /// settles what used to fall through to insertion order.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
+    #[cardinality(many)]
     pub struct Route(pub Entity);
 }
 

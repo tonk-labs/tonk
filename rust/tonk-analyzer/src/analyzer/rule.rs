@@ -2726,4 +2726,51 @@ rule!:
             .await
             .expect("a negation whose premise omits `this:` must compile");
     }
+
+    /// Re-declaring an attribute with a different cardinality supersedes
+    /// the stored descriptor: `db.attribute/cardinality` is
+    /// cardinality-one on the attribute's own entity, so the later
+    /// assert wins. A space seeded under an older declaration therefore
+    /// picks up the correction when its seed is re-run — no migration.
+    #[dialog_common::test]
+    async fn it_supersedes_a_stored_cardinality_on_redeclaration() {
+        use dialog_query::Cardinality as DialogCardinality;
+
+        let fixture = new_fixture().await;
+        let one = ConceptDescriptor::try_from(vec![(
+            "route",
+            AttributeDescriptor::new(
+                "xyz.test.seed/route".parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        fixture.declare("probe", one).await;
+
+        let many = ConceptDescriptor::try_from(vec![(
+            "route",
+            AttributeDescriptor::new(
+                "xyz.test.seed/route".parse().unwrap(),
+                "",
+                DialogCardinality::Many,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        fixture.declare("probe", many).await;
+
+        // Two routes on one entity: only reachable if `many` took effect.
+        let doc = r#"probe!:
+  this: seed:x
+  route: id:a
+  route: id:b
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("the re-declared cardinality must allow two routes");
+    }
 }
