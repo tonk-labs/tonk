@@ -2220,10 +2220,17 @@ mod tests {
 
     const LINK_ERROR_DIAGNOSTIC: &str = "tonk:test:link-error";
 
-    /// Preserve the account panel's exact LinkCli diagnostic across the
-    /// activation detour. The visible copy is deliberately safe/generic; this
-    /// test-only probe makes a failed real-browser run identify which async
-    /// boundary failed without changing production UI or logging broadly.
+    /// Preserve the exact ceremony diagnostic across a navigation. The
+    /// visible copy is deliberately safe/generic; this test-only probe makes
+    /// a failed real-browser run identify which async boundary failed without
+    /// changing production UI or logging broadly.
+    ///
+    /// Two prefixes, because a stalled ceremony can fail on either side of
+    /// the worker handoff. `account LinkCli failed:` is the panel's own
+    /// report; `custody:` is `custody_relay::report`, which warns rather
+    /// than errors — a custody refusal was invisible here until it was
+    /// added, which is why a stuck approval used to arrive with an empty
+    /// diagnostic.
     async fn install_link_error_probe(driver: &WebDriver) -> Result<()> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools
@@ -2234,22 +2241,33 @@ mod tests {
                         (() => {
                             if (globalThis.__tonkLinkErrorProbe) return;
                             globalThis.__tonkLinkErrorProbe = true;
-                            const original = console.error.bind(console);
-                            console.error = (...args) => {
+                            const capture = (args) => {
                                 try {
                                     const message = args[0];
                                     if (
                                         typeof message === "string" &&
-                                        message.startsWith("account LinkCli failed:")
+                                        (message.startsWith("account LinkCli failed:") ||
+                                            message.startsWith("custody:"))
                                     ) {
                                         const scrubbed = message
                                             .replace(/\b[A-Za-z0-9+/_=-]{48,}\b/g, "[redacted]")
                                             .slice(0, 1000);
-                                        sessionStorage.setItem("tonk:test:link-error", scrubbed);
+                                        const key = "tonk:test:link-error";
+                                        const seen = sessionStorage.getItem(key);
+                                        sessionStorage.setItem(
+                                            key,
+                                            seen ? `${seen} | ${scrubbed}` : scrubbed,
+                                        );
                                     }
                                 } catch {}
-                                original(...args);
                             };
+                            for (const level of ["error", "warn"]) {
+                                const original = console[level].bind(console);
+                                console[level] = (...args) => {
+                                    capture(args);
+                                    original(...args);
+                                };
+                            }
                         })();
                     "#,
                 }),
@@ -2325,9 +2343,9 @@ mod tests {
             "approval URL must carry the loopback callback"
         );
 
-        if register_first {
-            install_link_error_probe(driver).await?;
-        }
+        // Both paths can stall in the custody handoff, so the probe goes
+        // in whether or not this run registers first.
+        install_link_error_probe(driver).await?;
 
         if register_first {
             // A browser with no account yet registers before approving:
@@ -5060,6 +5078,7 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
+        install_link_error_probe(&driver).await?;
         let email = "goner@example.com";
         sign_up(&driver, &env, email).await?;
 
@@ -5126,7 +5145,14 @@ mod tests {
         // account again.
         if let Err(error) = await_url_path(&driver, "/").await {
             let consent = custody_consent_diagnostic(&driver).await;
-            return Err(error).context(format!("deletion consent={consent}"));
+            // The consent card is gone by now either way — it is removed
+            // on success and four seconds after a failure — so the card
+            // alone cannot say which happened. The probe's captured
+            // refusal is what distinguishes them.
+            let diagnostic = link_error_diagnostic(&driver).await.unwrap_or_default();
+            return Err(error).context(format!(
+                "deletion consent={consent}; diagnostic={diagnostic:?}"
+            ));
         }
         enter_hub(&driver).await?;
         wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
