@@ -356,7 +356,19 @@
                     );
                 }
 
-                const priorController = navigator.serviceWorker.controller;
+                // Not `const`: a document that evaluates before the browser
+                // attaches its controller adopts the one the claim below wins,
+                // so it stays update-aware instead of going deaf for its whole
+                // life.
+                let priorController = navigator.serviceWorker.controller;
+                // Whether this document became controlled by the claim below
+                // rather than arriving already controlled. Such a document
+                // still needs update AWARENESS, but not a fresh update
+                // CHECK: `navigator.serviceWorker.ready` resolved against
+                // the current registration moments ago, so re-checking over
+                // the network buys nothing and costs a fetch that queues
+                // behind an incumbent pinned by its own open streams.
+                let claimedThisLoad = false;
                 let reloadRequested = false;
                 const onControllerReplacement = () => {
                     if (
@@ -436,10 +448,23 @@
                     try {
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
-                    observingInstallLifecycle = false;
-                    await sendConnectivity();
-                    markServiceWorkerReady();
-                    return;
+                    // A document that never gained a controller has nothing
+                    // to be update-aware ABOUT, so it still stops here.
+                    // One that did adopts the controller the claim just won
+                    // and carries on into the update check, so a later
+                    // successor still reaches it. Returning unconditionally
+                    // left such a tab with no `updatefound` listener, no
+                    // `retire-if-superseded`, and a permanent
+                    // `controllerchange` listener disarmed by its own null
+                    // guard — deaf until the person reloaded by hand.
+                    priorController = navigator.serviceWorker.controller;
+                    if (!priorController) {
+                        observingInstallLifecycle = false;
+                        await sendConnectivity();
+                        markServiceWorkerReady();
+                        return;
+                    }
+                    claimedThisLoad = true;
                 }
                 navigator.serviceWorker.removeEventListener(
                     "controllerchange",
@@ -518,8 +543,18 @@
                     noteLife();
                     onWorkerState();
                 };
-                const onUpdateFound = () =>
+                const onUpdateFound = () => {
                     watchIncoming(registration.installing);
+                    // `registration.waiting` and the successor's
+                    // `statechange` land independently. A document that
+                    // heard "installed" before the registration exposed
+                    // `waiting` took no action, and `watchIncoming` returns
+                    // early for a worker it already watches, so nothing
+                    // re-checked — leaving the incumbent unwoken and the
+                    // successor waiting for good. Re-evaluate here, where
+                    // the registration has just changed.
+                    onWorkerState();
+                };
                 const onReplacement = () => {
                     if (
                         navigator.serviceWorker.controller &&
@@ -556,6 +591,15 @@
                 if (existingUpdate) {
                     watchIncoming(existingUpdate);
                     result = await outcome;
+                } else if (claimedThisLoad) {
+                    // Nothing is installing or waiting right now, and the
+                    // claim already resolved against the current
+                    // registration, so there is nothing to check and nothing
+                    // to await. Stay armed instead of tearing down: the
+                    // listeners registered above are this document's only
+                    // notice of a successor that installs later, and
+                    // `cleanup()` below would remove them.
+                    return;
                 } else {
                     try {
                         await registration.update();
