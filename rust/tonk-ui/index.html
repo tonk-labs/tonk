@@ -534,8 +534,18 @@
                     noteLife();
                     onWorkerState();
                 };
-                const onUpdateFound = () =>
+                const onUpdateFound = () => {
                     watchIncoming(registration.installing);
+                    // `registration.waiting` and the successor's
+                    // `statechange` land independently. A document that
+                    // heard "installed" before the registration exposed
+                    // `waiting` took no action, and `watchIncoming` returns
+                    // early for a worker it already watches, so nothing
+                    // re-checked — leaving the incumbent unwoken and the
+                    // successor waiting for good. Re-evaluate here, where
+                    // the registration has just changed.
+                    onWorkerState();
+                };
                 const onReplacement = () => {
                     if (
                         navigator.serviceWorker.controller &&

@@ -551,6 +551,30 @@ test("a tab claimed after load still notices a later successor", async () => {
   );
 });
 
+test("the retire nudge survives a successor that reaches installed before waiting", async () => {
+  // `onWorkerState` fires on the successor's statechange, and its nudge
+  // requires `registration.waiting === incoming`. The browser sets
+  // `waiting` and dispatches `statechange` independently, so a document
+  // that hears "installed" BEFORE the registration exposes `waiting`
+  // takes no action — and nothing re-checks afterwards. The incumbent is
+  // then never woken, the successor sits in `waiting` forever, and the
+  // tab stays on the outgoing build with no controllerchange to react to.
+  const result = pageHarness({ mode: "warm-update" });
+  await result.ready();
+
+  // The adverse ordering: state flips first, `waiting` lands after.
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  result.registration.waiting = result.incoming;
+  await result.registration.dispatch("updatefound");
+  for (let turn = 0; turn < 20; turn += 1) await new Promise(setImmediate);
+
+  assert.ok(
+    result.messages.some((message) => message?.type === "retire-if-superseded"),
+    "a successor seen installed before it is waiting must still wake the incumbent",
+  );
+});
+
 test("a controlled page becomes ready while its update continues in the background", async () => {
   const result = pageHarness({ mode: "warm", updatePending: true });
   let ready = false;
