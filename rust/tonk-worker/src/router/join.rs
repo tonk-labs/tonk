@@ -2092,7 +2092,11 @@ pub(crate) mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    use dialog_capability::Subject;
+    use dialog_credentials::Credential;
     use dialog_credentials::ed25519::Ed25519Signer;
+    use dialog_effects::storage::{self as storage_fx, LocationExt as _};
+    use dialog_operator::{DeriveOperator as _, Profile};
     use dialog_ucan_core::subject::Subject as UcanSubject;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
@@ -3298,28 +3302,52 @@ name!:
 
         let tonk = test_state().await;
 
+        // The operator signs every committed history entry, and those
+        // entries contribute keys to the tree. `test_state()` deliberately
+        // generates a fresh profile, so using its operator here left the
+        // supposedly fixed tree shape random between runs. Build the source
+        // branch with a fixed profile and derivation context; the destination
+        // can remain the isolated test state because it only receives the
+        // already-computed novel nodes.
+        let profile_signer = Ed25519Signer::import(&[66u8; 32])
+            .await
+            .expect("the fixture profile signer imports");
+        let profile_name = format!("{}-claim-install-source", tonk.profile_name);
+        let profile = Profile::try_from(
+            storage_fx::Storage::temp(&profile_name)
+                .create(Credential::Signer(profile_signer.into()))
+                .perform(&tonk.storage)
+                .await
+                .expect("the fixture profile mounts"),
+        )
+        .expect("the fixture profile is backed by a signer");
+        let source_operator = profile
+            .derive(b"claim-install-cost")
+            .allow(Subject::any())
+            .base(storage_fx::Directory::Temp)
+            .build(tonk.storage.clone())
+            .await
+            .expect("the fixture operator builds");
+
         // Tree shape is a pure function of its keys, and history keys carry
-        // the repository issuer. `put_repo` deliberately generates a fresh
-        // signer, which made this cost fixture sample a different tree on
-        // every run and occasionally turn one insert into a near-total
-        // rechunk. Pin the issuer so this test measures the install
-        // algorithm rather than key-distribution luck.
+        // both the repository issuer and committing operator. Pin both so
+        // this test measures the install algorithm rather than
+        // key-distribution luck.
         let signer = Ed25519Signer::import(&[65u8; 32])
             .await
             .expect("the fixture signer imports");
         let repo = signer.did().repo_key().to_owned();
-        let repository = tonk
-            .profile
+        let repository = profile
             .repository(repo)
             .create()
             .with_credential(signer)
-            .perform(&tonk.operator)
+            .perform(&source_operator)
             .await
             .expect("the fixture repository creates");
         let content: Branch = repository
             .branch(DEFAULT_BRANCH)
             .open()
-            .perform(&tonk.operator)
+            .perform(&source_operator)
             .await
             .expect("content branch opens");
 
@@ -3334,7 +3362,7 @@ name!:
                 name: tonk_schema::domain::repo::Name("the origin".to_string()),
             })
             .commit()
-            .perform(&tonk.operator)
+            .perform(&source_operator)
             .await
             .expect("the origin commits");
         let origin = content.revision().expect("the origin produced a head");
@@ -3350,7 +3378,7 @@ name!:
             });
         }
         bulk.commit()
-            .perform(&tonk.operator)
+            .perform(&source_operator)
             .await
             .expect("the filler commits");
         let base = content.revision().expect("the filler produced a head");
@@ -3362,18 +3390,24 @@ name!:
                 name: tonk_schema::domain::repo::Name("the claim".to_string()),
             })
             .commit()
-            .perform(&tonk.operator)
+            .perform(&source_operator)
             .await
             .expect("the claim commits");
         let target = content.revision().expect("the claim produced a head");
 
         ClaimInstallCost {
-            based: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &base)
+            based: super::install_claim_nodes(&tonk, &content, &source_operator, &target, &base)
                 .await
                 .expect("the claim installs"),
-            baseless: super::install_claim_nodes(&tonk, &content, &tonk.operator, &target, &origin)
-                .await
-                .expect("the space copies"),
+            baseless: super::install_claim_nodes(
+                &tonk,
+                &content,
+                &source_operator,
+                &target,
+                &origin,
+            )
+            .await
+            .expect("the space copies"),
         }
     }
 

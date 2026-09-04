@@ -126,6 +126,19 @@
                 animation: tonk-pulse 2s cubic-bezier(0.4, 0, 0.6, 1)
                     infinite;
             }
+            .tonk-boot-title {
+                display: none;
+                max-width: 36rem;
+                margin: 0;
+                font-family:
+                    "IBM Plex Sans Condensed", "Arial Narrow", system-ui,
+                    sans-serif;
+                font-size: clamp(1.75rem, 5vw, 2.5rem);
+                font-weight: 600;
+                line-height: 1.1;
+                text-align: center;
+                text-wrap: balance;
+            }
             .tonk-boot-status {
                 position: absolute;
                 width: 1px;
@@ -145,12 +158,24 @@
             }
             .tonk-boot-status[data-failed] {
                 position: static;
-                width: auto;
+                width: min(36rem, 100%);
                 height: auto;
                 margin: 0;
                 overflow: visible;
                 clip: auto;
                 white-space: normal;
+                font-family: "IBM Plex Sans", system-ui, sans-serif;
+                font-size: 1rem;
+                line-height: 1.5;
+                text-align: center;
+                text-wrap: pretty;
+            }
+            .tonk-boot-center:has(.tonk-boot-status[data-failed])
+                .tonk-boot-title {
+                display: block;
+            }
+            .tonk-boot-center:has(.tonk-boot-status[data-failed]) .tonk-pulse {
+                display: none;
             }
             @keyframes tonk-pulse {
                 0%,
@@ -282,18 +307,64 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
-            const OLD_BROWSER_BOOT_FAILURE =
-                "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.";
+            const GENERIC_BOOT_FAILURE_TITLE = "Tonk couldn’t start";
             const GENERIC_BOOT_FAILURE =
                 "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
-            const presentBootFailure = (message) => {
+            const isSafariBrowser = () => {
+                const userAgent = navigator.userAgent || "";
+                const vendor = navigator.vendor || "";
+                return (
+                    /Safari\//.test(userAgent) &&
+                    /Apple Computer/.test(vendor) &&
+                    !/(?:Chrome|Chromium|CriOS|FxiOS|EdgiOS|OPiOS)/.test(
+                        userAgent,
+                    )
+                );
+            };
+            const unsupportedServiceWorkerFailure = () => {
+                if (self.isSecureContext === false) {
+                    return {
+                        title: "Tonk needs a secure connection",
+                        message:
+                            "Tonk can’t access the browser storage it needs from this address. " +
+                            "Open this page over HTTPS to continue.",
+                    };
+                }
+
+                // Browsers do not expose a dependable Private Browsing flag.
+                // Safari plus a missing or denied API is enough to offer the
+                // useful normal-tab action without claiming the mode as fact.
+                if (isSafariBrowser()) {
+                    return {
+                        title: "Open Tonk in a normal Safari tab",
+                        message:
+                            "Tonk can’t use the browser storage it needs in this Safari tab. " +
+                            "If you’re using Private Browsing, open this page in a normal Safari tab. " +
+                            "Otherwise, update Safari and try again.",
+                    };
+                }
+
+                return {
+                    title: "This browser can’t run Tonk",
+                    message:
+                        "Tonk needs service workers to keep your spaces available on this device and work offline. " +
+                        "Try a current version of Safari, Chrome, Firefox, or Edge.",
+                };
+            };
+            const presentBootFailure = (
+                message,
+                title = GENERIC_BOOT_FAILURE_TITLE,
+            ) => {
                 if (typeof self.tonkBootTerminal === "function") {
-                    self.tonkBootTerminal(message);
+                    self.tonkBootTerminal(message, title);
                     return;
                 }
+                const heading = document.querySelector("[data-boot-title]");
+                if (heading) heading.textContent = title;
                 const status = document.querySelector("[data-boot-status]");
                 if (status) {
                     status.setAttribute("data-failed", "");
+                    status.setAttribute("role", "alert");
                     status.textContent = message;
                 }
             };
@@ -611,11 +682,17 @@
             serviceWorkerActivation.catch((error) => {
                 failServiceWorkerReady(error);
                 console.error("service-worker activation failed", error);
-                presentBootFailure(
-                    !serviceWorkersSupported
-                        ? OLD_BROWSER_BOOT_FAILURE
-                        : GENERIC_BOOT_FAILURE,
-                );
+                const safariDeniedServiceWorkers =
+                    isSafariBrowser() &&
+                    ["SecurityError", "NotSupportedError"].includes(
+                        error?.name,
+                    );
+                if (!serviceWorkersSupported || safariDeniedServiceWorkers) {
+                    const failure = unsupportedServiceWorkerFailure();
+                    presentBootFailure(failure.message, failure.title);
+                    return;
+                }
+                presentBootFailure(GENERIC_BOOT_FAILURE);
             });
             self.serviceWorkerActivates = () => serviceWorkerReadiness;
 
@@ -747,17 +824,23 @@
                     location.reload();
                 };
                 self.tonkBootRecover = recover;
-                self.tonkBootTerminal = (message) => {
+                self.tonkBootTerminal = (
+                    message,
+                    title = "Tonk couldn’t start",
+                ) => {
                     if (terminal) return;
                     terminal = true;
                     clearInterval(timer);
                     try {
                         sessionStorage.removeItem(RETRIES);
                     } catch {}
-                    const status =
-                        document.querySelector("[data-boot-status]");
+                    const heading =
+                        document.querySelector("[data-boot-title]");
+                    if (heading) heading.textContent = title;
+                    const status = document.querySelector("[data-boot-status]");
                     if (status) {
                         status.setAttribute("data-failed", "");
+                        status.setAttribute("role", "alert");
                         status.textContent = message;
                     }
                 };
@@ -954,6 +1037,9 @@
         <div id="tonk-boot" aria-live="polite">
             <div class="tonk-boot-center">
                 <span class="tonk-pulse" aria-hidden="true"></span>
+                <h1 class="tonk-boot-title" data-boot-title>
+                    Tonk couldn’t start
+                </h1>
                 <p class="tonk-boot-status" data-boot-status>loading…</p>
             </div>
         </div>
