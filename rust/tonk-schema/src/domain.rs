@@ -1399,6 +1399,37 @@ pub mod membership {
     pub struct Name(pub String);
 }
 
+/// Attributes of a [`Transplant`] — an existing space's history
+/// re-rooted under a fresh subject, typically because the old subject's
+/// keys were lost.
+///
+/// [`Transplant`]: crate::Transplant
+pub mod transplant {
+    use super::{Attribute, Entity};
+
+    /// The subject the history was adopted from, as its DID entity —
+    /// the same form membership and directory rows use, so the scar
+    /// joins against facts still anchored on the origin subject.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.transplant")]
+    #[cardinality(one)]
+    pub struct Origin(pub Entity);
+
+    /// The origin's last published head record, byte-exact. The record
+    /// is operator-signed, so the endpoint of the adopted history stays
+    /// verifiable after the origin's own stores are gone.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.transplant")]
+    #[cardinality(one)]
+    pub struct Revision(pub Vec<u8>);
+
+    /// The tree root the transplant adopted.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.transplant")]
+    #[cardinality(one)]
+    pub struct Tree(pub String);
+}
+
 /// Attributes that live on [`Invitation`] entities only.
 ///
 /// [`Invitation`]: crate::Invitation

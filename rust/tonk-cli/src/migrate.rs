@@ -183,7 +183,7 @@ fn perform_transfer(source: &Path, destination: &Path, mode: Mode) -> Result<boo
 /// directories as needed and copying every regular file. Skips
 /// symlinks rather than following them to avoid escaping the
 /// source tree (carry doesn't write any, so this is defensive).
-fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     std::fs::create_dir_all(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
     for entry in
