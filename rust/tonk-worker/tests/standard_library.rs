@@ -572,6 +572,25 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
         "retained failure content must suppress the opening row even while its display reconnects",
     );
 
+    let opening = css_rule(route, ".join-opening {");
+    for contract in [
+        "position:fixed",
+        "inset:0",
+        "align-items:center",
+        "justify-content:center",
+        "background:var(--edge-page)",
+    ] {
+        assert!(
+            opening.contains(contract),
+            "the pending join must match the centred boot pulse with `{contract}`",
+        );
+    }
+    assert!(PROFILE_LIBRARY.contains("class=\"join-opening-status\""));
+    assert!(PROFILE_LIBRARY.contains("class=\"tonk-pulse\""));
+    assert!(route.contains(
+        ".join-view:has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
+    ));
+
     let action = css_rule(route, ".ebtn {");
     for contract in [
         "height:40px",

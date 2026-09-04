@@ -17,6 +17,7 @@ function harness({ retries = 0, storageThrows = false } = {}) {
     failed: false,
     setAttribute(name) { if (name === "data-failed") this.failed = true; },
   };
+  const heading = { textContent: "Tonk couldn’t start" };
   let reloads = 0;
   const self = {};
   const storage = {
@@ -43,6 +44,7 @@ function harness({ retries = 0, storageThrows = false } = {}) {
     },
     document: {
       querySelector(selector) {
+        if (selector === "[data-boot-title]") return heading;
         return selector === "[data-boot-status]" ? status : null;
       },
     },
@@ -54,7 +56,7 @@ function harness({ retries = 0, storageThrows = false } = {}) {
     setInterval() { return 1; },
     clearInterval() {},
   });
-  return { self, status, values, reloads: () => reloads };
+  return { self, heading, status, values, reloads: () => reloads };
 }
 
 test("the first recovery reloads even when browser storage is unavailable", () => {
@@ -74,7 +76,8 @@ test("a second stall terminates instead of entering another recovery loop", () =
 
 test("an explicit terminal failure clears the retry guard", () => {
   const result = harness({ retries: 1 });
-  result.self.tonkBootTerminal("specific failure");
+  result.self.tonkBootTerminal("specific failure", "Specific guidance");
+  assert.equal(result.heading.textContent, "Specific guidance");
   assert.equal(result.status.textContent, "specific failure");
   assert.equal(result.status.failed, true);
   assert.equal(result.values.has("tonk:boot-retries"), false);

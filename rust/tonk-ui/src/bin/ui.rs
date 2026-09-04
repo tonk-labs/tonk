@@ -151,6 +151,7 @@ fn show_readiness_failure() {
         return;
     };
     let _ = status.set_attribute("data-failed", "");
+    let _ = status.set_attribute("role", "alert");
     status.set_text_content(Some(READINESS_FAILURE_MESSAGE));
 }
 
