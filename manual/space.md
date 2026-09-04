@@ -36,7 +36,6 @@ Asserts on the space's own entity (`subject.this()`):
 | Attribute | Value |
 | --- | --- |
 | `xyz.tonk.space/subject` | the space entity (same value as `this`) |
-| `xyz.tonk.space/kernel` | the seeded kernel, as a source URL with its hash — **not implemented yet** |
 | `xyz.tonk.space/founded-at` | unix seconds |
 | `xyz.tonk.space/founded-by` | the creating device profile |
 
@@ -56,29 +55,10 @@ own `Replica` so tonk's and dialog's replica facts co-locate:
 > is what makes "which spaces does this profile hold?" a single query, and it
 > replaces `xyz.tonk.space/local`, which is what exists today.
 >
-> `xyz.tonk.space/kernel` replaces `xyz.tonk.space/status` and
-> `xyz.tonk.replica/status`, whose `tonk:blank` / `tonk:initialized` is the
-> same question with a one-bit answer. Recording the seeded kernel instead
-> says *which* definitions a space is on, so a space seeded from an older
-> `core.yaml` / `profile.yaml` is detectable rather than merely "initialized".
->
-> The value is a source URL carrying its own hash, e.g.
-> `/library/core.yaml#42c2be0fa15977219bcb93b622391356` — provenance and
-> fingerprint in one, so the source can be fetched to compare or re-seed.
-> Unseeded is the hash of the empty document.
->
-> One URL, cardinality-one. A repo seeds one kernel, whatever files that
-> kernel is made of.
->
-> Today a space keeps whatever definitions it was provisioned with, and later
-> kernel changes never reach it. With the hash recorded, a service worker
-> update compares it against the shipped kernel and re-seeds where they
-> differ. The re-seed and the new hash ride one transaction, so a space is
-> never left claiming definitions it does not have.
->
-> The hash is per branch in principle; spaces are treated as their `main`
-> branch, so it hangs on the space entity. Branch-level tracking can come
-> later if it is ever wanted.
+> `xyz.tonk.space/status` and `xyz.tonk.replica/status` both go away. Their
+> `tonk:blank` / `tonk:initialized` answers "is this space seeded?" with one
+> bit; the kernel record on the space's own branch answers *which* definitions
+> it is seeded with, which subsumes it. See [Kernel](#kernel).
 >
 > `xyz.tonk.replica/kind` goes away entirely. It exists today to tell a real
 > space from the system replicas (the profile's own, the account, the ledger),
@@ -120,16 +100,16 @@ this device never held.
 
 #### Seed Repository
 
-Seeds the kernel — `core.yaml`, `profile.yaml` — into the branch. Runs after
-the lock is released, since seeding is the slow part and holding the lock would
-stall the page.
+Seeds the kernel into the branch. Runs after the lock is released, since
+seeding is the slow part and holding the lock would stall the page.
 
-Asserts `xyz.tonk.space/kernel` = the seeded kernel's source URL and hash, in
-the same transaction as the seed itself, so the two cannot disagree.
+Records the kernel version and its components on the space's own content
+branch, in the same transaction as the seed, so the two cannot disagree. See
+[Kernel](#kernel).
 
 > **Not implemented yet.** Today this flips `xyz.tonk.space/status` and
 > `xyz.tonk.replica/status` from `tonk:blank` to `tonk:initialized` in a
-> separate commit.
+> separate commit, and records nothing about which kernel was seeded.
 
 #### Provision Repository
 
@@ -156,6 +136,127 @@ rebuild the config and mount the space identically.
 
 Posts a `navigate` to the originating client, dropping the creator into the new
 space.
+
+## Kernel
+
+> **Not implemented yet**, except for `xyz.tonk.kernel/route`, which the router
+> already reads.
+
+The kernel is the library of concepts, views, rules and routes a space is
+seeded with — `core.yaml` and the files it pulls in. A space keeps whatever
+kernel it was created with, which is why a redesign shipped in a new bundle
+does not reach spaces created before it.
+
+### Where it lives
+
+On the **space's own content branch**, not in the profile db.
+
+The kernel is seeded onto that branch, so it syncs: when one member upgrades,
+the space's contents change for everyone. A copy in the profile db would name
+the version *this device last saw*, and would be wrong for every other device
+the moment anyone upgraded. On the content branch there is one kernel per
+space because there is one content branch, and every member converges on it.
+
+That also means an upgrade is not a per-device choice. Whoever upgrades
+upgrades the space, and the others pull it — which is the right semantics for
+a shared space, and unavoidable given one branch.
+
+### What is recorded
+
+On the kernel version's entity:
+
+| Attribute | Value |
+| --- | --- |
+| `xyz.tonk.kernel/concept` | a concept this version declared |
+| `xyz.tonk.kernel/view` | a view this version declared |
+| `xyz.tonk.kernel/rule` | a rule this version installed |
+| `xyz.tonk.kernel/route` | a route this version seeded |
+
+Each is cardinality-many, valued by the component's entity. The entity itself
+is the kernel's source URL carrying its content hash, e.g.
+`/library/core.yaml#42c2be0f…` — provenance and fingerprint in one, so the
+source can be re-fetched to compare or re-seed, and a custom kernel is just a
+different URL.
+
+The kinds are split rather than folded into one `component` because retraction
+differs by kind — a `view!:` retracts from a pin, a `concept!:` needs the
+concept already on the branch, a `rule!:` wants its effect URI — and the order
+matters, since a concept retracted before the views naming it would dangle.
+Separate attributes carry the kind in the data, so an upgrade never re-derives
+it.
+
+The facts are generated from the kernel source at seed time rather than
+written beside each definition: which components came from the kernel is
+something the seeder knows and the library file cannot state about itself.
+
+`xyz.tonk.kernel/route` doubles as the router's precedence signal — see
+[Routes](#routes).
+
+### Upgrading
+
+One commit: retract the previous version's components, assert the new
+version's, in a single transaction.
+
+Retraction reads the previous kernel's component facts and emits a pinned
+retraction per component. It must **only** retract what that version
+*asserted*. A kernel version's history contains both its own assertions and
+the retractions of the version before it; replaying all of them inverted would
+restore the version-before-last. This filter is load-bearing, not an
+optimization.
+
+Because retraction targets exact `(entity, attribute, value)` triples and
+retracting an absent fact is a no-op, a component the user has since replaced
+is left alone rather than clobbered.
+
+### When it upgrades
+
+Lazily, on mount — an unopened space costs nothing, and a space can never run
+a kernel newer than the worker that mounts it.
+
+Whether the upgrade is offered or applied depends on the kernel:
+
+- **Breaking** — the new bundle cannot render the old kernel's definitions.
+  Applied without asking, because declining does not mean "keep the old
+  design", it means a broken space. The view-system rollout was this: spaces
+  stayed broken until their views were redefined.
+- **Additive** — a new route, a revised view. Offered in a toast and left to
+  the user, since swapping a working space's definitions underneath them is
+  not something to do silently.
+
+Which one a version is is authored on the kernel, not inferred: the release
+knows what it shipped.
+
+A declined additive upgrade leaves a space on an older kernel indefinitely, so
+"this space names a handler this bundle no longer has" is a real state rather
+than a transient one, and should degrade visibly rather than mysteriously.
+
+### Caching
+
+The shipped kernel is cached on service-worker install, so mounting a space
+neither waits on the network nor fails when it is unavailable. Custom kernels
+cannot be known at install time; each is cached on first fetch, keyed by URL,
+so subsequent mounts are equally offline-safe.
+
+### Custom kernels
+
+A custom kernel is a kernel URL that is not the shipped one, so it needs no
+separate mechanism — the recorded version simply points elsewhere, and the
+mount-time comparison asks whether that URL still serves what the space holds
+rather than whether it matches the bundle.
+
+**Open:** a custom kernel can name command handlers the running bundle does
+not implement. Whether that is rejected at install or left to surface as an
+unresolved command is undecided.
+
+## Routes
+
+A route is matched by specificity first — static beats param beats catch-all.
+Ties beneath that are settled by origin: a route the space authored beats one
+the kernel seeded, so a space can define its own `/` and have it win.
+
+The router tells them apart by `xyz.tonk.kernel/route`. A route named there
+came from the kernel; one that is not was authored in the space. Within a
+group the order is by entity URI, so every device builds the same table.
 
 ## Join
 
