@@ -550,11 +550,20 @@ mod tests {
         deadline: tokio::time::Instant,
     ) -> Result<Value> {
         let mut last = Value::Null;
+        let mut polls: u32 = 0;
         loop {
+            // Health rides the stale path, which polls ten times a second.
+            // Fetching it every turn would hammer the retiring worker's
+            // fetch boundary and could keep it alive — the very thing the
+            // early return exists to avoid. Once every five seconds is
+            // enough to catch a stalled retirement without steering it.
+            let sample_health = polls.is_multiple_of(50);
+            polls += 1;
             if let Ok(state) = driver
                 .execute_async(
                     r##"
                     const expectedBuild = arguments[0];
+                    const sampleHealth = arguments[1];
                     const done = arguments[arguments.length - 1];
                     (async () => {
                         const registration = await navigator.serviceWorker.getRegistration();
@@ -591,16 +600,25 @@ mod tests {
                             // ("Streams are released").
                             const [names, health] = await Promise.all([
                                 caches.keys(),
-                                fetch("/api/health")
-                                    .then(response => response.json())
-                                    // The ring holds up to 200 entries of
-                                    // 2000 chars; the tail is what matters
-                                    // and the whole of it would swamp the
-                                    // failure message.
-                                    .then(body => ({ ...body, log: (body.log || []).slice(-25) }))
-                                    .catch(error => ({ unreachable: String(error) })),
+                                sampleHealth
+                                    ? fetch("/api/health")
+                                        .then(response => response.json())
+                                        // The ring holds up to 200 entries
+                                        // of 2000 chars; the tail is what
+                                        // matters and the whole of it would
+                                        // swamp the failure message.
+                                        .then(body => ({
+                                            ...body,
+                                            log: (body.log || []).slice(-25),
+                                        }))
+                                        .catch(error => ({ unreachable: String(error) }))
+                                    : null,
                             ]);
-                            done({ ...lifecycle, cacheNames: names, health });
+                            done({
+                                ...lifecycle,
+                                cacheNames: names,
+                                ...(health ? { health } : {}),
+                            });
                             return;
                         }
                         const generationCache = `TONK_GENERATION_${expectedBuild}`;
@@ -635,7 +653,7 @@ mod tests {
                         });
                     })().catch(error => done({ error: String(error) }));
                     "##,
-                    vec![build.into()],
+                    vec![build.into(), sample_health.into()],
                 )
                 .await
             {
