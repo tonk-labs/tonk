@@ -16,6 +16,15 @@ test-threads = 1
 # Report every failure: a fail-fast pass over an hour-long suite hides
 # everything after the first broken test.
 fail-fast = false
+# Each test drives a real Caddy + Chrome + wasm stack, and a shared CI
+# runner is 2-3x slower than the hand-rolled deadlines in these tests
+# assume: the same commit has passed every shard in one run and failed
+# three in another, tripping a different deadline each time. Retry the
+# flakes rather than widen forty scattered budgets by guesswork. This
+# disables nothing — a test that fails all three attempts still fails
+# the run — and the durable fix is to make the ceremonies faster or to
+# give the deadlines one scalable knob.
+retries = 2
 # The #852 quarantine is drained: every account flow it named is
 # repaired and back in the suite. To quarantine a newly broken test,
 # add a `default-filter` here excluding it, with a linked issue.
