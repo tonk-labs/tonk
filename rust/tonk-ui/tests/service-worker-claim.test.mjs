@@ -259,7 +259,15 @@ function pageHarness({
   let resolveReady;
   const incumbent = mode === "cold" ? null : eventTarget({
     state: "activated",
-    postMessage(message) { messages.push(message); },
+    postMessage(message) {
+      messages.push(message);
+      // An already-active worker answers a claim by taking control, which
+      // is how an uncontrolled document joins an existing deployment.
+      if (message?.type === "claim" && mode === "unclaimed") {
+        serviceWorkers.controller = incumbent;
+        void serviceWorkers.dispatch("controllerchange");
+      }
+    },
   });
   let serviceWorkers;
   const incoming = eventTarget({
@@ -288,7 +296,10 @@ function pageHarness({
     ? new Promise((resolve) => { resolveReady = resolve; })
     : Promise.resolve(registration);
   serviceWorkers = eventTarget({
-    controller: incumbent,
+    // `unclaimed`: an incumbent is already active, but this document
+    // evaluated before the browser attached it as the controller — what a
+    // tab opened alongside an existing deployment can observe.
+    controller: mode === "unclaimed" ? null : incumbent,
     ready,
     async register() { return registration; },
   });
@@ -506,6 +517,38 @@ test("a cold first install waits for activation, then claims", async () => {
   result.activateColdWorker();
   await result.ready();
   assert.deepEqual(result.messages.map((message) => message.type), ["claim", "connectivity"]);
+});
+
+test("a tab claimed after load still notices a later successor", async () => {
+  // `priorController` is read once, synchronously, at script evaluation
+  // (index.html). A tab that opens alongside an existing deployment can
+  // evaluate before the browser attaches its controller and capture null
+  // — and the `!priorController` branch then RETURNS before the update
+  // check is ever armed. Such a document keeps no `updatefound` listener,
+  // never sends `retire-if-superseded`, and its permanent
+  // `controllerchange` listener no-ops on its own null guard. It is deaf
+  // to every future update for the life of the document, which strands it
+  // on the outgoing generation while its siblings move on.
+  const result = pageHarness({ mode: "unclaimed" });
+  await result.ready();
+
+  // The claim landed: this document is controlled by the incumbent now,
+  // exactly like a tab that had been controlled all along.
+  assert.ok(result.serviceWorkers.controller, "the claim must take control");
+
+  // A successor installs afterwards. A tab that is still update-aware
+  // wakes its incumbent rather than sitting on the outgoing build.
+  // A successor is waiting by the time this document runs its update
+  // check — the ordering a tab opened just before a deployment sees.
+  const successor = eventTarget({ state: "installed", postMessage() {} });
+  result.registration.waiting = successor;
+  await result.registration.dispatch("updatefound");
+  for (let turn = 0; turn < 20; turn += 1) await new Promise(setImmediate);
+
+  assert.ok(
+    result.messages.some((message) => message?.type === "retire-if-superseded"),
+    "a tab claimed after load must still ask its incumbent to retire",
+  );
 });
 
 test("a controlled page becomes ready while its update continues in the background", async () => {

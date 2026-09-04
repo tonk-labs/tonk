@@ -356,7 +356,11 @@
                     );
                 }
 
-                const priorController = navigator.serviceWorker.controller;
+                // Not `const`: a document that evaluates before the browser
+                // attaches its controller adopts the one the claim below wins,
+                // so it stays update-aware instead of going deaf for its whole
+                // life.
+                let priorController = navigator.serviceWorker.controller;
                 let reloadRequested = false;
                 const onControllerReplacement = () => {
                     if (
@@ -436,10 +440,22 @@
                     try {
                         sessionStorage.removeItem(UPGRADE_RELOAD);
                     } catch {}
-                    observingInstallLifecycle = false;
                     await sendConnectivity();
                     markServiceWorkerReady();
-                    return;
+                    // A first install has the newest worker already and has
+                    // nothing to update to. An unclaimed document joining an
+                    // EXISTING deployment does: it adopts the controller the
+                    // claim just won and carries on into the update check, so
+                    // a later successor still reaches it. Returning here left
+                    // such a tab with no `updatefound` listener, no
+                    // `retire-if-superseded`, and a permanent
+                    // `controllerchange` listener disarmed by its own null
+                    // guard — deaf until the person reloaded by hand.
+                    priorController = navigator.serviceWorker.controller;
+                    if (!priorController) {
+                        observingInstallLifecycle = false;
+                        return;
+                    }
                 }
                 navigator.serviceWorker.removeEventListener(
                     "controllerchange",
