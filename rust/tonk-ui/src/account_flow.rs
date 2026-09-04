@@ -5150,8 +5150,17 @@ mod tests {
             // alone cannot say which happened. The probe's captured
             // refusal is what distinguishes them.
             let diagnostic = link_error_diagnostic(&driver).await.unwrap_or_default();
+            // Whether the purge itself landed: 404 means the account is
+            // gone and only the page's navigation was lost, while a plan
+            // that still loads means the ceremony failed before finishing.
+            // Without this the two are indistinguishable, and they have
+            // opposite fixes.
+            let plan = get_json(&driver, "/api/account/deletion/plan")
+                .await
+                .map(|plan| plan["status"].clone())
+                .unwrap_or(serde_json::Value::Null);
             return Err(error).context(format!(
-                "deletion consent={consent}; diagnostic={diagnostic:?}"
+                "deletion consent={consent}; diagnostic={diagnostic:?}; planStatus={plan}"
             ));
         }
         enter_hub(&driver).await?;
