@@ -178,23 +178,9 @@
     text-align: right;
 }
 
-/* The same matrix caret as every other Tonk field: an ink block where
-   the engine draws one (`tonk-block-caret` is page-level in styles.css,
-   always loaded beside this sheet), an ink line where it cannot. */
+/* Keep the browser's native insertion caret, tinted to the current theme. */
 :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
     caret-color: var(--ink);
-}
-
-@supports (caret-shape: block) {
-    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
-        caret-shape: block;
-        caret-animation: manual;
-        animation: tonk-block-caret 1.05s steps(1, end) infinite;
-    }
-
-    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]):not(:focus) {
-        animation: none;
-    }
 }
 
 .account__row--action {

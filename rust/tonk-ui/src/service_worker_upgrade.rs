@@ -370,8 +370,8 @@ mod tests {
 
     /// Put the navigation counter in the served document itself so every
     /// WebDriver observes the same lifecycle evidence. Session storage spans
-    /// same-tab reloads but not test environments; the root map distinguishes
-    /// the deliberately unmounted alignment document from mounted A/B pages.
+    /// same-tab reloads but not test environments; the root map records which
+    /// observed documents reached the application mount before a later reload.
     fn instrument_generation_documents(root: &Path) -> Result<()> {
         let index_path = root.join("index.html");
         let index = std::fs::read_to_string(&index_path)?;
@@ -567,13 +567,20 @@ mod tests {
                             done(lifecycle);
                             return;
                         }
-                        const [healthResponse, cacheNames, manifestResponse] = await Promise.all([
+                        const generationCache = `TONK_GENERATION_${expectedBuild}`;
+                        const generationMarkerUrl = new URL(
+                            `/.tonk-generation-${expectedBuild}`,
+                            location.origin,
+                        ).href;
+                        const [healthResponse, cacheNames, manifestResponse, markerResponse] = await Promise.all([
                             fetch("/api/health"),
                             caches.keys(),
                             fetch("/asset-manifest.json", { cache: "no-store" }),
+                            caches.match(generationMarkerUrl, { cacheName: generationCache }),
                         ]);
                         const healthBody = await healthResponse.text();
                         const manifestBody = await manifestResponse.text();
+                        const markerBody = markerResponse ? await markerResponse.text() : "";
                         const parse = body => {
                             try { return JSON.parse(body); } catch { return null; }
                         };
@@ -587,6 +594,8 @@ mod tests {
                             manifest: parsedManifest && { build: parsedManifest.build },
                             manifestStatus: manifestResponse.status,
                             manifestBody: manifestBody.slice(0, 200),
+                            generationMarker: parse(markerBody),
+                            generationMarkerBody: markerBody.slice(0, 200),
                         });
                     })().catch(error => done({ error: String(error) }));
                     "##,
@@ -596,6 +605,7 @@ mod tests {
             {
                 last = state.json().clone();
                 if last["health"]["build"] == build
+                    && last["health"]["worker"] == "ok"
                     && last["documentBuild"] == build
                     && last["manifest"]["build"] == build
                     && last["mounted"] == true
@@ -606,6 +616,61 @@ mod tests {
             ensure!(
                 tokio::time::Instant::now() < deadline,
                 "timed out waiting for coherent build {build}: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn wait_for_complete_generation(
+        driver: &WebDriver,
+        generation: &GenerationContract,
+        expected_documents: Option<u64>,
+        obsolete_build: Option<&str>,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let state = wait_for_mounted_build(driver, &generation.build).await?;
+            let cache_names = state["cacheNames"].as_array();
+            let has_cache = |expected: &str| {
+                cache_names.is_some_and(|names| names.iter().any(|name| name == expected))
+            };
+            let obsolete_pruned = obsolete_build.is_none_or(|build| {
+                cache_names.is_some_and(|names| {
+                    names.iter().all(|name| {
+                        !name
+                            .as_str()
+                            .is_some_and(|name| cache_belongs_to_build(name, build))
+                    })
+                })
+            });
+            let documents_ready = expected_documents
+                .is_none_or(|expected| state["documents"].as_u64() == Some(expected));
+            if state["health"]["worker"] == "ok"
+                && state["health"]["workerWasm"] == generation.worker_wasm
+                && state["generationMarker"]["build"] == generation.build
+                && state["generationMarker"]["state"] == "adopted"
+                && has_cache(&format!("TONK_SHELL_{}", generation.build))
+                && has_cache(&format!("TONK_WORKER_{}", generation.build))
+                && has_cache(&format!("TONK_GENERATION_{}", generation.build))
+                && documents_ready
+                && obsolete_pruned
+            {
+                return Ok(state);
+            }
+            if let Some(expected) = expected_documents
+                && state["documents"]
+                    .as_u64()
+                    .is_some_and(|actual| actual > expected)
+            {
+                return Err(anyhow!(
+                    "document count exceeded {expected} while waiting for complete generation {}: {state}",
+                    generation.build
+                ));
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for complete generation {} with documents={expected_documents:?} and obsolete build {obsolete_build:?} pruned: {state}",
+                generation.build
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -722,7 +787,7 @@ mod tests {
         let driver = env.driver().await?;
         let build_a = &generation_a.build;
         let build_b = &generation_b.build;
-        let initial = wait_for_mounted_build(&driver, build_a).await?;
+        let initial = wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         assert_eq!(
             initial["health"]["build"].as_str(),
             Some(build_a.as_str()),
@@ -736,11 +801,12 @@ mod tests {
         fetched_asset_digests(&driver, &generation_a.probes).await?;
         create_state_sentinels(&driver).await?;
         promote_second_generation(&env)?;
-        // An ordinary warm load discovers B, which activates automatically.
-        // The update-aware A document claims it and performs one guarded
-        // alignment reload before mounting.
+        // An ordinary warm load mounts A immediately while its update check
+        // discovers B in the background. B activates automatically, and the
+        // update-aware A document performs one guarded alignment reload.
         driver.refresh().await?;
-        let state = wait_for_mounted_build(&driver, build_b).await?;
+        let state =
+            wait_for_complete_generation(&driver, &generation_b, Some(3), Some(build_a)).await?;
         assert_eq!(state["controlled"], true, "{state}");
         assert_eq!(state["active"], "activated", "{state}");
         assert!(state["installing"].is_null(), "{state}");
@@ -748,7 +814,7 @@ mod tests {
         assert_eq!(state["mounted"], true, "{state}");
         assert_eq!(state["documents"], 3, "{state}");
         assert_eq!(state["roots"]["1"], true, "{state}");
-        assert_eq!(state["roots"]["2"], false, "{state}");
+        assert_eq!(state["roots"]["2"], true, "{state}");
         assert_eq!(state["roots"]["3"], true, "{state}");
         assert_eq!(
             state["health"]["workerWasm"].as_str(),
@@ -788,7 +854,7 @@ mod tests {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
         let first_tab = driver.window().await?;
-        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         create_state_sentinels(&driver).await?;
 
         let second_tab = driver.new_tab().await?;
@@ -799,14 +865,30 @@ mod tests {
         promote_second_generation(&env)?;
         driver.switch_to_window(first_tab.clone()).await?;
         driver.refresh().await?;
-        let first = wait_for_mounted_build(&driver, &generation_b.build).await?;
-        assert_eq!(first["documents"], 3, "{first}");
+        let first =
+            wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
+                .await?;
+        let first_documents = first["documents"]
+            .as_u64()
+            .context("the first tab reported no document count")?;
+        assert!(
+            matches!(first_documents, 2 | 3),
+            "the first tab must mount B directly or after one alignment reload: {first}"
+        );
         assert_eq!(first["roots"]["1"], true, "{first}");
-        assert_eq!(first["roots"]["2"], false, "{first}");
-        assert_eq!(first["roots"]["3"], true, "{first}");
+        assert_eq!(first["roots"]["2"], true, "{first}");
+        if first_documents == 3 {
+            assert_eq!(first["roots"]["3"], true, "{first}");
+        }
 
         driver.switch_to_window(second_tab).await?;
-        let second = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        let second = wait_for_complete_generation(
+            &driver,
+            &generation_b,
+            Some(2),
+            Some(&generation_a.build),
+        )
+        .await?;
         assert_eq!(second["documents"], 2, "{second}");
         assert_eq!(second["roots"]["1"], true, "{second}");
         assert_eq!(second["roots"]["2"], true, "{second}");
@@ -827,7 +909,7 @@ mod tests {
 
         driver.switch_to_window(first_tab).await?;
         let first_after = wait_for_mounted_build(&driver, &generation_b.build).await?;
-        assert_eq!(first_after["documents"], 3, "{first_after}");
+        assert_eq!(first_after["documents"], first_documents, "{first_after}");
         driver.quit().await?;
         Ok(())
     }
@@ -838,7 +920,7 @@ mod tests {
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
-        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         create_state_sentinels(&driver).await?;
         let removed = driver
             .execute_async(
@@ -860,7 +942,13 @@ mod tests {
 
         promote_second_generation(&env)?;
         driver.refresh().await?;
-        let state = wait_for_mounted_build(&driver, &generation_b.build).await?;
+        let state = wait_for_complete_generation(
+            &driver,
+            &generation_b,
+            Some(2),
+            Some(&generation_a.build),
+        )
+        .await?;
         assert_eq!(state["documents"], 2, "{state}");
         assert_eq!(state["roots"]["1"], true, "{state}");
         assert_eq!(state["roots"]["2"], true, "{state}");
@@ -899,9 +987,8 @@ mod tests {
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
-        let build_a = generation_a.build;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         let build_b = generation_b.build;
-        wait_for_mounted_build(&driver, &build_a).await?;
 
         let query = tonk_worker::helpers::named_concept_wire_query();
         let opened = driver

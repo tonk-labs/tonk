@@ -445,6 +445,13 @@ impl Mediation {
             && let Some(window) = web_sys::window()
         {
             let _ = window.location().assign(&href);
+        } else if js_sys::Reflect::get(&answer, &"reload".into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            && let Some(window) = web_sys::window()
+        {
+            let _ = window.location().reload();
         }
         Ok(())
     }

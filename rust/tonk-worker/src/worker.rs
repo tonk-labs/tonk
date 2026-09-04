@@ -4,7 +4,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use crate::{
@@ -420,6 +420,12 @@ pub struct TonkState {
     /// without re-deriving where the registry lives — and so tests can
     /// point it at a scratch registry instead of the real one.
     pub(crate) registry: crate::device::Registry,
+    /// Serializes every replacement of the active profile, whether explicit
+    /// or selected automatically by an account ceremony.
+    pub(crate) profile_transition: Arc<Mutex<()>>,
+    /// Monotonic active-profile context. Browser clients bind to the value
+    /// they first use and become stale when a profile promotion advances it.
+    pub(crate) context_generation: Arc<AtomicU64>,
 }
 
 impl TonkState {
@@ -1769,6 +1775,8 @@ pub(crate) async fn boot_state(
         clients: Default::default(),
         account_keys: Default::default(),
         registry,
+        profile_transition: Arc::new(Mutex::new(())),
+        context_generation: Arc::new(AtomicU64::new(0)),
     };
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
@@ -2104,7 +2112,8 @@ impl TonkServiceWorker {
             // which must not pass through JSON. Recognise it on the raw
             // value before the ordinary typed protocol parses anything.
             if crate::router::custody::is_custody_envelope(&data) {
-                crate::router::custody::receive(state, data, ports).await;
+                crate::router::custody::receive(state, source_client_id.map(ClientId), data, ports)
+                    .await;
                 return Ok(JsValue::UNDEFINED);
             }
 

@@ -2150,7 +2150,7 @@ async fn account_op(
                 Ok(url) => {
                     println!("Review permanent deletion of {subject} in your browser:\n{url}");
                     println!(
-                        "No data has been deleted yet. Your account and every other space will remain; the browser requires your email, explicit confirmation, and passkey."
+                        "No data has been deleted yet. Your account and every other space will remain; the browser requires an explicit typed confirmation."
                     );
                     ExitCode::Success
                 }
