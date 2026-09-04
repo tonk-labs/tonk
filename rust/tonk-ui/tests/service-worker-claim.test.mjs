@@ -536,13 +536,16 @@ test("a tab claimed after load still notices a later successor", async () => {
   // exactly like a tab that had been controlled all along.
   assert.ok(result.serviceWorkers.controller, "the claim must take control");
 
-  // A successor installs afterwards. A tab that is still update-aware
-  // wakes its incumbent rather than sitting on the outgoing build.
-  // A successor is waiting by the time this document runs its update
-  // check — the ordering a tab opened just before a deployment sees.
-  const successor = eventTarget({ state: "installed", postMessage() {} });
-  result.registration.waiting = successor;
+  // A successor arrives afterwards, the way the browser delivers one:
+  // `installing` first with `updatefound`, then `installed` + `waiting`.
+  // A tab that is still update-aware wakes its incumbent rather than
+  // sitting on the outgoing build.
+  const successor = eventTarget({ state: "installing", postMessage() {} });
+  result.registration.installing = successor;
   await result.registration.dispatch("updatefound");
+  successor.state = "installed";
+  result.registration.waiting = successor;
+  await successor.dispatch("statechange");
   for (let turn = 0; turn < 20; turn += 1) await new Promise(setImmediate);
 
   assert.ok(
