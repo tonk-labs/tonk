@@ -801,6 +801,16 @@ function ensureOfflineGeneration() {
 
 function extendOfflineGeneration(event) {
     if (typeof event.waitUntil !== "function") return;
+    // `fetch` and `message` both reach a worker that is still WAITING
+    // behind an incumbent — the page goes on posting `claim` and
+    // `connectivity` throughout. A successor owns nothing yet: its fill
+    // duplicates the one `oninstall` already runs, and its prune deletes
+    // the generation caches the incumbent is still serving from. An
+    // incumbent that loses its wasm can no longer load it to retire, so
+    // the successor is stranded in `waiting` for good. A first install
+    // has no incumbent to displace and must still fill, so the test is
+    // "someone else is active", not "this worker is active".
+    if (isWaitingBehindIncumbent()) return;
     event.waitUntil(ensureOfflineGeneration());
 }
 
@@ -969,6 +979,15 @@ async function retire(reason) {
 /// incumbent may stop the reactor serving the current pages.
 function isActiveIncumbent() {
     return self.registration.active === self.serviceWorker;
+}
+
+/// Whether another worker holds the registration while this one waits.
+/// A first install (no active worker) is NOT waiting behind anyone: it
+/// owns the registration as soon as it activates, so it still completes
+/// its own generation.
+function isWaitingBehindIncumbent() {
+    const active = self.registration.active;
+    return active != null && active !== self.serviceWorker;
 }
 
 function retireActiveIncumbent(reason) {
