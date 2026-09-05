@@ -40,6 +40,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use tonk_notation::syntax::{FieldValue, Scalar};
+
 /// Where one command field's value comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -83,6 +85,9 @@ pub enum SourceError {
     MalformedField(String),
     /// A `.` path with an empty segment (`.a..b`, `.`, `a.`).
     MalformedProperty(String),
+    /// A blank, a logic variable, or a nested mapping — meaningful in
+    /// a claim body, but not a place a value can come from.
+    Unusable(String),
 }
 
 impl fmt::Display for SourceError {
@@ -95,11 +100,22 @@ impl fmt::Display for SourceError {
             SourceError::MalformedProperty(raw) => {
                 write!(f, "`{raw}` has an empty path segment")
             }
+            SourceError::Unusable(raw) => {
+                write!(f, "`{raw}` is not a value a command field can read")
+            }
         }
     }
 }
 
 /// Read one `where:` value.
+///
+/// Two forms are this grammar's own — `{field}` and `.path` — and
+/// neither can be mistaken for anything else: a symbol must start with
+/// a lowercase letter, so `{` and `.` are already excluded. Everything
+/// else is handed to the notation's own classifier
+/// ([`tonk_notation::parse::classify_plain_value`]) rather than
+/// re-implemented, so a value means here exactly what it means in any
+/// other field position — and cannot drift from it.
 pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -125,9 +141,9 @@ pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
         return Ok(Source::Property(segments));
     }
 
-    // A quoted value is a literal. YAML usually strips the quotes
-    // before we see the string, so an already-unquoted literal is
-    // accepted only in that form; everything else is a bare word.
+    // An explicitly quoted value is a literal. YAML normally strips the
+    // quotes long before this, which is fine: the classifier below
+    // decides by charset, not by quoting.
     if let Some(inner) = raw
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
@@ -139,14 +155,31 @@ pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
         return Ok(Source::Literal(inner.to_string()));
     }
 
-    // A scheme-prefixed URI is a direct entity reference, no lookup —
-    // matching `FieldValue::Uri` and the rule `<tonk-display>` already
-    // applies to its `entity` attribute.
-    if raw.contains(':') {
-        return Ok(Source::Entity(raw.to_string()));
+    match tonk_notation::parse::classify_plain_value(raw) {
+        FieldValue::Symbol(name) => Ok(Source::Reference(name)),
+        FieldValue::Uri(uri) => Ok(Source::Entity(uri)),
+        FieldValue::Literal(scalar) => Ok(Source::Literal(scalar_text(&scalar))),
+        // A blank, a logic variable or a nested mapping is meaningful
+        // in a claim body but says nothing about where a value comes
+        // from, so it is a malformed source rather than a silent skip.
+        _ => Err(SourceError::Unusable(raw.to_string())),
     }
+}
 
-    Ok(Source::Reference(raw.to_string()))
+/// A literal scalar as the text the runtime coerces to the field's
+/// declared type.
+fn scalar_text(scalar: &Scalar) -> String {
+    match scalar {
+        Scalar::String(text) => text.clone(),
+        Scalar::Integer(value) => value.to_string(),
+        Scalar::UnsignedInteger(value) => value.to_string(),
+        Scalar::Float(value) => value.to_string(),
+        Scalar::Boolean(value) => value.to_string(),
+        // `null` reads as "no value", which the runtime treats the
+        // same way it treats a blank control: the field is omitted and
+        // the command still posts.
+        Scalar::Null => String::new(),
+    }
 }
 
 /// A parsed `event!:` declaration.
@@ -422,10 +455,20 @@ mod tests {
     fn a_bare_symbol_is_a_named_entity_reference() {
         // What a bare symbol means everywhere else in the notation
         // (`FieldValue::Symbol`): the entity the name currently refers
-        // to. Quotes are what make a value a string.
+        // to.
         assert_eq!(
             parse_source("counter"),
             Ok(Source::Reference("counter".into()))
+        );
+        // Kebab and digits are in the symbol charset.
+        assert_eq!(
+            parse_source("person-name2"),
+            Ok(Source::Reference("person-name2".into()))
+        );
+        // A `/`-qualified symbol is still a name lookup, not a URI.
+        assert_eq!(
+            parse_source("issue/title"),
+            Ok(Source::Reference("issue/title".into()))
         );
         assert_eq!(
             parse_source("\"counter\""),
@@ -434,8 +477,38 @@ mod tests {
     }
 
     #[test]
+    fn the_symbol_charset_decides_symbol_from_string() {
+        // Symbols are lowercase, start with a letter, and hold no
+        // spaces. Anything else is a string — which is why the
+        // distinction survives YAML stripping the quotes.
+        for text in ["Untitled", "timeStamp", "two words", "9lives", "TEXT"] {
+            assert!(
+                matches!(parse_source(text), Ok(Source::Literal(_))),
+                "`{text}` must classify as a literal, got {:?}",
+                parse_source(text)
+            );
+        }
+        for text in ["untitled", "time-stamp", "a", "space/route/view"] {
+            assert!(
+                matches!(parse_source(text), Ok(Source::Reference(_))),
+                "`{text}` must classify as a reference, got {:?}",
+                parse_source(text)
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_typed_scalars_are_literals() {
+        // A plain `28` is an integer, not a symbol — the classifier
+        // takes YAML's core schema before the symbol test.
+        assert_eq!(parse_source("28"), Ok(Source::Literal("28".into())));
+        assert_eq!(parse_source("true"), Ok(Source::Literal("true".into())));
+    }
+
+    #[test]
     fn a_uri_is_a_direct_entity_reference() {
-        // `FieldValue::Uri`: scheme-prefixed, no name-table lookup.
+        // `FieldValue::Uri`, both accepted shapes: scheme-prefixed,
+        // and a dotted domain with a name. No name-table lookup.
         assert_eq!(
             parse_source("did:key:zCounter"),
             Ok(Source::Entity("did:key:zCounter".into()))
@@ -444,26 +517,9 @@ mod tests {
             parse_source("tonk:invite"),
             Ok(Source::Entity("tonk:invite".into()))
         );
-    }
-
-    #[test]
-    fn a_dropped_dot_still_fails_but_as_an_unresolvable_name() {
-        // `timeStamp` is no longer an error at parse time — it is a
-        // reference. The typo is still caught, by the language's own
-        // mechanism: nothing names it, so resolution reports it.
-        let source = parse_source("timeStamp").expect("a reference");
-        assert_eq!(source, Source::Reference("timeStamp".into()));
-
-        let event = event_descriptor(
-            Some("click"),
-            false,
-            false,
-            [("time".to_string(), "timeStamp".to_string())],
-        )
-        .expect("descriptor");
         assert_eq!(
-            event.references(),
-            BTreeSet::from(["timeStamp".to_string()])
+            parse_source("io.gozala.issue/title"),
+            Ok(Source::Entity("io.gozala.issue/title".into()))
         );
     }
 
@@ -493,15 +549,15 @@ mod tests {
             Some("click"),
             false,
             false,
-            [("time".to_string(), "timeStamp".to_string())],
+            [("subject".to_string(), "counter".to_string())],
         )
         .expect("descriptor");
         let unresolved = event.resolve_references(&BTreeMap::new());
-        assert_eq!(unresolved, vec!["timeStamp".to_string()]);
+        assert_eq!(unresolved, vec!["counter".to_string()]);
         // Left as a reference rather than silently becoming a value.
         assert_eq!(
-            event.sources.get("time"),
-            Some(&Source::Reference("timeStamp".into()))
+            event.sources.get("subject"),
+            Some(&Source::Reference("counter".into()))
         );
     }
 
