@@ -4916,35 +4916,30 @@ mod library_analysis_tests {
         );
     }
 
-    /// The seed body the worker generates must analyze against the
-    /// library it is concatenated to. A malformed head fails the seed,
-    /// which takes space creation — and its redirect — down with it.
+    /// The seed record the worker writes must analyze against the library
+    /// it follows: a head naming a component per line, keyed on the seed
+    /// entity.
+    ///
+    /// The worker builds it from the entities EVALUATION derived, which
+    /// this test cannot run — see `it_evaluates_both_shipped_libraries`
+    /// for that. What is pinned here is the shape.
     #[test]
-    fn it_analyzes_a_generated_seed_body() {
+    fn it_analyzes_a_seed_record() {
         let core = include_str!("../../tonk-core/assets/library/core.yaml");
-        // Mirrors `seed_route_body`: one head naming every `route!:` entity.
-        let mut body = String::from(
-            "space/seed!:\n  this: seed:abc\n  source: \"/library/core.yaml\"\n  prior: seed:none\n",
-        );
-        let mut lines = core.lines();
-        while let Some(line) = lines.next() {
-            if !line.starts_with("route!:") {
-                continue;
-            }
-            for field in lines.by_ref() {
-                let trimmed = field.trim_start();
-                if trimmed.is_empty() || !field.starts_with(char::is_whitespace) {
-                    break;
-                }
-                if let Some(entity) = trimmed.strip_prefix("this:") {
-                    body.push_str("  route: ");
-                    body.push_str(entity.trim());
-                    body.push('\n');
-                    break;
-                }
-            }
-        }
-        assert_analyzes("core.yaml + seed body", &format!("{core}\n{body}"));
+        let body = r#"space/seed!:
+  this: seed:abc
+  source: "/library/core.yaml"
+  prior: seed:none
+
+space/seed-component!:
+  this: seed:abc
+  component: tonk:blank
+
+space/seed-rule!:
+  this: seed:abc
+  rule: concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fGY9Z7tXEsG
+"#;
+        assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }
 
     fn assert_analyzes(name: &str, source: &str) {

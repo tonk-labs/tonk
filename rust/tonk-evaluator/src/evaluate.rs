@@ -104,7 +104,9 @@ pub struct CommitSummary {
     /// Number of EAV claims committed (asserts + retracts).
     pub claims: usize,
     /// Variable name (or `"this"` for anonymous heads) →
-    /// entity URI for every head the mutation touched.
+    /// entity URI for every head the mutation touched. Rule
+    /// installs appear as `!rule-<n>` in document order: a rule
+    /// publishes no anchor, so nothing else would name it.
     pub entities: BTreeMap<String, String>,
 }
 
@@ -359,6 +361,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
             commits
                 .entities
                 .insert(format!("?{key}"), entity.to_string());
+        }
+        // A rule has no anchor to publish it under — its identity is
+        // derived from its body — so it would otherwise be the one
+        // installed thing a caller cannot name afterwards.
+        for (index, rule) in document.rule_installs().iter().enumerate() {
+            if let Some(entity) = rule.try_this() {
+                commits
+                    .entities
+                    .insert(format!("!rule-{index}"), entity.to_string());
+            }
         }
 
         // ---- Plan + apply mutations to the caller's transaction ----

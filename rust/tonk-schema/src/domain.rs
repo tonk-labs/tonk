@@ -375,6 +375,16 @@ pub mod seed {
     #[cardinality(one)]
     pub struct Prior(pub Entity);
 
+    /// A component this seed installed whose kind is not known.
+    ///
+    /// A head the library anchored itself reports under that anchor, which
+    /// says nothing about the form it decorated; only the anchors the
+    /// installer generates encode a kind.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(many)]
+    pub struct Component(pub Entity);
+
     /// A concept this seed version declared.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
