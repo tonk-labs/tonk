@@ -60,6 +60,121 @@ view!:
 
 
 # ============================================================
+# EVENTS
+# ============================================================
+
+# The `event` concept. An `event!:` declaration is the seam between a
+# host's input model and a command's domain shape: it names the platform
+# event to listen for, whether to suppress the platform's default
+# handling, and a `where:` map from COMMAND FIELD NAME to source.
+#
+# A template binds one with `on:<name>=<command>`, which resolves the
+# declaration named `on/<name>` — `/` is not legal in an HTML attribute
+# name but `:` is, so the identifier and the attribute differ by exactly
+# that substitution. Only the single `on:` prefix is reserved, so
+# `bind:base`, `xlink:href` and `xml:lang` are untouched.
+#
+# This replaces spelling the extraction inside the command's `with:`
+# map as `dom.event.*` identifiers. That form made a command's identity
+# its plumbing: two verbs reading the same DOM path were the same
+# concept (hence `sheet-name` / `rename-name` in table.yaml, contorted
+# only to stay distinct), and the command could not be reused by a host
+# with no DOM. Here the command stays domain-shaped and every platform
+# difference lives in one artifact whose whole job is platform
+# difference.
+#
+# `on<event>=` keeps working — the two attribute forms are distinct, so
+# templates migrate one at a time.
+concept!: &event
+  this: tonk:event
+  description: How a platform event fills a command's fields
+  with:
+    type:
+      description: The platform event name to listen for
+      the: xyz.tonk.event/type
+      cardinality: one
+      as: text
+    where:
+      description: Command field name to source
+      # A keyed collection's `the:` names a domain and the key supplies
+      # the name half, so each entry lands as its own fact
+      # (`xyz.tonk.event.where/<field>`) with cardinality one — a space
+      # can supersede one source without restating the map. Its own
+      # domain, so a field called `type` cannot collide with the `type:`
+      # attribute above.
+      the: xyz.tonk.event.where
+      cardinality: one
+      as: {[symbol]: text}
+  maybe:
+    prevent-default:
+      description: Suppress the platform's default handling
+      the: xyz.tonk.event/prevent-default
+      cardinality: one
+      as: boolean
+    stop-propagation:
+      description: Stop the event propagating further
+      the: xyz.tonk.event/stop-propagation
+      cardinality: one
+      as: boolean
+
+# A `where:` source is one of three forms, each syntactically distinct
+# so a typo cannot be mistaken for a different kind:
+#
+#   {field}   template interpolation, in the scope of the element the
+#             event fired on — a field of the enclosing repeat subject.
+#             `{this}` is the subject itself.
+#   .path     a property read off the live event, spelled the way the
+#             platform spells it (`.currentTarget.dataset.todo`). No
+#             case translation, so the old kebab/camel trap is gone.
+#   "text"    a literal, for defaults the interaction never supplies.
+#
+# A bare word is an error rather than a literal: `timeStamp` without its
+# dot would otherwise silently become the string "timeStamp", which is
+# the class of mistake this exists to catch.
+
+# Activation. `{this}` covers the whole `data-*` stash-and-recover
+# pattern: the renderer already stamps `data-this` on every repeat row,
+# so the subject needs no template attribute at all.
+event!: &on/click
+  type: "click"
+  where:
+    subject: "{this}"
+
+# Activation on a row, carrying a per-event nonce so two identical
+# clicks mint distinct entities. `time` is why a command that creates
+# something needs no hand-written nonce field.
+event!: &on/click-once
+  type: "click"
+  where:
+    subject: "{this}"
+    time: ".timeStamp"
+
+# Form submission. `prevent-default` lives here rather than in the
+# command, which is what keeps the command rule-consumable: an action
+# field in a command's `with:` map stores no value, so a rule premise
+# over it matches zero rows however successfully the command transacts.
+event!: &on/submit
+  type: "submit"
+  prevent-default: true
+  where:
+    subject: "{this}"
+
+# A native control's committed value.
+event!: &on/change
+  type: "change"
+  where:
+    subject: "{this}"
+    value: ".currentTarget.value"
+
+# A native control's checked state.
+event!: &on/toggle
+  type: "change"
+  where:
+    subject: "{this}"
+    checked: ".currentTarget.checked"
+
+
+# ============================================================
 # WORKSPACE
 # ============================================================
 
