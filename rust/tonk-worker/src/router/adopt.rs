@@ -63,6 +63,14 @@ pub(crate) async fn ensure_space_mounted(
         {
             log!("space adoption: directory reconcile for mounted '{subject}': {error}");
         }
+        // A space keeps the definitions it was seeded with, so a redesign
+        // shipped in a new bundle never reaches it. Catching up on mount
+        // costs nothing for a space already on the shipped seed, and an
+        // unopened space pays nothing at all.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if let Err(error) = super::repository::upgrade_seed(tonk, suffix).await {
+            log!("seed upgrade for mounted '{subject}': {error}");
+        }
         return Ok(true);
     }
     let Some(configuration) = directory_configuration(tonk, &subject).await else {

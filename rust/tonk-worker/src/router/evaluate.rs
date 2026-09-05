@@ -241,6 +241,29 @@ async fn evaluate_on_branch<'a>(
     body: Bytes,
     query: EvaluateQuery,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    evaluate_on_branch_with(tonk_state, tonk_branch, body, query, Vec::new()).await
+}
+
+/// [`evaluate_on_branch`], with `retract` folded into the same batch the
+/// document commits in.
+///
+/// A seed upgrade is the caller: it withdraws the previous seed's claims
+/// and installs the new library atomically. Order matters and is fixed
+/// here — the retractions seed the transaction, the document follows —
+/// because a retract followed by an assert of the same fact KEEPS it,
+/// citing what it overrode, while the reverse order cancels. So the
+/// overlap between two seeds survives an upgrade untouched.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+async fn evaluate_on_branch_with<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    tonk_branch: crate::reactor::BranchReference<'a>,
+    body: Bytes,
+    query: EvaluateQuery,
+    retract: Vec<crate::router::claim::RawClaim>,
+) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
@@ -279,7 +302,10 @@ async fn evaluate_on_branch<'a>(
         // explicit integrate here, and they never reach the durable write (the
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
-        let txn = branch.transaction();
+        let mut txn = branch.transaction();
+        for claim in retract.iter().cloned() {
+            txn = txn.retract(claim);
+        }
         let t_eval = web_time::Instant::now();
         let evaluated = syntax
             .evaluate(txn)
@@ -450,6 +476,27 @@ pub async fn evaluate_body(
     let query = EvaluateQuery { transact };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+        .await
+        .map(|Json(r)| r)
+}
+
+/// [`evaluate_body`], with `retract` folded into the same commit.
+///
+/// The seed upgrade's entry point: withdrawing the previous seed and
+/// installing its replacement is one batch, so a subscriber never sees a
+/// space with no definitions.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_with_retractions(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    body: String,
+    retract: Vec<crate::router::claim::RawClaim>,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
+    let query = EvaluateQuery { transact: true };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch_with(tonk_state, tonk_branch, bytes, query, retract)
         .await
         .map(|Json(r)| r)
 }

@@ -2945,7 +2945,7 @@ async fn seed_and_initialize(
                     &version,
                     STANDARD_LIBRARY_URL,
                     SEED_NONE,
-                    &revision.entity().to_string(),
+                    &encode_seed_revision(&revision.version()),
                     &seed_route_entities(&outcome.commits.entities),
                 );
                 seed_standard_library(&tonk, key, branch_name, &record)
@@ -2993,43 +2993,112 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
-/// Retract everything the seed at `revision` asserted, as instructions
-/// ready to ride the same batch that installs its replacement.
+/// Bring a space's seed up to the one this worker ships, if it is behind.
+///
+/// One atomic batch: the previous seed's assertions are retracted and the
+/// new library installed together. A retract followed by an assert of the
+/// same fact keeps it, citing what it overrode, so the overlap between
+/// two seeds survives untouched — only what the old seed had and the new
+/// one does not actually goes.
+///
+/// A space whose seed already matches is left alone, which is the common
+/// case: this runs on every mount.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    let shipped = seed_version(&library);
+
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}': {e}")))?;
+
+    let installed: Vec<tonk_schema::Seed> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Seed> {
+            this: Term::var("this"),
+            source: Term::var("source"),
+            prior: Term::var("prior"),
+            revision: Term::var("revision"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e:?}")))?;
+
+    let Some(current) = installed.into_iter().next() else {
+        // No record: a space seeded before this worker tracked one. Its
+        // definitions are whatever it was created with and nothing names
+        // them, so an upgrade would have to guess what to withdraw.
+        log!("seed upgrade: '{key}' predates the seed record, leaving it alone");
+        return Ok(false);
+    };
+    if current.this.to_string() == shipped {
+        return Ok(false);
+    }
+
+    let retract = prior_seed_retractions(tonk, &session, &current.revision.0.to_string()).await?;
+    log!(
+        "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
+        retract.len()
+    );
+
+    let outcome = super::evaluate::evaluate_with_retractions(
+        tonk,
+        key,
+        CONTENT_BRANCH,
+        library.clone(),
+        retract,
+    )
+    .await
+    .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
+
+    let Some(revision) = outcome.revision_after else {
+        return Ok(false);
+    };
+    let record = seed_record_body(
+        &shipped,
+        STANDARD_LIBRARY_URL,
+        &current.this.to_string(),
+        &encode_seed_revision(&revision.version()),
+        &seed_route_entities(&outcome.commits.entities),
+    );
+    seed_standard_library(tonk, key, CONTENT_BRANCH, &record)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("record upgraded seed '{key}': {e}")))?;
+    Ok(true)
+}
+
+/// Retract everything the seed at `revision` asserted, as claims ready to
+/// ride the same batch that installs its replacement.
 ///
 /// A revision's history is a changelog: every claim it wrote, with its
 /// polarity. Inverting only its ASSERTIONS is load-bearing — a seed
 /// install also carries the retractions of the seed before it, and
 /// replaying those inverted would restore the version before last.
-///
-/// The version is recovered by matching the recorded entity against the
-/// branch log, since a version's entity is a one-way derivation and there
-/// is no way back from the string.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn prior_seed_retractions(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
     revision: &str,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
-    use dialog_artifacts::history::VersionExt as _;
     use futures_util::StreamExt as _;
 
-    let branch = session.handle();
-    let log = branch
-        .log(&tonk.operator, SEED_LOG_DEPTH)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("read branch log: {e}")))?;
-    let Some((version, _)) = log
-        .into_iter()
-        .find(|(version, _)| version.entity().to_string() == revision)
-    else {
-        // The seed's revision has fallen out of the log we read. Retracting
-        // nothing leaves the old definitions standing, which is wrong but
-        // recoverable; guessing would not be.
-        log!("seed upgrade: revision '{revision}' is not in the last {SEED_LOG_DEPTH} revisions");
-        return Ok(Vec::new());
+    let Some(version) = decode_seed_revision(revision) else {
+        return Err(RepositoryError::Internal(format!(
+            "seed revision '{revision}' is not a version"
+        )));
     };
 
-    let history = branch.history(&tonk.operator);
+    let history = session.handle().history(&tonk.operator);
     let records = history.select(version);
     tokio::pin!(records);
 
@@ -3051,13 +3120,28 @@ async fn prior_seed_retractions(
     Ok(claims)
 }
 
-/// How far back the branch log is read to find a seed's revision.
+/// A revision's version, encoded for the record.
 ///
-/// A seed install is a handful of revisions old at most on a branch the
-/// user has been writing to; deeper than this and the space has moved on
-/// far enough that a full history scan is the honest fallback.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const SEED_LOG_DEPTH: usize = 256;
+/// The version's KEY BYTES, not its entity: the entity is a blake3 hash
+/// with no way back, while the key bytes round-trip through
+/// `Version::from_key_bytes`. Storing the entity meant hunting the branch
+/// log for a matching revision, which only works while the install is
+/// still recent.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn encode_seed_revision(version: &dialog_artifacts::history::Version) -> String {
+    use base58::ToBase58 as _;
+
+    version.key_bytes().to_base58()
+}
+
+/// The inverse of [`encode_seed_revision`].
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn decode_seed_revision(encoded: &str) -> Option<dialog_artifacts::history::Version> {
+    use base58::FromBase58 as _;
+
+    let bytes = encoded.from_base58().ok()?;
+    dialog_artifacts::history::Version::from_key_bytes(&bytes).ok()
+}
 
 /// Notation recording a seed install: its identity, where it came from,
 /// the seed it replaced, and the revision it committed at.
@@ -4201,7 +4285,7 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
         &version,
         PROFILE_LIBRARY_URL,
         SEED_NONE,
-        &revision.entity().to_string(),
+        &encode_seed_revision(&revision.version()),
         &seed_route_entities(&outcome.commits.entities),
     );
     super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, record, true)
@@ -8311,6 +8395,126 @@ mod seed_tests {
         assert_eq!(
             super::seed_route_entities(&entities),
             vec!["id:tonk:route/space".to_string()]
+        );
+    }
+
+    /// The round-trip a seed record depends on: a version encodes and
+    /// decodes exactly, so an upgrade can find the revision it must
+    /// withdraw. The entity cannot do this — it is a one-way hash.
+    #[test]
+    fn it_round_trips_a_seed_revision() {
+        use dialog_artifacts::history::{Edition, Origin, Version};
+
+        let version = Version::new(Origin::from([7u8; 32]), Edition::new(3));
+
+        let encoded = super::encode_seed_revision(&version);
+        let decoded = super::decode_seed_revision(&encoded).expect("the encoding round-trips");
+
+        assert_eq!(decoded, version);
+        assert!(
+            super::decode_seed_revision("not-a-version").is_none(),
+            "a value that is not a version decodes to nothing rather than a wrong one"
+        );
+    }
+
+    /// An upgrade withdraws what the previous seed asserted and installs
+    /// the new one, in a single commit.
+    ///
+    /// The hazard this pins: the two seeds overlap, and a retract and an
+    /// assert of the SAME fact in one batch must keep it. If the erase won
+    /// instead, every shared definition would vanish. And a fact only the
+    /// old seed had must actually go, or a space accretes definitions
+    /// forever.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_replaces_the_previous_seed_without_stranding_facts() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-upgrade").await;
+        let tonk = state.read().await;
+
+        // An "old seed": two routes, one of which the new seed keeps.
+        let old = r#"route!: &probe/kept
+  this: id:probe/kept
+  path: "/kept"
+  concept: tonk:blank
+
+route!: &probe/dropped
+  this: id:probe/dropped
+  path: "/dropped"
+  concept: tonk:blank
+"#;
+        let library = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let seeded = crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            format!("{library}\n{old}"),
+            true,
+        )
+        .await
+        .expect("the old seed evaluates");
+        let old_revision = super::encode_seed_revision(
+            &seeded
+                .revision_after
+                .expect("a committing seed has a revision")
+                .version(),
+        );
+
+        // The "new seed": keeps one route, drops the other.
+        let new = r#"route!: &probe/kept
+  this: id:probe/kept
+  path: "/kept"
+  concept: tonk:blank
+"#;
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("main acquires");
+        let retract = super::prior_seed_retractions(&tonk, &session, &old_revision)
+            .await
+            .expect("the prior seed's assertions are readable");
+        assert!(
+            !retract.is_empty(),
+            "the old seed asserted something to withdraw"
+        );
+
+        crate::router::evaluate::evaluate_with_retractions(
+            &tonk,
+            &key,
+            "main",
+            format!("{library}\n{new}"),
+            retract,
+        )
+        .await
+        .expect("the upgrade commits");
+
+        let routes: Vec<tonk_schema::Route> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("route query");
+        let paths: Vec<String> = routes.into_iter().map(|route| route.path.0).collect();
+
+        assert!(
+            paths.iter().any(|path| path == "/kept"),
+            "a definition both seeds carry survives the retract-then-assert: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path == "/dropped"),
+            "a definition only the old seed had is withdrawn: {paths:?}"
         );
     }
 
