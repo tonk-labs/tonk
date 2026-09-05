@@ -76,74 +76,48 @@ pub enum Source {
     Entity(String),
 }
 
-/// Why a `where:` value could not be read as a [`Source`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceError {
-    /// Empty, or nothing but whitespace.
-    Empty,
-    /// `{` with no closing `}`, or text outside the braces.
-    MalformedField(String),
-    /// A `.` path with an empty segment (`.a..b`, `.`, `a.`).
-    MalformedProperty(String),
-    /// A blank, a logic variable, or a nested mapping — meaningful in
-    /// a claim body, but not a place a value can come from.
-    Unusable(String),
-}
-
-impl fmt::Display for SourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SourceError::Empty => write!(f, "empty source"),
-            SourceError::MalformedField(raw) => {
-                write!(f, "`{raw}` is not a well-formed `{{field}}` reference")
-            }
-            SourceError::MalformedProperty(raw) => {
-                write!(f, "`{raw}` has an empty path segment")
-            }
-            SourceError::Unusable(raw) => {
-                write!(f, "`{raw}` is not a value a command field can read")
-            }
-        }
-    }
-}
-
 /// Read one `where:` value.
 ///
-/// Two forms are this grammar's own — `{field}` and `.path` — and
-/// neither can be mistaken for anything else: a symbol must start with
-/// a lowercase letter, so `{` and `.` are already excluded. Everything
-/// else is handed to the notation's own classifier
-/// ([`tonk_notation::parse::classify_plain_value`]) rather than
-/// re-implemented, so a value means here exactly what it means in any
-/// other field position — and cannot drift from it.
-pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
+/// **Total, like the classifier it delegates to.** The notation never
+/// rejects a scalar in a value position — everything that is not a
+/// symbol, a URI or a typed scalar is a string — so neither does this.
+/// Adding failure modes here would make syntax the language accepts
+/// invalid, and (worse) one odd value would take its whole declaration
+/// down with it.
+///
+/// Two forms are this grammar's own, recognised only when well formed:
+///
+/// - `{field}` — template interpolation, in the scope of the element
+///   the event fired on. `{this}` is the subject.
+/// - `.path` — a property read off the live event, spelled the way the
+///   platform spells it.
+///
+/// A symbol cannot begin with `{` or `.`, so neither form can shadow
+/// one. Anything else — including a malformed `{this` or `.a..b` — is
+/// handed to [`tonk_notation::parse::classify_plain_value`] and means
+/// exactly what it would mean in any other field position.
+pub fn parse_source(raw: &str) -> Source {
     let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(SourceError::Empty);
+
+    if let Some(name) = raw
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.contains(['{', '}']))
+    {
+        return Source::Field(name.to_string());
     }
 
-    if let Some(rest) = raw.strip_prefix('{') {
-        let Some(name) = rest.strip_suffix('}') else {
-            return Err(SourceError::MalformedField(raw.to_string()));
-        };
-        let name = name.trim();
-        if name.is_empty() || name.contains('{') || name.contains('}') {
-            return Err(SourceError::MalformedField(raw.to_string()));
-        }
-        return Ok(Source::Field(name.to_string()));
-    }
-
-    if let Some(rest) = raw.strip_prefix('.') {
+    if let Some(segments) = raw.strip_prefix('.').and_then(|rest| {
         let segments: Vec<String> = rest.split('.').map(str::to_string).collect();
-        if segments.iter().any(String::is_empty) {
-            return Err(SourceError::MalformedProperty(raw.to_string()));
-        }
-        return Ok(Source::Property(segments));
+        (!segments.iter().any(String::is_empty)).then_some(segments)
+    }) {
+        return Source::Property(segments);
     }
 
     // An explicitly quoted value is a literal. YAML normally strips the
-    // quotes long before this, which is fine: the classifier below
-    // decides by charset, not by quoting.
+    // quotes long before this, which is fine: the classifier decides by
+    // charset, not by quoting.
     if let Some(inner) = raw
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
@@ -152,17 +126,18 @@ pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
                 .and_then(|rest| rest.strip_suffix('\''))
         })
     {
-        return Ok(Source::Literal(inner.to_string()));
+        return Source::Literal(inner.to_string());
     }
 
     match tonk_notation::parse::classify_plain_value(raw) {
-        FieldValue::Symbol(name) => Ok(Source::Reference(name)),
-        FieldValue::Uri(uri) => Ok(Source::Entity(uri)),
-        FieldValue::Literal(scalar) => Ok(Source::Literal(scalar_text(&scalar))),
-        // A blank, a logic variable or a nested mapping is meaningful
-        // in a claim body but says nothing about where a value comes
-        // from, so it is a malformed source rather than a silent skip.
-        _ => Err(SourceError::Unusable(raw.to_string())),
+        FieldValue::Symbol(name) => Source::Reference(name),
+        FieldValue::Uri(uri) => Source::Entity(uri),
+        FieldValue::Literal(scalar) => Source::Literal(scalar_text(&scalar)),
+        // A blank, a logic variable or a nested mapping says nothing
+        // about where a value comes from. Carried through as its own
+        // text rather than rejected: the field simply will not coerce,
+        // which fails the one binding instead of the declaration.
+        _ => Source::Literal(raw.to_string()),
     }
 }
 
@@ -175,9 +150,9 @@ fn scalar_text(scalar: &Scalar) -> String {
         Scalar::UnsignedInteger(value) => value.to_string(),
         Scalar::Float(value) => value.to_string(),
         Scalar::Boolean(value) => value.to_string(),
-        // `null` reads as "no value", which the runtime treats the
-        // same way it treats a blank control: the field is omitted and
-        // the command still posts.
+        // `null` reads as "no value", which the runtime treats the way
+        // it treats a blank control: the field is omitted, the command
+        // still posts.
         Scalar::Null => String::new(),
     }
 }
@@ -237,17 +212,14 @@ impl EventDescriptor {
 }
 
 /// Why an `event!:` declaration could not be read.
+///
+/// One variant, because a declaration with no `type:` genuinely cannot
+/// install a listener. A `where:` entry never fails — see
+/// [`parse_source`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventError {
     /// No `type:`, or it was not text.
     MissingType,
-    /// A `where:` entry's value was unreadable.
-    Source {
-        /// The command field the entry was for.
-        field: String,
-        /// What was wrong with it.
-        error: SourceError,
-    },
 }
 
 impl fmt::Display for EventError {
@@ -255,9 +227,6 @@ impl fmt::Display for EventError {
         match self {
             EventError::MissingType => {
                 write!(f, "event declaration has no `type:`")
-            }
-            EventError::Source { field, error } => {
-                write!(f, "source for `{field}`: {error}")
             }
         }
     }
@@ -277,14 +246,13 @@ pub fn event_descriptor(
         .filter(|value| !value.is_empty())
         .ok_or(EventError::MissingType)?;
 
-    let mut sources = BTreeMap::new();
-    for (field, raw) in where_entries {
-        let source = parse_source(&raw).map_err(|error| EventError::Source {
-            field: field.clone(),
-            error,
-        })?;
-        sources.insert(field, source);
-    }
+    let sources = where_entries
+        .into_iter()
+        .map(|(field, raw)| {
+            let source = parse_source(&raw);
+            (field, source)
+        })
+        .collect();
 
     Ok(EventDescriptor {
         event_type: event_type.to_string(),
@@ -401,11 +369,11 @@ mod tests {
 
     #[test]
     fn a_braced_name_is_a_field_read() {
-        assert_eq!(parse_source("{this}"), Ok(Source::Field("this".into())));
-        assert_eq!(parse_source(" {title} "), Ok(Source::Field("title".into())));
+        assert_eq!(parse_source("{this}"), Source::Field("this".into()));
+        assert_eq!(parse_source(" {title} "), Source::Field("title".into()));
         assert_eq!(
             parse_source("{dom.host/repo}"),
-            Ok(Source::Field("dom.host/repo".into()))
+            Source::Field("dom.host/repo".into())
         );
     }
 
@@ -413,15 +381,15 @@ mod tests {
     fn a_leading_dot_is_a_property_read() {
         assert_eq!(
             parse_source(".timeStamp"),
-            Ok(Source::Property(vec!["timeStamp".into()]))
+            Source::Property(vec!["timeStamp".into()])
         );
         assert_eq!(
             parse_source(".currentTarget.dataset.todo"),
-            Ok(Source::Property(vec![
+            Source::Property(vec![
                 "currentTarget".into(),
                 "dataset".into(),
                 "todo".into()
-            ]))
+            ])
         );
     }
 
@@ -433,12 +401,12 @@ mod tests {
         // there is no transformation to get wrong.
         assert_eq!(
             parse_source(".currentTarget.elements.noteBody.value"),
-            Ok(Source::Property(vec![
+            Source::Property(vec![
                 "currentTarget".into(),
                 "elements".into(),
                 "noteBody".into(),
                 "value".into()
-            ]))
+            ])
         );
     }
 
@@ -446,9 +414,9 @@ mod tests {
     fn a_quoted_value_is_a_literal() {
         assert_eq!(
             parse_source("\"Untitled\""),
-            Ok(Source::Literal("Untitled".into()))
+            Source::Literal("Untitled".into())
         );
-        assert_eq!(parse_source("''"), Ok(Source::Literal(String::new())));
+        assert_eq!(parse_source("''"), Source::Literal(String::new()));
     }
 
     #[test]
@@ -456,23 +424,20 @@ mod tests {
         // What a bare symbol means everywhere else in the notation
         // (`FieldValue::Symbol`): the entity the name currently refers
         // to.
-        assert_eq!(
-            parse_source("counter"),
-            Ok(Source::Reference("counter".into()))
-        );
+        assert_eq!(parse_source("counter"), Source::Reference("counter".into()));
         // Kebab and digits are in the symbol charset.
         assert_eq!(
             parse_source("person-name2"),
-            Ok(Source::Reference("person-name2".into()))
+            Source::Reference("person-name2".into())
         );
         // A `/`-qualified symbol is still a name lookup, not a URI.
         assert_eq!(
             parse_source("issue/title"),
-            Ok(Source::Reference("issue/title".into()))
+            Source::Reference("issue/title".into())
         );
         assert_eq!(
             parse_source("\"counter\""),
-            Ok(Source::Literal("counter".into()))
+            Source::Literal("counter".into())
         );
     }
 
@@ -483,14 +448,14 @@ mod tests {
         // distinction survives YAML stripping the quotes.
         for text in ["Untitled", "timeStamp", "two words", "9lives", "TEXT"] {
             assert!(
-                matches!(parse_source(text), Ok(Source::Literal(_))),
+                matches!(parse_source(text), Source::Literal(_)),
                 "`{text}` must classify as a literal, got {:?}",
                 parse_source(text)
             );
         }
         for text in ["untitled", "time-stamp", "a", "space/route/view"] {
             assert!(
-                matches!(parse_source(text), Ok(Source::Reference(_))),
+                matches!(parse_source(text), Source::Reference(_)),
                 "`{text}` must classify as a reference, got {:?}",
                 parse_source(text)
             );
@@ -501,8 +466,8 @@ mod tests {
     fn yaml_typed_scalars_are_literals() {
         // A plain `28` is an integer, not a symbol — the classifier
         // takes YAML's core schema before the symbol test.
-        assert_eq!(parse_source("28"), Ok(Source::Literal("28".into())));
-        assert_eq!(parse_source("true"), Ok(Source::Literal("true".into())));
+        assert_eq!(parse_source("28"), Source::Literal("28".into()));
+        assert_eq!(parse_source("true"), Source::Literal("true".into()));
     }
 
     #[test]
@@ -511,15 +476,15 @@ mod tests {
         // and a dotted domain with a name. No name-table lookup.
         assert_eq!(
             parse_source("did:key:zCounter"),
-            Ok(Source::Entity("did:key:zCounter".into()))
+            Source::Entity("did:key:zCounter".into())
         );
         assert_eq!(
             parse_source("tonk:invite"),
-            Ok(Source::Entity("tonk:invite".into()))
+            Source::Entity("tonk:invite".into())
         );
         assert_eq!(
             parse_source("io.gozala.issue/title"),
-            Ok(Source::Entity("io.gozala.issue/title".into()))
+            Source::Entity("io.gozala.issue/title".into())
         );
     }
 
@@ -562,16 +527,43 @@ mod tests {
     }
 
     #[test]
-    fn malformed_sources_are_named() {
+    fn parsing_a_source_never_fails() {
+        // The contract: the notation accepts any scalar in a value
+        // position, so this must too. A malformed `{field}` or `.path`
+        // is not an error — it is simply not that form, and falls
+        // through to the classifier like anything else. Rejecting here
+        // would make syntax the language accepts invalid, and would
+        // take a whole declaration down over one odd value.
+        assert_eq!(parse_source("{this"), Source::Literal("{this".into()));
+        assert_eq!(parse_source(".a..b"), Source::Literal(".a..b".into()));
+        assert_eq!(parse_source("{}"), Source::Literal("{}".into()));
+        assert_eq!(parse_source("   "), Source::Literal(String::new()));
+        assert_eq!(parse_source("_"), Source::Literal("_".into()));
+        assert_eq!(parse_source("?var"), Source::Literal("?var".into()));
+    }
+
+    #[test]
+    fn a_declaration_survives_an_odd_source() {
+        // One unusable value must not cost the other bindings on the
+        // same declaration.
+        let event = event_descriptor(
+            Some("click"),
+            false,
+            false,
+            [
+                ("subject".to_string(), "{this}".to_string()),
+                ("time".to_string(), "{oops".to_string()),
+            ],
+        )
+        .expect("descriptor");
         assert_eq!(
-            parse_source("{this"),
-            Err(SourceError::MalformedField("{this".into()))
+            event.sources.get("subject"),
+            Some(&Source::Field("this".into()))
         );
         assert_eq!(
-            parse_source(".a..b"),
-            Err(SourceError::MalformedProperty(".a..b".into()))
+            event.sources.get("time"),
+            Some(&Source::Literal("{oops".into()))
         );
-        assert_eq!(parse_source("   "), Err(SourceError::Empty));
     }
 
     #[test]
@@ -584,29 +576,6 @@ mod tests {
             event_descriptor(Some("  "), false, false, []),
             Err(EventError::MissingType)
         );
-    }
-
-    #[test]
-    fn a_bad_source_names_its_field() {
-        // A malformed source — not a bare word, which is a reference —
-        // reports which field it was for.
-        let error = event_descriptor(
-            Some("click"),
-            false,
-            false,
-            [("time".to_string(), ".a..b".to_string())],
-        )
-        .expect_err("malformed source");
-        let EventError::Source {
-            field,
-            error: inner,
-        } = &error
-        else {
-            panic!("expected a source error, got {error:?}");
-        };
-        assert_eq!(field, "time");
-        assert_eq!(inner, &SourceError::MalformedProperty(".a..b".into()));
-        assert!(error.to_string().contains("time"), "{error}");
     }
 
     #[test]

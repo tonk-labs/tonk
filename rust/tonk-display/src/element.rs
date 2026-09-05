@@ -1773,6 +1773,9 @@ async fn resolve_event_table(
                 }
                 declarations.insert(name.clone(), descriptor);
             }
+            // Only a missing `type:` can fail — a `where:` entry never
+            // does, so one odd source cannot cost a declaration its
+            // other bindings.
             Err(error) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!(
                     "<tonk-display>: `{name}` is not a usable event declaration: {error}"
