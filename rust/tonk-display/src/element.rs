@@ -1756,7 +1756,21 @@ async fn resolve_event_table(
             stop_propagation,
             sources,
         ) {
-            Ok(descriptor) => {
+            Ok(mut descriptor) => {
+                // A bare symbol is a named-entity reference, the same
+                // as anywhere else in the notation. Resolve them here,
+                // once, so the event-time path never does a lookup.
+                let mut resolved = std::collections::BTreeMap::new();
+                for reference in descriptor.references() {
+                    if let Some(entity) = resolve_event_entity(host, &reference).await {
+                        resolved.insert(reference, entity);
+                    }
+                }
+                for missing in descriptor.resolve_references(&resolved) {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "<tonk-display>: `{name}` references `{missing}`, which names no entity"
+                    )));
+                }
                 declarations.insert(name.clone(), descriptor);
             }
             Err(error) => {

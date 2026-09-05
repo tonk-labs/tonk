@@ -92,10 +92,16 @@ fn read_source(
             },
             as_type,
         ),
-        Source::Literal(text) => match coerce(&JsValue::from_str(text), as_type) {
-            Some(value) => ReadOutcome::Value(value),
-            None => ReadOutcome::Unresolved,
-        },
+        Source::Literal(text) | Source::Entity(text) => {
+            match coerce(&JsValue::from_str(text), as_type) {
+                Some(value) => ReadOutcome::Value(value),
+                None => ReadOutcome::Unresolved,
+            }
+        }
+        // Left unresolved by the host's name lookup — reported there,
+        // and treated as a binding that does not apply rather than
+        // posting a command with a name where an entity belongs.
+        Source::Reference(_) => ReadOutcome::Unresolved,
     }
 }
 

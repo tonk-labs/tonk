@@ -54,8 +54,24 @@ pub enum Source {
     /// get wrong.
     Property(Vec<String>),
     /// `"text"` — a constant, for defaults the interaction never
-    /// supplies.
+    /// supplies. Quotes are load-bearing: a bare word is a
+    /// [`Source::Reference`], not a string.
     Literal(String),
+    /// A bare lowercase identifier — a reference to the entity the
+    /// symbol currently names, resolved through the name table.
+    ///
+    /// This is what a bare symbol means everywhere else in the
+    /// notation (`FieldValue::Symbol`), so it means the same here. A
+    /// misspelling is still caught, but by the language's own
+    /// mechanism: an unresolvable name is a diagnostic, so `timeStamp`
+    /// with its dot dropped fails to resolve rather than becoming the
+    /// literal string `"timeStamp"`.
+    Reference(String),
+    /// A reference already resolved to an entity URI. Not written by
+    /// hand — [`EventDescriptor::resolve_references`] produces it once
+    /// the host has consulted the name table, so the event-time path
+    /// never performs a lookup.
+    Entity(String),
 }
 
 /// Why a `where:` value could not be read as a [`Source`].
@@ -67,13 +83,6 @@ pub enum SourceError {
     MalformedField(String),
     /// A `.` path with an empty segment (`.a..b`, `.`, `a.`).
     MalformedProperty(String),
-    /// A bare word — neither `{field}`, nor `.path`, nor quoted.
-    ///
-    /// Rejected rather than guessed: `timeStamp` without its leading
-    /// dot would otherwise be silently taken as the literal string
-    /// `"timeStamp"`, which is exactly the class of typo this design
-    /// exists to catch.
-    Bare(String),
 }
 
 impl fmt::Display for SourceError {
@@ -86,11 +95,6 @@ impl fmt::Display for SourceError {
             SourceError::MalformedProperty(raw) => {
                 write!(f, "`{raw}` has an empty path segment")
             }
-            SourceError::Bare(raw) => write!(
-                f,
-                "`{raw}` is a bare word — write `.{raw}` to read it off the event, \
-                 `{{{raw}}}` to read a field, or `\"{raw}\"` for a literal"
-            ),
         }
     }
 }
@@ -135,7 +139,14 @@ pub fn parse_source(raw: &str) -> Result<Source, SourceError> {
         return Ok(Source::Literal(inner.to_string()));
     }
 
-    Err(SourceError::Bare(raw.to_string()))
+    // A scheme-prefixed URI is a direct entity reference, no lookup —
+    // matching `FieldValue::Uri` and the rule `<tonk-display>` already
+    // applies to its `entity` attribute.
+    if raw.contains(':') {
+        return Ok(Source::Entity(raw.to_string()));
+    }
+
+    Ok(Source::Reference(raw.to_string()))
 }
 
 /// A parsed `event!:` declaration.
@@ -153,6 +164,43 @@ pub struct EventDescriptor {
     pub stop_propagation: bool,
     /// Command field name -> source.
     pub sources: BTreeMap<String, Source>,
+}
+
+impl EventDescriptor {
+    /// Every bare-symbol reference this declaration makes, for the
+    /// host to resolve through the name table.
+    pub fn references(&self) -> BTreeSet<String> {
+        self.sources
+            .values()
+            .filter_map(|source| match source {
+                Source::Reference(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Rewrite resolved references into [`Source::Entity`], so the
+    /// event-time path never performs a name lookup.
+    ///
+    /// Returns the names that did not resolve. They are left as
+    /// references rather than dropped or guessed, so the caller can
+    /// report them — an unresolvable name is the typo case, and it
+    /// should be loud.
+    pub fn resolve_references(&mut self, resolved: &BTreeMap<String, String>) -> Vec<String> {
+        let mut unresolved = Vec::new();
+        for source in self.sources.values_mut() {
+            let Source::Reference(name) = source else {
+                continue;
+            };
+            match resolved.get(name) {
+                Some(entity) => *source = Source::Entity(entity.clone()),
+                None => unresolved.push(name.clone()),
+            }
+        }
+        unresolved.sort();
+        unresolved.dedup();
+        unresolved
+    }
 }
 
 /// Why an `event!:` declaration could not be read.
@@ -371,12 +419,90 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_word_is_rejected_rather_than_guessed() {
-        // The whole point: `timeStamp` (missing its dot) must not be
-        // silently accepted as the literal string "timeStamp".
-        let error = parse_source("timeStamp").expect_err("bare word");
-        assert_eq!(error, SourceError::Bare("timeStamp".into()));
-        assert!(error.to_string().contains(".timeStamp"), "{error}");
+    fn a_bare_symbol_is_a_named_entity_reference() {
+        // What a bare symbol means everywhere else in the notation
+        // (`FieldValue::Symbol`): the entity the name currently refers
+        // to. Quotes are what make a value a string.
+        assert_eq!(
+            parse_source("counter"),
+            Ok(Source::Reference("counter".into()))
+        );
+        assert_eq!(
+            parse_source("\"counter\""),
+            Ok(Source::Literal("counter".into()))
+        );
+    }
+
+    #[test]
+    fn a_uri_is_a_direct_entity_reference() {
+        // `FieldValue::Uri`: scheme-prefixed, no name-table lookup.
+        assert_eq!(
+            parse_source("did:key:zCounter"),
+            Ok(Source::Entity("did:key:zCounter".into()))
+        );
+        assert_eq!(
+            parse_source("tonk:invite"),
+            Ok(Source::Entity("tonk:invite".into()))
+        );
+    }
+
+    #[test]
+    fn a_dropped_dot_still_fails_but_as_an_unresolvable_name() {
+        // `timeStamp` is no longer an error at parse time — it is a
+        // reference. The typo is still caught, by the language's own
+        // mechanism: nothing names it, so resolution reports it.
+        let source = parse_source("timeStamp").expect("a reference");
+        assert_eq!(source, Source::Reference("timeStamp".into()));
+
+        let event = event_descriptor(
+            Some("click"),
+            false,
+            false,
+            [("time".to_string(), "timeStamp".to_string())],
+        )
+        .expect("descriptor");
+        assert_eq!(
+            event.references(),
+            BTreeSet::from(["timeStamp".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolving_references_rewrites_them_to_entities() {
+        let mut event = event_descriptor(
+            Some("click"),
+            false,
+            false,
+            [("subject".to_string(), "counter".to_string())],
+        )
+        .expect("descriptor");
+        let unresolved = event.resolve_references(&BTreeMap::from([(
+            "counter".to_string(),
+            "did:key:zCounter".to_string(),
+        )]));
+        assert!(unresolved.is_empty());
+        assert_eq!(
+            event.sources.get("subject"),
+            Some(&Source::Entity("did:key:zCounter".into()))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_reference_is_reported_not_dropped() {
+        let mut event = event_descriptor(
+            Some("click"),
+            false,
+            false,
+            [("time".to_string(), "timeStamp".to_string())],
+        )
+        .expect("descriptor");
+        let unresolved = event.resolve_references(&BTreeMap::new());
+        assert_eq!(unresolved, vec!["timeStamp".to_string()]);
+        // Left as a reference rather than silently becoming a value.
+        assert_eq!(
+            event.sources.get("time"),
+            Some(&Source::Reference("timeStamp".into()))
+        );
     }
 
     #[test]
@@ -406,17 +532,24 @@ mod tests {
 
     #[test]
     fn a_bad_source_names_its_field() {
+        // A malformed source — not a bare word, which is a reference —
+        // reports which field it was for.
         let error = event_descriptor(
             Some("click"),
             false,
             false,
-            [("time".to_string(), "timeStamp".to_string())],
+            [("time".to_string(), ".a..b".to_string())],
         )
-        .expect_err("bare source");
-        let EventError::Source { field, .. } = &error else {
+        .expect_err("malformed source");
+        let EventError::Source {
+            field,
+            error: inner,
+        } = &error
+        else {
             panic!("expected a source error, got {error:?}");
         };
         assert_eq!(field, "time");
+        assert_eq!(inner, &SourceError::MalformedProperty(".a..b".into()));
         assert!(error.to_string().contains("time"), "{error}");
     }
 
