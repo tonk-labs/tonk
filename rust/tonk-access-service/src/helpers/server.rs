@@ -578,7 +578,9 @@ async fn handle_request(
     if req.method() == Method::PUT && req.uri().path() == "/@" {
         return Ok(cors_response(store_shortcut(req, shortcuts).await));
     }
-    if req.method() == Method::GET
+    // `HEAD` alongside `GET`: a caller expanding a short link needs
+    // only the URL the redirect lands on, not the body behind it.
+    if (req.method() == Method::GET || req.method() == Method::HEAD)
         && let Some(hash) = req.uri().path().strip_prefix("/@/")
     {
         let query = req.uri().query().map(str::to_owned);
@@ -1081,7 +1083,7 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
     headers.insert(
         ACCESS_CONTROL_ALLOW_METHODS,
-        "GET, PUT, POST, OPTIONS".parse().unwrap(),
+        "GET, HEAD, PUT, POST, OPTIONS".parse().unwrap(),
     );
     headers.insert(
         ACCESS_CONTROL_ALLOW_HEADERS,
