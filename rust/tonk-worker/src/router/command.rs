@@ -475,4 +475,57 @@ mod tests {
             assert!(drain_ping_log().is_empty());
         }
     }
+
+    /// A command must be dispatchable outside the browser.
+    ///
+    /// The native branch of [`command_registry`] used to return an empty
+    /// registry, so a command asserted from the CLI committed, was swept
+    /// by the induce pass, and ran nothing — succeeding silently, which
+    /// is the failure mode this whole seam exists to remove. These pin
+    /// the two halves of that: the registry is populated off-browser,
+    /// and a real transient reaches the command registered there.
+    ///
+    /// What they deliberately do NOT claim: that the provider's effect
+    /// landed. Observing that needs a space to exist natively, and space
+    /// creation still seeds its library over HTTP from a served asset —
+    /// a genuine runtime difference that wants a `Native` provider, not
+    /// a wider `cfg`. Until that exists, asserting the effect here would
+    /// be asserting something this test cannot see.
+    #[dialog_common::test]
+    fn the_registry_is_populated_off_browser() {
+        let registry = command_registry();
+        assert!(
+            !registry.is_empty(),
+            "no commands registered outside the browser — a CLI-asserted \
+             command would commit, be swept, and do nothing",
+        );
+    }
+
+    #[dialog_common::test]
+    fn a_pause_sync_transient_reaches_its_command_off_browser() {
+        use dialog_artifacts::Changes;
+
+        let registry = command_registry();
+        let this: Entity = "did:key:zPause".parse().expect("entity");
+        let space: Entity = "did:key:z6MkSpace".parse().expect("space entity");
+
+        // The shape the FAB dispatches: the command's own timestamp plus
+        // the space it names rather than infers.
+        let mut changes = Changes::new();
+        the!("xyz.tonk.command.pause-sync/time")
+            .of(this.clone())
+            .is(17.0_f64)
+            .assert(&mut changes);
+        the!("xyz.tonk.pause-sync/space")
+            .of(this.clone())
+            .is(space)
+            .assert(&mut changes);
+
+        assert_eq!(
+            registry.match_transients(&changes).len(),
+            1,
+            "a PauseSync transient must reach exactly one registered command \
+             on a native build",
+        );
+    }
 }

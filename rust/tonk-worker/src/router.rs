@@ -457,8 +457,125 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
 ///
 /// These tests run in a WASM service worker context since TonkState
 /// requires IndexedDB (WASM) or filesystem (native) storage.
+/// Test-state construction that works on every target.
+///
+/// These live outside the browser-only `tests` module because a command
+/// must be runnable outside the browser: a native test builds a
+/// [`TonkState`] here and dispatches through the real registry, which is
+/// what proves a provider is not welded to the service worker. The rest
+/// of `tests` stays wasm-gated because it drives browser-only production
+/// helpers, not because state construction needs a browser.
+#[cfg(test)]
+pub mod state {
+    use super::*;
+    use crate::worker::{DefaultSpace, TonkState};
+    use dialog_operator::Profile;
+    use dialog_storage::provider::storage::Storage;
+
+    /// A random id minted once per test *process*, mixed into every profile
+    /// name so two runs never collide on storage a shared browser profile
+    /// kept between them.
+    pub fn session_nonce() -> u32 {
+        use std::sync::OnceLock;
+        static NONCE: OnceLock<u32> = OnceLock::new();
+        *NONCE.get_or_init(rand::random::<u32>)
+    }
+
+    /// Creates a test state with the default storage backend.
+    ///
+    /// The state has a profile and operator but *no* repository —
+    /// tests that need one call [`put_repo`] with a display label and
+    /// use the minted routing key it returns. Every create mints a
+    /// fresh identity for the repos it makes, but the profile itself
+    /// is durable IndexedDB state keyed by name: each call mints its
+    /// own unique profile name so tests that rename or restamp the
+    /// profile never bleed into one another.
+    ///
+    /// The sequence number alone is unique only *within* a run —
+    /// `test-tonk-3` is whichever test happened to run third — so a
+    /// runner that reuses a browser profile (safaridriver, a persistent
+    /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
+    /// run N+1's third test, reviving the order dependence in cross-run
+    /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
+    /// that today; the [`session_nonce`] makes it unconditional.
+    pub async fn test_state_without_root() -> TonkState {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let profile_name = format!(
+            "test-tonk-{}-{}",
+            session_nonce(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        crate::patch_idb_versionchange();
+        let storage = Storage::<DefaultSpace>::default();
+        let profile = Profile::open(&profile_name)
+            .perform(&storage)
+            .await
+            .expect("Failed to create test profile");
+
+        let session = crate::session::open(&profile, &storage)
+            .await
+            .expect("Failed to open a test signing session");
+
+        let reactor = crate::Reactor::new(profile.clone());
+        // The registry mirrors production shape — the state's own profile
+        // is the registry profile, exactly as `Registry::device()` signs
+        // as `tonk` until the first rotation. Uniquely named per state,
+        // so tests neither collide with each other nor touch the real
+        // registry, while rotated/activated profiles still resolve in the
+        // same directory the test profile itself lives in.
+        let registry = crate::device::Registry {
+            profile: profile_name.clone(),
+            directory: dialog_effects::storage::Directory::Profile,
+        };
+        TonkState {
+            profile,
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
+            profile_name,
+            reactor,
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            sync_queue: Default::default(),
+            commands: super::command_registry(),
+            clients: Default::default(),
+            account_keys: Default::default(),
+            registry,
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
+        }
+    }
+
+    /// The root seed for a test profile, derived from its name.
+    ///
+    /// Per-profile rather than one shared constant, because the account
+    /// repository's routing key IS the root's — so every profile sharing a
+    /// root shares one account repository, and its storage is not scoped by
+    /// profile the way a space's is. Two tests that link descriptors naming
+    /// different remotes then fight over the same mount, and the second one
+    /// to run reads the first one's remote and refuses as a conflict. That
+    /// is invisible until the ordering shifts, which is exactly the failure
+    /// [`session_nonce`] exists to prevent one layer down.
+    ///
+    /// A fold rather than a hash: no dependency, deterministic, and it mixes
+    /// every byte of the name — which is all that separating test profiles
+    /// requires.
+    pub fn test_root_seed(profile_name: &str) -> [u8; 32] {
+        let mut seed = [42u8; 32];
+        for (index, byte) in profile_name.as_bytes().iter().enumerate() {
+            seed[index % 32] ^= byte.rotate_left((index % 8) as u32);
+        }
+        seed
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub mod tests {
+    pub use super::state::{session_nonce, test_root_seed, test_state_without_root};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -601,105 +718,6 @@ pub mod tests {
             !js_sys::Reflect::has(&global, &missing).unwrap(),
             "a helper global absent before replacement must be deleted"
         );
-    }
-
-    /// A random id minted once per test *process*, mixed into every profile
-    /// name so two runs never collide on storage a shared browser profile
-    /// kept between them.
-    fn session_nonce() -> u32 {
-        use std::sync::OnceLock;
-        static NONCE: OnceLock<u32> = OnceLock::new();
-        *NONCE.get_or_init(rand::random::<u32>)
-    }
-
-    /// Creates a test state with the default storage backend.
-    ///
-    /// The state has a profile and operator but *no* repository —
-    /// tests that need one call [`put_repo`] with a display label and
-    /// use the minted routing key it returns. Every create mints a
-    /// fresh identity for the repos it makes, but the profile itself
-    /// is durable IndexedDB state keyed by name: each call mints its
-    /// own unique profile name so tests that rename or restamp the
-    /// profile never bleed into one another.
-    ///
-    /// The sequence number alone is unique only *within* a run —
-    /// `test-tonk-3` is whichever test happened to run third — so a
-    /// runner that reuses a browser profile (safaridriver, a persistent
-    /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
-    /// run N+1's third test, reviving the order dependence in cross-run
-    /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
-    /// that today; the [`session_nonce`] makes it unconditional.
-    pub async fn test_state_without_root() -> TonkState {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let profile_name = format!(
-            "test-tonk-{}-{}",
-            session_nonce(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        );
-
-        crate::patch_idb_versionchange();
-        let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(&profile_name)
-            .perform(&storage)
-            .await
-            .expect("Failed to create test profile");
-
-        let session = crate::session::open(&profile, &storage)
-            .await
-            .expect("Failed to open a test signing session");
-
-        let reactor = crate::Reactor::new(profile.clone());
-        // The registry mirrors production shape — the state's own profile
-        // is the registry profile, exactly as `Registry::device()` signs
-        // as `tonk` until the first rotation. Uniquely named per state,
-        // so tests neither collide with each other nor touch the real
-        // registry, while rotated/activated profiles still resolve in the
-        // same directory the test profile itself lives in.
-        let registry = crate::device::Registry {
-            profile: profile_name.clone(),
-            directory: dialog_effects::storage::Directory::Profile,
-        };
-        TonkState {
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name,
-            reactor,
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: super::command_registry(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-            registry,
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-        }
-    }
-
-    /// The root seed for a test profile, derived from its name.
-    ///
-    /// Per-profile rather than one shared constant, because the account
-    /// repository's routing key IS the root's — so every profile sharing a
-    /// root shares one account repository, and its storage is not scoped by
-    /// profile the way a space's is. Two tests that link descriptors naming
-    /// different remotes then fight over the same mount, and the second one
-    /// to run reads the first one's remote and refuses as a conflict. That
-    /// is invisible until the ordering shifts, which is exactly the failure
-    /// [`session_nonce`] exists to prevent one layer down.
-    ///
-    /// A fold rather than a hash: no dependency, deterministic, and it mixes
-    /// every byte of the name — which is all that separating test profiles
-    /// requires.
-    pub(crate) fn test_root_seed(profile_name: &str) -> [u8; 32] {
-        let mut seed = [42u8; 32];
-        for (index, byte) in profile_name.as_bytes().iter().enumerate() {
-            seed[index % 32] ^= byte.rotate_left((index % 8) as u32);
-        }
-        seed
     }
 
     /// Create an isolated test state with a stable local root grant and no
