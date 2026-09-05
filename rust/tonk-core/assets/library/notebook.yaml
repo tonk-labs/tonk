@@ -359,6 +359,15 @@ command!: &block/insert
 command!: &notebook/create
   description: Create a notebook with a title.
   with:
+    entity:
+      description: |
+        The notebook's entity, minted by the page. The page mints it so it
+        knows where to navigate: an anchor-less write derives its entity
+        from its body, which the element never learns, and a rule cannot
+        derive one either — every branch-metadata attribute describes the
+        head BEFORE the commit, so two creates from one head would collide.
+      the: dom.event.detail/created-entity
+      as: entity
     title:
       description: |
         The title typed into the index's heading. Its OWN attribute, not
