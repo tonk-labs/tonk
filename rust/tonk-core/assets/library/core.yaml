@@ -942,16 +942,26 @@ concept!: &tonk/agents
 # `subject` reads the repository identity stamped on the banner so the
 # rule below knows which repository to rename. The command is transient:
 # the rule fires once and the command is swept before the durable commit.
+# How the banner input's commit fills the rename. `subject` stays a
+# `data-*` read rather than `{this}`: the banner is not inside a repeat
+# row, and its subject is the repository rather than the view's own
+# entity, so the two are genuinely different values here.
+event!: &on/repository-rename
+  type: "change"
+  where:
+    subject: ".currentTarget.dataset.subject"
+    name: ".currentTarget.value"
+
 command!: &tonk/rename-repository
   description: Rename the repository.
   with:
     subject:
-      description: The repository's subject DID, stamped on the banner element.
-      the: dom.event.current-target.dataset/subject
+      description: The repository being renamed.
+      the: xyz.tonk.rename-repository/subject
       as: entity
     name:
-      description: The new name, read from the banner input's value on commit.
-      the: dom.event.current-target/value
+      description: The new name.
+      the: xyz.tonk.rename-repository/name
       as: text
 
 # Apply the rename: assert the new `tonk/repository` name against the
@@ -985,7 +995,7 @@ view!:
         class="workspace__title-input"
         value={name}
         data-subject={this}
-        onchange=tonk/rename-repository
+        on:repository-rename=tonk/rename-repository
         aria-label="Space name"
       ></tonk-editable>
 

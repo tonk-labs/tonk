@@ -175,10 +175,10 @@ view!:
         data-subject={this}
         data-notebook={this}
         title={title}
-        onblockedit=block/edit
-        onplace=block/place
-        onremove=block/remove
-        ontitlechange=notebook/retitle
+        on:block-edit=block/edit
+        on:block-place=block/place
+        on:block-remove=block/remove
+        on:notebook-retitle=notebook/retitle
         style="display: block;"
       >
         <div class="notebook-data" hidden>
@@ -276,14 +276,14 @@ view!:
   this: tonk:notebook/index-route
   show:
     ui: |
-      <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
+      <tonk-notebook-index class="notebook-index" on:notebook-create=notebook/create>
         <tonk-notebook
           draft
           with="{branch}@{repo}"
-          onblockedit=block/edit
-          onplace=block/place
-          onremove=block/remove
-          ontitlechange=notebook/retitle
+          on:block-edit=block/edit
+          on:block-place=block/place
+          on:block-remove=block/remove
+          on:notebook-retitle=notebook/retitle
           style="display: block;"
         ></tonk-notebook>
         <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
@@ -372,6 +372,54 @@ command!: &block/insert
 # notebook's first block is written by the ordinary insert path once the
 # author types into the body, so a notebook begins as a name and nothing
 # else.
+# ---------------------------------------------------------------------------
+# Events — how `<tonk-notebook>`'s CustomEvents fill the commands.
+#
+# The commands above used to give near-identical fields their own
+# attributes (`created-title` rather than `title`, `removed` rather than
+# `key`) purely so two transient commands would not decode from one
+# event. With each command's fields in its own namespace they cannot
+# collide, so the distinction lives here, in the source, where it is
+# about the element's payload rather than about the matcher.
+#
+# Detail keys are spelled the way the element spells them: the old
+# identifiers kebab-cased then camel-cased on the way to the DOM, so the
+# wire name was never written down.
+# ---------------------------------------------------------------------------
+
+event!: &on/notebook-create
+  type: "notebookcreate"
+  where:
+    title: ".detail.createdTitle"
+    body: ".detail.createdBody"
+
+event!: &on/notebook-retitle
+  type: "titlechange"
+  where:
+    subject: ".detail.notebook"
+    title: ".detail.title"
+
+event!: &on/block-edit
+  type: "blockedit"
+  where:
+    subject: ".currentTarget.dataset.subject"
+    source: ".detail.source"
+    notebook: ".detail.notebook"
+
+event!: &on/block-place
+  type: "place"
+  where:
+    subject: ".currentTarget.dataset.subject"
+    notebook: ".detail.notebook"
+    key: ".detail.key"
+
+event!: &on/block-remove
+  type: "remove"
+  where:
+    subject: ".currentTarget.dataset.subject"
+    notebook: ".detail.notebook"
+    key: ".detail.removed"
+
 command!: &notebook/create
   description: Create a notebook with a title.
   with:
@@ -381,7 +429,7 @@ command!: &notebook/create
         `detail/title`: a retitle carries that one, and two transient
         commands reading the same attribute both decode from one event, so
         every rename would also create a notebook.
-      the: dom.event.detail/created-title
+      the: xyz.tonk.notebook.create/title
       as: text
     body:
       description: |
@@ -390,7 +438,7 @@ command!: &notebook/create
         in `CreateNotebook`: a field the struct requires but the command
         does not declare is simply absent from the descriptor, so the decode
         fails and the binding falls through in silence.
-      the: dom.event.detail/created-body
+      the: xyz.tonk.notebook.create/body
       as: text
 
 # Rename a notebook from its document's own heading.
@@ -404,11 +452,11 @@ command!: &notebook/retitle
   with:
     subject:
       description: The notebook entity.
-      the: dom.event.detail/notebook
+      the: xyz.tonk.notebook.retitle/subject
       as: entity
     title:
       description: The heading text, without its `#` markers.
-      the: dom.event.detail/title
+      the: xyz.tonk.notebook.retitle/title
       as: text
 
 command!: &block/edit
@@ -416,11 +464,11 @@ command!: &block/edit
   with:
     subject:
       description: The block entity, stamped on the element's data-subject.
-      the: dom.event.current-target.dataset/subject
+      the: xyz.tonk.block.edit/subject
       as: entity
     source:
       description: The block's new markdown source.
-      the: dom.event.detail/source
+      the: xyz.tonk.block.edit/source
       as: text
     notebook:
       description: |
@@ -428,7 +476,7 @@ command!: &block/edit
         creating one: a block written with only its source does not match
         `tonk:notebook/block`, so it renders no row. Re-asserting it on an
         existing block is a no-op.
-      the: dom.event.detail/notebook
+      the: xyz.tonk.block.edit/notebook
       as: entity
 
 # Placement is per block: put this block into its notebook's sequence under
@@ -440,15 +488,15 @@ command!: &block/place
   with:
     subject:
       description: The block entity.
-      the: dom.event.current-target.dataset/subject
+      the: xyz.tonk.block.place/subject
       as: entity
     notebook:
       description: The notebook whose sequence the block joins.
-      the: dom.event.detail/notebook
+      the: xyz.tonk.block.place/notebook
       as: entity
     key:
       description: The block's position in the sequence.
-      the: dom.event.detail/key
+      the: xyz.tonk.block.place/key
       as: text
 
 command!: &block/remove
@@ -456,18 +504,18 @@ command!: &block/remove
   with:
     subject:
       description: The block entity.
-      the: dom.event.current-target.dataset/subject
+      the: xyz.tonk.block.remove/subject
       as: entity
     notebook:
       description: The notebook whose sequence the block leaves.
-      the: dom.event.detail/notebook
+      the: xyz.tonk.block.remove/notebook
       as: entity
     # Its own attribute, not `detail/key`: two transient commands with the
     # same shape would both decode from one event, and the retraction
     # would fire alongside every placement.
     key:
       description: The position the block held.
-      the: dom.event.detail/removed
+      the: xyz.tonk.block.remove/key
       as: text
 
 # An inserted block exists.
