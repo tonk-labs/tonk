@@ -2993,6 +2993,72 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
+/// Retract everything the seed at `revision` asserted, as instructions
+/// ready to ride the same batch that installs its replacement.
+///
+/// A revision's history is a changelog: every claim it wrote, with its
+/// polarity. Inverting only its ASSERTIONS is load-bearing — a seed
+/// install also carries the retractions of the seed before it, and
+/// replaying those inverted would restore the version before last.
+///
+/// The version is recovered by matching the recorded entity against the
+/// branch log, since a version's entity is a one-way derivation and there
+/// is no way back from the string.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn prior_seed_retractions(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    revision: &str,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    use dialog_artifacts::history::VersionExt as _;
+    use futures_util::StreamExt as _;
+
+    let branch = session.handle();
+    let log = branch
+        .log(&tonk.operator, SEED_LOG_DEPTH)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read branch log: {e}")))?;
+    let Some((version, _)) = log
+        .into_iter()
+        .find(|(version, _)| version.entity().to_string() == revision)
+    else {
+        // The seed's revision has fallen out of the log we read. Retracting
+        // nothing leaves the old definitions standing, which is wrong but
+        // recoverable; guessing would not be.
+        log!("seed upgrade: revision '{revision}' is not in the last {SEED_LOG_DEPTH} revisions");
+        return Ok(Vec::new());
+    };
+
+    let history = branch.history(&tonk.operator);
+    let records = history.select(version);
+    tokio::pin!(records);
+
+    let mut claims = Vec::new();
+    while let Some(record) = records.next().await {
+        let (_, record) =
+            record.map_err(|e| RepositoryError::Internal(format!("read seed history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        claims.push(super::claim::RawClaim {
+            the: claim.the.clone(),
+            of: claim.of.clone(),
+            is: claim.is.clone(),
+            unique: false,
+        });
+    }
+    Ok(claims)
+}
+
+/// How far back the branch log is read to find a seed's revision.
+///
+/// A seed install is a handful of revisions old at most on a branch the
+/// user has been writing to; deeper than this and the space has moved on
+/// far enough that a full history scan is the honest fallback.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SEED_LOG_DEPTH: usize = 256;
+
 /// Notation recording a seed install: its identity, where it came from,
 /// the seed it replaced, and the revision it committed at.
 ///
