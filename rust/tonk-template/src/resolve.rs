@@ -42,8 +42,13 @@ pub fn view_query(model_entity: &str) -> Result<Query, serde_json::Error> {
     serde_json::from_value(json!({ "terms": terms, "predicate": view_predicate() }))
 }
 
-/// The `event` concept's shape, kept in step with the declaration
-/// pinned to `tonk:event` in the standard library.
+/// The `event` concept's shape, kept in step with the built-in
+/// registered as `event` in `tonk_schema::builtin`.
+///
+/// A hand-mirrored copy for the same reason [`view_predicate`] is one:
+/// this crate builds wire queries as JSON and does not go through the
+/// descriptor types. The built-in is the source of truth; the parity
+/// test in `tonk-worker` is what keeps the two honest.
 ///
 /// `where` is a keyed collection like `view`'s `show`, so each source
 /// lands as its own fact (`xyz.tonk.event.where/<field>`) with

@@ -63,10 +63,16 @@ view!:
 # EVENTS
 # ============================================================
 
-# The `event` concept. An `event!:` declaration is the seam between a
-# host's input model and a command's domain shape: it names the platform
-# event to listen for, whether to suppress the platform's default
-# handling, and a `where:` map from COMMAND FIELD NAME to source.
+# `event` is a BUILT-IN concept (tonk-schema's registry, beside
+# `command` and `rule`), not a library one — an `event!:` declaration is
+# schema an author writes, so it must resolve on any branch rather than
+# only where this library has been seeded. What lives here are its
+# INSTANCES: the DOM event set. A terminal seeds its own.
+#
+# An `event!:` declaration is the seam between a host's input model and
+# a command's domain shape: it names the platform event to listen for,
+# whether to suppress the platform's default handling, and a `where:`
+# map from COMMAND FIELD NAME to source.
 #
 # A template binds one with `on:<name>=<command>`, which resolves the
 # declaration named `on/<name>` — `/` is not legal in an HTML attribute
@@ -85,38 +91,6 @@ view!:
 #
 # `on<event>=` keeps working — the two attribute forms are distinct, so
 # templates migrate one at a time.
-concept!: &event
-  this: tonk:event
-  description: How a platform event fills a command's fields
-  with:
-    type:
-      description: The platform event name to listen for
-      the: xyz.tonk.event/type
-      cardinality: one
-      as: text
-    where:
-      description: Command field name to source
-      # A keyed collection's `the:` names a domain and the key supplies
-      # the name half, so each entry lands as its own fact
-      # (`xyz.tonk.event.where/<field>`) with cardinality one — a space
-      # can supersede one source without restating the map. Its own
-      # domain, so a field called `type` cannot collide with the `type:`
-      # attribute above.
-      the: xyz.tonk.event.where
-      cardinality: one
-      as: {[symbol]: text}
-  maybe:
-    prevent-default:
-      description: Suppress the platform's default handling
-      the: xyz.tonk.event/prevent-default
-      cardinality: one
-      as: boolean
-    stop-propagation:
-      description: Stop the event propagating further
-      the: xyz.tonk.event/stop-propagation
-      cardinality: one
-      as: boolean
-
 # A `where:` source is one of three forms, each syntactically distinct
 # so a typo cannot be mistaken for a different kind:
 #

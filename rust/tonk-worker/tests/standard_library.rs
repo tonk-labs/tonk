@@ -959,3 +959,102 @@ fn parse_bindings(document: &str) -> Vec<(String, String)> {
     }
     out
 }
+
+/// An `event!:` declaration lowers with no library seeded at all.
+///
+/// This is what makes `event` a built-in rather than a library concept:
+/// like `command!:` and `rule!:`, a declaration is schema an author
+/// writes, so it has to resolve on a bare branch. Declared in the
+/// standard library instead, it would work only where that library had
+/// been seeded — and a lean repo, the profile meta-branch, or a `tonk
+/// eval` fixture would all fail to parse one.
+#[dialog_common::test]
+fn an_event_declaration_lowers_without_the_library() {
+    let document = r#"event!: &on/tap
+  type: "click"
+  prevent-default: true
+  where:
+    subject: "{this}"
+    time: ".timeStamp"
+
+command!: &bump
+  with:
+    subject:
+      description: The thing being bumped
+      the: io.gozala.bump/subject
+      as: entity
+      cardinality: one
+  maybe:
+    time:
+      description: A per-event nonce
+      the: io.gozala.bump/time
+      as: float
+      cardinality: one
+"#;
+    assert_library_lowers("a bare `event!:` document", document);
+}
+
+/// The optional side-effect flags really are optional: a declaration
+/// that suppresses neither must lower. Every declaration in the
+/// library omits them, so a regression here would break all of them at
+/// once.
+#[dialog_common::test]
+fn an_event_declaration_may_omit_the_side_effect_flags() {
+    let document = r#"event!: &on/plain
+  type: "click"
+  where:
+    subject: "{this}"
+"#;
+    assert_library_lowers("an `event!:` with no flags", document);
+}
+
+/// The wire predicate `tonk-template` builds matches the built-in.
+///
+/// Two hand-maintained copies of one shape: the built-in descriptor is
+/// the source of truth and the query builder mirrors it, because that
+/// crate emits JSON rather than descriptor types. Drift would show up
+/// as an event declaration that resolves but reads back empty, which is
+/// the silent class of failure again — so it is asserted rather than
+/// trusted to a comment.
+#[dialog_common::test]
+fn the_event_query_predicate_matches_the_builtin() {
+    let builtin = tonk_schema::builtin::lookup_concept("event").expect("`event` is a built-in");
+    // `.concept()` unwraps the durability tag; the wire predicate has
+    // no such wrapper.
+    let serialized =
+        serde_json::to_value(builtin.descriptor.concept()).expect("descriptor serializes");
+    let builtin_with = serialized
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the built-in has a `with` map");
+
+    let predicate = tonk_template::resolve::event_predicate();
+    let query_with = predicate
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the predicate has a `with` map");
+
+    // The query pins only the required fields — the optional flags are
+    // read separately, since pinning them would make a declaration that
+    // omits them match nothing.
+    for field in query_with.keys() {
+        let ours = &query_with[field];
+        let theirs = builtin_with
+            .get(field)
+            .unwrap_or_else(|| panic!("the built-in has no `{field}` field"));
+        assert_eq!(
+            ours.get("the"),
+            theirs.get("the"),
+            "`{field}`: the query and the built-in disagree on `the`",
+        );
+        assert_eq!(
+            ours.get("cardinality"),
+            theirs.get("cardinality"),
+            "`{field}`: the query and the built-in disagree on cardinality",
+        );
+    }
+    assert!(
+        query_with.contains_key("type") && query_with.contains_key("where"),
+        "the query must pin both required fields",
+    );
+}
