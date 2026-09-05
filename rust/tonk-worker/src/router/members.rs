@@ -192,7 +192,7 @@ pub(crate) async fn expel_member(
     retract_leaf(tonk, session.handle(), &path).await;
     retract_member_rows(tonk, repo, session.handle(), &subject, member).await;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, crate::clock::now_millis());
     Ok(receipt)
 }
 
@@ -291,7 +291,7 @@ pub(crate) async fn admit_member(
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("stamp admin role: {error}")))?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, crate::clock::now_millis());
     Ok(target)
 }
 

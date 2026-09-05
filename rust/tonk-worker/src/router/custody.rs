@@ -708,7 +708,7 @@ async fn enroll(
     // cell before the customer row: what cannot be recovered must not
     // depend on the step after it succeeding.
     let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
-        created_at: (js_sys::Date::now() / 1000.0) as u64,
+        created_at: crate::clock::now_seconds(),
         created_on,
     });
     crate::router::customer::record_custody_cell(

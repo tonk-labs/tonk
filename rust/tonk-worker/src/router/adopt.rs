@@ -82,7 +82,7 @@ pub(crate) async fn ensure_space_mounted(
     // waiting for an idle beat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     tonk.sync_queue
-        .mark_dirty(subject.as_str(), js_sys::Date::now());
+        .mark_dirty(subject.as_str(), crate::clock::now_millis());
     Ok(true)
 }
 
@@ -278,7 +278,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
         match super::repository::attach_account_remote_if_local(tonk, &key, remote).await {
             Ok(true) => {
                 log!("space reconcile: attached account remote to local space '{subject}'");
-                tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+                tonk.sync_queue.mark_dirty(&key, crate::clock::now_millis());
             }
             Ok(false) => {}
             Err(error) => log!("space reconcile: attach account remote to '{subject}': {error}"),

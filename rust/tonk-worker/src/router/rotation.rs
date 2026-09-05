@@ -494,7 +494,7 @@ async fn migrate_membership_rows(
             TonkWorkerError::Internal(format!("{space}: migrate membership roster: {error}"))
         })?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, crate::clock::now_millis());
     Ok(())
 }
 

@@ -2056,9 +2056,10 @@ impl TonkServiceWorker {
         // touch the reactor. The guard rides into the future below and drops when
         // the request completes.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let loading_guard = path
-            .starts_with("/api/")
-            .then(|| self.sync_scheduler.enter_loading(js_sys::Date::now()));
+        let loading_guard = path.starts_with("/api/").then(|| {
+            self.sync_scheduler
+                .enter_loading(crate::clock::now_millis())
+        });
 
         let lifetime = FetchLifetime::new(event);
         let routed_lifetime = lifetime.clone();
@@ -2175,12 +2176,14 @@ impl TonkServiceWorker {
                 // fix this first: with the hidden quiet interval in place, a
                 // tab-closed sync event is refused for up to a minute after
                 // the last drain, which is exactly when this fires.
-                if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+                if !scheduler
+                    .may_drain(crate::clock::now_millis(), pending_local_work(&state).await)
+                {
                     return Ok(JsValue::UNDEFINED);
                 }
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain(js_sys::Date::now());
+                scheduler.end_drain(crate::clock::now_millis());
             }
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             {
@@ -2214,10 +2217,12 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+            } else if scheduler
+                .may_drain(crate::clock::now_millis(), pending_local_work(&state).await)
+            {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain(js_sys::Date::now());
+                scheduler.end_drain(crate::clock::now_millis());
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -2234,11 +2239,11 @@ impl TonkServiceWorker {
         let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             if !offline()
-                && scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await)
+                && scheduler.may_drain(crate::clock::now_millis(), pending_local_work(&state).await)
             {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain(js_sys::Date::now());
+                scheduler.end_drain(crate::clock::now_millis());
             }
             Ok(JsValue::UNDEFINED)
         })
@@ -2304,16 +2309,18 @@ impl TonkServiceWorker {
                 // visibility read costs nothing: the reading is only ever
                 // consumed by a gate check, and every path that reaches one
                 // refreshes it first.
-                if scheduler.blocked(js_sys::Date::now()) {
+                if scheduler.blocked(crate::clock::now_millis()) {
                     continue;
                 }
                 scheduler.set_visible(any_client_visible().await);
-                if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+                if !scheduler
+                    .may_drain(crate::clock::now_millis(), pending_local_work(&state).await)
+                {
                     continue;
                 }
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
-                scheduler.end_drain(js_sys::Date::now());
+                scheduler.end_drain(crate::clock::now_millis());
             }
             running.set(false);
         });
@@ -2453,7 +2460,7 @@ async fn any_client_visible() -> bool {
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
 
-    let ticket = scheduler.next(js_sys::Date::now());
+    let ticket = scheduler.next(crate::clock::now_millis());
     // Record the burst-opener (method + path + query — the query carries the
     // heartbeat's `?why=`), so the coalesced drain can log what initiated it.
     scheduler.note_cause(|| {
@@ -2483,14 +2490,14 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         // below can turn a refusal here into a drain: `blocked` is a refusal on
         // its own, and a superseded ticket only becomes drainable via the cap,
         // which the ticket that superseded it will hit in its own turn.
-        let now = js_sys::Date::now();
+        let now = crate::clock::now_millis();
         if scheduler.blocked(now) || scheduler.superseded(ticket, now) {
             return Ok(JsValue::UNDEFINED);
         }
         scheduler.set_visible(any_client_visible().await);
         if !scheduler.should_drain(
             ticket,
-            js_sys::Date::now(),
+            crate::clock::now_millis(),
             pending_local_work(&state).await,
         ) {
             // The quiet interval hasn't elapsed, or the ticket was superseded
@@ -2506,7 +2513,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         if offline() {
             scheduler.begin_drain();
             crate::router::mark_offline(&state).await;
-            scheduler.end_drain(js_sys::Date::now());
+            scheduler.end_drain(crate::clock::now_millis());
             return Ok(JsValue::UNDEFINED);
         }
         scheduler.begin_drain();
@@ -2514,7 +2521,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             log!("sync drain, caused by: {cause}");
         }
         crate::router::drain_sync(&state).await;
-        scheduler.end_drain(js_sys::Date::now());
+        scheduler.end_drain(crate::clock::now_millis());
         Ok(JsValue::UNDEFINED)
     });
 

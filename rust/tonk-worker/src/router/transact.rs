@@ -100,7 +100,9 @@ pub async fn transact(
         != response.0.revision_after.as_ref().map(|r| &r.tree)
     {
         let tonk_state = state.read().await;
-        tonk_state.sync_queue.mark_dirty(&path.repo, now_millis());
+        tonk_state
+            .sync_queue
+            .mark_dirty(&path.repo, crate::clock::now_millis());
     }
     announce_local_commit(&path.branch, &response.0);
     // Dispatch any transient commands (now that the state lock is
@@ -187,19 +189,6 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
                 revision: revision.clone(),
             },
         );
-    }
-}
-
-/// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
-/// in the SW event context; native (tests) has no clock dependency, so 0.
-fn now_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        js_sys::Date::now()
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        0.0
     }
 }
 

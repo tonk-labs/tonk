@@ -1479,7 +1479,7 @@ pub async fn drain() -> Json<serde_json::Value> {
 fn current_millis() -> f64 {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        js_sys::Date::now()
+        crate::clock::now_millis()
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
