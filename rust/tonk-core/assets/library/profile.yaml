@@ -777,6 +777,14 @@ view!:
 # sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
 # repository from their own `with` — here the profile endpoint — so they
 # query `/api/profile/branch/main/query` rather than a named space.
+#
+# Both take that `with` from the SITE, exactly as core.yaml's route views do,
+# rather than naming the profile endpoint literally. The site's `repo` is a
+# LOCATION TOKEN (`profile:<name>` here, a bare repository key in a space), so
+# `{branch}@{repo}` is the one spelling that resolves in either context — which
+# is what lets the same view be written once. The literal it replaces also
+# pinned the profile NAME, so it addressed the wrong endpoint outright for any
+# profile not called `tonk`.
 route!: &route/inspector
   this: id:tonk:route/inspector
   path: "/inspector"
@@ -786,11 +794,21 @@ concept!: &inspector/route
   this: tonk:inspector/route
   description: The /inspector page — a query inspector over the profile DB.
   with:
-    # A route model must declare at least one field; the view doesn't read
-    # it (the inspector needs no entity — it inspects the whole branch).
+    # The inspector needs no entity — it inspects the whole branch — but it
+    # does need the branch, so `repo`/`branch` are what the model declares.
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
       cardinality: one
       as: text
 
@@ -800,7 +818,7 @@ view!:
     ui: |
       <div class="display-view-slot">
         <tonk-title text="Tonk"></tonk-title>
-        <tonk-inspector with="main@profile:tonk"></tonk-inspector>
+        <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
 
 route!: &route/diagnose
@@ -817,6 +835,16 @@ concept!: &diagnose/route
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:diagnose/route
@@ -824,7 +852,7 @@ view!:
     ui: |
       <div class="display-view-slot">
         <tonk-title text="Tonk"></tonk-title>
-        <tonk-tree with="main@profile:tonk"></tonk-tree>
+        <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
 
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
