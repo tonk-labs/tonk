@@ -250,8 +250,20 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
 /// pinned to the account's passkey so a browser holding several for this
 /// origin cannot answer with another account's.
 fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    // `BUSY` dedupes identical asks: for the encryption key, whose ask is
+    // always "save the derived key with the root", the standing card's
+    // save genuinely answers a second request. Commands are not like
+    // that. A pending deletion does not answer a later device
+    // authorization, so dropping the second one silently strands the
+    // operation that asked for it — no card, no console line, nothing in
+    // the worker log. Retire the standing card and run this one.
     if BUSY.with(|busy| busy.replace(true)) {
-        return;
+        tonk_common::log!(
+            "custody: replacing a standing consent card for {:?}",
+            command_action(&intent)
+        );
+        remove_card();
+        BUSY.with(|busy| busy.set(true));
     }
     let Some(host) = mount_card() else {
         BUSY.with(|busy| busy.set(false));
