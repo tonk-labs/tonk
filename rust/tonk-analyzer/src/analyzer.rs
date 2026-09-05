@@ -4979,14 +4979,11 @@ mod library_analysis_tests {
   this: seed:abc
   source: "/library/core.yaml"
   prior: seed:none
+  revision: revision:xyz
 
-space/seed-component!:
+space/seed-route!:
   this: seed:abc
-  component: tonk:blank
-
-space/seed-rule!:
-  this: seed:abc
-  rule: concept:5ksSpHB5KYS5aErr55zBYMDKW2MYhjRN5fGY9Z7tXEsG
+  route: id:tonk:route/space
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }

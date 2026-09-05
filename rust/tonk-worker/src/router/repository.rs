@@ -2928,9 +2928,8 @@ async fn seed_and_initialize(
             })?;
 
         let name_body = repository_name_body(subject, display_name)?;
-        // Seeded first, recorded second: a document cannot name what it is
-        // asserting, and the entities are only known once evaluation has
-        // derived them.
+        // Seeded first, recorded second: the record names the revision the
+        // seed committed at, which only exists once it has committed.
         let version = seed_version(&scaffold);
         let tonk = state.read().await;
         for branch_name in branches {
@@ -2941,13 +2940,14 @@ async fn seed_and_initialize(
 
             // A fresh space has no predecessor; an upgrade will pass the
             // seed it replaces.
-            let record = seed_component_body(
-                &outcome.commits.entities,
-                &version,
-                STANDARD_LIBRARY_URL,
-                SEED_NONE,
-            );
-            if !record.is_empty() {
+            if let Some(revision) = outcome.revision_after {
+                let record = seed_record_body(
+                    &version,
+                    STANDARD_LIBRARY_URL,
+                    SEED_NONE,
+                    &revision.entity().to_string(),
+                    &seed_route_entities(&outcome.commits.entities),
+                );
                 seed_standard_library(&tonk, key, branch_name, &record)
                     .await
                     .map_err(|e| {
@@ -2993,56 +2993,63 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
-/// Notation recording what a seed installed, from the entities evaluation
-/// derived for its heads.
+/// Notation recording a seed install: its identity, where it came from,
+/// the seed it replaced, and the revision it committed at.
 ///
-/// `entities` is the evaluator's commit summary: name to entity for every
-/// head the document touched — anchors under their own names, rule
-/// installs under `!rule-<n>`. A rule publishes no anchor (its identity
-/// comes from its body), so the evaluator names it there or nothing can.
-/// Everything else rides the generic `component` field: an anchor says
-/// what a head is called, not which form it decorated.
+/// The revision is the whole record of WHAT it installed. A revision's
+/// history is a changelog — every claim it wrote, with its polarity — so
+/// an upgrade reads the prior seed's revision and inverts its assertions
+/// rather than consulting a per-component tag. Tagging each definition
+/// meant naming heads whose identity is content-derived, which the
+/// source cannot do.
 ///
-/// ONE HEAD PER COMPONENT, all keyed on the seed entity: the notation
-/// collapses duplicate field keys (last wins) and rejects a sequence value,
-/// so a cardinality-many field cannot ride a single head.
+/// Retraction and the new install go in ONE batch: a retract followed by
+/// an assert of the same fact keeps it, folded to an assertion citing the
+/// version it overrode (dialog `it_keeps_a_fact_retracted_and_re_asserted_in_one_batch`).
+/// So an upgrade is atomic and the overlap between two seeds survives it.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_component_body(
-    entities: &std::collections::BTreeMap<String, String>,
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn seed_record_body(
     version: &str,
     url: &str,
     prior: &str,
+    revision: &str,
+    routes: &[String],
 ) -> String {
-    let mut body =
-        format!("space/seed!:\n  this: {version}\n  source: \"{url}\"\n  prior: {prior}\n");
-    let mut recorded = false;
-    for (name, entity) in entities {
-        // Only the anchors this seed generated carry a kind; a library
-        // anchor names a component too, but nothing says which kind, so
-        // it rides the generic `component` field.
-        // Each kind is its own concept: one concept carrying every kind
-        // as a cardinality-many field makes a query over it the cartesian
-        // product of all of them.
-        let field = if name.starts_with("!rule-") {
-            "rule"
-        } else {
-            "component"
-        };
-        recorded = true;
-        body.push_str("\nspace/seed-");
-        body.push_str(field);
-        body.push_str("!:\n  this: ");
+    let mut body = format!(
+        r#"space/seed!:
+  this: {version}
+  source: "{url}"
+  prior: {prior}
+  revision: {revision}
+"#
+    );
+    // Routes are recorded individually as well, because the ROUTER needs
+    // them: a route named here came from the seed and loses an
+    // equal-specificity tie to one the space authored. That is a live read
+    // on every navigation, not upgrade bookkeeping, so it cannot wait on a
+    // history walk. One head each — the notation collapses duplicate keys.
+    for route in routes {
+        body.push_str("\nspace/seed-route!:\n  this: ");
         body.push_str(version);
-        body.push_str("\n  ");
-        body.push_str(field);
-        body.push_str(": ");
-        body.push_str(entity);
+        body.push_str("\n  route: ");
+        body.push_str(route);
         body.push('\n');
     }
-    if !recorded {
-        return String::new();
-    }
     body
+}
+
+/// The entity of every `route!:` head the document declared.
+///
+/// Routes carry an anchor in the library, so the evaluator reports them in
+/// its commit summary under that name.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn seed_route_entities(entities: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    entities
+        .iter()
+        .filter(|(name, _)| name.starts_with("route/"))
+        .map(|(_, entity)| entity.clone())
+        .collect()
 }
 
 /// The entity naming a seed version: `seed:{hash}` over the bytes actually
@@ -4121,15 +4128,16 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
                 RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
             })?;
 
-    let record = seed_component_body(
-        &outcome.commits.entities,
+    let Some(revision) = outcome.revision_after else {
+        return Ok(());
+    };
+    let record = seed_record_body(
         &version,
         PROFILE_LIBRARY_URL,
         SEED_NONE,
+        &revision.entity().to_string(),
+        &seed_route_entities(&outcome.commits.entities),
     );
-    if record.is_empty() {
-        return Ok(());
-    }
     super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, record, true)
         .await
         .map(|_| ())
@@ -8196,42 +8204,48 @@ mod seed_tests {
 
         assert_eq!(one, same, "the same bytes give the same identity");
         assert_ne!(one, other, "different bytes give a different identity");
-        assert!(one.starts_with("seed:"), "{one}");
         assert!(
             one.parse::<dialog_artifacts::Entity>().is_ok(),
             "the identity must be a usable entity: {one}"
         );
     }
 
-    /// A rule is recorded under its own kind; everything else the
-    /// evaluator names rides the generic `component` field.
+    /// The record names the revision the seed committed at — the whole
+    /// record of what it installed — plus each route, which the router
+    /// reads on every navigation and cannot get from a history walk.
     #[test]
-    fn it_records_rules_under_their_kind() {
-        let entities = std::collections::BTreeMap::from([
-            ("!rule-0".to_string(), "concept:aaa".to_string()),
-            ("kept".to_string(), "concept:bbb".to_string()),
-        ]);
+    fn it_records_the_revision_and_the_routes() {
+        let routes = vec!["id:tonk:route/space".to_string()];
 
-        let body =
-            super::seed_component_body(&entities, "seed:v", "/library/core.yaml", super::SEED_NONE);
-
-        assert!(
-            body.contains("space/seed-rule!:\n  this: seed:v\n  rule: concept:aaa"),
-            "a rule publishes no anchor, so the evaluator names it: {body}"
+        let body = super::seed_record_body(
+            "seed:v",
+            "/library/core.yaml",
+            super::SEED_NONE,
+            "revision:abc",
+            &routes,
         );
+
+        assert!(body.contains("  revision: revision:abc"), "{body}");
+        assert!(body.contains("  prior: seed:none"), "{body}");
         assert!(
-            body.contains("space/seed-component!:\n  this: seed:v\n  component: concept:bbb"),
-            "an anchor says what a head is called, not which form it decorated: {body}"
+            body.contains("space/seed-route!:\n  this: seed:v\n  route: id:tonk:route/space"),
+            "one head per route: the notation collapses duplicate keys: {body}"
         );
     }
 
-    /// Nothing to record is an empty document, not a bare header that
-    /// would assert a seed version with no components.
+    /// Only the anchors the library gives its routes are read back; a
+    /// concept or view anchor names a head the router has no use for.
     #[test]
-    fn it_records_nothing_without_components() {
-        let empty = std::collections::BTreeMap::new();
+    fn it_reads_back_only_route_anchors() {
+        let entities = std::collections::BTreeMap::from([
+            ("route/space".to_string(), "id:tonk:route/space".to_string()),
+            ("blank".to_string(), "tonk:blank".to_string()),
+        ]);
 
-        assert!(super::seed_component_body(&empty, "seed:v", "/u", super::SEED_NONE).is_empty());
+        assert_eq!(
+            super::seed_route_entities(&entities),
+            vec!["id:tonk:route/space".to_string()]
+        );
     }
 
     /// Both shipped libraries must EVALUATE against a real branch, not
@@ -8268,11 +8282,17 @@ mod seed_tests {
             .await;
             assert!(outcome.is_ok(), "{name}.yaml must evaluate: {outcome:?}");
 
-            let record = super::seed_component_body(
-                &outcome.expect("evaluated").commits.entities,
+            let outcome = outcome.expect("evaluated");
+            let record = super::seed_record_body(
                 &super::seed_version(library),
                 url,
                 super::SEED_NONE,
+                &outcome
+                    .revision_after
+                    .expect("a committing seed has a revision")
+                    .entity()
+                    .to_string(),
+                &super::seed_route_entities(&outcome.commits.entities),
             );
             let recorded =
                 crate::router::evaluate::evaluate_body(&tonk, &key, "main", record, true).await;
@@ -8307,17 +8327,17 @@ mod seed_tests {
             crate::router::evaluate::evaluate_body(&tonk, &key, "main", LIBRARY.to_owned(), true)
                 .await
                 .expect("the library evaluates");
-        let rule_names = outcome
-            .commits
-            .entities
-            .keys()
-            .filter(|name| name.starts_with("!rule-"))
-            .count();
-        let record = super::seed_component_body(
-            &outcome.commits.entities,
+        let record = super::seed_record_body(
             &super::seed_version(LIBRARY),
             super::STANDARD_LIBRARY_URL,
             super::SEED_NONE,
+            &outcome
+                .revision_after
+                .clone()
+                .expect("a committing seed has a revision")
+                .entity()
+                .to_string(),
+            &super::seed_route_entities(&outcome.commits.entities),
         );
         crate::router::evaluate::evaluate_body(&tonk, &key, "main", record, true)
             .await
@@ -8331,6 +8351,19 @@ mod seed_tests {
             .await
             .expect("main acquires");
 
+        let seeds: Vec<tonk_schema::Seed> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Seed> {
+                this: Term::var("this"),
+                source: Term::var("source"),
+                prior: Term::var("prior"),
+                revision: Term::var("revision"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("seed query");
         let routes: Vec<tonk_schema::SeedRoute> = session
             .handle()
             .query()
@@ -8342,34 +8375,28 @@ mod seed_tests {
             .try_vec()
             .await
             .expect("seed route query");
-        let rules: Vec<tonk_schema::SeedRule> = session
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SeedRule> {
-                this: Term::var("this"),
-                rule: Term::var("rule"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .expect("seed rule query");
 
+        let seed = seeds.first().expect("the install is recorded");
+        assert_eq!(
+            seed.revision.0.to_string(),
+            outcome
+                .revision_after
+                .expect("a committing seed has a revision")
+                .entity()
+                .to_string(),
+            "the record names the revision the seed committed at — the whole \
+             record of what it installed"
+        );
+
+        let declared = super::seed_route_entities(&outcome.commits.entities);
         assert!(
-            rule_names > 0,
-            "the library must install rules for this to mean anything"
+            declared.len() > 1,
+            "the library must declare several routes for this to mean anything"
         );
         assert_eq!(
-            rules.len(),
-            rule_names,
-            "every rule the library installs must be recorded — they carry no \
-             anchor of their own, so the evaluator names them"
-        );
-        // Routes are anchored in the library, so they land under `component`
-        // until an anchor can carry its kind.
-        assert!(
-            routes.is_empty(),
-            "routes ride `component` today: an anchor names a head without \
-             saying which form it decorated"
+            routes.len(),
+            declared.len(),
+            "every route is recorded: the router reads them on every navigation"
         );
     }
 }

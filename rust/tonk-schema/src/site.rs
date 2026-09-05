@@ -125,33 +125,22 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
-/// A concept a seed installed, on the seed version's entity.
+/// A seed install: what it was, where it came from, and the revision it
+/// committed at.
 ///
-/// Read by an upgrade to retract what the previous seed installed.
+/// The revision is the record of WHAT it installed — a revision's history
+/// is a changelog, so an upgrade reads the prior seed's revision and
+/// inverts its assertions rather than consulting a per-component tag.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedConcept {
-    /// The seed version's entity.
+pub struct Seed {
+    /// The seed's entity: the content hash of its bytes.
     pub this: Entity,
-    /// The concept this seed declared.
-    pub concept: crate::domain::seed::Concept,
-}
-
-/// A view a seed installed, on the seed version's entity.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedView {
-    /// The seed version's entity.
-    pub this: Entity,
-    /// The view this seed declared.
-    pub view: crate::domain::seed::View,
-}
-
-/// A rule a seed installed, on the seed version's entity.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedRule {
-    /// The seed version's entity.
-    pub this: Entity,
-    /// The rule this seed installed.
-    pub rule: crate::domain::seed::Rule,
+    /// Where it was fetched from.
+    pub source: crate::domain::seed::Source,
+    /// The seed it replaced, or `seed:none` on a first install.
+    pub prior: crate::domain::seed::Prior,
+    /// The revision it committed at.
+    pub revision: crate::domain::seed::Revision,
 }
 
 /// A route a seed version seeded, hanging on the seed version's

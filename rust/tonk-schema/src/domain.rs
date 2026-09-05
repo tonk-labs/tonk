@@ -375,33 +375,17 @@ pub mod seed {
     #[cardinality(one)]
     pub struct Prior(pub Entity);
 
-    /// A component this seed installed whose kind is not known.
+    /// The revision this seed committed at.
     ///
-    /// A head the library anchored itself reports under that anchor, which
-    /// says nothing about the form it decorated; only the anchors the
-    /// installer generates encode a kind.
+    /// The record of what it installed: a revision's history is a
+    /// changelog, so an upgrade reads the prior seed's revision and
+    /// inverts its assertions rather than consulting a per-component
+    /// tag. Tagging each definition meant naming heads whose identity is
+    /// content-derived, which the source cannot do.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(many)]
-    pub struct Component(pub Entity);
-
-    /// A concept this seed version declared.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.seed")]
-    #[cardinality(many)]
-    pub struct Concept(pub Entity);
-
-    /// A view this seed version declared.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.seed")]
-    #[cardinality(many)]
-    pub struct View(pub Entity);
-
-    /// A rule this seed version installed.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.seed")]
-    #[cardinality(many)]
-    pub struct Rule(pub Entity);
+    #[cardinality(one)]
+    pub struct Revision(pub Entity);
 
     /// A route this seed version seeded.
     ///

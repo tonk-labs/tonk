@@ -1449,7 +1449,7 @@ concept!: &route
 # space, which wins an equal-specificity tie.
 concept!: &space/seed
   this: tonk:space/seed
-  description: The components a seed version seeded.
+  description: A seed install — its identity, source, and what it replaced.
   with:
     source:
       description: >
@@ -1468,44 +1468,15 @@ concept!: &space/seed
       the: xyz.tonk.seed/prior
       cardinality: one
       as: entity
-
-concept!: &space/seed-component
-  with:
-    component:
+    revision:
       description: >
-        A component whose kind is not known. An anchor names a head
-        without saying which form it decorated, so everything the
-        evaluator reports under a library anchor lands here; only a rule,
-        which publishes no anchor, is reported under its own kind.
-      the: xyz.tonk.seed/component
-      cardinality: many
-      as: entity
-
-concept!: &space/seed-concept
-  with:
-    concept:
-      description: >
-        A concept this seed declared. Cardinality MANY, like every
-        component field: a seed installs many, and one per entry would
-        mean each supersedes the last.
-      the: xyz.tonk.seed/concept
-      cardinality: many
-      as: entity
-
-concept!: &space/seed-view
-  with:
-    view:
-      description: A view this seed declared.
-      the: xyz.tonk.seed/view
-      cardinality: many
-      as: entity
-
-concept!: &space/seed-rule
-  with:
-    rule:
-      description: A rule this seed installed.
-      the: xyz.tonk.seed/rule
-      cardinality: many
+        The revision this seed committed at, and the record of what it
+        installed: a revision's history is a changelog, so an upgrade
+        reads the prior seed's revision and inverts its assertions.
+        Tagging each definition instead meant naming heads whose identity
+        is content-derived, which the source cannot do.
+      the: xyz.tonk.seed/revision
+      cardinality: one
       as: entity
 
 concept!: &space/seed-route
