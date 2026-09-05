@@ -373,6 +373,7 @@ pub mod command {
     /// identity, so two transients of the same shape both decode from one
     /// event — every rename would also create a notebook.
     pub mod notebook {
+        use super::super::Entity;
         use super::Attribute;
 
         /// The title a create carries.
@@ -390,6 +391,20 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.detail")]
         pub struct CreatedBody(pub String);
+
+        /// The entity the notebook is created UNDER, minted by the page.
+        ///
+        /// The page mints it so it knows where it is going: the entity of
+        /// an anchor-less write derives from its body, which the element
+        /// that fired the command never learns, and a rule cannot derive
+        /// one either — every branch-metadata attribute
+        /// (`dialog.branch/revision` & co) describes the head BEFORE the
+        /// commit, so two creates from one head would collide. A minted
+        /// UUID is unique without coordination, and the page can navigate
+        /// to it the moment the write lands.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct CreatedEntity(pub Entity);
     }
 
     /// The address read from the registration form's submit event:

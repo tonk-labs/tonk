@@ -4916,6 +4916,23 @@ mod library_analysis_tests {
         );
     }
 
+    /// The notebook library must also lower onto the PROFILE branch.
+    ///
+    /// A profile is a space like any other as far as guest content is
+    /// concerned, so a notebook has to install there too. But the profile
+    /// branch carries `profile.yaml`, not `core.yaml` — so anything
+    /// `notebook.yaml` leans on from core must also be declared there, or the
+    /// install fails with an unknown concept.
+    #[test]
+    fn it_analyzes_the_notebook_library_on_the_profile_branch() {
+        let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
+        assert_analyzes(
+            "notebook.yaml on profile",
+            &format!("{profile}\n{notebook}"),
+        );
+    }
+
     fn assert_analyzes(name: &str, source: &str) {
         let parsed = tonk_notation::parse(source);
         assert!(

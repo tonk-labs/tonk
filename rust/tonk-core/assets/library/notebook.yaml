@@ -35,7 +35,6 @@ attribute!: &block/source
 # ---------------------------------------------------------------------------
 
 concept!: &notebook
-  this: tonk:notebook
   description: |
     A notebook - prose with live dialog query cells. Its content is the
     `block` sequence: every block, keyed by a fractional position, in
@@ -87,7 +86,6 @@ concept!: &notebook/blocks
 # kind a neighbour is — which is what lets an inserted block take its place
 # from a neighbour that was itself just inserted.
 concept!: &block/position
-  this: tonk:notebook/block-position
   description: A block's position, derived or stored.
   with:
     at:
@@ -100,7 +98,6 @@ concept!: &block/position
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
 concept!: &notebook/block
-  this: tonk:notebook/block
   description: One markdown block of a notebook.
   with:
     notebook:
@@ -125,7 +122,6 @@ concept!: &notebook/block
 # is retracted is still a block, and a rule reading the chain must not have
 # to bind a source it does not care about.
 concept!: &block/chain
-  this: tonk:notebook/block-chain
   description: A block and the block that follows it.
   with:
     next:
@@ -135,40 +131,26 @@ concept!: &block/chain
       as: entity
 
 # ---------------------------------------------------------------------------
-# The space shell.
+# NOT the space shell.
 #
-# The space route mounts `<tonk-display entity={replica} model=tonk/space>`,
-# so the model the shell renders has to resolve for the REPLICA entity, not
-# a notebook. `tonk:notebook/space` is that model; its view mounts the scratch
-# notebook as a nested display.
+# This library used to re-point `id:tonk/space` — the cardinality-one alias
+# core.yaml resolves to `tonk:blank` — at a notebook model, so installing the
+# notebook silently REPLACED the space home for the whole branch. Core's space
+# route renders through that alias (`<tonk-display entity={replica}
+# model=tonk/space>`), so the two libraries fought over one slot and whichever
+# landed last won.
+#
+# A library that adds a feature must not seize the home page to do it. The
+# notebook is reached through its own `/notebook` routes below; the space home
+# stays whatever the space chose. An author who does want a notebook as their
+# landing page re-points the alias themselves, which is what that slot is for.
 # ---------------------------------------------------------------------------
-
-concept!: &notebook/space
-  this: tonk:notebook/space
-  description: A notebook view of the tonk replica.
-  with:
-    subject:
-      description: The repository's subject DID (shared with tonk/replica)
-      the: dialog.replica/subject
-      as: entity
-
-name!:
-  this: id:tonk/space
-  entity: tonk:notebook/space
-
-view!:
-  this: tonk:notebook/space
-  show:
-    ui: |
-      <div class="notebook-space">
-        <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
-      </div>
 
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
 view!:
-  this: tonk:notebook
+  this: notebook
   show:
     ui: |
       <tonk-notebook
@@ -185,7 +167,7 @@ view!:
           <div class="notebook-order">
             <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
           </div>
-          <tonk-display model=tonk:notebook/block></tonk-display>
+          <tonk-display model=notebook/block></tonk-display>
         </div>
       </tonk-notebook>
 
@@ -201,7 +183,7 @@ view!:
 # These rows are the switcher's candidates as well as the plain list, so an
 # index whose script never loads is still a working set of links.
 view!:
-  this: tonk:notebook
+  this: notebook
   show:
     directory: |
       <div class="notebook-index">
@@ -217,7 +199,7 @@ view!:
 
 # The block rows the element reads: one per block, its source on the row.
 view!:
-  this: tonk:notebook/block
+  this: notebook/block
   show:
     directory: |
       <div class="notebook-block-rows">
@@ -241,13 +223,11 @@ view!:
 # "Concept mismatch: required attribute missing" beside the working list.
 # A literal path wins over `/{*model}` under the router's specificity rules
 # (fewer broad params first), so this claims the URL outright.
-route!: &route/notebook/index
-  this: id:notebook/index/route
+route!:
   path: "/notebook"
-  concept: tonk:notebook/index-route
+  concept: notebook/index-route
 
 concept!: &notebook/index-route
-  this: tonk:notebook/index-route
   description: The notebook index (`/space/{repo}/notebook`).
   with:
     repo:
@@ -273,7 +253,7 @@ concept!: &notebook/index-route
 # The nested display renders the notebook rows the switcher matches
 # against; they are its data and the no-script fallback both.
 view!:
-  this: tonk:notebook/index-route
+  this: notebook/index-route
   show:
     ui: |
       <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
@@ -286,16 +266,14 @@ view!:
           ontitlechange=notebook/retitle
           style="display: block;"
         ></tonk-notebook>
-        <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+        <tonk-display with="{branch}@{repo}" model=notebook></tonk-display>
       </tonk-notebook-index>
 
-route!: &route/notebook
-  this: id:notebook/route
+route!:
   path: "/notebook/{*entity}"
-  concept: tonk:notebook/route
+  concept: notebook/route
 
 concept!: &notebook/route
-  this: tonk:notebook/route
   description: A single notebook page (`/space/{repo}/notebook/{entity}`).
   with:
     entity:
@@ -315,11 +293,11 @@ concept!: &notebook/route
       as: text
 
 view!:
-  this: tonk:notebook/route
+  this: notebook/route
   show:
     ui: |
       <div class="notebook-space">
-        <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
+        <tonk-display with="{branch}@{repo}" entity={entity} model=notebook></tonk-display>
       </div>
 
 # ---------------------------------------------------------------------------
@@ -375,6 +353,15 @@ command!: &block/insert
 command!: &notebook/create
   description: Create a notebook with a title.
   with:
+    entity:
+      description: |
+        The notebook's entity, minted by the page. The page mints it so it
+        knows where to navigate: an anchor-less write derives its entity
+        from its body, which the element never learns, and a rule cannot
+        derive one either — every branch-metadata attribute describes the
+        head BEFORE the commit, so two creates from one head would collide.
+      the: dom.event.detail/created-entity
+      as: entity
     title:
       description: |
         The title typed into the index's heading. Its OWN attribute, not

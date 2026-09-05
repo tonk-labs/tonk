@@ -127,17 +127,19 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
-/// Create a notebook from the index's heading switcher, and drop the
-/// author into it.
+/// Create a notebook from the index's heading switcher.
 ///
-/// The handler does both halves: it writes the notebook and then posts a
-/// `navigate` to the originating client. The navigation cannot happen in
-/// the page, because the notebook's entity is derived when the fact is
-/// written — the element that fired the command never learns it.
+/// The page mints the notebook's entity and carries it here, so the
+/// handler writes at a known address and the page navigates itself. It
+/// used to do neither: the entity derived from the write's body, so only
+/// the worker could learn it (by writing, then reading back by title) and
+/// only the worker could redirect.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CreateNotebook {
     /// The command entity, minted per invocation.
     pub this: Entity,
+    /// The notebook entity, minted by the page.
+    pub entity: crate::domain::command::notebook::CreatedEntity,
     /// The title typed into the heading.
     pub title: crate::domain::command::notebook::CreatedTitle,
     /// The draft's document, blocks and all.
