@@ -144,24 +144,30 @@ command!: &space/create
 # The command is transient: it fires the handler once and is swept before
 # the durable commit.
 #
-# `subject` used to be read from a `data-remove` attribute, deliberately
-# NOT `data-subject`: `tonk/rename-repository` transients already carried
+# The COMMAND's field used to be `dataset/remove` too, deliberately NOT
+# `dataset/subject`: `tonk/rename-repository` transients already carried
 # `dataset/subject`, and a remove matched on that attribute alone would
 # have decoded every rename — turning each rename into a deletion. The
-# distinct DOM attribute doubled as the command's unique shape.
+# distinct DOM read path doubled as the command's unique shape.
 # `xyz.tonk.command.remove-space/subject` is that distinctness by
-# construction, so the field can be named for what it is and read from
-# the row it is rendered in.
+# construction, so the field is named for what it is. The DOM attribute
+# it is read FROM keeps its name: `<ui-space-remove>` locates this form
+# by it.
 #
-# How the confirm's submit fills it. `{subject}` is a field of the row
-# being confirmed, not the row's own entity (`{this}` is the replica
-# record; `{subject}` is the space's DID), so the form stamps it and the
-# read resolves against the nearest element carrying it.
+# How the confirm's submit fills it.
+#
+# The source is the form's `data-remove`, not a `{subject}` template
+# field, because that attribute is load-bearing for something else:
+# `<ui-space-remove>` finds this form by `form[data-remove]` to write the
+# confirm copy into it. Stamping a second attribute carrying the same DID
+# just to feed the command would be two names for one fact. Reading the
+# one that already exists is what an `event!:` declaration is for —
+# platform specifics live here so the command stays domain-shaped.
 event!: &on/space-remove
   type: "submit"
   prevent-default: true
   where:
-    subject: "{subject}"
+    subject: ".currentTarget.dataset.remove"
 
 command!: &space/remove
   description: A request to remove a space from this device (its list entry and local data).
@@ -247,7 +253,7 @@ view!:
                 <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
               </span>
               <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
-                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-subject={subject}>
+                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
                   Leave {name}? This removes the space and its local data from this
                   device. You'll need another invite link to join again. Other
                   members keep access.
