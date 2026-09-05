@@ -125,6 +125,35 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
+/// A concept a seed installed, on the seed version's entity.
+///
+/// Read by an upgrade to retract what the previous seed installed.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedConcept {
+    /// The seed version's entity.
+    pub this: Entity,
+    /// The concept this seed declared.
+    pub concept: crate::domain::seed::Concept,
+}
+
+/// A view a seed installed, on the seed version's entity.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedView {
+    /// The seed version's entity.
+    pub this: Entity,
+    /// The view this seed declared.
+    pub view: crate::domain::seed::View,
+}
+
+/// A rule a seed installed, on the seed version's entity.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedRule {
+    /// The seed version's entity.
+    pub this: Entity,
+    /// The rule this seed installed.
+    pub rule: crate::domain::seed::Rule,
+}
+
 /// A route a seed version seeded, hanging on the seed version's
 /// entity rather than the route's.
 ///

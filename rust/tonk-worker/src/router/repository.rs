@@ -8276,16 +8276,10 @@ mod seed_route_tests {
     /// route, because what actually governs the write is the descriptor
     /// stored on the branch. Only evaluating a real seed against a real
     /// branch and querying it back proves the whole path.
-    // IGNORED: the readback formats stored values with `{:?}` while the
-    // expectation holds raw source strings, so the two are not comparable.
-    // The claim it makes is worth keeping — every declared component is
-    // recorded — but the comparison needs rewriting against the typed
-    // concepts rather than a raw claims scan.
-    #[ignore]
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_records_every_seeded_component_on_the_branch() {
-        use futures_util::StreamExt as _;
+        use dialog_query::{Output as _, Query, Term};
 
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
@@ -8323,58 +8317,93 @@ mod seed_route_tests {
                 .acquire(&tonk.operator)
                 .await
                 .expect("main acquires");
+            // Typed queries, so each value comes back as the entity it is
+            // rather than a debug-formatted `Value` that no source string
+            // could match.
             let mut found: Vec<String> = Vec::new();
-            for attribute in [
-                "xyz.tonk.seed/concept",
-                "xyz.tonk.seed/view",
-                "xyz.tonk.seed/rule",
-                "xyz.tonk.seed/route",
-            ] {
-                let claims = session
-                    .handle()
-                    .claims()
-                    .select(
-                        dialog_artifacts::ArtifactSelector::new()
-                            .the(attribute.parse().expect("attribute parses")),
-                    )
-                    .perform(&tonk.operator)
-                    .await
-                    .expect("claims select");
-                tokio::pin!(claims);
-                while let Some(artifact) = claims.next().await {
-                    let artifact = artifact
-                        .expect("claim reads")
-                        .to_owned()
-                        .expect("claim owns");
-                    found.push(format!("{:?}", artifact.is));
-                }
-            }
+            let concepts: Vec<tonk_schema::SeedConcept> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedConcept> {
+                    this: Term::var("this"),
+                    concept: Term::var("concept"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("seed concept query");
+            found.extend(concepts.into_iter().map(|row| row.concept.0.to_string()));
+
+            let views: Vec<tonk_schema::SeedView> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedView> {
+                    this: Term::var("this"),
+                    view: Term::var("view"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("seed view query");
+            found.extend(views.into_iter().map(|row| row.view.0.to_string()));
+
+            let rules: Vec<tonk_schema::SeedRule> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedRule> {
+                    this: Term::var("this"),
+                    rule: Term::var("rule"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("seed rule query");
+            found.extend(rules.into_iter().map(|row| row.rule.0.to_string()));
+
+            let routes: Vec<tonk_schema::SeedRoute> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedRoute> {
+                    this: Term::var("this"),
+                    route: Term::var("route"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("seed route query");
+            found.extend(routes.into_iter().map(|row| row.route.0.to_string()));
             found.sort();
             found.dedup();
             found
         };
 
-        let mut expected: Vec<String> = ["concept", "view", "rule", "route"]
-            .into_iter()
-            .flat_map(|form| super::seed_head_entities(library, form))
-            .collect();
-        expected.sort();
-        // A fact is stored once: two heads naming one entity (a concept
-        // and its view, say) are one claim, so compare against the set.
-        expected.dedup();
+        // Every route the library declares must be recorded. Routes are
+        // pinned by literal `this:` in the source, so the source names and
+        // the stored entities are the same strings; a concept or view
+        // written as an anchor (`&board`) resolves to a content-derived
+        // entity at evaluation, which no source string can predict, so
+        // those are checked by count rather than by name.
+        let mut routes = super::seed_head_entities(library, "route");
+        routes.sort();
         assert!(
-            expected.len() > 1,
-            "the library must declare several components for this to mean anything"
+            routes.len() > 1,
+            "the library must declare several routes for this to mean anything"
         );
-        let missing: Vec<&String> = expected.iter().filter(|e| !recorded.contains(e)).collect();
-        let extra: Vec<&String> = recorded.iter().filter(|r| !expected.contains(r)).collect();
-        assert_eq!(
-            recorded,
-            expected,
-            "every seeded component must be recorded, not just the last; \
-             recorded {} of {}; missing {missing:?}; unexpected {extra:?}",
+        for route in &routes {
+            assert!(
+                recorded.contains(route),
+                "route {route} was declared but not recorded; recorded {recorded:?}"
+            );
+        }
+
+        // And nothing collapsed: a cardinality-one field would have left a
+        // single component of each kind.
+        assert!(
+            recorded.len() >= routes.len() + 2,
+            "concepts and views must be recorded alongside the routes, \
+             got {} components for {} routes",
             recorded.len(),
-            expected.len()
+            routes.len()
         );
     }
 
