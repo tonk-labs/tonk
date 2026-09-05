@@ -35,7 +35,6 @@ attribute!: &block/source
 # ---------------------------------------------------------------------------
 
 concept!: &notebook
-  this: tonk:notebook
   description: |
     A notebook - prose with live dialog query cells. Its content is the
     `block` sequence: every block, keyed by a fractional position, in
@@ -99,7 +98,6 @@ concept!: &block/position
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
 concept!: &notebook/block
-  this: tonk:notebook/block
   description: One markdown block of a notebook.
   with:
     notebook:
@@ -152,7 +150,7 @@ concept!: &block/chain
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
 view!:
-  this: tonk:notebook
+  this: notebook
   show:
     ui: |
       <tonk-notebook
@@ -169,7 +167,7 @@ view!:
           <div class="notebook-order">
             <span class="notebook-order__item" data-block={block} data-key={block/key}></span>
           </div>
-          <tonk-display model=tonk:notebook/block></tonk-display>
+          <tonk-display model=notebook/block></tonk-display>
         </div>
       </tonk-notebook>
 
@@ -185,7 +183,7 @@ view!:
 # These rows are the switcher's candidates as well as the plain list, so an
 # index whose script never loads is still a working set of links.
 view!:
-  this: tonk:notebook
+  this: notebook
   show:
     directory: |
       <div class="notebook-index">
@@ -201,7 +199,7 @@ view!:
 
 # The block rows the element reads: one per block, its source on the row.
 view!:
-  this: tonk:notebook/block
+  this: notebook/block
   show:
     directory: |
       <div class="notebook-block-rows">
@@ -226,12 +224,10 @@ view!:
 # A literal path wins over `/{*model}` under the router's specificity rules
 # (fewer broad params first), so this claims the URL outright.
 route!:
-  this: id:notebook/index/route
   path: "/notebook"
-  concept: tonk:notebook/index-route
+  concept: notebook/index-route
 
-concept!:
-  this: tonk:notebook/index-route
+concept!: &notebook/index-route
   description: The notebook index (`/space/{repo}/notebook`).
   with:
     repo:
@@ -257,7 +253,7 @@ concept!:
 # The nested display renders the notebook rows the switcher matches
 # against; they are its data and the no-script fallback both.
 view!:
-  this: tonk:notebook/index-route
+  this: notebook/index-route
   show:
     ui: |
       <tonk-notebook-index class="notebook-index" onnotebookcreate=notebook/create>
@@ -270,16 +266,14 @@ view!:
           ontitlechange=notebook/retitle
           style="display: block;"
         ></tonk-notebook>
-        <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
+        <tonk-display with="{branch}@{repo}" model=notebook></tonk-display>
       </tonk-notebook-index>
 
 route!:
-  this: id:notebook/route
   path: "/notebook/{*entity}"
-  concept: tonk:notebook/route
+  concept: notebook/route
 
-concept!:
-  this: tonk:notebook/route
+concept!: &notebook/route
   description: A single notebook page (`/space/{repo}/notebook/{entity}`).
   with:
     entity:
@@ -299,11 +293,11 @@ concept!:
       as: text
 
 view!:
-  this: tonk:notebook/route
+  this: notebook/route
   show:
     ui: |
       <div class="notebook-space">
-        <tonk-display with="{branch}@{repo}" entity={entity} model=tonk:notebook></tonk-display>
+        <tonk-display with="{branch}@{repo}" entity={entity} model=notebook></tonk-display>
       </div>
 
 # ---------------------------------------------------------------------------

@@ -943,13 +943,39 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // The notebook index route matched, so the notebook's own model is
-        // what the shell mounts rather than the profile's fallback.
+        // what the shell mounts rather than the profile's `/{*rest}`
+        // fallback. Compared against the NOT-FOUND model rather than a
+        // literal: the index concept is anchor-named, so its entity derives
+        // from its body and no URI is stable to assert.
         let concept = stamped_field(&app, "nb", "concept", "/api/profile/branch/main/query")
             .await
             .expect("the notebook route stamps a concept");
-        assert_eq!(
-            concept, "tonk:notebook/index-route",
-            "/notebook on a profile must match the notebook index route"
+        // What `/` resolves to is the profile's Hub; `/notebook` must NOT be
+        // that, and must not be the not-found fallback either.
+        let home = {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/profile/branch/main/site")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"path":"/"}"#))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(ClientId("nb-home".to_owned()));
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            stamped_field(&app, "nb-home", "concept", "/api/profile/branch/main/query")
+                .await
+                .expect("the home route stamps a concept")
+        };
+        assert_eq!(home, "tonk:hub", "the profile's `/` is the Hub");
+        assert_ne!(
+            concept, home,
+            "/notebook on a profile must match the notebook index route, not the Hub"
+        );
+        assert_ne!(
+            concept, "tonk:not-found",
+            "/notebook on a profile must not fall through to not-found"
         );
 
         // And the location its view builds reaches the profile endpoint.
