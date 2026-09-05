@@ -381,6 +381,15 @@ fn expand(
                             // content-derived `this()`.
                             let intent = ThisIntent::Derived;
                             this = intent.clone();
+                            // An anchor on a rule publishes that derived
+                            // identity, the same as on any other head. It
+                            // does not travel the assertion path, so it is
+                            // recorded here or nowhere.
+                            if let Some(name) = &anchor
+                                && let Some(entity) = rule.try_this()
+                            {
+                                working.declarations.insert(name.clone(), entity);
+                            }
                             rule_effect = Some((*rule).clone());
                             claims
                                 .push(Statement::Assert(Application::Rule { rule, this: intent }));
@@ -4913,6 +4922,46 @@ mod library_analysis_tests {
         assert_analyzes(
             "profile.yaml",
             include_str!("../../tonk-core/assets/library/profile.yaml"),
+        );
+    }
+
+    /// A rule may carry an `&anchor`, and it publishes the rule's own
+    /// content-derived identity.
+    ///
+    /// Anchors were rejected on rules on the grounds that a rule has no
+    /// single subject entity. It does — `InductiveRule::this()` — it
+    /// simply is not the head's `this:`. Without this a rule was the one
+    /// installed thing a document could not name.
+    #[test]
+    fn it_publishes_a_rule_anchor() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        let doc = r#"rule!: &named-rule
+  description: Renames the repository from a rename-repository command
+  assert!: tonk/repository
+  when:
+    - assert: tonk/rename-repository
+      where:
+        subject: ?this
+        name: ?name
+"#;
+        let source = format!("{core}\n{doc}");
+        let parsed = tonk_notation::parse(&source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "an anchored rule must parse: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        let analysis = analyze_local(&syntax).expect("an anchored rule must analyze");
+
+        let published = analysis
+            .analysis
+            .declarations
+            .get("named-rule")
+            .expect("the anchor publishes the rule's entity");
+        assert!(
+            published.to_string().starts_with("rule:"),
+            "the published entity is the rule's content-derived identity: {published}"
         );
     }
 
