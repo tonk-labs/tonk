@@ -188,7 +188,7 @@ pub fn build_transact_body(
 }
 
 /// The result of reading a `dom.event` path for one field.
-enum ReadOutcome {
+pub(super) enum ReadOutcome {
     /// The path resolved and the leaf coerced to a term value.
     Value(Value),
     /// The path resolved to a *present but empty* leaf — a blank
@@ -217,7 +217,7 @@ enum ReadOutcome {
 /// [`ReadOutcome::Empty`] — "field left blank", not a hard failure —
 /// while a missing intermediate step or an uncoercible value is
 /// [`ReadOutcome::Unresolved`].
-fn read_path_and_coerce(
+pub(super) fn read_path_and_coerce(
     event: &JsValue,
     binding: &JsValue,
     path: &EventPath,
@@ -285,7 +285,7 @@ fn read_path_and_coerce(
 /// concept attribute declared with any supported `as:` can be
 /// populated from a DOM event provided the JS path produces a
 /// shape that fits.
-fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
+pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
     match as_type {
         "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
         "Entity" | "entity" => {

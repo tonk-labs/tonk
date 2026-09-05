@@ -30,6 +30,15 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// The component libraries. Each is seeded the same way and lowers the
+/// same way, so each belongs in the lowering gate — until now only
+/// `core.yaml` and `profile.yaml` were covered, which meant a broken
+/// `table.yaml` reached the seed before anything complained.
+const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
+const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
+
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
@@ -650,4 +659,94 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
             "mobile Hub/join CSS must contain `{contract}`"
         );
     }
+}
+
+/// Lower a component library the way the seed reaches it: on top of
+/// the standard library, whose `view` / `event` / `command` concepts it
+/// references. `analyze_local` resolves names within one document, so
+/// the concatenation is what stands in for "core is already seeded".
+fn assert_component_library_lowers(label: &str, document: &str) {
+    assert_library_lowers(label, &format!("{STANDARD_LIBRARY}\n{document}"));
+}
+
+#[dialog_common::test]
+fn it_lowers_the_table_library() {
+    assert_component_library_lowers("table library (table.yaml)", TABLE_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_notebook_library() {
+    assert_component_library_lowers("notebook library (notebook.yaml)", NOTEBOOK_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_prose_library() {
+    assert_component_library_lowers("prose library (prose.yaml)", PROSE_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_issue_library() {
+    assert_component_library_lowers("issue library (issue.yaml)", ISSUE_LIBRARY);
+}
+
+/// Every `on:<name>` binding in a library names a declaration the same
+/// library defines.
+///
+/// The dangling case is exactly the one the design exists to catch: a
+/// binding whose declaration does not resolve produces no listener and
+/// no diagnostic, so the element is simply inert. Cheap to check by
+/// scanning, and it fails at build time rather than on a click.
+#[dialog_common::test]
+fn every_on_binding_names_a_declared_event() {
+    for (label, document) in [
+        ("core.yaml", STANDARD_LIBRARY),
+        ("profile.yaml", PROFILE_LIBRARY),
+        ("table.yaml", TABLE_LIBRARY),
+        ("notebook.yaml", NOTEBOOK_LIBRARY),
+        ("prose.yaml", PROSE_LIBRARY),
+        ("issue.yaml", ISSUE_LIBRARY),
+    ] {
+        // Declarations are anchored `event!: &on/<name>`; every library
+        // resolves against the core one too, which is always seeded.
+        let mut declared: Vec<String> = collect_anchors(STANDARD_LIBRARY);
+        declared.extend(collect_anchors(document));
+
+        for attribute in collect_on_attributes(document) {
+            let event_name = tonk_template::event::event_name_for_attribute(&attribute)
+                .unwrap_or_else(|| panic!("{label}: `{attribute}` is not a usable binding name"));
+            assert!(
+                declared.contains(&event_name),
+                "{label}: `{attribute}` names `{event_name}`, which no `event!:` declares",
+            );
+        }
+    }
+}
+
+/// `event!: &on/<name>` anchors declared in a document.
+fn collect_anchors(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("event!: &")?;
+            Some(rest.split_whitespace().next()?.to_string())
+        })
+        .collect()
+}
+
+/// `on:<name>=` attribute names appearing in any template.
+fn collect_on_attributes(document: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (index, _) in document.match_indices("on:") {
+        // Only an attribute position counts — preceded by whitespace.
+        if index > 0 && !document.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &document[index..];
+        let Some(end) = rest.find('=') else { continue };
+        let name = &rest[..end];
+        if !name.contains(char::is_whitespace) {
+            out.push(name.to_string());
+        }
+    }
+    out
 }

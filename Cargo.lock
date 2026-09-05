@@ -5385,6 +5385,7 @@ dependencies = [
  "tonk-notation",
  "tonk-router",
  "tonk-schema",
+ "tonk-template",
  "tonk-worker-api",
  "tower",
  "tower-service",

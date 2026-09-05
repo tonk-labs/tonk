@@ -16,7 +16,14 @@
 //! - `delegate` (wasm-only) — installs per-event-type listeners
 //!   on the host that route fires to the bound concept,
 //!   extract, and POST the resulting `TransactRequest`.
+//! - `binding` (wasm-only) — the `on:<name>=<command>` form: reads
+//!   an `event!:` declaration's `where:` map against the live event
+//!   instead of the command's own `dom.event.*` identifiers. The
+//!   grammar, the dispatch table and the wire shape live in
+//!   `tonk_template::event`, shared with any other host.
 
+#[cfg(target_arch = "wasm32")]
+pub mod binding;
 #[cfg(target_arch = "wasm32")]
 pub mod delegate;
 #[cfg(target_arch = "wasm32")]

@@ -121,6 +121,7 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 
 [dev-dependencies]
+tonk-template = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-operator = { workspace = true, features = ["helpers"] }
