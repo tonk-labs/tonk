@@ -515,13 +515,17 @@ pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
 /// Build a `TransactRequest` JSON body for the `tonk:pause-sync` command.
 ///
 /// A transient command asserting the target `space` (the DID to pause) with a
-/// per-click `time` so each dispatch is a distinct transient, plus the `marker`
-/// (the command URI) that keeps the shape distinct from `tonk:invite`. `this`
-/// is omitted so the worker mints it from `(descriptor, parameters)`. Dispatched
+/// per-click `time` so each dispatch is a distinct transient. `this` is
+/// omitted so the worker mints it from `(descriptor, parameters)`.
+///
+/// It used to carry a third field, the command URI, whose only job was to
+/// keep this shape distinct from `tonk:invite`'s identical `{this, time}`.
+/// The two commands now have their own attribute namespaces, so the marker
+/// is gone. Dispatched
 /// routeless via `window.tonk.transact`, so it lands on the FAB portal's own
 /// `main@profile:tonk` context where the command lives; the worker's handler
 /// reads `space` to flip that replica — nothing space-side is required.
-pub fn pause_claim_json(command: &str, space: &str, time: f64) -> Value {
+pub fn pause_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{
             "op": "assert",
@@ -531,16 +535,14 @@ pub fn pause_claim_json(command: &str, space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
                         "with": {
-                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-                            "space":  { "the": "xyz.tonk.pause-sync/space", "as": "Entity" },
-                            "marker": { "the": "dom.event.current-target.dataset/pause-sync", "as": "Entity" }
+                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "Float" },
+                            "space": { "the": "xyz.tonk.pause-sync/space", "as": "Entity" }
                         }
                     }
                 },
                 "parameters": {
                     "time": time,
-                    "space": space,
-                    "marker": command
+                    "space": space
                 }
             }
         }]
@@ -1046,7 +1048,7 @@ mod persist {
 
     #[test]
     fn pause_claim_carries_the_space_and_is_transient() {
-        let v = pause_claim_json("tonk:pause-sync", "did:key:zSpace", 123.0);
+        let v = pause_claim_json("did:key:zSpace", 123.0);
         let app = &v["claims"][0]["application"];
         assert_eq!(v["claims"][0]["op"], "assert");
         // A command is a one-timestep transient, not a durable fact.
@@ -1055,12 +1057,19 @@ mod persist {
         // from the dispatch origin — this is what lets pause dispatch from the
         // profile branch and depend on nothing seeded per-space.
         assert_eq!(app["parameters"]["space"], "did:key:zSpace");
-        assert_eq!(app["parameters"]["marker"], "tonk:pause-sync");
         assert_eq!(app["parameters"]["time"], 123.0);
         assert_eq!(
             app["predicate"]["concept"]["with"]["space"]["the"],
             "xyz.tonk.pause-sync/space"
         );
+        // The timestamp is in the command's own namespace, which is what
+        // separates this from `tonk:invite`'s identical `{this, time}`. No
+        // marker field does that job any more.
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["time"]["the"],
+            "xyz.tonk.command.pause-sync/time"
+        );
+        assert!(app["parameters"].get("marker").is_none());
         // `this` is omitted so the worker mints it from (descriptor, params).
         assert!(app["parameters"].get("this").is_none());
     }
@@ -1558,9 +1567,8 @@ pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
                     "concept": {
                         "description": "Rename a space's repository from the FAB.",
                         "with": {
-                            "value":            { "the": "dom.event.current-target/value", "as": "Text" },
-                            "space":            { "the": "xyz.tonk.rename-repository/space", "as": "Entity" },
-                            "rename-repository": { "the": "dom.event.current-target.dataset/rename-repository", "as": "Entity" }
+                            "name":  { "the": "xyz.tonk.command.rename-repository/name", "as": "Text" },
+                            "space": { "the": "xyz.tonk.rename-repository/space", "as": "Entity" }
                         }
                     }
                 },
@@ -1580,7 +1588,7 @@ mod rename_repo {
         let text = claim.to_string();
         // The descriptor rides WITH the claim — nothing seeded is consulted.
         assert!(text.contains("xyz.tonk.rename-repository/space"));
-        assert!(text.contains("dom.event.current-target/value"));
+        assert!(text.contains("xyz.tonk.command.rename-repository/name"));
         assert!(text.contains("did:key:z6Mk"));
         assert!(text.contains("Renamed"));
     }
@@ -1614,12 +1622,11 @@ mod create_space {
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
         let claim = create_space_claim_json("Untitled");
         let text = claim.to_string();
-        // Verbatim, kebab-cased as declared — the handler matches on these.
-        // Every control is read at `/value`: the segment after the control
-        // name is the JS property the browser's extractor would have read,
-        // so a descriptive leaf resolves to `undefined` there and the
-        // handler would never see the field here.
-        assert!(text.contains("dom.event.current-target.elements.name/value"));
+        // Verbatim as declared — the handler matches on this. The
+        // attribute is the command's own; the DOM read path that used to
+        // fill it is now only what a branch seeded before the migration
+        // still asserts, and the handler converts that separately.
+        assert!(text.contains("xyz.tonk.command.create-space/name"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
     }
@@ -1662,7 +1669,7 @@ mod create_space {
 /// same "commit a blank, nothing changes" behaviour `ProfileRenameHandler`
 /// itself would otherwise have to special-case.
 pub fn profile_rename_claim_json(name: &str) -> Value {
-    let mut parameters = json!({ "marker": "tonk:profile" });
+    let mut parameters = json!({});
     if !name.is_empty() {
         parameters["name"] = json!(name);
     }
@@ -1675,8 +1682,7 @@ pub fn profile_rename_claim_json(name: &str) -> Value {
                     "concept": {
                         "description": "Rename the signed-in member (set their display name).",
                         "with": {
-                            "name":   { "the": "dom.event.current-target/value", "as": "Text" },
-                            "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
+                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
                         }
                     }
                 },
@@ -1703,14 +1709,14 @@ mod profile_rename {
         // and never on their values. `dialog-reactor`'s
         // `it_does_not_decode_a_repo_rename_as_a_profile_rename` pins the
         // invariant; this pins the claim this crate actually builds.
-        assert_eq!(with["name"]["the"], "dom.event.current-target/value");
-        assert_eq!(
-            with["marker"]["the"],
-            "dom.event.current-target.dataset/rename"
+        assert_eq!(with["name"]["the"], "xyz.tonk.command.profile-rename/name");
+        assert!(
+            with.get("marker").is_none(),
+            "the namespace separates the two renames; no marker is needed"
         );
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Ada");
-        assert_eq!(params["marker"], "tonk:profile");
+        assert!(params.get("marker").is_none());
     }
 
     #[test]
@@ -1744,16 +1750,14 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-                            "space":  { "the": "xyz.tonk.invite/space", "as": "Entity" },
-                            "marker": { "the": "dom.event.current-target.dataset/invite", "as": "Entity" }
+                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "Float" },
+                            "space": { "the": "xyz.tonk.invite/space", "as": "Entity" }
                         }
                     }
                 },
                 "parameters": {
                     "time": time,
-                    "space": space,
-                    "marker": "tonk:invite"
+                    "space": space
                 }
             }
         }]
@@ -1769,14 +1773,12 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// the assert incomplete, so the transient would commit and match nothing.
 pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
     let mut with = json!({
-        "time":   { "the": "dom.event/time-stamp", "as": "Float" },
-        "space":  { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-        "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" }
+        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
+        "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" }
     });
     let mut parameters = json!({
         "time": time,
-        "space": space,
-        "marker": "tonk:enable-sync"
+        "space": space
     });
     // An empty remote is omitted rather than sent as `""`: the handler
     // then resolves where this account syncs from its own recorded
@@ -1819,8 +1821,12 @@ mod invite {
         assert!(claim.to_string().contains("did:key:z6Mk"));
         let app = &claim["claims"][0]["application"];
         assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
-        assert_eq!(app["parameters"]["marker"], "tonk:invite");
         assert_eq!(app["parameters"]["time"], 1.0);
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["time"]["the"],
+            "xyz.tonk.command.invite/time"
+        );
+        assert!(app["parameters"].get("marker").is_none());
         assert!(app["parameters"].get("this").is_none());
     }
 }
@@ -2049,8 +2055,8 @@ mod enable_sync_claim {
         assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
         assert_eq!(app["parameters"]["remote"], "https://tonk.network/ucan/");
         assert_eq!(app["parameters"]["share"], "tonk:share");
-        assert_eq!(app["parameters"]["marker"], "tonk:enable-sync");
         assert_eq!(app["parameters"]["time"], 7.0);
+        assert!(app["parameters"].get("marker").is_none());
         assert_eq!(
             app["predicate"]["concept"]["description"],
             "Attach a sync remote to a space, and share it."
@@ -2061,12 +2067,12 @@ mod enable_sync_claim {
         // above, then silently no-ops at runtime because the transient
         // commits and matches no handler. Pin every declared attribute name.
         let with = &app["predicate"]["concept"]["with"];
-        assert_eq!(with["time"]["the"], "dom.event/time-stamp");
+        assert_eq!(with["time"]["the"], "xyz.tonk.command.enable-sync/time");
         assert_eq!(with["space"]["the"], "xyz.tonk.enable-sync/space");
         assert_eq!(with["remote"]["the"], "xyz.tonk.enable-sync/remote");
-        assert_eq!(
-            with["marker"]["the"],
-            "dom.event.current-target.dataset/enable-sync"
+        assert!(
+            with.get("marker").is_none(),
+            "the namespace keeps this shape distinct; no marker is needed"
         );
         assert_eq!(with["share"]["the"], "xyz.tonk.enable-sync/share");
     }
@@ -2241,7 +2247,7 @@ mod wire_types {
             create_space_claim_json("N").to_string(),
             profile_rename_claim_json("N").to_string(),
             invite_claim_json("did:key:zX", 1.0).to_string(),
-            pause_claim_json("tonk:pause-sync", "did:key:zX", 1.0).to_string(),
+            pause_claim_json("did:key:zX", 1.0).to_string(),
             dock_claim_json(crate::logic::Dock::BottomRight).to_string(),
         ];
 

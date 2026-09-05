@@ -39,7 +39,10 @@ mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
-pub use command::{CommandHandler, CommandRegistry, Decode, EntityFacts, RunFuture, TypedCommand};
+pub use command::{
+    CommandHandler, CommandRegistry, Decode, EntityFacts, Migrated, MigratedCommand, RunFuture,
+    TypedCommand,
+};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
     SelectProvider,

@@ -1167,30 +1167,32 @@ pub(crate) fn is_plausible(email: &str) -> bool {
 
 /// The `account/check-email` claim, in the shape the command decodes.
 pub(crate) fn check_email_claim(email: &str) -> serde_json::Value {
-    claim("Ask whether an address is registered.", email)
+    claim(
+        "Ask whether an address is registered.",
+        "xyz.tonk.command.check-email/email",
+        email,
+    )
 }
 /// The `account/register` claim.
 #[cfg(test)]
 pub(crate) fn register_claim(email: &str) -> serde_json::Value {
-    let mut claim = claim("Register an account for this address.", email);
-    // The marker is what makes this a REGISTRATION and not a lookup.
-    // Both carry `{this, email}`, and decode does not consider concept
-    // identity — so without it every keystroke's `check-email` also
-    // decoded as `account/register`, and a passkey prompt appeared
-    // while the user was still typing.
-    claim["claims"][0]["application"]["predicate"]["concept"]["with"]["marker"] = serde_json::json!({
-        "the": "dom.event.current-target.dataset/register-account",
-        "as": "Entity"
-    });
-    claim["claims"][0]["application"]["parameters"]["marker"] =
-        serde_json::json!(tonk_schema::command::RegisterAccount::MARKER);
-    claim
+    claim(
+        "Register an account for this address.",
+        "xyz.tonk.command.register-account/email",
+        email,
+    )
 }
 
-/// The two commands read one field from the same read-path. A distinct
-/// description mints a distinct command entity, but that alone does not
-/// keep them apart at decode — see [`register_claim`].
-fn claim(description: &str, email: &str) -> serde_json::Value {
+/// One field, but under the asking command's own attribute — which is
+/// what keeps a lookup and a registration apart.
+///
+/// They were once the same shape `{this, email}` reading one shared DOM
+/// path, and decode does not consider concept identity, so every
+/// keystroke's `check-email` also decoded as `account/register` and a
+/// passkey prompt appeared while the user was still typing. A marker
+/// attribute patched that. Separate namespaces make the shapes disjoint,
+/// so there is nothing left to patch.
+fn claim(description: &str, attribute: &str, email: &str) -> serde_json::Value {
     serde_json::json!({
         "claims": [{
             "op": "assert",
@@ -1200,10 +1202,7 @@ fn claim(description: &str, email: &str) -> serde_json::Value {
                     "concept": {
                         "description": description,
                         "with": {
-                            "email": {
-                                "the": "dom.event.current-target.elements.email/value",
-                                "as": "Text"
-                            }
+                            "email": { "the": attribute, "as": "Text" }
                         }
                     }
                 },
@@ -2088,12 +2087,11 @@ fn profile_rename_claim(name: &str) -> serde_json::Value {
                     "concept": {
                         "description": "Rename the signed-in member (set their display name).",
                         "with": {
-                            "name":   { "the": "dom.event.current-target/value", "as": "Text" },
-                            "marker": { "the": "dom.event.current-target.dataset/rename", "as": "Entity" }
+                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
                         }
                     }
                 },
-                "parameters": { "name": name, "marker": "tonk:profile" }
+                "parameters": { "name": name }
             }
         }]
     })
@@ -2119,21 +2117,16 @@ pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
                     "concept": {
                         "description": "Attach a sync remote to a space, and share it.",
                         "with": {
-                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "time": { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
-                            "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" },
-                            "marker": {
-                                "the": "dom.event.current-target.dataset/enable-sync",
-                                "as": "Entity"
-                            }
+                            "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" }
                         }
                     }
                 },
                 "parameters": {
                     "time": time,
                     "space": space,
-                    "share": "tonk:share",
-                    "marker": "tonk:enable-sync"
+                    "share": "tonk:share"
                 }
             }
         }]
@@ -2574,33 +2567,43 @@ mod tests {
 
     /// A lookup must not also decode as a registration.
     ///
-    /// `CheckEmail` and `RegisterAccount` are both `{this, email}`, and
-    /// decode does not consider concept identity — so before the marker,
-    /// every keystroke's lookup ALSO fired the register handler, and a
-    /// passkey prompt appeared while the user was still typing.
+    /// The two were both `{this, email}` reading one shared DOM path, and
+    /// decode does not consider concept identity — so every keystroke's
+    /// lookup ALSO fired the register handler, and a passkey prompt
+    /// appeared while the user was still typing. A marker attribute
+    /// patched that. What keeps them apart now is that each names its own
+    /// attribute, so the shapes are disjoint by construction and neither
+    /// claim carries a marker at all.
     #[dialog_common::test]
-    fn it_marks_a_registration_so_a_lookup_cannot_be_mistaken_for_one() {
+    fn a_lookup_cannot_be_mistaken_for_a_registration() {
         let lookup = check_email_claim("someone@example.com");
         let register = register_claim("someone@example.com");
 
-        let marker_of = |claim: &serde_json::Value| {
-            claim["claims"][0]["application"]["parameters"]["marker"].clone()
+        let attribute = |claim: &serde_json::Value| {
+            claim["claims"][0]["application"]["predicate"]["concept"]["with"]["email"]["the"]
+                .as_str()
+                .expect("the claim declares its email attribute")
+                .to_string()
         };
-        assert!(
-            marker_of(&lookup).is_null(),
-            "a lookup carries no marker: {lookup}",
-        );
+        assert_eq!(attribute(&lookup), "xyz.tonk.command.check-email/email");
         assert_eq!(
-            marker_of(&register),
-            serde_json::json!(tonk_schema::command::RegisterAccount::MARKER),
-            "a registration is the only one that does",
+            attribute(&register),
+            "xyz.tonk.command.register-account/email"
+        );
+        assert_ne!(
+            attribute(&lookup),
+            attribute(&register),
+            "one shared attribute is what made every keystroke a registration",
         );
 
-        // The declared field must be there too, or the marker never
-        // becomes a fact the handler can match on.
-        let declared =
-            &register["claims"][0]["application"]["predicate"]["concept"]["with"]["marker"];
-        assert_eq!(declared["as"], "Entity", "a `:`-bearing value is an entity");
+        for claim in [&lookup, &register] {
+            assert!(
+                claim["claims"][0]["application"]["parameters"]
+                    .get("marker")
+                    .is_none(),
+                "the namespace does the separating; no marker is needed: {claim}",
+            );
+        }
     }
 
     use super::*;
@@ -2661,19 +2664,21 @@ mod tests {
         );
     }
 
-    /// Both claims name the read-path the commands decode, and differ
-    /// so each mints its own command entity.
+    /// Each claim names the attribute its own command decodes, and the
+    /// two are different attributes — which is what keeps a lookup from
+    /// also decoding as a registration.
     #[dialog_common::test]
     fn it_builds_claims_the_commands_decode() {
         let check = check_email_claim("jsmith@example.com").to_string();
-        assert!(check.contains("dom.event.current-target.elements.email/value"));
+        assert!(check.contains("xyz.tonk.command.check-email/email"));
         assert!(check.contains("jsmith@example.com"));
 
         let register = register_claim("jsmith@example.com").to_string();
-        assert!(register.contains("dom.event.current-target.elements.email/value"));
-        assert_ne!(
-            check, register,
-            "the descriptions differ, so the two commands are distinct transients",
+        assert!(register.contains("xyz.tonk.command.register-account/email"));
+        assert!(
+            !register.contains("xyz.tonk.command.check-email/email"),
+            "a registration must not carry the lookup's attribute",
         );
+        assert_ne!(check, register, "the two commands are distinct transients",);
     }
 }

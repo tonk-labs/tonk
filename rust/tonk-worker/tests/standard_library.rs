@@ -30,6 +30,15 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// The component libraries. Each is seeded the same way and lowers the
+/// same way, so each belongs in the lowering gate — until now only
+/// `core.yaml` and `profile.yaml` were covered, which meant a broken
+/// `table.yaml` reached the seed before anything complained.
+const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
+const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
+
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
@@ -650,4 +659,587 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
             "mobile Hub/join CSS must contain `{contract}`"
         );
     }
+}
+
+/// Lower a component library the way the seed reaches it: on top of
+/// the standard library, whose `view` / `event` / `command` concepts it
+/// references. `analyze_local` resolves names within one document, so
+/// the concatenation is what stands in for "core is already seeded".
+fn assert_component_library_lowers(label: &str, document: &str) {
+    assert_library_lowers(label, &format!("{STANDARD_LIBRARY}\n{document}"));
+}
+
+#[dialog_common::test]
+fn it_lowers_the_table_library() {
+    assert_component_library_lowers("table library (table.yaml)", TABLE_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_notebook_library() {
+    assert_component_library_lowers("notebook library (notebook.yaml)", NOTEBOOK_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_prose_library() {
+    assert_component_library_lowers("prose library (prose.yaml)", PROSE_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_issue_library() {
+    assert_component_library_lowers("issue library (issue.yaml)", ISSUE_LIBRARY);
+}
+
+/// Every `on:<name>` binding in a library names a declaration the same
+/// library defines.
+///
+/// The dangling case is exactly the one the design exists to catch: a
+/// binding whose declaration does not resolve produces no listener and
+/// no diagnostic, so the element is simply inert. Cheap to check by
+/// scanning, and it fails at build time rather than on a click.
+#[dialog_common::test]
+fn every_on_binding_names_a_declared_event() {
+    for (label, document) in [
+        ("core.yaml", STANDARD_LIBRARY),
+        ("profile.yaml", PROFILE_LIBRARY),
+        ("table.yaml", TABLE_LIBRARY),
+        ("notebook.yaml", NOTEBOOK_LIBRARY),
+        ("prose.yaml", PROSE_LIBRARY),
+        ("issue.yaml", ISSUE_LIBRARY),
+    ] {
+        // Declarations are anchored `event!: &on/<name>`; every library
+        // resolves against the core one too, which is always seeded.
+        let mut declared: Vec<String> = collect_anchors(STANDARD_LIBRARY);
+        declared.extend(collect_anchors(document));
+
+        for attribute in collect_on_attributes(document) {
+            let event_name = tonk_template::event::event_name_for_attribute(&attribute)
+                .unwrap_or_else(|| panic!("{label}: `{attribute}` is not a usable binding name"));
+            assert!(
+                declared.contains(&event_name),
+                "{label}: `{attribute}` names `{event_name}`, which no `event!:` declares",
+            );
+        }
+    }
+}
+
+/// `event!: &on/<name>` anchors declared in a document.
+fn collect_anchors(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("event!: &")?;
+            Some(rest.split_whitespace().next()?.to_string())
+        })
+        .collect()
+}
+
+/// `on:<name>=` attribute names appearing in any template.
+fn collect_on_attributes(document: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (index, _) in document.match_indices("on:") {
+        // Only an attribute position counts — preceded by whitespace.
+        if index > 0 && !document.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &document[index..];
+        let Some(end) = rest.find('=') else { continue };
+        let name = &rest[..end];
+        if !name.contains(char::is_whitespace) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Every `on:<name>=<command>` binding in a library resolves to a
+/// declaration that can fill the command's required fields.
+///
+/// This is the check the whole `event!:` design exists to make
+/// possible, run against the real libraries: a required field with no
+/// source posts a command the rule's premise cannot match, so the
+/// interaction silently does nothing. Before, the only way to find that
+/// was to click the button in a browser.
+#[dialog_common::test]
+fn every_binding_can_fill_its_command() {
+    let libraries = [
+        ("core.yaml", STANDARD_LIBRARY),
+        ("profile.yaml", PROFILE_LIBRARY),
+        ("table.yaml", TABLE_LIBRARY),
+        ("notebook.yaml", NOTEBOOK_LIBRARY),
+        ("prose.yaml", PROSE_LIBRARY),
+        ("issue.yaml", ISSUE_LIBRARY),
+    ];
+
+    // Declarations and commands resolve across the seed, so index them
+    // all before checking any binding.
+    let mut events = std::collections::BTreeMap::new();
+    let mut commands = std::collections::BTreeMap::new();
+    for (_, document) in libraries {
+        events.extend(parse_event_declarations(document));
+        commands.extend(parse_command_fields(document));
+    }
+    assert!(
+        !events.is_empty() && !commands.is_empty(),
+        "the scan found nothing — it has drifted from the library's shape"
+    );
+
+    let mut checked = 0usize;
+    for (label, document) in libraries {
+        for (attribute, command_name) in parse_bindings(document) {
+            let event_name = tonk_template::event::event_name_for_attribute(&attribute)
+                .unwrap_or_else(|| panic!("{label}: `{attribute}` is not a usable binding name"));
+            let event = events
+                .get(&event_name)
+                .unwrap_or_else(|| panic!("{label}: no `event!:` declares `{event_name}`"));
+            let (required, optional) = commands.get(&command_name).unwrap_or_else(|| {
+                panic!("{label}: `{attribute}={command_name}` names no command")
+            });
+
+            let mismatch = tonk_template::event::check(event, required, optional);
+            assert!(
+                mismatch.is_empty(),
+                "{label}: `{attribute}={command_name}` — unfilled {:?}, unknown {:?}",
+                mismatch
+                    .unfilled
+                    .iter()
+                    .map(|u| &u.field)
+                    .collect::<Vec<_>>(),
+                mismatch
+                    .unknown
+                    .iter()
+                    .map(|u| &u.field)
+                    .collect::<Vec<_>>(),
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no `on:` bindings were checked");
+}
+
+/// `event!: &on/<name>` blocks, as name -> descriptor.
+fn parse_event_declarations(
+    document: &str,
+) -> std::collections::BTreeMap<String, tonk_template::event::EventDescriptor> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("event!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let (mut event_type, mut prevent, mut stop) = (None, false, false);
+        let mut sources: Vec<(String, String)> = Vec::new();
+        let mut in_where = false;
+        // Peek; never consume the terminator. `for body in lines.by_ref()`
+        // eats the line it breaks on, so a declaration ending on the NEXT
+        // `event!:` header swallows it and that declaration is never seen.
+        // A blank line between them used to terminate first, which hid the
+        // bug for exactly as long as every pair had one.
+        while let Some(body) = lines.peek().copied() {
+            let trimmed = body.trim();
+            // Blank lines occur inside `description: |` blocks and do not
+            // end a declaration.
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.next();
+                continue;
+            }
+            if !body.starts_with("  ") {
+                break;
+            }
+            lines.next();
+            if trimmed == "where:" {
+                in_where = true;
+                continue;
+            }
+            let Some((key, value)) = trimmed.split_once(':') else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"').to_string();
+            if in_where && body.starts_with("    ") {
+                sources.push((key.trim().to_string(), format!("\"{value}\"")));
+                continue;
+            }
+            in_where = false;
+            match key.trim() {
+                "type" => event_type = Some(value),
+                "prevent-default" => prevent = value == "true",
+                "stop-propagation" => stop = value == "true",
+                _ => {}
+            }
+        }
+        // The scan re-quotes every source so `parse_source` sees the
+        // form YAML would have delivered; a `.path` must survive that.
+        let sources = sources.into_iter().map(|(field, raw)| {
+            let inner = raw.trim_matches('"').to_string();
+            (field, inner)
+        });
+        let descriptor =
+            tonk_template::event::event_descriptor(event_type.as_deref(), prevent, stop, sources)
+                .unwrap_or_else(|e| panic!("`{name}` is not a usable declaration: {e}"));
+        out.insert(name, descriptor);
+    }
+    out
+}
+
+/// `command!: &<name>` blocks, as name -> (required, optional) fields.
+#[allow(clippy::type_complexity)]
+fn parse_command_fields(
+    document: &str,
+) -> std::collections::BTreeMap<
+    String,
+    (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ),
+> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("command!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let (mut required, mut optional) = (
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        );
+        // A command with a `this:` is bound by that URI in templates, not
+        // by its YAML anchor (`<tonk-page on:invite=tonk:invite>`), so it
+        // is indexed under both.
+        let mut this: Option<String> = None;
+        let mut section: Option<bool> = None;
+        // Peek, and skip blanks — see `parse_event_declarations`. Ending a
+        // declaration on the first blank line truncated the field list of
+        // any command whose field carries a multi-paragraph description,
+        // so every check built on this quietly measured less than it read.
+        while let Some(body) = lines.peek().copied() {
+            let trimmed = body.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.next();
+                continue;
+            }
+            if !body.starts_with("  ") {
+                break;
+            }
+            lines.next();
+            if let Some(uri) = trimmed.strip_prefix("this: ") {
+                this = Some(uri.trim().to_string());
+                continue;
+            }
+            match trimmed {
+                "with:" => section = Some(true),
+                "maybe:" => section = Some(false),
+                _ => {
+                    // A field name is exactly four spaces in and ends
+                    // with `:` — deeper lines are its own body.
+                    if let Some(is_required) = section
+                        && body.starts_with("    ")
+                        && !body.starts_with("      ")
+                        && let Some(field) = trimmed.strip_suffix(':')
+                    {
+                        if is_required {
+                            required.insert(field.to_string());
+                        } else {
+                            optional.insert(field.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(uri) = this {
+            out.insert(uri, (required.clone(), optional.clone()));
+        }
+        out.insert(name, (required, optional));
+    }
+    out
+}
+
+/// `on:<name>=<command>` pairs appearing in any template.
+fn parse_bindings(document: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (index, _) in document.match_indices("on:") {
+        if index > 0 && !document.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &document[index..];
+        let Some(end) = rest.find('=') else { continue };
+        let attribute = &rest[..end];
+        if attribute.contains(char::is_whitespace) {
+            continue;
+        }
+        let value: String = rest[end + 1..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '"')
+            .collect();
+        if !value.is_empty() {
+            out.push((attribute.to_string(), value));
+        }
+    }
+    out
+}
+
+/// An `event!:` declaration lowers with no library seeded at all.
+///
+/// This is what makes `event` a built-in rather than a library concept:
+/// like `command!:` and `rule!:`, a declaration is schema an author
+/// writes, so it has to resolve on a bare branch. Declared in the
+/// standard library instead, it would work only where that library had
+/// been seeded — and a lean repo, the profile meta-branch, or a `tonk
+/// eval` fixture would all fail to parse one.
+#[dialog_common::test]
+fn an_event_declaration_lowers_without_the_library() {
+    let document = r#"event!: &on/tap
+  type: "click"
+  prevent-default: true
+  where:
+    subject: "{this}"
+    time: ".timeStamp"
+
+command!: &bump
+  with:
+    subject:
+      description: The thing being bumped
+      the: io.gozala.bump/subject
+      as: entity
+      cardinality: one
+  maybe:
+    time:
+      description: A per-event nonce
+      the: io.gozala.bump/time
+      as: float
+      cardinality: one
+"#;
+    assert_library_lowers("a bare `event!:` document", document);
+}
+
+/// The optional side-effect flags really are optional: a declaration
+/// that suppresses neither must lower. Every declaration in the
+/// library omits them, so a regression here would break all of them at
+/// once.
+#[dialog_common::test]
+fn an_event_declaration_may_omit_the_side_effect_flags() {
+    let document = r#"event!: &on/plain
+  type: "click"
+  where:
+    subject: "{this}"
+"#;
+    assert_library_lowers("an `event!:` with no flags", document);
+}
+
+/// The wire predicate `tonk-template` builds matches the built-in.
+///
+/// Two hand-maintained copies of one shape: the built-in descriptor is
+/// the source of truth and the query builder mirrors it, because that
+/// crate emits JSON rather than descriptor types. Drift would show up
+/// as an event declaration that resolves but reads back empty, which is
+/// the silent class of failure again — so it is asserted rather than
+/// trusted to a comment.
+#[dialog_common::test]
+fn the_event_query_predicate_matches_the_builtin() {
+    let builtin = tonk_schema::builtin::lookup_concept("event").expect("`event` is a built-in");
+    // `.concept()` unwraps the durability tag; the wire predicate has
+    // no such wrapper.
+    let serialized =
+        serde_json::to_value(builtin.descriptor.concept()).expect("descriptor serializes");
+    let builtin_with = serialized
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the built-in has a `with` map");
+
+    let predicate = tonk_template::resolve::event_predicate();
+    let query_with = predicate
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the predicate has a `with` map");
+
+    // The query pins only the required fields — the optional flags are
+    // read separately, since pinning them would make a declaration that
+    // omits them match nothing.
+    for field in query_with.keys() {
+        let ours = &query_with[field];
+        let theirs = builtin_with
+            .get(field)
+            .unwrap_or_else(|| panic!("the built-in has no `{field}` field"));
+        assert_eq!(
+            ours.get("the"),
+            theirs.get("the"),
+            "`{field}`: the query and the built-in disagree on `the`",
+        );
+        assert_eq!(
+            ours.get("cardinality"),
+            theirs.get("cardinality"),
+            "`{field}`: the query and the built-in disagree on cardinality",
+        );
+    }
+    assert!(
+        query_with.contains_key("type") && query_with.contains_key("where"),
+        "the query must pin both required fields",
+    );
+}
+
+/// A command with a Rust handler must match on attributes its notation
+/// declaration actually carries.
+///
+/// The two halves are written in different files and nothing but this
+/// connects them: the YAML `command!:` declares what a transient carries,
+/// and the Rust concept declares what the handler decodes. When they
+/// drift the transient still commits, the handler never runs, and the UI
+/// looks like it worked. `notebook.yaml` says it in its own words — "a
+/// field the struct requires but the command does not declare is simply
+/// absent from the descriptor, so the decode fails and the binding falls
+/// through in silence".
+///
+/// That is not hypothetical: moving `notebook/create` into its own
+/// namespace in the YAML without moving `CreateNotebook` with it silently
+/// broke notebook creation on any freshly seeded branch, and nothing
+/// failed.
+///
+/// The invariant is containment, not equality. A concept may deliberately
+/// match on FEWER attributes than the command declares — `CreateSpace` is
+/// matched name-only so a frozen older descriptor still decodes it, and
+/// reads the optional remote from the raw facts. What is never sound is
+/// the other direction: an attribute the handler requires that no
+/// declaration produces.
+#[dialog_common::test]
+fn every_handled_command_matches_attributes_its_declaration_carries() {
+    use dialog_reactor::Decode as _;
+
+    let mut declared = std::collections::BTreeMap::new();
+    for document in [
+        STANDARD_LIBRARY,
+        PROFILE_LIBRARY,
+        TABLE_LIBRARY,
+        NOTEBOOK_LIBRARY,
+        PROSE_LIBRARY,
+        ISSUE_LIBRARY,
+    ] {
+        for (name, attributes) in parse_command_attributes(document) {
+            declared
+                .entry(name)
+                .or_insert_with(std::collections::BTreeSet::new)
+                .extend(attributes);
+        }
+    }
+
+    // Every notation command the worker decodes in typed Rust. A command
+    // consumed by a `rule!:` has no Rust concept and is not listed.
+    //
+    // `tonk/rename-repository` is deliberately absent, and the reason is
+    // worth stating: the name belongs to TWO different commands. The one
+    // `core.yaml` declares carries `{subject, name}` and is consumed by a
+    // space-side `rule!:`. `tonk_schema::command::RenameRepository`
+    // carries `{space, name}` and is dispatched from the profile branch by
+    // the FAB, which inlines its own descriptor because the space-side
+    // rule cannot consume a claim made on the profile branch. They share a
+    // notation name and nothing else, so pairing them here would compare
+    // two unrelated things. The FAB's claim is pinned against the struct
+    // in `fab_drift.rs` instead, which is where that pairing lives.
+    let handled: Vec<(&str, Vec<String>)> = vec![
+        (
+            "space/create",
+            tonk_schema::command::CreateSpace::trigger_attributes(),
+        ),
+        (
+            "space/enable-sync",
+            tonk_schema::command::CreateSpace::trigger_attributes(),
+        ),
+        (
+            "space/remove",
+            tonk_schema::command::RemoveSpace::trigger_attributes(),
+        ),
+        (
+            "tonk/invite",
+            tonk_schema::command::Invite::trigger_attributes(),
+        ),
+        (
+            "tonk/pause-sync",
+            tonk_schema::command::PauseSync::trigger_attributes(),
+        ),
+        (
+            "profile/rename",
+            tonk_schema::command::ProfileRename::trigger_attributes(),
+        ),
+        (
+            "member/expel",
+            tonk_schema::command::ExpelMember::trigger_attributes(),
+        ),
+        (
+            "tonk/join",
+            tonk_schema::command::Join::trigger_attributes(),
+        ),
+        (
+            "tonk/load",
+            tonk_schema::command::Load::trigger_attributes(),
+        ),
+        (
+            "notebook/create",
+            tonk_schema::command::CreateNotebook::trigger_attributes(),
+        ),
+    ];
+
+    for (name, required) in handled {
+        let carries = declared
+            .get(name)
+            .unwrap_or_else(|| panic!("no `command!: &{name}` in any shipped library"));
+        let missing: Vec<&String> = required
+            .iter()
+            .filter(|attribute| !carries.contains(*attribute))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "`{name}`: the handler matches on {missing:?}, which its notation \
+             declaration does not carry — the transient would commit and the \
+             handler would never run. Declared: {carries:?}",
+        );
+    }
+}
+
+/// Every `the:` a `command!:` declaration names, keyed by command name.
+fn parse_command_attributes(
+    document: &str,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("command!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let mut attributes = std::collections::BTreeSet::new();
+        // Peek, and skip blanks — see `parse_event_declarations`.
+        while let Some(body) = lines.peek().copied() {
+            // A blank line does not end the declaration: `description: |`
+            // block scalars contain them, and treating one as the end
+            // silently truncated the scan — which is how this gate first
+            // reported that `tonk/invite` declared no attributes at all.
+            if body.trim().is_empty() {
+                lines.next();
+                continue;
+            }
+            if !body.starts_with("  ") {
+                break;
+            }
+            lines.next();
+            // Exactly a field's own `the:`, six spaces in. Prose inside a
+            // block scalar is indented deeper and must not be read as a
+            // declaration however it happens to begin.
+            if let Some(attribute) = body.strip_prefix("      the: ") {
+                attributes.insert(attribute.trim().to_string());
+            }
+        }
+        out.insert(name, attributes);
+    }
+    out
 }

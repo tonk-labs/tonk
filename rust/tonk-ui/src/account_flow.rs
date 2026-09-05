@@ -2543,7 +2543,7 @@ mod tests {
                             "description": "Ask whether an address is registered.",
                             "with": {
                                 "email": {
-                                    "the": "dom.event.current-target.elements.email/value",
+                                    "the": "xyz.tonk.command.check-email/email",
                                     "as": "Text"
                                 }
                             }
@@ -6227,8 +6227,8 @@ mod tests {
                             "concept": {
                                 "description": "A request to create a new space from the wizard form.",
                                 "with": {
-                                    "name":     { "the": "dom.event.current-target.elements.name/value", "as": "Text" },
-                                    "remote":   { "the": "dom.event.current-target.elements.remote/value", "as": "Text" }
+                                    "name":   { "the": "xyz.tonk.command.create-space/name", "as": "Text" },
+                                    "remote": { "the": "xyz.tonk.command.create-space/remote", "as": "Text" }
                                 }
                             }
                         },

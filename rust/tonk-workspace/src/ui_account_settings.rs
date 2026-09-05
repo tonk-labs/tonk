@@ -671,9 +671,9 @@ fn add_passkey(this: &HtmlElement) {
         &claim(
             "Seal the account under another passkey.",
             serde_json::json!({
-                "marker": { "the": "dom.event.current-target.dataset/add-passkey", "as": "Entity" }
+                "account": { "the": "xyz.tonk.command.add-passkey/account", "as": "Entity" }
             }),
-            serde_json::json!({ "marker": "tonk:add-passkey" }),
+            serde_json::json!({ "account": "tonk:add-passkey" }),
         ),
     );
 }

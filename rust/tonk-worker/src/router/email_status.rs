@@ -79,38 +79,40 @@ pub(crate) fn state_for_status(status: u16) -> &'static str {
 /// Runs `account/check-email`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct CheckEmailHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::CheckEmail,
+        tonk_schema::command::legacy::CheckEmail,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl CheckEmailHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::CheckEmail::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
-}
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_email(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use crate::reactor::Decode as _;
-    facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::CheckEmail::decode(entity, facts))
-        .map(|command| command.email.0)
-        .filter(|email| !email.trim().is_empty())
+    /// The address to look up, or `None` when these facts are not a
+    /// lookup (or carry a blank address).
+    fn email(&self, facts: &crate::reactor::EntityFacts) -> Option<String> {
+        self.command
+            .decode(facts)
+            .map(|command| command.email.0)
+            .filter(|email| !email.trim().is_empty())
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckEmailHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_email(facts).is_some()
+        self.email(facts).is_some()
     }
 
     fn run(
@@ -118,7 +120,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckEmailHan
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        let email = decode_email(facts);
+        let email = self.email(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -264,38 +266,40 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
 /// dialog the user might never finish.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct RegisterAccountHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::RegisterAccount,
+        tonk_schema::command::legacy::RegisterAccount,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl RegisterAccountHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::RegisterAccount::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
-}
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_registration(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use crate::reactor::Decode as _;
-    facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::RegisterAccount::decode(entity, facts))
-        .map(|command| command.email.0)
-        .filter(|email| split_address(email).is_some())
+    /// The address to register, or `None` when these facts are not a
+    /// registration (or carry an unparseable address).
+    fn email(&self, facts: &crate::reactor::EntityFacts) -> Option<String> {
+        self.command
+            .decode(facts)
+            .map(|command| command.email.0)
+            .filter(|email| split_address(email).is_some())
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccountHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_registration(facts).is_some()
+        self.email(facts).is_some()
     }
 
     fn run(
@@ -305,7 +309,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccou
     ) -> crate::reactor::RunFuture {
         use tonk_common::log;
 
-        let email = decode_registration(facts);
+        let email = self.email(facts);
         let env = env.clone();
 
         Box::pin(async move {

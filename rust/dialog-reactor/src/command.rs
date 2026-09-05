@@ -124,6 +124,108 @@ where
     }
 }
 
+/// A command's decode surface: the shape it has **now**, plus one
+/// deprecated predecessor that converts into it.
+///
+/// A command is matched structurally — the set of attribute names a
+/// transient carries is its whole identity. That makes changing a
+/// command's shape a compatibility problem: a branch seeded before the
+/// change still asserts the old attributes, and a handler keyed on the
+/// new ones stops firing for it.
+///
+/// This is the seam that makes such a change survivable without the old
+/// shape becoming permanent. A handler declares
+/// `Migrated<Current, Legacy>`; the registry indexes it under the union
+/// of both attribute sets, so either shape reaches it, and
+/// [`decode`](Self::decode) hands the handler a `Current` either way —
+/// the legacy shape arriving through `Legacy: Into<Current>`.
+///
+/// The handler is therefore written against `Current` only. Retiring the
+/// legacy shape is deleting its concept, its `From` impl, and the second
+/// type parameter here: no handler body changes.
+///
+/// `Current` is tried first, so a transient that satisfies both shapes
+/// (one carrying every attribute of each) decodes as the current one.
+///
+/// ```no_run
+/// # use dialog_reactor::Migrated;
+/// # use dialog_artifacts::Entity;
+/// # use dialog_query::{Attribute, Concept};
+/// # #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// # #[domain("xyz.example.rename")] pub struct Name(pub String);
+/// # #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// # #[domain("dom.event.current-target")] pub struct Value(pub String);
+/// # #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// # pub struct Rename { pub this: Entity, pub name: Name }
+/// # #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// # pub struct LegacyRename { pub this: Entity, pub value: Value }
+/// impl From<LegacyRename> for Rename {
+///     fn from(old: LegacyRename) -> Self {
+///         Self { this: old.this, name: Name(old.value.0) }
+///     }
+/// }
+///
+/// let command: Migrated<Rename, LegacyRename> = Migrated::new();
+/// // Indexed under both `xyz.example.rename/name` and
+/// // `dom.event.current-target/value`.
+/// assert_eq!(command.trigger_attributes().len(), 2);
+/// ```
+pub struct Migrated<Current, Legacy> {
+    attributes: Vec<String>,
+    _shapes: std::marker::PhantomData<fn() -> (Current, Legacy)>,
+}
+
+impl<Current, Legacy> Migrated<Current, Legacy>
+where
+    Current: Decode,
+    Legacy: Decode + Into<Current>,
+{
+    /// Cache the union of both shapes' trigger attributes, so the
+    /// registry indexes the handler under everything either shape can
+    /// assert.
+    pub fn new() -> Self {
+        let mut attributes = Current::trigger_attributes();
+        for attribute in Legacy::trigger_attributes() {
+            if !attributes.contains(&attribute) {
+                attributes.push(attribute);
+            }
+        }
+        Self {
+            attributes,
+            _shapes: std::marker::PhantomData,
+        }
+    }
+
+    /// The attribute names that make a transient a candidate: every one
+    /// either shape carries.
+    pub fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    /// Decode one transient entity's facts as `Current`, converting a
+    /// legacy shape when that is what arrived. `None` when the facts
+    /// satisfy neither.
+    pub fn decode(&self, facts: &EntityFacts) -> Option<Current> {
+        let this = facts_entity(facts)?;
+        Current::decode(this.clone(), facts).or_else(|| Legacy::decode(this, facts).map(Into::into))
+    }
+
+    /// Whether these facts decode as either shape.
+    pub fn matches(&self, facts: &EntityFacts) -> bool {
+        self.decode(facts).is_some()
+    }
+}
+
+impl<Current, Legacy> Default for Migrated<Current, Legacy>
+where
+    Current: Decode,
+    Legacy: Decode + Into<Current>,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A `'static` boxed future for one command's execution, `Send` only
 /// off wasm — matches the reactor's
 /// [`ConditionalSync`](dialog_common::ConditionalSync) convention so a
@@ -250,6 +352,75 @@ where
     }
 }
 
+/// A registry entry for a command whose shape changed: runs the
+/// [`Provider<Current>`](dialog_capability::Provider) for either the
+/// current shape or the deprecated predecessor that converts into it.
+///
+/// The [`TypedCommand`] sibling for [`Migrated`]. The provider is
+/// implemented for `Current` alone — `Legacy` reaches it through
+/// `Into<Current>`, so nothing downstream of decode knows the old shape
+/// exists, and retiring it touches only the registration.
+pub struct MigratedCommand<Current, Legacy, Env> {
+    command: Migrated<Current, Legacy>,
+    _env: std::marker::PhantomData<fn() -> Env>,
+}
+
+impl<Current, Legacy, Env> MigratedCommand<Current, Legacy, Env>
+where
+    Current: Decode + Command<Input = Current> + 'static,
+    Legacy: Decode + Into<Current> + 'static,
+    Env: Provider<Current>,
+{
+    /// Register `Current`, also accepting `Legacy` on its behalf. The
+    /// `Env: Provider<Current>` bound is the same compile-time
+    /// capability gate [`TypedCommand::new`] applies — the legacy shape
+    /// grants no capability of its own.
+    pub fn new() -> Self {
+        Self {
+            command: Migrated::new(),
+            _env: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<Current, Legacy, Env> Default for MigratedCommand<Current, Legacy, Env>
+where
+    Current: Decode + Command<Input = Current> + 'static,
+    Legacy: Decode + Into<Current> + 'static,
+    Env: Provider<Current>,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Current, Legacy, Env> CommandHandler<Env> for MigratedCommand<Current, Legacy, Env>
+where
+    Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+    Legacy: Decode + Into<Current> + ConditionalSync + 'static,
+    Env: Provider<Current> + Clone + ConditionalSync + 'static,
+{
+    fn trigger_attributes(&self) -> &[String] {
+        self.command.trigger_attributes()
+    }
+
+    fn matches(&self, facts: &EntityFacts) -> bool {
+        self.command.matches(facts)
+    }
+
+    fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture {
+        // Decode (and convert) synchronously, as `TypedCommand` does —
+        // the caller still holds the lock.
+        let decoded = self.command.decode(facts);
+        let env = env.clone();
+        Box::pin(async move {
+            if let Some(command) = decoded {
+                env.execute(command).await;
+            }
+        })
+    }
+}
+
 /// Registry of command handlers, with a reverse index from trigger
 /// attribute name to the handlers it can fire. Mirrors the
 /// `dialog.effect/on` index the induce loop walks, but over
@@ -295,6 +466,20 @@ impl<Env> CommandRegistry<Env> {
         Env: Provider<C> + Clone + ConditionalSync + 'static,
     {
         self.register(Box::new(TypedCommand::<C, Env>::new()));
+        self
+    }
+
+    /// Register the command type `Current`, also accepting the
+    /// deprecated `Legacy` shape on its behalf and converting it. The
+    /// [`Self::command`] counterpart for a command whose shape changed;
+    /// see [`Migrated`]. Chainable.
+    pub fn migrated<Current, Legacy>(mut self) -> Self
+    where
+        Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+        Legacy: Decode + Into<Current> + ConditionalSync + 'static,
+        Env: Provider<Current> + Clone + ConditionalSync + 'static,
+    {
+        self.register(Box::new(MigratedCommand::<Current, Legacy, Env>::new()));
         self
     }
 
@@ -488,7 +673,7 @@ mod tests {
     /// fields off the matched concept.
     #[dialog_common::test]
     fn it_decodes_create_space_from_name_only_facts() {
-        use tonk_schema::command::CreateSpace;
+        use tonk_schema::command::{CreateSpace, legacy};
 
         let this = entity("did:key:zCreateSpace");
         let mut changes = Changes::new();
@@ -496,9 +681,13 @@ mod tests {
             .of(this.clone())
             .is("pictures".to_string())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = CreateSpace::decode(this, &facts)
+        // Through `Migrated`, exactly as the handler decodes it: the
+        // attribute here is the DOM read path an older descriptor still
+        // asserts, and it must arrive as the current shape.
+        let decoded = Migrated::<CreateSpace, legacy::CreateSpace>::new()
+            .decode(&facts)
             .expect("CreateSpace must decode from name-only facts (older descriptor / blank form)");
         assert_eq!(decoded.name.0, "pictures");
     }
@@ -507,7 +696,7 @@ mod tests {
     /// transient carrying only `data-remove` (the subject DID).
     #[dialog_common::test]
     fn it_decodes_remove_space_from_a_data_remove_fact() {
-        use tonk_schema::command::RemoveSpace;
+        use tonk_schema::command::{RemoveSpace, legacy};
 
         let this = entity("did:key:zRemoveSpace");
         let subject = entity("did:key:zSpaceSubject");
@@ -516,9 +705,10 @@ mod tests {
             .of(this.clone())
             .is(subject.clone())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = RemoveSpace::decode(this, &facts)
+        let decoded = Migrated::<RemoveSpace, legacy::RemoveSpace>::new()
+            .decode(&facts)
             .expect("RemoveSpace must decode from a data-remove-only transient");
         assert_eq!(decoded.subject.0, subject);
     }
@@ -530,7 +720,7 @@ mod tests {
     /// DID decode from the transient's raw facts.
     #[dialog_common::test]
     fn it_decodes_rename_repository_naming_its_target_space() {
-        use tonk_schema::command::RenameRepository;
+        use tonk_schema::command::{RenameRepository, legacy};
 
         let this = entity("did:key:zRenameRepository");
         let target_space = entity("did:key:zTargetSpace");
@@ -547,9 +737,10 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:repository"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = RenameRepository::decode(this, &facts)
+        let decoded = Migrated::<RenameRepository, legacy::RenameRepository>::new()
+            .decode(&facts)
             .expect("RenameRepository must decode from its raw facts");
         assert_eq!(decoded.name.0, "Renamed");
         assert_eq!(
@@ -564,7 +755,7 @@ mod tests {
     /// would turn every banner rename into a space deletion.
     #[dialog_common::test]
     fn it_does_not_decode_a_rename_transient_as_remove_space() {
-        use tonk_schema::command::RemoveSpace;
+        use tonk_schema::command::{RemoveSpace, legacy};
 
         let mut changes = Changes::new();
         the!("dom.event.current-target.dataset/subject")
@@ -575,10 +766,10 @@ mod tests {
             .of(entity("did:key:zRename"))
             .is("new name".to_string())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            RemoveSpace::decode(this, &facts).is_none(),
+            !Migrated::<RemoveSpace, legacy::RemoveSpace>::new().matches(&facts),
             "a rename-shaped transient must not decode as RemoveSpace"
         );
     }
@@ -592,13 +783,19 @@ mod tests {
     /// decoded as BOTH commands and both handlers fired. Command decoding
     /// matches on which attributes are PRESENT, never their values, so a
     /// shared marker value (`tonk:repository` vs `tonk:profile`) never
-    /// disambiguated anything. The fix is a DISTINCT ATTRIBUTE per command
-    /// — `dataset/rename-repository` here — the same pattern
-    /// `remove::Remove` already uses (see
-    /// `it_does_not_decode_a_rename_transient_as_remove_space` above).
+    /// disambiguated anything. The fix was a DISTINCT ATTRIBUTE per
+    /// command — the marker `dataset/rename-repository` this transient
+    /// still carries.
+    ///
+    /// The current shapes need no marker: each command's fields live in
+    /// its own `xyz.tonk.command.<verb>` namespace, so the shapes are
+    /// disjoint by construction (`tonk-worker/tests/command_migration.rs`
+    /// pins that). What this test still pins is that the DEPRECATED
+    /// shapes stay disjoint too — a branch seeded before the migration is
+    /// exactly where this bug would come back.
     #[dialog_common::test]
     fn it_does_not_decode_a_repo_rename_as_a_profile_rename() {
-        use tonk_schema::command::{ProfileRename, RenameRepository};
+        use tonk_schema::command::{ProfileRename, RenameRepository, legacy};
 
         let this = entity("did:key:zRepoRename");
         let target_space = entity("did:key:zTargetSpace");
@@ -615,14 +812,14 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:repository"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            RenameRepository::decode(this.clone(), &facts).is_some(),
+            Migrated::<RenameRepository, legacy::RenameRepository>::new().matches(&facts),
             "a repo-rename transient must decode as RenameRepository"
         );
         assert!(
-            ProfileRename::decode(this, &facts).is_none(),
+            !Migrated::<ProfileRename, legacy::ProfileRename>::new().matches(&facts),
             "a repo-rename transient must NOT also decode as ProfileRename — \
              that is the bug: renaming a space was also renaming the profile"
         );
@@ -633,7 +830,7 @@ mod tests {
     /// `RenameRepository`, which requires `space` regardless.
     #[dialog_common::test]
     fn it_does_not_decode_a_profile_rename_as_a_repo_rename() {
-        use tonk_schema::command::{ProfileRename, RenameRepository};
+        use tonk_schema::command::{ProfileRename, RenameRepository, legacy};
 
         let this = entity("did:key:zProfileRename");
         let mut changes = Changes::new();
@@ -645,14 +842,14 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:profile"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            ProfileRename::decode(this.clone(), &facts).is_some(),
+            Migrated::<ProfileRename, legacy::ProfileRename>::new().matches(&facts),
             "a profile-rename transient must decode as ProfileRename"
         );
         assert!(
-            RenameRepository::decode(this, &facts).is_none(),
+            !Migrated::<RenameRepository, legacy::RenameRepository>::new().matches(&facts),
             "a profile-rename transient must not decode as RenameRepository \
              (it carries no `space`)"
         );
@@ -900,5 +1097,144 @@ mod tests {
                 _ => None,
             });
         assert_eq!(name.as_deref(), Some("pics"));
+    }
+
+    // --- migrated commands ----------------------------------------------
+    // A command's shape is the set of attributes it carries, so changing
+    // the shape breaks every branch seeded before the change. `Migrated`
+    // is how a handler accepts both without the old shape becoming
+    // permanent: the handler only ever sees `Current`.
+
+    /// The DOM-shaped predecessor of [`CreateRepo`]: same command, but
+    /// its field is the DOM read path the form used to post. Its own
+    /// module so the struct can be named `Value` — the attribute's last
+    /// segment IS the struct name, and the read path ends `name/value`.
+    pub mod form {
+        use dialog_query::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.name")]
+        pub struct Value(pub String);
+    }
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct LegacyCreateRepo {
+        pub this: Entity,
+        pub name: form::Value,
+    }
+
+    impl From<LegacyCreateRepo> for CreateRepo {
+        fn from(legacy: LegacyCreateRepo) -> Self {
+            Self {
+                this: legacy.this,
+                name: RepoName(legacy.name.0),
+            }
+        }
+    }
+
+    fn legacy_create_repo_transient(of: &str, name: &str) -> Changes {
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.elements.name/value")
+            .of(entity(of))
+            .is(name.to_string())
+            .assert(&mut changes);
+        changes
+    }
+
+    #[dialog_common::test]
+    fn a_migrated_command_is_indexed_under_both_shapes() {
+        let command: Migrated<CreateRepo, LegacyCreateRepo> = Migrated::new();
+        let attributes: Vec<&str> = command
+            .trigger_attributes()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert!(attributes.contains(&"xyz.tonk.command/repo-name"));
+        assert!(attributes.contains(&"dom.event.current-target.elements.name/value"));
+    }
+
+    #[dialog_common::test]
+    fn a_migrated_command_decodes_the_current_shape() {
+        let command: Migrated<CreateRepo, LegacyCreateRepo> = Migrated::new();
+        let (_, facts) = facts_for(create_repo_transient("did:key:zCmd", "pictures"));
+        let decoded = command.decode(&facts).expect("the current shape decodes");
+        assert_eq!(decoded.name.0, "pictures");
+    }
+
+    #[dialog_common::test]
+    fn a_migrated_command_converts_the_legacy_shape() {
+        // The whole point: a branch seeded before the change still posts
+        // the DOM-shaped transient, and the handler still receives a
+        // `CreateRepo` — it never learns the old shape exists.
+        let command: Migrated<CreateRepo, LegacyCreateRepo> = Migrated::new();
+        let (_, facts) = facts_for(legacy_create_repo_transient("did:key:zCmd", "pictures"));
+        let decoded = command.decode(&facts).expect("the legacy shape converts");
+        assert_eq!(decoded.name.0, "pictures");
+    }
+
+    #[dialog_common::test]
+    fn a_migrated_command_prefers_the_current_shape() {
+        // A transient carrying both (a page mid-migration, or a branch
+        // reseeded while a tab held the old descriptor) decodes as the
+        // current shape rather than round-tripping through the
+        // conversion.
+        let command: Migrated<CreateRepo, LegacyCreateRepo> = Migrated::new();
+        let mut changes = create_repo_transient("did:key:zCmd", "current");
+        the!("dom.event.current-target.elements.name/value")
+            .of(entity("did:key:zCmd"))
+            .is("legacy".to_string())
+            .assert(&mut changes);
+        let (_, facts) = facts_for(changes);
+        assert_eq!(command.decode(&facts).expect("decodes").name.0, "current");
+    }
+
+    #[dialog_common::test]
+    fn a_migrated_command_rejects_facts_matching_neither_shape() {
+        let command: Migrated<CreateRepo, LegacyCreateRepo> = Migrated::new();
+        let mut changes = Changes::new();
+        noise_fact(&mut changes, "did:key:zCmd");
+        let (_, facts) = facts_for(changes);
+        assert!(!command.matches(&facts));
+    }
+
+    #[dialog_common::test]
+    fn the_registry_fires_a_migrated_handler_for_either_shape() {
+        // End to end through the registry: both transients reach the
+        // same registered handler.
+        let mut registry = CommandRegistry::<()>::new();
+        registry.register(Box::new(MigratedStub {
+            command: Migrated::<CreateRepo, LegacyCreateRepo>::new(),
+        }));
+
+        for changes in [
+            create_repo_transient("did:key:zCmd", "pictures"),
+            legacy_create_repo_transient("did:key:zCmd", "pictures"),
+        ] {
+            assert_eq!(
+                registry.match_transients(&changes).len(),
+                1,
+                "both shapes reach the migrated handler"
+            );
+        }
+    }
+
+    /// A handler that only knows `Migrated` — the shape every real
+    /// command handler takes once migrated.
+    struct MigratedStub {
+        command: Migrated<CreateRepo, LegacyCreateRepo>,
+    }
+
+    impl CommandHandler<()> for MigratedStub {
+        fn trigger_attributes(&self) -> &[String] {
+            self.command.trigger_attributes()
+        }
+
+        fn matches(&self, facts: &EntityFacts) -> bool {
+            self.command.matches(facts)
+        }
+
+        fn run(&self, _facts: &EntityFacts, _env: &()) -> RunFuture {
+            Box::pin(async {})
+        }
     }
 }

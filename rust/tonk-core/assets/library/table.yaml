@@ -172,30 +172,106 @@ concept!: &table/row-height
     height: row/height
 
 # ---------------------------------------------------------------------------
-# Commands — one per element event; field URIs are command-specific
-# (`dom.event.detail/edit-cell` ↔ detail.editCell) so one event can
-# never read as another. `time` is a component-minted monotonic nonce
-# that keeps otherwise-identical creates distinct.
+# Commands — domain-shaped, each in its own namespace so one can never
+# read as another. `time` is a component-minted monotonic nonce that
+# keeps otherwise-identical creates distinct. How the element's payload
+# fills them is the `event!:` declarations below.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Events — how `<tonk-table>`'s CustomEvents fill the commands.
+#
+# Detail keys are spelled the way the element spells them. The old
+# `dom.event.detail/edit-cell` identifier kebab-cased then camel-cased
+# on the way to `detail.editCell`, so the wire name was never written
+# down; here it is verbatim and there is no translation to get wrong.
+#
+# The keys are prefixed (`sheet-name`, `rename-name`) only because two
+# commands reading the same key used to be structurally the same
+# concept. With each command's fields in its own namespace that
+# constraint is gone, so they are read here under domain names and the
+# element's payload can be simplified independently.
+# ---------------------------------------------------------------------------
+
+event!: &on/table-create-sheet
+  type: "createsheet"
+  where:
+    table: ".detail.sheetTable"
+    name: ".detail.sheetName"
+    order: ".detail.sheetOrder"
+    time: ".detail.time"
+
+event!: &on/table-rename-sheet
+  type: "renamesheet"
+  where:
+    sheet: ".detail.renameSheet"
+    name: ".detail.renameName"
+
+event!: &on/table-create-cell
+  type: "createcell"
+  where:
+    sheet: ".detail.cellSheet"
+    at: ".detail.cellAt"
+    content: ".detail.cellContent"
+    time: ".detail.time"
+
+event!: &on/table-edit-cell
+  type: "editcell"
+  where:
+    cell: ".detail.editCell"
+    content: ".detail.editContent"
+
+event!: &on/table-clear-cell
+  type: "clearcell"
+  where:
+    cell: ".detail.clearCell"
+
+event!: &on/table-create-column
+  type: "createcolumn"
+  where:
+    sheet: ".detail.columnSheet"
+    at: ".detail.columnAt"
+    width: ".detail.columnWidth"
+    time: ".detail.time"
+
+event!: &on/table-resize-column
+  type: "resizecolumn"
+  where:
+    column: ".detail.resizeColumn"
+    width: ".detail.resizeWidth"
+
+event!: &on/table-create-row
+  type: "createrow"
+  where:
+    sheet: ".detail.rowSheet"
+    at: ".detail.rowAt"
+    height: ".detail.rowHeight"
+    time: ".detail.time"
+
+event!: &on/table-resize-row
+  type: "resizerow"
+  where:
+    row: ".detail.resizeRow"
+    height: ".detail.resizeHeight"
 
 command!: &table/create-sheet
   description: Create a sheet in workbook `table`.
   with:
     table:
       description: The workbook gaining the sheet
-      the: dom.event.detail/sheet-table
+      the: xyz.tonk.table.create-sheet/table
       as: entity
     name:
       description: The new sheet's name
-      the: dom.event.detail/sheet-name
+      the: xyz.tonk.table.create-sheet/name
       as: text
     order:
       description: Tab-strip order key, computed by the element
-      the: dom.event.detail/sheet-order
+      the: xyz.tonk.table.create-sheet/order
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
+      the: xyz.tonk.table.create-sheet/time
       as: unsigned-integer
 
 command!: &table/rename-sheet
@@ -203,11 +279,11 @@ command!: &table/rename-sheet
   with:
     sheet:
       description: The sheet being renamed
-      the: dom.event.detail/rename-sheet
+      the: xyz.tonk.table.rename-sheet/sheet
       as: entity
     name:
       description: The new name
-      the: dom.event.detail/rename-name
+      the: xyz.tonk.table.rename-sheet/name
       as: text
 
 command!: &table/create-cell
@@ -215,19 +291,19 @@ command!: &table/create-cell
   with:
     sheet:
       description: The sheet the cell is on
-      the: dom.event.detail/cell-sheet
+      the: xyz.tonk.table.create-cell/sheet
       as: entity
     at:
       description: A1-style address
-      the: dom.event.detail/cell-at
+      the: xyz.tonk.table.create-cell/at
       as: text
     content:
       description: The raw input
-      the: dom.event.detail/cell-content
+      the: xyz.tonk.table.create-cell/content
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
+      the: xyz.tonk.table.create-sheet/time
       as: unsigned-integer
 
 command!: &table/edit-cell
@@ -235,11 +311,11 @@ command!: &table/edit-cell
   with:
     cell:
       description: The edited cell
-      the: dom.event.detail/edit-cell
+      the: xyz.tonk.table.edit-cell/cell
       as: entity
     content:
       description: The new raw input
-      the: dom.event.detail/edit-content
+      the: xyz.tonk.table.edit-cell/content
       as: text
 
 command!: &table/clear-cell
@@ -247,7 +323,7 @@ command!: &table/clear-cell
   with:
     cell:
       description: The cleared cell
-      the: dom.event.detail/clear-cell
+      the: xyz.tonk.table.clear-cell/cell
       as: entity
 
 command!: &table/create-column
@@ -255,19 +331,19 @@ command!: &table/create-column
   with:
     sheet:
       description: The sheet the column is on
-      the: dom.event.detail/column-sheet
+      the: xyz.tonk.table.create-column/sheet
       as: entity
     at:
       description: Column letters
-      the: dom.event.detail/column-at
+      the: xyz.tonk.table.create-column/at
       as: text
     width:
       description: Width px, as decimal text
-      the: dom.event.detail/column-width
+      the: xyz.tonk.table.create-column/width
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
+      the: xyz.tonk.table.create-sheet/time
       as: unsigned-integer
 
 command!: &table/resize-column
@@ -275,11 +351,11 @@ command!: &table/resize-column
   with:
     column:
       description: The resized column
-      the: dom.event.detail/resize-column
+      the: xyz.tonk.table.resize-column/column
       as: entity
     width:
       description: The new width px, as decimal text
-      the: dom.event.detail/resize-width
+      the: xyz.tonk.table.resize-column/width
       as: text
 
 command!: &table/create-row
@@ -287,19 +363,19 @@ command!: &table/create-row
   with:
     sheet:
       description: The sheet the row is on
-      the: dom.event.detail/row-sheet
+      the: xyz.tonk.table.create-row/sheet
       as: entity
     at:
       description: The row number, as text
-      the: dom.event.detail/row-at
+      the: xyz.tonk.table.create-row/at
       as: text
     height:
       description: Height px, as decimal text
-      the: dom.event.detail/row-height
+      the: xyz.tonk.table.create-row/height
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: dom.event.detail/time
+      the: xyz.tonk.table.create-sheet/time
       as: unsigned-integer
 
 command!: &table/resize-row
@@ -307,11 +383,11 @@ command!: &table/resize-row
   with:
     row:
       description: The resized row
-      the: dom.event.detail/resize-row
+      the: xyz.tonk.table.resize-row/row
       as: entity
     height:
       description: The new height px, as decimal text
-      the: dom.event.detail/resize-height
+      the: xyz.tonk.table.resize-row/height
       as: text
 
 # ---------------------------------------------------------------------------
@@ -445,15 +521,15 @@ view!:
   show:
     ui: |
       <tonk-table subject={this}
-        oncreatesheet=table/create-sheet
-        onrenamesheet=table/rename-sheet
-        oncreatecell=table/create-cell
-        oneditcell=table/edit-cell
-        onclearcell=table/clear-cell
-        oncreatecolumn=table/create-column
-        onresizecolumn=table/resize-column
-        oncreaterow=table/create-row
-        onresizerow=table/resize-row
+        on:table-create-sheet=table/create-sheet
+        on:table-rename-sheet=table/rename-sheet
+        on:table-create-cell=table/create-cell
+        on:table-edit-cell=table/edit-cell
+        on:table-clear-cell=table/clear-cell
+        on:table-create-column=table/create-column
+        on:table-resize-column=table/resize-column
+        on:table-create-row=table/create-row
+        on:table-resize-row=table/resize-row
       >
         <div hidden>
           <tonk-display model=tonk:table/sheet></tonk-display>

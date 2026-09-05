@@ -890,6 +890,208 @@ pub mod command {
         #[domain("dom.event.detail")]
         pub struct Href(pub String);
     }
+
+    /// The **current** shape of every command's fields: one
+    /// `xyz.tonk.command.<verb>` namespace per verb.
+    ///
+    /// Everything above this is the shape commands used to have, and
+    /// the reason this module exists. A command is matched
+    /// structurally — the set of attributes a transient carries is its
+    /// whole identity — so spelling a field as the DOM read path that
+    /// produced it (`dom.event.current-target.dataset/subject`) made two
+    /// unrelated verbs reading the same DOM path the *same concept*.
+    ///
+    /// Every `marker` field above is that collision being patched by
+    /// hand: `Invite` carries one so a `PauseSync` transient (an
+    /// identical `{this, time}` otherwise) does not also decode as an
+    /// invite; `RenameRepository` and `ProfileRename` each carry one
+    /// because both read `currentTarget.value`; `RemoveSpace` reads
+    /// `dataset/remove` rather than the honest `dataset/subject` only
+    /// because the latter would make every rename decode as a deletion;
+    /// `EnableSync` is a whole second command because the first one
+    /// shared `CreateSpace`'s trigger attribute.
+    ///
+    /// Giving each verb its own namespace makes all of that structural:
+    /// `xyz.tonk.command.remove-space/subject` and
+    /// `xyz.tonk.command.rename-repository/space` cannot collide however
+    /// they were typed in, so nominal identity is a *byproduct* of the
+    /// naming rather than something a marker field has to reassert. Not
+    /// one of these modules needs a marker.
+    ///
+    /// This is the same rule the module header states for every other
+    /// concept — "each concept owns its own attribute namespace so its
+    /// descriptor never matches entities of another shape". Commands
+    /// were the exception, and the markers were the cost.
+    ///
+    /// Where a field was *already* domain-shaped (`xyz.tonk.invite/space`,
+    /// `xyz.tonk.pause-sync/space`, `xyz.tonk.enable-sync/remote`, the
+    /// whole of `promote` / `enroll` / `authorize_device`) the current
+    /// command reuses it rather than minting a synonym.
+    pub mod current {
+        /// `space/create` — make a new space, optionally with a remote.
+        pub mod create_space {
+            use dialog_query::Attribute;
+
+            /// The space's local name. The create wizard supplies the
+            /// `Untitled` sentinel, which the handler uniquifies.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-space")]
+            pub struct Name(pub String);
+        }
+
+        /// `notebook/create` — write a notebook and go to it.
+        ///
+        /// The domain is `xyz.tonk.notebook.create`, not
+        /// `xyz.tonk.command.create-notebook`: `notebook.yaml` declares
+        /// this command and the YAML is the schema of record, so the
+        /// struct follows it rather than the other way round.
+        pub mod create_notebook {
+            use dialog_query::Attribute;
+
+            /// The title typed into the heading switcher. Named `title`,
+            /// not `created-title`: the old name existed only so a
+            /// retitle's `detail/title` would not also decode as a
+            /// create.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.notebook.create")]
+            pub struct Title(pub String);
+
+            /// The draft's whole document, so the new notebook keeps
+            /// what was already written under the heading.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.notebook.create")]
+            pub struct Body(pub String);
+        }
+
+        /// `space/remove` — drop a space from this device.
+        pub mod remove_space {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The space to remove. Called what it is: the old
+            /// `dataset/remove` name was chosen only to avoid colliding
+            /// with a rename's `dataset/subject`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.remove-space")]
+            pub struct Subject(pub Entity);
+        }
+
+        /// `tonk/invite` — mint a repo invite.
+        pub mod invite {
+            use dialog_query::Attribute;
+
+            /// The activation's timestamp, so repeated Share clicks are
+            /// distinct transients and each re-fires the handler
+            /// (rotating the credential).
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.invite")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/enable-sync` — attach a remote to an existing space.
+        pub mod enable_sync {
+            use dialog_query::Attribute;
+
+            /// The acceptance's timestamp — one click from the next.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.enable-sync")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/pause-sync` — toggle a space's background sync.
+        pub mod pause_sync {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so each toggle re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.pause-sync")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/rename-repository` — rename a space's repository.
+        pub mod rename_repository {
+            use dialog_query::Attribute;
+
+            /// The new repository name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.rename-repository")]
+            pub struct Name(pub String);
+        }
+
+        /// `profile/rename` — set the signed-in member's display name.
+        pub mod profile_rename {
+            use dialog_query::Attribute;
+
+            /// The new display name. Distinct from
+            /// [`rename_repository::Name`] by namespace alone, which is
+            /// what retires both commands' marker fields.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.profile-rename")]
+            pub struct Name(pub String);
+        }
+
+        /// `member/expel` — revoke a member's access to a space.
+        pub mod expel_member {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The DID the member's membership is keyed on.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.expel-member")]
+            pub struct Member(pub Entity);
+        }
+
+        /// `tonk/join` — redeem an invite URL.
+        pub mod join {
+            use dialog_query::Attribute;
+
+            /// The complete invite URL, fragment included.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.join")]
+            pub struct Url(pub String);
+        }
+
+        /// `account/check-email` — is this address already registered?
+        pub mod check_email {
+            use dialog_query::Attribute;
+
+            /// The address to look up.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.check-email")]
+            pub struct Email(pub String);
+        }
+
+        /// `account/register` — create the account.
+        pub mod register_account {
+            use dialog_query::Attribute;
+
+            /// The address to register. Distinct from
+            /// [`check_email::Email`] by namespace, which is why a
+            /// registration marker is no longer needed to stop every
+            /// keystroke's lookup from also running a passkey ceremony.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.register-account")]
+            pub struct Email(pub String);
+        }
+
+        /// `tonk/add-passkey` — seal the account under a second passkey.
+        pub mod add_passkey {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The account to add a passkey to.
+            ///
+            /// The one command here that keeps a single opaque field,
+            /// and the one place that is not a workaround: the verb
+            /// carries no data, so it needs one attribute simply to be
+            /// nameable. Unlike the markers above, it is not there to
+            /// separate this command from another that would otherwise
+            /// decode identically — the namespace already does that.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.add-passkey")]
+            pub struct Account(pub Entity);
+        }
+    }
 }
 
 /// Attributes on the transient overlay row answering "is this address

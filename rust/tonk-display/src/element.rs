@@ -1688,6 +1688,143 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
     });
 }
 
+/// Resolve the `event!:` declarations a template's `on:<name>`
+/// bindings reference into a dispatch table.
+///
+/// Each declaration is an *instance* of `tonk:event`, not a concept, so
+/// this is a name lookup followed by an entity read — not the phase-1
+/// descriptor path the command names take. Two reads per declaration:
+/// the required `type`/`where`, then the optional side-effect flags,
+/// which are separate because a declaration that omits them must still
+/// resolve.
+///
+/// A declaration that does not resolve is skipped with a warning rather
+/// than aborting the whole delegate, so one bad binding cannot silence
+/// the rest of a view.
+async fn resolve_event_table(
+    host: &Element,
+    event_names: &std::collections::BTreeSet<String>,
+) -> tonk_template::event::EventTable {
+    use tonk_template::event::event_descriptor;
+    use tonk_template::resolve::event_query;
+
+    let mut declarations = std::collections::BTreeMap::new();
+    for name in event_names {
+        let Some(entity) = resolve_event_entity(host, name).await else {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "<tonk-display>: no `event!:` declaration named `{name}` \
+                 (bound as `{}`)",
+                tonk_template::event::attribute_for_event_name(name).unwrap_or_default(),
+            )));
+            continue;
+        };
+
+        let Ok(query) = event_query(&entity) else {
+            continue;
+        };
+        let Ok(body) = to_body(&query) else { continue };
+        let Ok(rows) = host_consumer::query(host, &body).await else {
+            continue;
+        };
+        let conclusions: Vec<Conclusion> =
+            serde_wasm_bindgen::from_value(rows.clone()).unwrap_or_default();
+        let folded = tonk_template::fold::select_rows(conclusions);
+        let Some(conclusion) = folded.first() else {
+            continue;
+        };
+
+        let event_type = conclusion.fields.get("type").and_then(ipld_text);
+        let sources: Vec<(String, String)> = conclusion
+            .fields
+            .get("where")
+            .and_then(|value| match value {
+                Ipld::Map(map) => Some(map),
+                _ => None,
+            })
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(field, value)| ipld_text(value).map(|raw| (field.clone(), raw)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (prevent_default, stop_propagation) = resolve_event_flags(host, &entity).await;
+
+        match event_descriptor(
+            event_type.as_deref(),
+            prevent_default,
+            stop_propagation,
+            sources,
+        ) {
+            Ok(mut descriptor) => {
+                // A bare symbol is a named-entity reference, the same
+                // as anywhere else in the notation. Resolve them here,
+                // once, so the event-time path never does a lookup.
+                let mut resolved = std::collections::BTreeMap::new();
+                for reference in descriptor.references() {
+                    if let Some(entity) = resolve_event_entity(host, &reference).await {
+                        resolved.insert(reference, entity);
+                    }
+                }
+                for missing in descriptor.resolve_references(&resolved) {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "<tonk-display>: `{name}` references `{missing}`, which names no entity"
+                    )));
+                }
+                declarations.insert(name.clone(), descriptor);
+            }
+            // Only a missing `type:` can fail — a `where:` entry never
+            // does, so one odd source cannot cost a declaration its
+            // other bindings.
+            Err(error) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "<tonk-display>: `{name}` is not a usable event declaration: {error}"
+                )));
+            }
+        }
+    }
+    tonk_template::event::EventTable::new(declarations)
+}
+
+/// Name -> entity for an event declaration.
+async fn resolve_event_entity(host: &Element, name: &str) -> Option<String> {
+    if name.contains(':') {
+        return Some(name.to_string());
+    }
+    let body = to_body(&name_query(name)).ok()?;
+    let result = host_consumer::query(host, &body).await.ok()?;
+    first_field(&result, "entity").ok().flatten()
+}
+
+/// Read the optional side-effect flags. Absent means `false`.
+async fn resolve_event_flags(host: &Element, entity: &str) -> (bool, bool) {
+    use tonk_template::resolve::event_flags_query;
+    let Ok(query) = event_flags_query(entity) else {
+        return (false, false);
+    };
+    let Ok(body) = to_body(&query) else {
+        return (false, false);
+    };
+    let Ok(rows) = host_consumer::query(host, &body).await else {
+        return (false, false);
+    };
+    let conclusions: Vec<Conclusion> =
+        serde_wasm_bindgen::from_value(rows.clone()).unwrap_or_default();
+    let Some(conclusion) = conclusions.first() else {
+        return (false, false);
+    };
+    let flag = |name: &str| matches!(conclusion.fields.get(name), Some(Ipld::Bool(true)));
+    (flag("prevent-default"), flag("stop-propagation"))
+}
+
+/// `Ipld::String` as text.
+fn ipld_text(value: &Ipld) -> Option<String> {
+    match value {
+        Ipld::String(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
 async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_generation: u64) {
     use crate::events::delegate::{Delegate, Descriptors};
 
@@ -1706,6 +1843,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     // Collect distinct event types and concept names across slides.
     let mut event_types: BTreeSet<String> = BTreeSet::new();
     let mut concept_names: BTreeSet<String> = BTreeSet::new();
+    let mut event_names: BTreeSet<String> = BTreeSet::new();
     for el in &view_els {
         let Some(raw) = el.get_attribute("data-event-bindings") else {
             continue;
@@ -1727,9 +1865,18 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 }
             }
         }
+        if let Some(arr) = value.get("declarations").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    event_names.insert(s.to_owned());
+                }
+            }
+        }
     }
 
-    if event_types.is_empty() || concept_names.is_empty() {
+    // A template using only `on:<name>` bindings has no legacy event
+    // types, so the guard cannot require them.
+    if concept_names.is_empty() || (event_types.is_empty() && event_names.is_empty()) {
         // No bindings — drop any existing delegate so detached
         // listeners don't linger after a template-swap. Only do
         // this if no newer refresh has been scheduled in the
@@ -1783,7 +1930,8 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 
     // Build the delegate before acquiring the borrow so its
     // `addEventListener` calls don't run inside the lock.
-    let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors);
+    let table = resolve_event_table(host, &event_names).await;
+    let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors, table);
     // Re-check the per-refresh generation: if a newer refresh has
     // started while we were resolving descriptors, drop our delegate
     // rather than overwrite the newer one. `delegate`'s `Drop` impl

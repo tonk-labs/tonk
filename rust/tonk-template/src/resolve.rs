@@ -42,6 +42,83 @@ pub fn view_query(model_entity: &str) -> Result<Query, serde_json::Error> {
     serde_json::from_value(json!({ "terms": terms, "predicate": view_predicate() }))
 }
 
+/// The `event` concept's shape, kept in step with the built-in
+/// registered as `event` in `tonk_schema::builtin`.
+///
+/// A hand-mirrored copy for the same reason [`view_predicate`] is one:
+/// this crate builds wire queries as JSON and does not go through the
+/// descriptor types. The built-in is the source of truth; the parity
+/// test in `tonk-worker` is what keeps the two honest.
+///
+/// `where` is a keyed collection like `view`'s `show`, so each source
+/// lands as its own fact (`xyz.tonk.event.where/<field>`) with
+/// cardinality one — a space can supersede one source without
+/// restating the map. Its own domain, so a command field called `type`
+/// cannot collide with the `type` attribute.
+pub fn event_predicate() -> Value {
+    json!({
+        "with": {
+            "type": {
+                "the": "xyz.tonk.event/type",
+                "as": "Text",
+                "cardinality": "one"
+            },
+            "where": {
+                "the": { "domain": "xyz.tonk.event.where", "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// Build the query that reads one `event!:` declaration: its `type`
+/// and every entry of its `where` map.
+///
+/// The optional `prevent-default` / `stop-propagation` markers are
+/// deliberately absent: they are `maybe:` fields, so pinning them here
+/// would make a declaration that omits them match nothing. They are
+/// read separately ([`event_flags_query`]).
+pub fn event_query(event_entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(event_entity));
+    terms.insert("type".into(), json!({ "?": { "name": "type" } }));
+    terms.insert("where".into(), json!({ "?": { "name": "where" } }));
+    terms.insert("where/key".into(), json!({ "?": { "name": "where/key" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": event_predicate() }))
+}
+
+/// Build the query that reads a declaration's optional side-effect
+/// flags. Separate from [`event_query`] because an `event!:` that
+/// declares neither must still resolve.
+pub fn event_flags_query(event_entity: &str) -> Result<Query, serde_json::Error> {
+    let predicate = json!({
+        "with": {
+            "prevent-default": {
+                "the": "xyz.tonk.event/prevent-default",
+                "as": "Boolean",
+                "cardinality": "one"
+            },
+            "stop-propagation": {
+                "the": "xyz.tonk.event/stop-propagation",
+                "as": "Boolean",
+                "cardinality": "one"
+            }
+        }
+    });
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(event_entity));
+    terms.insert(
+        "prevent-default".into(),
+        json!({ "?": { "name": "prevent-default" } }),
+    );
+    terms.insert(
+        "stop-propagation".into(),
+        json!({ "?": { "name": "stop-propagation" } }),
+    );
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
 /// Whether a `with:` entry declares a keyed collection: its `the` is a
 /// `{domain, keyed}` object rather than an attribute string.
 ///

@@ -375,15 +375,19 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PromoteMember
 /// command fires in.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct ExpelMemberHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::ExpelMember,
+        tonk_schema::command::legacy::ExpelMember,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl ExpelMemberHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::ExpelMember::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -391,7 +395,7 @@ impl ExpelMemberHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ExpelMemberHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {

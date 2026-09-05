@@ -296,11 +296,17 @@ pub async fn put_repository(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// The form-event attribute carrying the optional sync URL — the
-/// `remote` input on the `space/create` and `space/enable-sync` forms.
-/// Kept in sync with those notation commands' `remote` field `the:`.
+/// The attribute carrying the optional sync URL on a `space/create` or
+/// `space/enable-sync` transient. Kept in step with those notation
+/// commands' `remote` field `the:`.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
+const REMOTE_ATTR: &str = "xyz.tonk.command.create-space/remote";
+
+/// The same field before the command took its own namespace: the DOM
+/// read path that filled it. Still asserted by any branch seeded before
+/// the migration, so both are read.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
@@ -311,13 +317,23 @@ const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 /// decodes a URL (that's the bug a `remote: String` field hit). Reading
 /// the artifact directly sidesteps the concept decode and accepts either
 /// representation. Empty/whitespace → `None` (a local-only space).
+///
+/// This is why `remote` is still not a field on [`CreateSpace`] even
+/// after the command took its own namespace: the obstacle is how a URL
+/// is *represented*, not how the command is *shaped*, and the two are
+/// separate problems.
+///
+/// [`CreateSpace`]: tonk_schema::command::CreateSpace
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
     facts
         .iter()
-        .find(|artifact| artifact.the.to_string() == REMOTE_ATTR)
+        .find(|artifact| {
+            let the = artifact.the.to_string();
+            the == REMOTE_ATTR || the == LEGACY_REMOTE_ATTR
+        })
         .and_then(|artifact| match &artifact.is {
             Value::String(url) => Some(url.clone()),
             Value::Entity(uri) => Some(uri.to_string()),
@@ -506,7 +522,12 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct CreateSpaceHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::CreateSpace,
+        tonk_schema::command::legacy::CreateSpace,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -514,9 +535,8 @@ impl CreateSpaceHandler {
     /// Cache `CreateSpace`'s trigger attributes (its `name` field) so the
     /// registry indexes this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::CreateSpace::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -524,16 +544,11 @@ impl CreateSpaceHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::CreateSpace::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -541,15 +556,9 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
-
         // Decode synchronously (the caller still holds the lock), then
         // hand owned values + an env clone to the `'static` future.
-        let name = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::CreateSpace::decode(entity, facts))
-            .map(|command| command.name.0);
+        let name = self.command.decode(facts).map(|command| command.name.0);
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
@@ -714,7 +723,12 @@ fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String
 /// [`Credential`]: tonk_schema::command::Credential
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct InviteHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::Invite,
+        tonk_schema::command::legacy::Invite,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -722,9 +736,8 @@ impl InviteHandler {
     /// Cache `Invite`'s trigger attributes (its `time` field) so the
     /// registry indexes this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::Invite::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -732,16 +745,11 @@ impl InviteHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::Invite::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -749,7 +757,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
         // Read the target space off the facts opportunistically (NOT a
@@ -768,10 +775,9 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
         // The triggering click's timestamp, echoed onto a refusal so a
         // later resubscribe can tell this refusal from a replay of an
         // older one — see `publish_share_blocked`.
-        let time = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
+        let time = self
+            .command
+            .decode(facts)
             .map(|command| command.time.0)
             .unwrap_or_default();
         let env = env.clone();
@@ -814,15 +820,19 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
 /// subscription it already holds — the same path an ordinary mint takes.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct EnableSyncHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::EnableSync,
+        tonk_schema::command::legacy::EnableSync,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl EnableSyncHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::EnableSync::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -830,16 +840,11 @@ impl EnableSyncHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::EnableSync::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -847,13 +852,11 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
-        let time = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::EnableSync::decode(entity, facts))
+        let time = self
+            .command
+            .decode(facts)
             .map(|command| command.time.0)
             .unwrap_or_default();
         let space = text_fact(facts, ENABLE_SYNC_SPACE_ATTR);
@@ -1453,7 +1456,12 @@ fn long_invite_url(
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct PauseSyncHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::PauseSync,
+        tonk_schema::command::legacy::PauseSync,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1461,9 +1469,8 @@ impl PauseSyncHandler {
     /// Cache `PauseSync`'s trigger attributes (its `time` field) so the
     /// registry indexes this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::PauseSync::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -1471,16 +1478,11 @@ impl PauseSyncHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::PauseSync::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -1488,17 +1490,15 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
         // Decode synchronously to read the target space off the command — the
         // handler flips THAT space's replica, not the dispatch origin's, so the
         // command can be dispatched from the profile branch. The repo key is
         // the space DID's suffix; a space's content branch is always `main`.
-        let target = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::PauseSync::decode(entity, facts))
+        let target = self
+            .command
+            .decode(facts)
             .and_then(|command| {
                 command
                     .space
@@ -1550,7 +1550,12 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
 /// [`MemberName`]: tonk_schema::MemberName
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct ProfileRenameHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::ProfileRename,
+        tonk_schema::command::legacy::ProfileRename,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1558,9 +1563,8 @@ impl ProfileRenameHandler {
     /// Cache `ProfileRename`'s trigger attributes (its `name` field) so
     /// the registry indexes this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::ProfileRename::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -1568,16 +1572,11 @@ impl ProfileRenameHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRenameHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::ProfileRename::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -1585,15 +1584,9 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
-
         // Decode synchronously (the caller still holds the lock), then
         // hand the owned new name + an env clone to the `'static` future.
-        let name = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::ProfileRename::decode(entity, facts))
-            .map(|command| command.name.0);
+        let name = self.command.decode(facts).map(|command| command.name.0);
         let key = env.origin().repo.clone();
         let env = env.clone();
 
@@ -1683,7 +1676,12 @@ pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutco
 /// [`RenameRepository`]: tonk_schema::command::RenameRepository
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct RenameRepositoryHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::RenameRepository,
+        tonk_schema::command::legacy::RenameRepository,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1691,9 +1689,8 @@ impl RenameRepositoryHandler {
     /// Cache `RenameRepository`'s trigger attributes so the registry indexes
     /// this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::RenameRepository::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -1701,16 +1698,11 @@ impl RenameRepositoryHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::RenameRepository::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -1718,16 +1710,12 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameReposit
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
         use tonk_schema::prelude::DidExt as _;
 
         // Decode synchronously to read the target space off the command — the
         // handler renames THAT repository, not the dispatch origin's, so the
         // command can be dispatched from the profile branch.
-        let decoded = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::RenameRepository::decode(entity, facts));
+        let decoded = self.command.decode(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -1831,15 +1819,19 @@ async fn run_rename_repository(
 /// join redirects.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct CreateNotebookHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::CreateNotebook,
+        tonk_schema::command::legacy::CreateNotebook,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl CreateNotebookHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::CreateNotebook::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -1847,16 +1839,11 @@ impl CreateNotebookHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNotebookHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::CreateNotebook::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -1864,12 +1851,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
-
-        let decoded = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::CreateNotebook::decode(entity, facts));
+        let decoded = self.command.decode(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -2063,7 +2045,12 @@ fn yaml_block_scalar(source: &str) -> String {
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct RemoveSpaceHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::RemoveSpace,
+        tonk_schema::command::legacy::RemoveSpace,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -2071,9 +2058,8 @@ impl RemoveSpaceHandler {
     /// Cache `RemoveSpace`'s trigger attributes (its `subject` field) so
     /// the registry indexes this handler under them.
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::RemoveSpace::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -2081,16 +2067,11 @@ impl RemoveSpaceHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::RemoveSpace::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -2098,15 +2079,9 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
-
         // Decode synchronously (the caller still holds the lock), then
         // hand the owned subject + an env clone to the `'static` future.
-        let subject = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::RemoveSpace::decode(entity, facts))
-            .map(|command| command.subject.0);
+        let subject = self.command.decode(facts).map(|command| command.subject.0);
         let env = env.clone();
 
         Box::pin(async move {
@@ -4996,7 +4971,7 @@ mod space_config_tests {
 /// sides against the seeded document. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod form_attribute_tests {
-    use super::REMOTE_ATTR;
+    use super::{LEGACY_REMOTE_ATTR, REMOTE_ATTR};
 
     /// The document the worker seeds onto a profile branch, embedded for
     /// the same reason `tests/standard_library.rs` embeds it: CI runs from
@@ -5015,17 +4990,19 @@ mod form_attribute_tests {
     /// remote would wire one anyway, which is the behaviour
     /// `it_creates_a_local_only_space_from_the_hub_wizard` refuses.
     ///
-    /// `REMOTE_ATTR` stays readable so a frozen older descriptor that
-    /// still declares the field keeps working; it is simply no longer
-    /// where the answer comes from.
+    /// Both spellings stay readable so a frozen older descriptor that
+    /// still declares the field keeps working; neither is where the
+    /// answer comes from any more.
     #[test]
     fn it_declares_no_remote_on_the_create_form() {
-        assert!(
-            !PROFILE_LIBRARY.contains(REMOTE_ATTR),
-            "profile.yaml declares `the: {REMOTE_ATTR}` again — a space \
-             would wire a remote at creation instead of earning one when \
-             it is shared",
-        );
+        for attribute in [REMOTE_ATTR, LEGACY_REMOTE_ATTR] {
+            assert!(
+                !PROFILE_LIBRARY.contains(attribute),
+                "profile.yaml declares `the: {attribute}` again — a space \
+                 would wire a remote at creation instead of earning one \
+                 when it is shared",
+            );
+        }
     }
 }
 
@@ -5088,6 +5065,21 @@ mod remote_from_facts_tests {
         the!("dom.event.current-target.elements.remote/value")
             .of(of)
             .is(url)
+            .assert(&mut changes);
+        assert_eq!(remote_from_facts(&artifacts(changes)).as_deref(), Some(URL));
+    }
+
+    /// The attribute the app posts now. The two cases above use the DOM
+    /// read path a branch seeded before the migration still asserts, so
+    /// between them both spellings are covered.
+    #[test]
+    fn it_reads_the_commands_own_remote_attribute() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        the!("xyz.tonk.command.create-space/remote")
+            .of(of)
+            .is(URL.to_string())
             .assert(&mut changes);
         assert_eq!(remote_from_facts(&artifacts(changes)).as_deref(), Some(URL));
     }
