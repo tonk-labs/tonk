@@ -26,7 +26,7 @@ use worker::*;
 fn with_cors_headers(response: Response) -> Response {
     let headers = response.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
-    let _ = headers.set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
+    let _ = headers.set("Access-Control-Allow-Methods", "GET, HEAD, PUT, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
     let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
     response.with_headers(headers)
