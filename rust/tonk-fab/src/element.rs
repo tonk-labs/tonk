@@ -741,7 +741,7 @@ fn dispatch_pause(this: &HtmlElement) {
         .and_then(|w| w.performance())
         .map(|p| p.now())
         .unwrap_or_default();
-    transact(&pause_claim_json("tonk:pause-sync", &space, time));
+    transact(&pause_claim_json(&space, time));
 }
 
 /// Call `window.tonk.transact(request)` with a claim.

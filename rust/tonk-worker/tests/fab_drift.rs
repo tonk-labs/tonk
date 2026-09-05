@@ -90,7 +90,7 @@ fn it_builds_pause_claims_carrying_every_attribute_the_handler_triggers_on() {
         "the command must declare trigger attributes"
     );
 
-    let claim = logic::pause_claim_json("tonk:pause-sync", "did:key:z6Mk", 1.0).to_string();
+    let claim = logic::pause_claim_json("did:key:z6Mk", 1.0).to_string();
     for attribute in &triggers {
         assert!(
             claim.contains(attribute.as_str()),

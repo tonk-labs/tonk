@@ -191,7 +191,7 @@ where
             }
         }
         Self {
-            attributes: attributes,
+            attributes,
             _shapes: std::marker::PhantomData,
         }
     }
@@ -673,7 +673,7 @@ mod tests {
     /// fields off the matched concept.
     #[dialog_common::test]
     fn it_decodes_create_space_from_name_only_facts() {
-        use tonk_schema::command::CreateSpace;
+        use tonk_schema::command::{CreateSpace, legacy};
 
         let this = entity("did:key:zCreateSpace");
         let mut changes = Changes::new();
@@ -681,9 +681,13 @@ mod tests {
             .of(this.clone())
             .is("pictures".to_string())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = CreateSpace::decode(this, &facts)
+        // Through `Migrated`, exactly as the handler decodes it: the
+        // attribute here is the DOM read path an older descriptor still
+        // asserts, and it must arrive as the current shape.
+        let decoded = Migrated::<CreateSpace, legacy::CreateSpace>::new()
+            .decode(&facts)
             .expect("CreateSpace must decode from name-only facts (older descriptor / blank form)");
         assert_eq!(decoded.name.0, "pictures");
     }
@@ -692,7 +696,7 @@ mod tests {
     /// transient carrying only `data-remove` (the subject DID).
     #[dialog_common::test]
     fn it_decodes_remove_space_from_a_data_remove_fact() {
-        use tonk_schema::command::RemoveSpace;
+        use tonk_schema::command::{RemoveSpace, legacy};
 
         let this = entity("did:key:zRemoveSpace");
         let subject = entity("did:key:zSpaceSubject");
@@ -701,9 +705,10 @@ mod tests {
             .of(this.clone())
             .is(subject.clone())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = RemoveSpace::decode(this, &facts)
+        let decoded = Migrated::<RemoveSpace, legacy::RemoveSpace>::new()
+            .decode(&facts)
             .expect("RemoveSpace must decode from a data-remove-only transient");
         assert_eq!(decoded.subject.0, subject);
     }
@@ -715,7 +720,7 @@ mod tests {
     /// DID decode from the transient's raw facts.
     #[dialog_common::test]
     fn it_decodes_rename_repository_naming_its_target_space() {
-        use tonk_schema::command::RenameRepository;
+        use tonk_schema::command::{RenameRepository, legacy};
 
         let this = entity("did:key:zRenameRepository");
         let target_space = entity("did:key:zTargetSpace");
@@ -732,9 +737,10 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:repository"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
-        let decoded = RenameRepository::decode(this, &facts)
+        let decoded = Migrated::<RenameRepository, legacy::RenameRepository>::new()
+            .decode(&facts)
             .expect("RenameRepository must decode from its raw facts");
         assert_eq!(decoded.name.0, "Renamed");
         assert_eq!(
@@ -749,7 +755,7 @@ mod tests {
     /// would turn every banner rename into a space deletion.
     #[dialog_common::test]
     fn it_does_not_decode_a_rename_transient_as_remove_space() {
-        use tonk_schema::command::RemoveSpace;
+        use tonk_schema::command::{RemoveSpace, legacy};
 
         let mut changes = Changes::new();
         the!("dom.event.current-target.dataset/subject")
@@ -760,10 +766,10 @@ mod tests {
             .of(entity("did:key:zRename"))
             .is("new name".to_string())
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            RemoveSpace::decode(this, &facts).is_none(),
+            !Migrated::<RemoveSpace, legacy::RemoveSpace>::new().matches(&facts),
             "a rename-shaped transient must not decode as RemoveSpace"
         );
     }
@@ -777,13 +783,19 @@ mod tests {
     /// decoded as BOTH commands and both handlers fired. Command decoding
     /// matches on which attributes are PRESENT, never their values, so a
     /// shared marker value (`tonk:repository` vs `tonk:profile`) never
-    /// disambiguated anything. The fix is a DISTINCT ATTRIBUTE per command
-    /// — `dataset/rename-repository` here — the same pattern
-    /// `remove::Remove` already uses (see
-    /// `it_does_not_decode_a_rename_transient_as_remove_space` above).
+    /// disambiguated anything. The fix was a DISTINCT ATTRIBUTE per
+    /// command — the marker `dataset/rename-repository` this transient
+    /// still carries.
+    ///
+    /// The current shapes need no marker: each command's fields live in
+    /// its own `xyz.tonk.command.<verb>` namespace, so the shapes are
+    /// disjoint by construction (`tonk-worker/tests/command_migration.rs`
+    /// pins that). What this test still pins is that the DEPRECATED
+    /// shapes stay disjoint too — a branch seeded before the migration is
+    /// exactly where this bug would come back.
     #[dialog_common::test]
     fn it_does_not_decode_a_repo_rename_as_a_profile_rename() {
-        use tonk_schema::command::{ProfileRename, RenameRepository};
+        use tonk_schema::command::{ProfileRename, RenameRepository, legacy};
 
         let this = entity("did:key:zRepoRename");
         let target_space = entity("did:key:zTargetSpace");
@@ -800,14 +812,14 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:repository"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            RenameRepository::decode(this.clone(), &facts).is_some(),
+            Migrated::<RenameRepository, legacy::RenameRepository>::new().matches(&facts),
             "a repo-rename transient must decode as RenameRepository"
         );
         assert!(
-            ProfileRename::decode(this, &facts).is_none(),
+            !Migrated::<ProfileRename, legacy::ProfileRename>::new().matches(&facts),
             "a repo-rename transient must NOT also decode as ProfileRename — \
              that is the bug: renaming a space was also renaming the profile"
         );
@@ -818,7 +830,7 @@ mod tests {
     /// `RenameRepository`, which requires `space` regardless.
     #[dialog_common::test]
     fn it_does_not_decode_a_profile_rename_as_a_repo_rename() {
-        use tonk_schema::command::{ProfileRename, RenameRepository};
+        use tonk_schema::command::{ProfileRename, RenameRepository, legacy};
 
         let this = entity("did:key:zProfileRename");
         let mut changes = Changes::new();
@@ -830,14 +842,14 @@ mod tests {
             .of(this.clone())
             .is(entity("tonk:profile"))
             .assert(&mut changes);
-        let (this, facts) = facts_for(changes);
+        let (_, facts) = facts_for(changes);
 
         assert!(
-            ProfileRename::decode(this.clone(), &facts).is_some(),
+            Migrated::<ProfileRename, legacy::ProfileRename>::new().matches(&facts),
             "a profile-rename transient must decode as ProfileRename"
         );
         assert!(
-            RenameRepository::decode(this, &facts).is_none(),
+            !Migrated::<RenameRepository, legacy::RenameRepository>::new().matches(&facts),
             "a profile-rename transient must not decode as RenameRepository \
              (it carries no `space`)"
         );

@@ -902,6 +902,10 @@ fn parse_command_fields(
             std::collections::BTreeSet::new(),
             std::collections::BTreeSet::new(),
         );
+        // A command with a `this:` is bound by that URI in templates, not
+        // by its YAML anchor (`<tonk-page on:invite=tonk:invite>`), so it
+        // is indexed under both.
+        let mut this: Option<String> = None;
         let mut section: Option<bool> = None;
         for body in lines.by_ref() {
             if !body.starts_with("  ") {
@@ -909,6 +913,10 @@ fn parse_command_fields(
             }
             let trimmed = body.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(uri) = trimmed.strip_prefix("this: ") {
+                this = Some(uri.trim().to_string());
                 continue;
             }
             match trimmed {
@@ -930,6 +938,9 @@ fn parse_command_fields(
                     }
                 }
             }
+        }
+        if let Some(uri) = this {
+            out.insert(uri, (required.clone(), optional.clone()));
         }
         out.insert(name, (required, optional));
     }

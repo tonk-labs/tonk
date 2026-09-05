@@ -20,7 +20,7 @@ use dialog_artifacts::Entity;
 use dialog_capability::Command;
 use dialog_query::Concept;
 
-use crate::domain::command::Value as SpaceName;
+pub mod legacy;
 
 /// `tonk:delete-account`: purge the account from every service and
 /// this device.
@@ -74,74 +74,24 @@ impl Command for AuthorizeDevice {
 pub struct AddPasskey {
     /// The command entity (a fresh id per click).
     pub this: Entity,
-    /// The per-command marker; see [`crate::domain::command::add_passkey`].
-    pub marker: crate::domain::command::add_passkey::AddPasskey,
+    /// The account to add a passkey to. The verb carries no data of its
+    /// own, so it needs one attribute simply to be nameable; see
+    /// [`crate::domain::command::current::add_passkey::Account`].
+    pub account: crate::domain::command::current::add_passkey::Account,
+}
+
+impl From<legacy::AddPasskey> for AddPasskey {
+    fn from(legacy: legacy::AddPasskey) -> Self {
+        Self {
+            account: crate::domain::command::current::add_passkey::Account(legacy.marker.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for AddPasskey {
     type Input = Self;
     type Output = ();
-}
-
-/// Request to create a new space (repository) by local name.
-///
-/// Asserted transiently when the user submits the Add Space form (a
-/// `<form onsubmit=space/create>` defined in `profile.yaml`). The
-/// notation event layer reads `name` from the form's
-/// `elements.name.value` and POSTs the transient claim; the handler
-/// records the replica (`status: blank`) so the Hub shows it
-/// installing, then creates the repository, seeds the standard library,
-/// and flips the status to `initialized`.
-///
-/// `name`'s attribute is a `dom.event.*` read-path so the same concept
-/// the form asserts is the one the worker handler decodes — see
-/// [`crate::domain::command::Value`].
-///
-/// Deliberately a single matched field. A command concept must keep
-/// decoding against the descriptor an *older* version seeded — a profile
-/// branch is seeded once and not re-seeded across versions, so its
-/// `space/create` descriptor is frozen at the version that created it.
-/// Adding a required field here would make the command silently fail to
-/// match every such profile (the transient commits, no provider runs),
-/// breaking all space creation.
-///
-/// The optional sync remote is therefore *not* a field here: the worker's
-/// `CreateSpaceHandler` matches on `name` and reads the remote URL
-/// directly from the transient's facts. It can't be a `String`-typed
-/// concept field anyway — a URL round-trips through JSON and the worker's
-/// untagged `Value` deserialization picks `Entity` for any string with a
-/// `:`, so a `remote: String` field would never decode a URL. Reading the
-/// artifact directly tolerates both `String` and `Entity`. The same
-/// handler also serves the topbar's "Enable sync" form (which posts the
-/// same `name`+`remote` shape against an existing space).
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CreateSpace {
-    /// The command entity (a fresh id per invocation, derived by the
-    /// worker from the predicate + payload).
-    pub this: Entity,
-    /// Local name for the new space, read from the form's `name` input.
-    /// The create wizard supplies it from a hidden input carrying the
-    /// `Untitled` sentinel (the user no longer types a name up front);
-    /// the worker's handler uniquifies that to "Untitled N" against the
-    /// existing space labels, and the user renames later.
-    pub name: SpaceName,
-}
-
-/// Create a notebook from the index's heading switcher, and drop the
-/// author into it.
-///
-/// The handler does both halves: it writes the notebook and then posts a
-/// `navigate` to the originating client. The navigation cannot happen in
-/// the page, because the notebook's entity is derived when the fact is
-/// written — the element that fired the command never learns it.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CreateNotebook {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The title typed into the heading.
-    pub title: crate::domain::command::notebook::CreatedTitle,
-    /// The draft's document, blocks and all.
-    pub body: crate::domain::command::notebook::CreatedBody,
 }
 
 /// Ask whether an address is already registered, so the form can route
@@ -159,8 +109,17 @@ pub struct CreateNotebook {
 pub struct CheckEmail {
     /// The command entity, minted per invocation.
     pub this: Entity,
-    /// The address to ask about, read from the form's `email` input.
-    pub email: crate::domain::command::email::Value,
+    /// The address to look up.
+    pub email: crate::domain::command::current::check_email::Email,
+}
+
+impl From<legacy::CheckEmail> for CheckEmail {
+    fn from(legacy: legacy::CheckEmail) -> Self {
+        Self {
+            email: crate::domain::command::current::check_email::Email(legacy.email.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for CheckEmail {
@@ -168,35 +127,29 @@ impl Command for CheckEmail {
     type Output = ();
 }
 
-/// Register an account, from the form the registration overlay renders.
+/// Create the account for an address, once the lookup said it is free.
 ///
-/// The page asserts this and then watches facts: `AccountCustomer`
-/// appears once enrollment lands, and gains a provider at activation.
-/// Nothing is read back from a response, because a command answers with
-/// facts rather than a body.
-///
-/// The provider cannot finish this alone. Creating an account is a
-/// WebAuthn ceremony, which needs a `window` and a user gesture, and the
-/// service worker has neither; it asks the originating client to
-/// authorize with a passkey and continues from what comes back.
+/// The lookup ([`CheckEmail`]) and this were once the same shape
+/// `{this, email}` under one shared DOM read path, so every keystroke's
+/// lookup also decoded as a registration and the worker started a
+/// passkey ceremony while the user was still typing. A marker attribute
+/// patched that; the two now live in separate namespaces, so the shapes
+/// cannot collide and the marker is gone.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RegisterAccount {
     /// The command entity, minted per invocation.
     pub this: Entity,
-    /// The address to register, read from the form's `email` input.
-    pub email: crate::domain::command::email::Value,
-    /// Per-command marker keeping this distinct from [`CheckEmail`],
-    /// which is otherwise the same shape.
-    ///
-    /// Without it every keystroke's lookup also decoded as a
-    /// registration, and a passkey prompt appeared while the user was
-    /// still typing their address.
-    pub marker: crate::domain::command::register::RegisterAccount,
+    /// The address to register.
+    pub email: crate::domain::command::current::register_account::Email,
 }
 
-impl RegisterAccount {
-    /// The value [`Self::marker`] carries.
-    pub const MARKER: &str = "tonk:register-account";
+impl From<legacy::RegisterAccount> for RegisterAccount {
+    fn from(legacy: legacy::RegisterAccount) -> Self {
+        Self {
+            email: crate::domain::command::current::register_account::Email(legacy.email.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for RegisterAccount {
@@ -204,11 +157,85 @@ impl Command for RegisterAccount {
     type Output = ();
 }
 
+/// Request to create a new space (repository) by local name.
+///
+/// Asserted transiently when a create form submits. The handler records
+/// the replica (`status: blank`) so the Hub shows it installing, then
+/// creates the repository, seeds the standard library, flips the status
+/// to `initialized`, and navigates the creator into it.
+///
+/// Matched **name-only**, deliberately. An optional sync URL rides on
+/// the same transient and is read straight from its facts rather than
+/// declared here: a URL round-trips through JSON as `Value::Entity` (the
+/// untagged decode picks it for any `:`-bearing string), so a
+/// `String`-typed field would never decode one. That is a value
+/// representation problem, not a command shape problem, and it is left
+/// where it was.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space's local name. Nothing asks for one: every create
+    /// carries the `Untitled` sentinel, which the handler uniquifies
+    /// against the existing labels ("Untitled", "Untitled 2", …), and
+    /// the user renames the space in place on arrival.
+    pub name: crate::domain::command::current::create_space::Name,
+}
+
+impl From<legacy::CreateSpace> for CreateSpace {
+    fn from(legacy: legacy::CreateSpace) -> Self {
+        Self {
+            name: crate::domain::command::current::create_space::Name(legacy.name.0),
+            this: legacy.this,
+        }
+    }
+}
+
 /// `CreateSpace` is a [`dialog_capability::Command`]. Note the worker
 /// registers a custom `CreateSpaceHandler` (not a plain `Provider`) so it
 /// can read the optional remote from the facts; the `Command` impl is
 /// kept for the decode/`Decode` machinery.
 impl Command for CreateSpace {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Create a notebook from the index's heading switcher, and drop the
+/// author into it.
+///
+/// The handler does both halves: it writes the notebook and then posts a
+/// `navigate` to the originating client. The navigation cannot happen in
+/// the page, because the notebook's entity is derived when the fact is
+/// written — the element that fired the command never learns it.
+///
+/// The fields are `title` and `body`. They were `created-title` and
+/// `created-body` only so a retitle's `detail/title` would not also
+/// decode as a create; the namespace does that now.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateNotebook {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The title typed into the heading.
+    pub title: crate::domain::command::current::create_notebook::Title,
+    /// The draft's document, blocks and all.
+    pub body: crate::domain::command::current::create_notebook::Body,
+}
+
+impl From<legacy::CreateNotebook> for CreateNotebook {
+    fn from(legacy: legacy::CreateNotebook) -> Self {
+        Self {
+            title: crate::domain::command::current::create_notebook::Title(legacy.title.0),
+            body: crate::domain::command::current::create_notebook::Body(legacy.body.0),
+            this: legacy.this,
+        }
+    }
+}
+
+/// `CreateNotebook` is a [`dialog_capability::Command`]; the worker
+/// registers a custom handler for it (the work needs the branch handle
+/// and the originating client, which the decoded command does not
+/// carry).
+impl Command for CreateNotebook {
     type Input = Self;
     type Output = ();
 }
@@ -249,47 +276,36 @@ impl Command for Load {
     type Output = ();
 }
 
-/// Request to mint a repository invite.
+/// Mint a repository invite: a membership keypair, a delegation of the
+/// space's access to its DID, and the private seed on the overlay.
 ///
-/// Asserted transiently when the FAB's share control is clicked
-/// (`<tonk-share>`, `tonk-fab`). The worker handler generates a fresh
-/// membership keypair, delegates the repository's access to its DID,
-/// asserts a durable [`Authorization`] (the public delegation chain) into
-/// storage, and asserts the private seed as a [`Credential`] into the
-/// reactor's session overlay (never replicated). The share view joins the
-/// two via `tonk:invitation` and assembles the final URL.
+/// The target space rides on the transient as a raw fact
+/// (`xyz.tonk.invite/space`) that the handler reads opportunistically,
+/// falling back to the dispatch origin — the FAB's share affordance is
+/// routeless, so it must name its target, while a space's own share form
+/// need not.
 ///
-/// Deliberately a minimal matched shape, like [`CreateSpace`]: a command
-/// concept must keep decoding against the descriptor an *older* seeded
-/// `core.yaml` carries, and every existing space's `tonk:invite` descriptor
-/// is frozen at `{this, time, marker}` (no `space` field). A required
-/// `space` field here would make those transients silently fail to match
-/// (the transient commits, no handler runs) — see `CreateSpace`'s doc and
-/// `docs/evolving-command-concepts.md`, which records the same mistake with
-/// `CreateSpace.remote`.
-///
-/// The FAB's newer profile-dispatched share affordance (routeless, so
-/// `CommandEnv::origin` is empty) still needs to name its target: it does
-/// so by asserting the `xyz.tonk.invite/space` attribute on the same
-/// transient WITHOUT it being a matched concept field — the worker's
-/// `InviteHandler` reads it opportunistically from the raw facts
-/// (`invite_space_from_facts`, mirroring `remote_from_facts`), falling back
-/// to the dispatch origin when it's absent. The timestamp makes each click
-/// a distinct transient so repeated Share clicks reliably re-fire the
-/// handler and rotate the credential.
+/// The timestamp makes each activation a distinct transient, so repeated
+/// Share clicks reliably re-fire the handler and rotate the credential.
+/// It used to be accompanied by a marker attribute, whose whole job was
+/// to stop a [`PauseSync`] transient — an identical `{this, time}`
+/// otherwise — from also decoding as an invite. Per-verb namespaces make
+/// the two disjoint, so the marker is gone.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The submit event's timestamp — distinguishes one click from the
-    /// next so the transient re-fires.
-    pub time: crate::domain::command::invite::TimeStamp,
-    /// Per-command marker (read from the share form's `data-invite`) that
-    /// gives `Invite` an attribute no other command carries — so a
-    /// `tonk:pause-sync` transient (identical `{this, time}` shape otherwise)
-    /// does NOT also decode as an invite. See
-    /// [`crate::domain::command::invite::Invite`].
-    pub marker: crate::domain::command::invite::Invite,
+    /// The activation's timestamp — one click from the next.
+    pub time: crate::domain::command::current::invite::Time,
+}
+
+impl From<legacy::Invite> for Invite {
+    fn from(legacy: legacy::Invite) -> Self {
+        Self {
+            time: crate::domain::command::current::invite::Time(legacy.time.0),
+            this: legacy.this,
+        }
+    }
 }
 
 /// `Invite` is a [`dialog_capability::Command`]; its handler lives in
@@ -300,29 +316,37 @@ impl Command for Invite {
     type Output = ();
 }
 
-/// Attach a sync remote to an existing space, and optionally mint an invite
-/// once it is attached.
+/// Attach a sync remote to an existing space, and optionally mint an
+/// invite once it is attached.
 ///
-/// Dispatched routelessly by the share control when a user accepts the offer
-/// to turn sync on. `space`, `remote` and the `share` marker ride on the
-/// transient as raw facts the handler reads directly — `remote` because a URL
-/// cannot be a `String`-typed field (see
+/// Dispatched routelessly by the share control when a user accepts the
+/// offer to turn sync on. `space`, `remote` and the `share` request ride
+/// on the transient as raw facts the handler reads directly — `remote`
+/// because a URL cannot be a `String`-typed field (see
 /// [`crate::domain::command::enable_sync::Remote`]), the other two for
 /// symmetry with it.
 ///
-/// This is deliberately NOT the `space/enable-sync` command seeded in
-/// `core.yaml`: that one shares `CreateSpace`'s trigger attribute, so a
-/// handler registered against it would fire alongside `CreateSpaceHandler`
-/// and mint a new space instead of attaching to the existing one.
+/// This used to need a marker attribute, and to be a second command
+/// distinct from the `space/enable-sync` form's, because that form
+/// shared [`CreateSpace`]'s trigger attribute and anything registered
+/// against it would have minted a new space instead of attaching to the
+/// existing one. Both commands now have their own namespace, so neither
+/// workaround is load-bearing.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct EnableSync {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The acceptance timestamp — distinguishes one click from the next.
-    pub time: crate::domain::command::enable_sync::TimeStamp,
-    /// Per-command marker that keeps this command's shape distinct from
-    /// every other transient's.
-    pub marker: crate::domain::command::enable_sync::EnableSync,
+    /// The acceptance's timestamp — one click from the next.
+    pub time: crate::domain::command::current::enable_sync::Time,
+}
+
+impl From<legacy::EnableSync> for EnableSync {
+    fn from(legacy: legacy::EnableSync) -> Self {
+        Self {
+            time: crate::domain::command::current::enable_sync::Time(legacy.time.0),
+            this: legacy.this,
+        }
+    }
 }
 
 /// `EnableSync` is a [`dialog_capability::Command`]; its handler lives in
@@ -336,28 +360,31 @@ impl Command for EnableSync {
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
 /// target `space` (the DID to pause) and a timestamp so each click is a
-/// distinct transient (re-firing the handler); the handler reads the
-/// replica's current `auto-sync` preference for that space and flips it.
+/// distinct transient; the handler reads the replica's current
+/// `auto-sync` preference for that space and flips it.
 ///
-/// The `space` field is what lets this command live on and dispatch from the
-/// PROFILE branch: the handler reads the target space from the command rather
-/// than the dispatch origin, so the FAB's pause affordance needs no view or
-/// command seeded on each space's own branch.
+/// Naming the target rather than firing on it is what lets this live on
+/// and dispatch from the PROFILE branch, so the FAB's pause affordance
+/// needs nothing seeded per space.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct PauseSync {
     /// The command entity (a fresh id per click).
     pub this: Entity,
-    /// The click event's timestamp — distinguishes one click from the next
-    /// so the transient re-fires.
-    pub time: crate::domain::command::invite::TimeStamp,
-    /// The target space DID — the replica to pause/resume. Read by the handler
-    /// in place of the dispatch origin.
+    /// The click's timestamp — one click from the next.
+    pub time: crate::domain::command::current::pause_sync::Time,
+    /// The target space DID — the replica to pause/resume, read in place
+    /// of the dispatch origin.
     pub space: crate::domain::command::pause_sync::Space,
-    /// Per-command marker that gives `PauseSync` an attribute no other command
-    /// carries — so this transient does NOT also decode as `tonk:invite` (which
-    /// shares the same `{this, time}` shape). See
-    /// [`crate::domain::command::pause_sync::PauseSync`].
-    pub marker: crate::domain::command::pause_sync::PauseSync,
+}
+
+impl From<legacy::PauseSync> for PauseSync {
+    fn from(legacy: legacy::PauseSync) -> Self {
+        Self {
+            time: crate::domain::command::current::pause_sync::Time(legacy.time.0),
+            space: legacy.space,
+            this: legacy.this,
+        }
+    }
 }
 
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
@@ -369,23 +396,33 @@ impl Command for PauseSync {
 
 /// Rename a space's repository from the FAB.
 ///
-/// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot consume a
-/// claim dispatched on the profile branch, so this carries its target `space`
-/// and is executed by a worker handler instead — the `PauseSync` pattern. That
-/// is what lets the FAB's name chip depend on nothing seeded per-space.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+/// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot
+/// consume a claim dispatched on the profile branch, so this carries its
+/// target `space` and is executed by a worker handler instead — the
+/// [`PauseSync`] pattern. That is what lets the FAB's name chip depend
+/// on nothing seeded per space.
+///
+/// It shared `currentTarget.value` with [`ProfileRename`], and a marker
+/// attribute is what kept the two shapes disjoint. They now have
+/// separate namespaces, so neither carries one.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RenameRepository {
     /// The command entity (a fresh id per commit).
     pub this: Entity,
-    /// The new name, read from the editable's value on commit.
-    pub name: crate::domain::command::rename_repository::Value,
+    /// The new repository name.
+    pub name: crate::domain::command::current::rename_repository::Name,
     /// The target space DID — the repository to rename.
     pub space: crate::domain::command::rename_repository::Space,
-    /// Per-command marker distinguishing this from `profile/rename`, which
-    /// shares the `{this, value}` shape. A DISTINCT ATTRIBUTE (not a
-    /// distinct marker value) is what keeps the shapes disjoint — see
-    /// `domain::command::rename_repository::RenameRepository`'s doc.
-    pub marker: crate::domain::command::rename_repository::RenameRepository,
+}
+
+impl From<legacy::RenameRepository> for RenameRepository {
+    fn from(legacy: legacy::RenameRepository) -> Self {
+        Self {
+            name: crate::domain::command::current::rename_repository::Name(legacy.name.0),
+            space: legacy.space,
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for RenameRepository {
@@ -393,22 +430,28 @@ impl Command for RenameRepository {
     type Output = ();
 }
 
-/// Request to rename the current profile (set the member display name).
+/// Rename the signed-in member (set their display name).
 ///
-/// Asserted transiently when the topbar identity chip's `<tonk-editable>`
-/// commits. Carries the new `name` (read from `currentTarget.value`) and
-/// a `marker` (`data-rename`) that distinguishes it from the declarative
-/// `tonk/rename-repository` transient, which shares the `current-target/
-/// value` attribute. The handler persists the override to the profile
-/// meta branch and re-stamps `MemberName` on the origin space.
+/// Asserted transiently when the topbar identity chip's
+/// `<tonk-editable>` commits. The handler persists the override to the
+/// profile meta branch and re-stamps `MemberName` on the origin space.
+///
+/// See [`RenameRepository`] for the marker these two used to need.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProfileRename {
     /// The command entity (a fresh id per commit).
     pub this: Entity,
     /// The new display name.
-    pub name: crate::domain::command::rename::Value,
-    /// Per-command marker (`data-rename="tonk:profile"`).
-    pub marker: crate::domain::command::rename::Rename,
+    pub name: crate::domain::command::current::profile_rename::Name,
+}
+
+impl From<legacy::ProfileRename> for ProfileRename {
+    fn from(legacy: legacy::ProfileRename) -> Self {
+        Self {
+            name: crate::domain::command::current::profile_rename::Name(legacy.name.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for ProfileRename {
@@ -417,28 +460,34 @@ impl Command for ProfileRename {
 }
 
 /// Request to remove a space from this device: retract its replica
-/// record from the profile meta branch (the Hub row's source of
-/// truth), detach it from the reactor/sync, and delete its local
-/// storage.
+/// record from the profile meta branch (the Hub row's source of truth),
+/// detach it from the reactor/sync, and delete its local storage.
 ///
-/// Asserted transiently when the user confirms a Hub row's delete
-/// overlay (`<form onsubmit=space/remove data-remove={subject}>` in
-/// `profile.yaml`). Removal is device-local: a synced space can be
-/// rejoined via an invite link; server-side data is untouched.
+/// Removal is device-local: a synced space can be rejoined via an invite
+/// link, and server-side data is untouched. An owned hosted space does
+/// NOT submit this — `<ui-space-remove>` routes that verb through the
+/// reviewed account-space deletion flow instead.
 ///
-/// Deliberately a single matched field, like [`CreateSpace`], so an
-/// older profile descriptor keeps decoding it. The field also doubles
-/// as the command's distinct shape: `dataset/remove` is read by no
-/// other command, whereas a `dataset/subject` field would also match
-/// every `tonk/rename-repository` transient (which carries
-/// `dataset/subject`) and turn each rename into a deletion — see
-/// [`crate::domain::command::remove::Remove`].
+/// The field is called `subject`, which is what it is. It used to be
+/// read from `data-remove` rather than the honest `data-subject` for one
+/// reason: a `dataset/subject` field would also have matched every
+/// [`RenameRepository`] transient and turned each rename into a
+/// deletion.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RemoveSpace {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The subject DID of the space to remove, from `data-remove`.
-    pub subject: crate::domain::command::remove::Remove,
+    /// The subject DID of the space to remove.
+    pub subject: crate::domain::command::current::remove_space::Subject,
+}
+
+impl From<legacy::RemoveSpace> for RemoveSpace {
+    fn from(legacy: legacy::RemoveSpace) -> Self {
+        Self {
+            subject: crate::domain::command::current::remove_space::Subject(legacy.subject.0),
+            this: legacy.this,
+        }
+    }
 }
 
 /// `RemoveSpace` is a [`dialog_capability::Command`]; the worker
@@ -525,20 +574,29 @@ impl Command for ResendActivation {
     type Output = ();
 }
 
-/// Remove a member from the space this command fires in.
+/// Revoke a member's access to a space.
 ///
-/// Asserted transiently by the roster row's expel form; the worker's
-/// handler revokes the hop that admits the member under the remover's
-/// own `/` chain, records it at the space's access service, and retracts
-/// the member's roster rows. The service refuses a revocation minted
-/// under a member's `/use` chain, so holding the space is what lets this
-/// take effect, not the role fact.
+/// Asserted transiently by the roster row's expel control; the handler
+/// revokes the hop that admits the member under the remover's own `/`
+/// chain, records it at the space's access service, and retracts the
+/// member's roster rows. The service refuses a revocation minted under a
+/// member's `/use` chain, so holding the space is what lets this take
+/// effect, not the role fact.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExpelMember {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The DID the member's membership is keyed on, from `data-expel`.
-    pub member: crate::domain::command::expel::Expel,
+    /// The DID the member's membership is keyed on.
+    pub member: crate::domain::command::current::expel_member::Member,
+}
+
+impl From<legacy::ExpelMember> for ExpelMember {
+    fn from(legacy: legacy::ExpelMember) -> Self {
+        Self {
+            member: crate::domain::command::current::expel_member::Member(legacy.member.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl Command for ExpelMember {
@@ -679,22 +737,28 @@ pub struct ShareBlocked {
     pub time: crate::domain::share::Time,
 }
 
-/// Request to redeem an invite URL and join its space.
+/// Redeem an invite URL and join its space.
 ///
-/// Asserted transiently when `<tonk-page>` fires its `mount` event on the
-/// `/join` view (`<tonk-page onmount=tonk/join>`). The element reads the
-/// complete page URL, including the fragment the service worker cannot see,
-/// and delivers it as `detail.href`.
-///
-/// The handler parses and claims that URL, driving the overlay-only
-/// `tonk:join/status` (pending → failed, or retract + durable space on
+/// Fired by the /join view's page element, which reads the page location
+/// (the service worker cannot see the `#fragment`, where an open
+/// invite's seed rides). The handler claims the invite and drives
+/// `tonk:join/status` (pending → failed, or retract + durable replica on
 /// success).
 #[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Join {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// Complete invite URL from `detail.href`.
-    pub url: crate::domain::command::join::Href,
+    /// The complete invite URL, fragment included.
+    pub url: crate::domain::command::current::join::Url,
+}
+
+impl From<legacy::Join> for Join {
+    fn from(legacy: legacy::Join) -> Self {
+        Self {
+            url: crate::domain::command::current::join::Url(legacy.url.0),
+            this: legacy.this,
+        }
+    }
 }
 
 impl std::fmt::Debug for Join {
