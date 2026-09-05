@@ -226,6 +226,31 @@ where
     }
 }
 
+/// An environment that can scope itself to the transient it is
+/// dispatching.
+///
+/// [`Provider::execute`](dialog_capability::Provider::execute) receives
+/// the decoded command and nothing else, which is the right shape: a
+/// command is intent, and its declared fields are that intent. But a few
+/// commands carry data on the transient that their declaration does not
+/// name — a value the page asserts alongside the command, kept off the
+/// matched shape so an older frozen descriptor still decodes.
+///
+/// Reading that used to require bypassing `Provider` entirely and hand-
+/// writing a [`CommandHandler`], which welds the command to one
+/// environment and is why those commands could not run outside the
+/// browser. Scoping the env to the triggering facts instead keeps every
+/// command a plain `Provider<C>`: the host is free, and the facts are
+/// there for the two or three providers that still need them.
+///
+/// Prefer a declared field. This exists so an undeclared one is not a
+/// reason to abandon the trait.
+pub trait Dispatched: Clone {
+    /// A copy of this environment scoped to `facts`, the triggering
+    /// transient's own artifacts.
+    fn with_facts(&self, facts: EntityFacts) -> Self;
+}
+
 /// A `'static` boxed future for one command's execution, `Send` only
 /// off wasm — matches the reactor's
 /// [`ConditionalSync`](dialog_common::ConditionalSync) convention so a
@@ -325,7 +350,7 @@ where
 impl<C, Env> CommandHandler<Env> for TypedCommand<C, Env>
 where
     C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
-    Env: Provider<C> + Clone + ConditionalSync + 'static,
+    Env: Provider<C> + Dispatched + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
@@ -343,7 +368,9 @@ where
         // then hand the owned command + an env clone to a `'static`
         // future so the dispatcher can drop the lock before awaiting.
         let decoded = facts_entity(facts).and_then(|this| C::decode(this, facts));
-        let env = env.clone();
+        // Scope the env to this transient so a provider that needs an
+        // undeclared attribute can still read it — see [`Dispatched`].
+        let env = env.with_facts(facts.clone());
         Box::pin(async move {
             if let Some(command) = decoded {
                 env.execute(command).await;
@@ -398,7 +425,7 @@ impl<Current, Legacy, Env> CommandHandler<Env> for MigratedCommand<Current, Lega
 where
     Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
     Legacy: Decode + Into<Current> + ConditionalSync + 'static,
-    Env: Provider<Current> + Clone + ConditionalSync + 'static,
+    Env: Provider<Current> + Dispatched + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
         self.command.trigger_attributes()
@@ -412,7 +439,7 @@ where
         // Decode (and convert) synchronously, as `TypedCommand` does —
         // the caller still holds the lock.
         let decoded = self.command.decode(facts);
-        let env = env.clone();
+        let env = env.with_facts(facts.clone());
         Box::pin(async move {
             if let Some(command) = decoded {
                 env.execute(command).await;
@@ -463,7 +490,7 @@ impl<Env> CommandRegistry<Env> {
     pub fn command<C>(mut self) -> Self
     where
         C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
-        Env: Provider<C> + Clone + ConditionalSync + 'static,
+        Env: Provider<C> + Dispatched + ConditionalSync + 'static,
     {
         self.register(Box::new(TypedCommand::<C, Env>::new()));
         self
@@ -477,7 +504,7 @@ impl<Env> CommandRegistry<Env> {
     where
         Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
         Legacy: Decode + Into<Current> + ConditionalSync + 'static,
-        Env: Provider<Current> + Clone + ConditionalSync + 'static,
+        Env: Provider<Current> + Dispatched + ConditionalSync + 'static,
     {
         self.register(Box::new(MigratedCommand::<Current, Legacy, Env>::new()));
         self

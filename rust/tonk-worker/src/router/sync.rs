@@ -81,7 +81,6 @@ async fn publish_sync_status(
 
 /// Stamp a specific `tonk/sync` `status` value into the `state:here` overlay
 /// (e.g. `offline` on a fetch failure, where there is no `SyncState` to map).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn publish_sync_status_attr(
     tonk: &crate::worker::TonkState,
     repo: &str,
@@ -121,7 +120,6 @@ pub async fn publish_sync_status_attr(
 /// just-paused replica without waiting for a status sweep (which a paused
 /// replica skips). Called by the pause-sync command handler after it commits
 /// the durable preference.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
     publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::paused_status()).await;
 }
@@ -169,7 +167,6 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
 /// both consult before pulling/pushing. Keyed on the replica entity (derived
 /// from `(profile, subject)`) rather than the `state:here` singleton, so the
 /// preference is this device's own.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch: &str) -> bool {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{Replica, ReplicaSyncEnabled};

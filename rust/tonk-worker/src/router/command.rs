@@ -35,6 +35,9 @@ use crate::reactor::CommandRegistry;
 pub struct CommandEnv {
     state: AppState,
     origin: CommandOrigin,
+    /// The triggering transient's own artifacts, present once the
+    /// dispatcher has scoped this env to a match. See [`Self::facts`].
+    facts: Option<std::sync::Arc<crate::reactor::EntityFacts>>,
 }
 
 /// The repository + branch a command was triggered in. Captured at the
@@ -61,7 +64,11 @@ impl CommandEnv {
     /// Build the env over a clone of the shared state, scoped to the
     /// `origin` the triggering commit happened in.
     pub fn new(state: AppState, origin: CommandOrigin) -> Self {
-        Self { state, origin }
+        Self {
+            state,
+            origin,
+            facts: None,
+        }
     }
 
     /// Borrow the underlying state — `Provider` impls re-lock through
@@ -84,6 +91,34 @@ impl CommandEnv {
     /// back to this client.
     pub fn client(&self) -> Option<&crate::router::ClientId> {
         self.origin.client.as_ref()
+    }
+
+    /// The triggering transient's own artifacts.
+    ///
+    /// Empty unless the dispatcher scoped this env to a match, which it
+    /// always does before calling a provider.
+    ///
+    /// **Prefer a declared command field.** A provider receives its
+    /// command's fields in `C::Input`, and that is where a command's
+    /// intent belongs. This is for the handful of attributes a page
+    /// asserts alongside a command without the command's shape naming
+    /// them — kept off the matched shape so an older frozen descriptor
+    /// still decodes. Reading them used to mean hand-writing a
+    /// [`CommandHandler`](crate::reactor::CommandHandler), which welds
+    /// the command to this one environment; that is what stopped these
+    /// commands running anywhere but the browser.
+    pub fn facts(&self) -> &[dialog_artifacts::Artifact] {
+        self.facts.as_deref().map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+impl crate::reactor::Dispatched for CommandEnv {
+    fn with_facts(&self, facts: crate::reactor::EntityFacts) -> Self {
+        Self {
+            state: self.state.clone(),
+            origin: self.origin.clone(),
+            facts: Some(std::sync::Arc::new(facts)),
+        }
     }
 }
 
@@ -132,7 +167,8 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::repository::RemoveSpaceHandler::new()));
         registry.register(Box::new(super::repository::InviteHandler::new()));
         registry.register(Box::new(super::repository::EnableSyncHandler::new()));
-        registry.register(Box::new(super::repository::PauseSyncHandler::new()));
+        registry = registry
+            .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>();
         registry.register(Box::new(super::repository::ProfileRenameHandler::new()));
         registry.register(Box::new(super::repository::RenameRepositoryHandler::new()));
         registry.register(Box::new(super::members::PromoteMemberHandler::new()));
@@ -152,7 +188,17 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
+        // Every command whose provider is target-agnostic is registered
+        // here too, so the same intent runs outside the browser — the
+        // CLI dispatches these against a native state, and a native test
+        // can exercise a command end to end without a service worker.
+        //
+        // This branch used to be empty, which is why a command asserted
+        // from the CLI committed, was swept, and did nothing. A command
+        // belongs here unless its provider genuinely needs the page; add
+        // it as you convert it (see `.claude/skills/target-agnostic-commands`).
         CommandRegistry::new()
+            .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
     }
 }
 

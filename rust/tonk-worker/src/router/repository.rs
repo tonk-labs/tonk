@@ -1454,74 +1454,40 @@ fn long_invite_url(
 ///
 /// [`PauseSync`]: tonk_schema::command::PauseSync
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct PauseSyncHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::PauseSync,
-        tonk_schema::command::legacy::PauseSync,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl PauseSyncHandler {
-    /// Cache `PauseSync`'s trigger attributes (its `time` field) so the
-    /// registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+/// `PauseSync` is fulfilled by a [`Provider`], not a hand-written
+/// handler: everything it needs is on the env (`state()` for the
+/// operator and reactor) or on the command (`space`, the target it
+/// names rather than infers). Nothing here is browser-specific, so the
+/// same provider runs in the service worker, the CLI and a native test.
+///
+/// [`Provider`]: dialog_capability::Provider
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::PauseSync) {
         use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously to read the target space off the command — the
-        // handler flips THAT space's replica, not the dispatch origin's, so the
-        // command can be dispatched from the profile branch. The repo key is
-        // the space DID's suffix; a space's content branch is always `main`.
-        let target = self
-            .command
-            .decode(facts)
-            .and_then(|command| {
-                command
-                    .space
-                    .0
-                    .to_string()
-                    .parse::<dialog_varsig::Did>()
-                    .ok()
-            })
-            .map(|did| did.repo_key().to_owned());
-        let env = env.clone();
+        // The command names the space to flip rather than taking the
+        // dispatch origin's, which is what lets the FAB pause a space
+        // from the profile branch. A space's content branch is always
+        // `main`; the repo key is the space DID's suffix.
+        let Some(repo) = command
+            .space
+            .0
+            .to_string()
+            .parse::<dialog_varsig::Did>()
+            .ok()
+            .map(|did| did.repo_key().to_owned())
+        else {
+            log!("PauseSync: no/unparseable target space, skipping");
+            return;
+        };
+        let branch = CONTENT_BRANCH.to_string();
+        log!("command PauseSync repo={} branch={}", repo, branch);
 
-        Box::pin(async move {
-            let Some(repo) = target else {
-                log!("PauseSync: no/unparseable target space, skipping");
-                return;
-            };
-            let branch = CONTENT_BRANCH.to_string();
-            log!("command PauseSync repo={} branch={}", repo, branch);
-
-            if let Err(error) = run_pause_sync(&env, &repo, &branch).await {
-                log!("PauseSync for repo '{}' failed: {}", repo, error);
-            }
-        })
+        if let Err(error) = run_pause_sync(self, &repo, &branch).await {
+            log!("PauseSync for repo '{}' failed: {}", repo, error);
+        }
     }
 }
 
@@ -1543,7 +1509,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
 /// A custom handler (not a plain `Provider<ProfileRename>`) because it
 /// writes durable branch state the decoded command doesn't carry and
 /// targets the repo from the origin rather than a command field — like
-/// [`InviteHandler`]/[`PauseSyncHandler`].
+/// [`InviteHandler`] and the `PauseSync` provider.
 ///
 /// [`ProfileRename`]: tonk_schema::command::ProfileRename
 /// [`ProfileName`]: tonk_schema::ProfileName
@@ -2206,7 +2172,6 @@ pub(crate) async fn remove_space_inner(
     Ok(())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
@@ -2439,9 +2404,8 @@ pub(crate) async fn delete_legacy_storage(key: &str) {
 /// branch), so the command also publishes status on BOTH pause and resume so
 /// the chip reflects the change immediately.
 ///
-/// Split out from [`PauseSyncHandler::run`] so the `?` early-return funnels
+/// Split out from the `PauseSync` provider so the `?` early-return funnels
 /// into the single `log!` there.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_pause_sync(
     env: &crate::router::CommandEnv,
     repo: &str,
