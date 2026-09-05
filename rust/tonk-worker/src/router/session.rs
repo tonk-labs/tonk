@@ -26,6 +26,15 @@ use tokio::sync::oneshot;
 use super::{AppState, ClientId};
 use crate::TonkWorkerError;
 
+/// The repo-token prefix naming the profile-as-repository endpoint, mirroring
+/// `tonk_host::location`'s `PROFILE_PREFIX`. A site's stamped `repo` is a
+/// location token a view interpolates into `with="{branch}@{repo}"`, so the
+/// profile's must carry this prefix or the location parses as a named
+/// repository. Duplicated rather than imported: `tonk-host` is guest-side and
+/// the worker does not depend on it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PROFILE_LOCATION_PREFIX: &str = "profile:";
+
 /// `POST /api/site` response: the site entity the client should render against.
 #[derive(Debug, Serialize)]
 pub struct SiteResponse {
@@ -406,7 +415,20 @@ async fn stamp_site_on(
     // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
     // repo/branch by walking DOM ancestors, which the sealed guest otherwise
     // lacks. These are `as: text` site fields, hence string-typed raw claims.
-    for (name, value) in [("repo", repo), ("branch", branch_name)] {
+    //
+    // `repo` is a LOCATION TOKEN, not a bare name: it is what a view
+    // interpolates into `with="{branch}@{repo}"`, and `tonk_host::Location`
+    // reads a bare token as a NAMED repository. The profile lives outside the
+    // named-repo namespace, so stamping its name alone sent every query and
+    // transact a profile-side view built to `/api/repository/<profile>/…` — a
+    // repository that does not exist. Prefixing it here is what lets one view
+    // work in both contexts without knowing which it is in.
+    let repo_token = if profile {
+        format!("{PROFILE_LOCATION_PREFIX}{repo}")
+    } else {
+        repo.to_owned()
+    };
+    for (name, value) in [("repo", repo_token.as_str()), ("branch", branch_name)] {
         match site_param_claim(&entity, name, value) {
             Some(claim) => overlay = overlay.assert(claim),
             None => tonk_common::log!("register_site: bad site {name} attribute"),
@@ -573,6 +595,15 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for LoadHandler {
             );
 
             let tonk = env.state().read().await;
+            // In profile mode the origin carries no repo at all, but the stamp
+            // records a `profile:<name>` location token — and a nameless
+            // `profile:` is not a location. Fill the name from the worker's own
+            // profile, which is what the per-branch endpoint already stamps.
+            let repo = if profile {
+                tonk.profile_name.clone()
+            } else {
+                repo
+            };
             // The command's `path` is already the route-relative path the tab
             // routes (a nested `<tonk-site path={rest}>`), so it is both the
             // recorded `path` and the `rest` matched against the route table.
@@ -700,5 +731,239 @@ async fn match_route(
             })
         }
         Err(_) => None,
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use ::axum::body::Body;
+    use ::axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+
+    use crate::router::tests::test_state;
+    use crate::router::{ClientId, api_router_with_state};
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// The `xyz.tonk.site/{field}` value stamped for `client`, read back
+    /// through `endpoint`'s query route.
+    async fn stamped_field(
+        app: &::axum::Router,
+        client: &str,
+        field: &str,
+        endpoint: &str,
+    ) -> Option<String> {
+        // `concept` is an entity-typed site field; the rest read as text.
+        let as_type = if field == "concept" { "Entity" } else { "Text" };
+        let query = format!(
+            r#"{{"predicate":{{"with":{{"{field}":{{"the":"xyz.tonk.site/{field}","as":"{as_type}","cardinality":"one"}}}}}},"terms":{{"this":"site:{client}","{field}":{{"?":{{"name":"{field}"}}}}}}}}"#
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(endpoint.to_owned())
+            .header("content-type", "application/json")
+            .body(Body::from(query))
+            .unwrap();
+        request.extensions_mut().insert(ClientId(client.to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        let body = ::axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&body).ok()?;
+        rows.as_array()?
+            .first()?
+            .get("fields")?
+            .get(field)?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// The site's stamped `repo` — the location token a view interpolates.
+    async fn stamped_repo(app: &::axum::Router, client: &str, endpoint: &str) -> Option<String> {
+        stamped_field(app, client, "repo", endpoint).await
+    }
+
+    /// The profile library, embedded at compile time — seeded so the profile
+    /// branch has a `route!` table for `/` to match against. Without it the
+    /// stamp is skipped entirely and nothing is written.
+    const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+    /// The standard library, embedded at compile time — the space-branch
+    /// counterpart of [`PROFILE_LIBRARY`], seeded so `/` matches a route.
+    const CORE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+    /// The notebook library, embedded at compile time.
+    const NOTEBOOK_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+
+    #[dialog_common::test]
+    async fn it_stamps_a_resolvable_repo_token_on_the_profile_branch() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        {
+            let tonk = state.read().await;
+            crate::router::evaluate::evaluate_profile_body(
+                &tonk,
+                "main",
+                PROFILE_LIBRARY.to_owned(),
+                true,
+            )
+            .await
+            .expect("the profile library seeds");
+        }
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/profile/branch/main/site")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/"}"#))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ClientId("probe".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let repo = stamped_repo(&app, "probe", "/api/profile/branch/main/query")
+            .await
+            .expect("the profile site stamps a repo field");
+        assert!(
+            repo.starts_with("profile:"),
+            "stamped repo {repo:?} must be a `profile:<name>` location token, not a bare name: \
+             a `with=\"{{branch}}@{{repo}}\"` template built from it otherwise addresses a named \
+             repository that does not exist"
+        );
+    }
+
+    /// A site stamped on a NAMED space records the bare repository key — the
+    /// same location token it always did. The profile prefix must not leak
+    /// into the space path, or every space view's `with="{branch}@{repo}"`
+    /// would address the profile endpoint instead of its own repository.
+    #[dialog_common::test]
+    async fn it_stamps_a_bare_repo_token_on_a_named_space() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        // A branchless `{}` create: the worker seeds nothing, so this test
+        // drives the seed itself and the repo exists to seed onto.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/repository/space")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let body = ::axum::body::to_bytes(created.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let key = info["name"]
+            .as_str()
+            .expect("the create returns a key")
+            .to_owned();
+        {
+            let tonk = state.read().await;
+            crate::router::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                "main",
+                CORE_LIBRARY.to_owned(),
+                true,
+            )
+            .await
+            .expect("the core library seeds");
+        }
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/repository/{key}/branch/main/site"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/"}"#))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ClientId("space-probe".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let repo = stamped_repo(
+            &app,
+            "space-probe",
+            &format!("/api/repository/{key}/branch/main/query"),
+        )
+        .await
+        .expect("the space site stamps a repo field");
+        assert_eq!(
+            repo, key,
+            "a named space stamps its bare repository key, unprefixed"
+        );
+    }
+
+    /// A notebook installed on a PROFILE resolves its route and hands its view
+    /// a location that addresses the profile endpoint.
+    ///
+    /// This is the whole point: `notebook.yaml` is written once, and its route
+    /// view mounts `<tonk-display with="{branch}@{repo}">`. The guest does not
+    /// know or care whether it is in a profile or a named space — it only
+    /// interpolates the site's fields. So the `repo` the site stamps has to be
+    /// a location token that reaches the branch the notebook actually lives on.
+    #[dialog_common::test]
+    async fn it_resolves_a_notebook_route_installed_on_a_profile() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        {
+            let tonk = state.read().await;
+            // The profile library first (it declares the shared `view` /
+            // `route` concepts), then the notebook on top — the install a
+            // author performs to get a notebook onto their profile.
+            for library in [PROFILE_LIBRARY, NOTEBOOK_LIBRARY] {
+                crate::router::evaluate::evaluate_profile_body(
+                    &tonk,
+                    "main",
+                    library.to_owned(),
+                    true,
+                )
+                .await
+                .expect("the library installs on the profile");
+            }
+        }
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/profile/branch/main/site")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/notebook"}"#))
+            .unwrap();
+        request.extensions_mut().insert(ClientId("nb".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The notebook index route matched, so the notebook's own model is
+        // what the shell mounts rather than the profile's fallback.
+        let concept = stamped_field(&app, "nb", "concept", "/api/profile/branch/main/query")
+            .await
+            .expect("the notebook route stamps a concept");
+        assert_eq!(
+            concept, "tonk:notebook/index-route",
+            "/notebook on a profile must match the notebook index route"
+        );
+
+        // And the location its view builds reaches the profile endpoint.
+        let repo = stamped_repo(&app, "nb", "/api/profile/branch/main/query")
+            .await
+            .expect("the notebook route stamps a repo");
+        let branch = stamped_field(&app, "nb", "branch", "/api/profile/branch/main/query")
+            .await
+            .expect("the notebook route stamps a branch");
+        let with = format!("{branch}@{repo}");
+        assert!(
+            with.starts_with("main@profile:") && with.len() > "main@profile:".len(),
+            "the notebook view's `with` ({with:?}) must address the profile endpoint \
+             with a named profile, not a repository"
+        );
     }
 }

@@ -87,7 +87,6 @@ concept!: &notebook/blocks
 # kind a neighbour is — which is what lets an inserted block take its place
 # from a neighbour that was itself just inserted.
 concept!: &block/position
-  this: tonk:notebook/block-position
   description: A block's position, derived or stored.
   with:
     at:
@@ -125,7 +124,6 @@ concept!: &notebook/block
 # is retracted is still a block, and a rule reading the chain must not have
 # to bind a source it does not care about.
 concept!: &block/chain
-  this: tonk:notebook/block-chain
   description: A block and the block that follows it.
   with:
     next:
@@ -135,34 +133,20 @@ concept!: &block/chain
       as: entity
 
 # ---------------------------------------------------------------------------
-# The space shell.
+# NOT the space shell.
 #
-# The space route mounts `<tonk-display entity={replica} model=tonk/space>`,
-# so the model the shell renders has to resolve for the REPLICA entity, not
-# a notebook. `tonk:notebook/space` is that model; its view mounts the scratch
-# notebook as a nested display.
+# This library used to re-point `id:tonk/space` — the cardinality-one alias
+# core.yaml resolves to `tonk:blank` — at a notebook model, so installing the
+# notebook silently REPLACED the space home for the whole branch. Core's space
+# route renders through that alias (`<tonk-display entity={replica}
+# model=tonk/space>`), so the two libraries fought over one slot and whichever
+# landed last won.
+#
+# A library that adds a feature must not seize the home page to do it. The
+# notebook is reached through its own `/notebook` routes below; the space home
+# stays whatever the space chose. An author who does want a notebook as their
+# landing page re-points the alias themselves, which is what that slot is for.
 # ---------------------------------------------------------------------------
-
-concept!: &notebook/space
-  this: tonk:notebook/space
-  description: A notebook view of the tonk replica.
-  with:
-    subject:
-      description: The repository's subject DID (shared with tonk/replica)
-      the: dialog.replica/subject
-      as: entity
-
-name!:
-  this: id:tonk/space
-  entity: tonk:notebook/space
-
-view!:
-  this: tonk:notebook/space
-  show:
-    ui: |
-      <div class="notebook-space">
-        <tonk-display entity="id:notebook/scratch" model=tonk:notebook></tonk-display>
-      </div>
 
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
@@ -241,12 +225,12 @@ view!:
 # "Concept mismatch: required attribute missing" beside the working list.
 # A literal path wins over `/{*model}` under the router's specificity rules
 # (fewer broad params first), so this claims the URL outright.
-route!: &route/notebook/index
+route!:
   this: id:notebook/index/route
   path: "/notebook"
   concept: tonk:notebook/index-route
 
-concept!: &notebook/index-route
+concept!:
   this: tonk:notebook/index-route
   description: The notebook index (`/space/{repo}/notebook`).
   with:
@@ -289,12 +273,12 @@ view!:
         <tonk-display with="{branch}@{repo}" model=tonk:notebook></tonk-display>
       </tonk-notebook-index>
 
-route!: &route/notebook
+route!:
   this: id:notebook/route
   path: "/notebook/{*entity}"
   concept: tonk:notebook/route
 
-concept!: &notebook/route
+concept!:
   this: tonk:notebook/route
   description: A single notebook page (`/space/{repo}/notebook/{entity}`).
   with:
