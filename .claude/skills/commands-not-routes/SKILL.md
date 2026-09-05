@@ -52,3 +52,8 @@ If you believe you have one of these, add it to `ROUTES` in `route_table.rs` in 
 - Does it need to answer the caller? Ask what fact the caller would subscribe to instead.
 - Does it need the page to do something (navigate, open)? Post to the originating client from the handler.
 - Is the same operation needed from the CLI? A command is asserted the same way from `tonk eval`; a route is not.
+
+## See also
+
+- `target-agnostic-commands` — once it *is* a command, define it and its
+  provider target-agnostically so the browser, the CLI and tests all run it.
