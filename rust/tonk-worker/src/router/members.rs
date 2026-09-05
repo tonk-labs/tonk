@@ -719,6 +719,7 @@ mod tests {
     /// promote and an expel never decode as each other.
     #[dialog_common::test]
     async fn it_decodes_each_member_command_by_its_own_attribute() {
+        use crate::reactor::Decode as _;
         use tonk_schema::command::{ExpelMember, PromoteMember};
         let promote = PromoteMember::trigger_attributes();
         let expel = ExpelMember::trigger_attributes();

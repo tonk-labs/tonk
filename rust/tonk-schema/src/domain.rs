@@ -939,7 +939,12 @@ pub mod command {
             pub struct Name(pub String);
         }
 
-        /// `space/create-notebook` — write a notebook and go to it.
+        /// `notebook/create` — write a notebook and go to it.
+        ///
+        /// The domain is `xyz.tonk.notebook.create`, not
+        /// `xyz.tonk.command.create-notebook`: `notebook.yaml` declares
+        /// this command and the YAML is the schema of record, so the
+        /// struct follows it rather than the other way round.
         pub mod create_notebook {
             use dialog_query::Attribute;
 
@@ -948,13 +953,13 @@ pub mod command {
             /// retitle's `detail/title` would not also decode as a
             /// create.
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.create-notebook")]
+            #[domain("xyz.tonk.notebook.create")]
             pub struct Title(pub String);
 
             /// The draft's whole document, so the new notebook keeps
             /// what was already written under the heading.
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.create-notebook")]
+            #[domain("xyz.tonk.notebook.create")]
             pub struct Body(pub String);
         }
 

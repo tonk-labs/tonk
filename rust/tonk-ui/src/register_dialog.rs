@@ -2664,19 +2664,21 @@ mod tests {
         );
     }
 
-    /// Both claims name the read-path the commands decode, and differ
-    /// so each mints its own command entity.
+    /// Each claim names the attribute its own command decodes, and the
+    /// two are different attributes — which is what keeps a lookup from
+    /// also decoding as a registration.
     #[dialog_common::test]
     fn it_builds_claims_the_commands_decode() {
         let check = check_email_claim("jsmith@example.com").to_string();
-        assert!(check.contains("dom.event.current-target.elements.email/value"));
+        assert!(check.contains("xyz.tonk.command.check-email/email"));
         assert!(check.contains("jsmith@example.com"));
 
         let register = register_claim("jsmith@example.com").to_string();
-        assert!(register.contains("dom.event.current-target.elements.email/value"));
-        assert_ne!(
-            check, register,
-            "the descriptions differ, so the two commands are distinct transients",
+        assert!(register.contains("xyz.tonk.command.register-account/email"));
+        assert!(
+            !register.contains("xyz.tonk.command.check-email/email"),
+            "a registration must not carry the lookup's attribute",
         );
+        assert_ne!(check, register, "the two commands are distinct transients",);
     }
 }

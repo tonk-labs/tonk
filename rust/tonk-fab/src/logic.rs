@@ -1622,12 +1622,11 @@ mod create_space {
     fn it_uses_the_declared_form_attribute_uris_for_create_space() {
         let claim = create_space_claim_json("Untitled");
         let text = claim.to_string();
-        // Verbatim, kebab-cased as declared — the handler matches on these.
-        // Every control is read at `/value`: the segment after the control
-        // name is the JS property the browser's extractor would have read,
-        // so a descriptive leaf resolves to `undefined` there and the
-        // handler would never see the field here.
-        assert!(text.contains("dom.event.current-target.elements.name/value"));
+        // Verbatim as declared — the handler matches on this. The
+        // attribute is the command's own; the DOM read path that used to
+        // fill it is now only what a branch seeded before the migration
+        // still asserts, and the handler converts that separately.
+        assert!(text.contains("xyz.tonk.command.create-space/name"));
         let params = &claim["claims"][0]["application"]["parameters"];
         assert_eq!(params["name"], "Untitled");
     }

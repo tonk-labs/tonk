@@ -834,14 +834,23 @@ fn parse_event_declarations(
         let (mut event_type, mut prevent, mut stop) = (None, false, false);
         let mut sources: Vec<(String, String)> = Vec::new();
         let mut in_where = false;
-        for body in lines.by_ref() {
+        // Peek; never consume the terminator. `for body in lines.by_ref()`
+        // eats the line it breaks on, so a declaration ending on the NEXT
+        // `event!:` header swallows it and that declaration is never seen.
+        // A blank line between them used to terminate first, which hid the
+        // bug for exactly as long as every pair had one.
+        while let Some(body) = lines.peek().copied() {
+            let trimmed = body.trim();
+            // Blank lines occur inside `description: |` blocks and do not
+            // end a declaration.
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.next();
+                continue;
+            }
             if !body.starts_with("  ") {
                 break;
             }
-            let trimmed = body.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
+            lines.next();
             if trimmed == "where:" {
                 in_where = true;
                 continue;
@@ -907,14 +916,20 @@ fn parse_command_fields(
         // is indexed under both.
         let mut this: Option<String> = None;
         let mut section: Option<bool> = None;
-        for body in lines.by_ref() {
+        // Peek, and skip blanks — see `parse_event_declarations`. Ending a
+        // declaration on the first blank line truncated the field list of
+        // any command whose field carries a multi-paragraph description,
+        // so every check built on this quietly measured less than it read.
+        while let Some(body) = lines.peek().copied() {
+            let trimmed = body.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.next();
+                continue;
+            }
             if !body.starts_with("  ") {
                 break;
             }
-            let trimmed = body.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
+            lines.next();
             if let Some(uri) = trimmed.strip_prefix("this: ") {
                 this = Some(uri.trim().to_string());
                 continue;
@@ -1068,4 +1083,163 @@ fn the_event_query_predicate_matches_the_builtin() {
         query_with.contains_key("type") && query_with.contains_key("where"),
         "the query must pin both required fields",
     );
+}
+
+/// A command with a Rust handler must match on attributes its notation
+/// declaration actually carries.
+///
+/// The two halves are written in different files and nothing but this
+/// connects them: the YAML `command!:` declares what a transient carries,
+/// and the Rust concept declares what the handler decodes. When they
+/// drift the transient still commits, the handler never runs, and the UI
+/// looks like it worked. `notebook.yaml` says it in its own words — "a
+/// field the struct requires but the command does not declare is simply
+/// absent from the descriptor, so the decode fails and the binding falls
+/// through in silence".
+///
+/// That is not hypothetical: moving `notebook/create` into its own
+/// namespace in the YAML without moving `CreateNotebook` with it silently
+/// broke notebook creation on any freshly seeded branch, and nothing
+/// failed.
+///
+/// The invariant is containment, not equality. A concept may deliberately
+/// match on FEWER attributes than the command declares — `CreateSpace` is
+/// matched name-only so a frozen older descriptor still decodes it, and
+/// reads the optional remote from the raw facts. What is never sound is
+/// the other direction: an attribute the handler requires that no
+/// declaration produces.
+#[dialog_common::test]
+fn every_handled_command_matches_attributes_its_declaration_carries() {
+    use dialog_reactor::Decode as _;
+
+    let mut declared = std::collections::BTreeMap::new();
+    for document in [
+        STANDARD_LIBRARY,
+        PROFILE_LIBRARY,
+        TABLE_LIBRARY,
+        NOTEBOOK_LIBRARY,
+        PROSE_LIBRARY,
+        ISSUE_LIBRARY,
+    ] {
+        for (name, attributes) in parse_command_attributes(document) {
+            declared
+                .entry(name)
+                .or_insert_with(std::collections::BTreeSet::new)
+                .extend(attributes);
+        }
+    }
+
+    // Every notation command the worker decodes in typed Rust. A command
+    // consumed by a `rule!:` has no Rust concept and is not listed.
+    //
+    // `tonk/rename-repository` is deliberately absent, and the reason is
+    // worth stating: the name belongs to TWO different commands. The one
+    // `core.yaml` declares carries `{subject, name}` and is consumed by a
+    // space-side `rule!:`. `tonk_schema::command::RenameRepository`
+    // carries `{space, name}` and is dispatched from the profile branch by
+    // the FAB, which inlines its own descriptor because the space-side
+    // rule cannot consume a claim made on the profile branch. They share a
+    // notation name and nothing else, so pairing them here would compare
+    // two unrelated things. The FAB's claim is pinned against the struct
+    // in `fab_drift.rs` instead, which is where that pairing lives.
+    let handled: Vec<(&str, Vec<String>)> = vec![
+        (
+            "space/create",
+            tonk_schema::command::CreateSpace::trigger_attributes(),
+        ),
+        (
+            "space/enable-sync",
+            tonk_schema::command::CreateSpace::trigger_attributes(),
+        ),
+        (
+            "space/remove",
+            tonk_schema::command::RemoveSpace::trigger_attributes(),
+        ),
+        (
+            "tonk/invite",
+            tonk_schema::command::Invite::trigger_attributes(),
+        ),
+        (
+            "tonk/pause-sync",
+            tonk_schema::command::PauseSync::trigger_attributes(),
+        ),
+        (
+            "profile/rename",
+            tonk_schema::command::ProfileRename::trigger_attributes(),
+        ),
+        (
+            "member/expel",
+            tonk_schema::command::ExpelMember::trigger_attributes(),
+        ),
+        (
+            "tonk/join",
+            tonk_schema::command::Join::trigger_attributes(),
+        ),
+        (
+            "tonk/load",
+            tonk_schema::command::Load::trigger_attributes(),
+        ),
+        (
+            "notebook/create",
+            tonk_schema::command::CreateNotebook::trigger_attributes(),
+        ),
+    ];
+
+    for (name, required) in handled {
+        let carries = declared
+            .get(name)
+            .unwrap_or_else(|| panic!("no `command!: &{name}` in any shipped library"));
+        let missing: Vec<&String> = required
+            .iter()
+            .filter(|attribute| !carries.contains(*attribute))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "`{name}`: the handler matches on {missing:?}, which its notation \
+             declaration does not carry — the transient would commit and the \
+             handler would never run. Declared: {carries:?}",
+        );
+    }
+}
+
+/// Every `the:` a `command!:` declaration names, keyed by command name.
+fn parse_command_attributes(
+    document: &str,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("command!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let mut attributes = std::collections::BTreeSet::new();
+        // Peek, and skip blanks — see `parse_event_declarations`.
+        while let Some(body) = lines.peek().copied() {
+            // A blank line does not end the declaration: `description: |`
+            // block scalars contain them, and treating one as the end
+            // silently truncated the scan — which is how this gate first
+            // reported that `tonk/invite` declared no attributes at all.
+            if body.trim().is_empty() {
+                lines.next();
+                continue;
+            }
+            if !body.starts_with("  ") {
+                break;
+            }
+            lines.next();
+            // Exactly a field's own `the:`, six spaces in. Prose inside a
+            // block scalar is indented deeper and must not be read as a
+            // declaration however it happens to begin.
+            if let Some(attribute) = body.strip_prefix("      the: ") {
+                attributes.insert(attribute.trim().to_string());
+            }
+        }
+        out.insert(name, attributes);
+    }
+    out
 }
