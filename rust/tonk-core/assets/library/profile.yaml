@@ -560,11 +560,30 @@ concept!: &space/seed
       the: xyz.tonk.seed/prior
       cardinality: one
       as: entity
+    concept:
+      description: >
+        A concept this seed declared. Cardinality MANY, like every
+        component field: a seed installs many, and one per entry would
+        mean each supersedes the last.
+      the: xyz.tonk.seed/concept
+      cardinality: many
+      as: entity
+    view:
+      description: A view this seed declared.
+      the: xyz.tonk.seed/view
+      cardinality: many
+      as: entity
+    rule:
+      description: A rule this seed installed.
+      the: xyz.tonk.seed/rule
+      cardinality: many
+      as: entity
     route:
       description: >
-        A route this seed installed. Cardinality MANY — a seed installs
-        many routes, and one per entry means each supersedes the last,
-        leaving only the final route recorded.
+        A route this seed installed. Also the router's precedence
+        signal: a route named here came from the seed, and one that is
+        not was authored in the space, which wins an equal-specificity
+        tie.
       the: xyz.tonk.seed/route
       cardinality: many
       as: entity
