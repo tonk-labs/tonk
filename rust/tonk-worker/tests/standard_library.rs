@@ -750,3 +750,212 @@ fn collect_on_attributes(document: &str) -> Vec<String> {
     }
     out
 }
+
+/// Every `on:<name>=<command>` binding in a library resolves to a
+/// declaration that can fill the command's required fields.
+///
+/// This is the check the whole `event!:` design exists to make
+/// possible, run against the real libraries: a required field with no
+/// source posts a command the rule's premise cannot match, so the
+/// interaction silently does nothing. Before, the only way to find that
+/// was to click the button in a browser.
+#[dialog_common::test]
+fn every_binding_can_fill_its_command() {
+    let libraries = [
+        ("core.yaml", STANDARD_LIBRARY),
+        ("profile.yaml", PROFILE_LIBRARY),
+        ("table.yaml", TABLE_LIBRARY),
+        ("notebook.yaml", NOTEBOOK_LIBRARY),
+        ("prose.yaml", PROSE_LIBRARY),
+        ("issue.yaml", ISSUE_LIBRARY),
+    ];
+
+    // Declarations and commands resolve across the seed, so index them
+    // all before checking any binding.
+    let mut events = std::collections::BTreeMap::new();
+    let mut commands = std::collections::BTreeMap::new();
+    for (_, document) in libraries {
+        events.extend(parse_event_declarations(document));
+        commands.extend(parse_command_fields(document));
+    }
+    assert!(
+        !events.is_empty() && !commands.is_empty(),
+        "the scan found nothing — it has drifted from the library's shape"
+    );
+
+    let mut checked = 0usize;
+    for (label, document) in libraries {
+        for (attribute, command_name) in parse_bindings(document) {
+            let event_name = tonk_template::event::event_name_for_attribute(&attribute)
+                .unwrap_or_else(|| panic!("{label}: `{attribute}` is not a usable binding name"));
+            let event = events
+                .get(&event_name)
+                .unwrap_or_else(|| panic!("{label}: no `event!:` declares `{event_name}`"));
+            let (required, optional) = commands.get(&command_name).unwrap_or_else(|| {
+                panic!("{label}: `{attribute}={command_name}` names no command")
+            });
+
+            let mismatch = tonk_template::event::check(event, required, optional);
+            assert!(
+                mismatch.is_empty(),
+                "{label}: `{attribute}={command_name}` — unfilled {:?}, unknown {:?}",
+                mismatch
+                    .unfilled
+                    .iter()
+                    .map(|u| &u.field)
+                    .collect::<Vec<_>>(),
+                mismatch
+                    .unknown
+                    .iter()
+                    .map(|u| &u.field)
+                    .collect::<Vec<_>>(),
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no `on:` bindings were checked");
+}
+
+/// `event!: &on/<name>` blocks, as name -> descriptor.
+fn parse_event_declarations(
+    document: &str,
+) -> std::collections::BTreeMap<String, tonk_template::event::EventDescriptor> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("event!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let (mut event_type, mut prevent, mut stop) = (None, false, false);
+        let mut sources: Vec<(String, String)> = Vec::new();
+        let mut in_where = false;
+        for body in lines.by_ref() {
+            if !body.starts_with("  ") {
+                break;
+            }
+            let trimmed = body.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed == "where:" {
+                in_where = true;
+                continue;
+            }
+            let Some((key, value)) = trimmed.split_once(':') else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"').to_string();
+            if in_where && body.starts_with("    ") {
+                sources.push((key.trim().to_string(), format!("\"{value}\"")));
+                continue;
+            }
+            in_where = false;
+            match key.trim() {
+                "type" => event_type = Some(value),
+                "prevent-default" => prevent = value == "true",
+                "stop-propagation" => stop = value == "true",
+                _ => {}
+            }
+        }
+        // The scan re-quotes every source so `parse_source` sees the
+        // form YAML would have delivered; a `.path` must survive that.
+        let sources = sources.into_iter().map(|(field, raw)| {
+            let inner = raw.trim_matches('"').to_string();
+            (field, inner)
+        });
+        let descriptor =
+            tonk_template::event::event_descriptor(event_type.as_deref(), prevent, stop, sources)
+                .unwrap_or_else(|e| panic!("`{name}` is not a usable declaration: {e}"));
+        out.insert(name, descriptor);
+    }
+    out
+}
+
+/// `command!: &<name>` blocks, as name -> (required, optional) fields.
+#[allow(clippy::type_complexity)]
+fn parse_command_fields(
+    document: &str,
+) -> std::collections::BTreeMap<
+    String,
+    (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ),
+> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = document.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.trim_start().strip_prefix("command!: &") else {
+            continue;
+        };
+        let name = name
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let (mut required, mut optional) = (
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        );
+        let mut section: Option<bool> = None;
+        for body in lines.by_ref() {
+            if !body.starts_with("  ") {
+                break;
+            }
+            let trimmed = body.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            match trimmed {
+                "with:" => section = Some(true),
+                "maybe:" => section = Some(false),
+                _ => {
+                    // A field name is exactly four spaces in and ends
+                    // with `:` — deeper lines are its own body.
+                    if let Some(is_required) = section
+                        && body.starts_with("    ")
+                        && !body.starts_with("      ")
+                        && let Some(field) = trimmed.strip_suffix(':')
+                    {
+                        if is_required {
+                            required.insert(field.to_string());
+                        } else {
+                            optional.insert(field.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out.insert(name, (required, optional));
+    }
+    out
+}
+
+/// `on:<name>=<command>` pairs appearing in any template.
+fn parse_bindings(document: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (index, _) in document.match_indices("on:") {
+        if index > 0 && !document.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &document[index..];
+        let Some(end) = rest.find('=') else { continue };
+        let attribute = &rest[..end];
+        if attribute.contains(char::is_whitespace) {
+            continue;
+        }
+        let value: String = rest[end + 1..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '"')
+            .collect();
+        if !value.is_empty() {
+            out.push((attribute.to_string(), value));
+        }
+    }
+    out
+}
