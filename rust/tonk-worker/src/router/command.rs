@@ -87,6 +87,27 @@ impl CommandEnv {
     }
 }
 
+/// Check whether a newer seed is waiting for the space the command names.
+///
+/// The behaviour of `tonk:check-update`, reached by registering the TYPE
+/// (`registry.command::<CheckUpdate>()`): the impl is the capability, so
+/// a command that `CommandEnv` cannot provide fails to compile rather
+/// than failing to match at runtime.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[async_trait::async_trait(?Send)]
+impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::CheckUpdate) {
+        let Ok(subject) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
+            tonk_common::log!("CheckUpdate: '{}' is not a space DID", command.space.0);
+            return;
+        };
+        let tonk = self.state().read().await;
+        if let Err(error) = super::repository::check_seed_update(&tonk, &subject).await {
+            tonk_common::log!("CheckUpdate '{subject}': {error}");
+        }
+    }
+}
+
 /// Build the registry of supported command *types*. Registration is just
 /// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
@@ -133,7 +154,6 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::repository::InviteHandler::new()));
         registry.register(Box::new(super::repository::EnableSyncHandler::new()));
         registry.register(Box::new(super::repository::PauseSyncHandler::new()));
-        registry.register(Box::new(super::repository::CheckUpdateHandler::new()));
         registry.register(Box::new(super::repository::ProfileRenameHandler::new()));
         registry.register(Box::new(super::repository::RenameRepositoryHandler::new()));
         registry.register(Box::new(super::members::PromoteMemberHandler::new()));
@@ -149,7 +169,10 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         ));
         registry.register(Box::new(super::ceremony::AuthorizeDeviceHandler::new()));
         registry.register(Box::new(super::ceremony::AddPasskeyHandler::new()));
-        registry
+        // Registered by TYPE: the behaviour is `Provider<CheckUpdate> for
+        // CommandEnv`, so the capability is checked at compile time rather
+        // than by a hand-rolled handler matching on shape.
+        registry.command::<tonk_schema::command::CheckUpdate>()
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
@@ -302,6 +325,38 @@ mod tests {
             registry.match_transients(&changes).len(),
             1,
             "the registered Ping command should match its trigger"
+        );
+    }
+
+    /// `CheckUpdate` is registered by TYPE, so its trigger matches
+    /// through the same path `Ping` proves — no hand-rolled handler.
+    ///
+    /// The registration compiles only because `CommandEnv:
+    /// Provider<CheckUpdate>`, which is the capability gate; this checks
+    /// the other half, that the type's trigger actually matches a
+    /// transient the page asserts.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_matches_a_check_update_transient() {
+        let mut changes = Changes::new();
+        let entity = "did:key:zCheck".parse::<Entity>().expect("entity URI");
+        the!("dom.event/time-stamp")
+            .of(entity.clone())
+            .is(1.0f64)
+            .assert(&mut changes);
+        the!("xyz.tonk.check-update/space")
+            .of(entity.clone())
+            .is("did:key:zSpace".parse::<Entity>().expect("entity URI"))
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/check-update")
+            .of(entity)
+            .is("tonk:check-update".parse::<Entity>().expect("entity URI"))
+            .assert(&mut changes);
+
+        assert_eq!(
+            command_registry().match_transients(&changes).len(),
+            1,
+            "the registered CheckUpdate type should match its trigger"
         );
     }
 
