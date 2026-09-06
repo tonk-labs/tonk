@@ -703,14 +703,14 @@ async fn match_route(
             this: Term::var("this"),
             source: Term::var("source"),
             prior: Term::var("prior"),
-            revision: Term::var("revision"),
+            version: Term::var("version"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .unwrap_or_default();
     let seed = match seeds.first() {
-        Some(seed) => super::repository::seed_routes(tonk, state, &seed.revision.0.to_string())
+        Some(seed) => super::repository::seed_routes(tonk, state, &seed.version.0.to_string())
             .await
             .unwrap_or_default(),
         None => std::collections::HashSet::new(),
@@ -788,9 +788,9 @@ mod match_route_tests {
   this: seed:probe
   source: "/library/core.yaml"
   prior: seed:none
-  revision: "{}"
+  version: "{}"
 "#,
-            crate::router::repository::encode_seed_revision(&revision)
+            crate::router::repository::encode_seed_version(&revision)
         );
         let recorded =
             crate::router::evaluate::evaluate_body(&tonk, &key, "main", record.clone(), true).await;

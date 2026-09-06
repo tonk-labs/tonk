@@ -560,14 +560,17 @@ concept!: &space/seed
       the: xyz.tonk.seed/prior
       cardinality: one
       as: entity
-    revision:
+    version:
       description: >
-        The revision this seed committed at, and the record of what it
-        installed: a revision's history is a changelog, so an upgrade
-        reads the prior seed's revision and inverts its assertions.
-        Tagging each definition instead meant naming heads whose identity
-        is content-derived, which the source cannot do.
-      the: xyz.tonk.seed/revision
+        The version of the commit that installed this seed. A version,
+        not a revision: a revision includes the tree its commit produces,
+        so a fact inside a commit can never name it, while a version is
+        knowable before the batch is written — which is what lets this
+        record ride the same commit as the claims it describes.
+
+        It is also the record of WHAT the seed installed, since a
+        commit's history lists every claim it wrote.
+      the: xyz.tonk.seed/version
       cardinality: one
       as: text
 

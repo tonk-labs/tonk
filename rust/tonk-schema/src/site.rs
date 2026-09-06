@@ -128,9 +128,9 @@ pub struct Route {
 /// A seed install: what it was, where it came from, and the revision it
 /// committed at.
 ///
-/// The revision is the record of WHAT it installed — a revision's history
-/// is a changelog, so an upgrade reads the prior seed's revision and
-/// inverts its assertions rather than consulting a per-component tag.
+/// The version names the commit that installed it, and a commit's history
+/// is a changelog — so an upgrade inverts that commit's assertions rather
+/// than consulting a per-component tag.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Seed {
     /// The seed's entity: the content hash of its bytes.
@@ -139,6 +139,6 @@ pub struct Seed {
     pub source: crate::domain::seed::Source,
     /// The seed it replaced, or `seed:none` on a first install.
     pub prior: crate::domain::seed::Prior,
-    /// The revision it committed at.
-    pub revision: crate::domain::seed::Revision,
+    /// The version of the commit that installed it.
+    pub version: crate::domain::seed::Version,
 }

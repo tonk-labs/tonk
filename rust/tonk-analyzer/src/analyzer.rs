@@ -4979,7 +4979,7 @@ mod library_analysis_tests {
   this: seed:abc
   source: "/library/core.yaml"
   prior: seed:none
-  revision: revision:xyz
+  version: "1@abc"
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }

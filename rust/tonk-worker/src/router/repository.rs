@@ -2950,7 +2950,7 @@ async fn seed_and_initialize(
                 &version,
                 STANDARD_LIBRARY_URL,
                 SEED_NONE,
-                &encode_seed_revision(&record_version),
+                &encode_seed_version(&record_version),
             );
             let body = format!("{scaffold}\n{record}\n{name_body}");
             super::evaluate::evaluate_body(&tonk, key, branch_name, body, true)
@@ -3024,7 +3024,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
             this: Term::var("this"),
             source: Term::var("source"),
             prior: Term::var("prior"),
-            revision: Term::var("revision"),
+            version: Term::var("version"),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -3051,7 +3051,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         return Ok(false);
     }
 
-    let retract = prior_seed_retractions(tonk, &session, &current.revision.0.to_string()).await?;
+    let retract = prior_seed_retractions(tonk, &session, &current.version.0.clone()).await?;
     log!(
         "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
         retract.len()
@@ -3072,7 +3072,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         &shipped,
         &source,
         &current.this.to_string(),
-        &encode_seed_revision(&version),
+        &encode_seed_version(&version),
     );
 
     // Retractions, the new library, and the record naming this commit —
@@ -3091,9 +3091,9 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     Ok(true)
 }
 
-/// The routes the seed at `revision` installed.
+/// The routes the seed installed at `version`.
 ///
-/// Read from the revision's own history rather than recorded separately:
+/// Read from that commit's own history rather than recorded separately:
 /// a route the seed installed is a claim it asserted, so the changelog
 /// already names them. The router asks this to settle an
 /// equal-specificity tie — a route the seed installed loses to one the
@@ -3102,11 +3102,11 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
 pub(crate) async fn seed_routes(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
-    revision: &str,
+    version: &str,
 ) -> Result<std::collections::HashSet<String>, RepositoryError> {
     use futures_util::StreamExt as _;
 
-    let Some(version) = decode_seed_revision(revision) else {
+    let Some(version) = decode_seed_version(version) else {
         return Ok(std::collections::HashSet::new());
     };
 
@@ -3129,7 +3129,7 @@ pub(crate) async fn seed_routes(
     Ok(routes)
 }
 
-/// Retract everything the seed at `revision` asserted, as claims ready to
+/// Retract everything the seed installed at `version` asserted, as claims
 /// ride the same batch that installs its replacement.
 ///
 /// A revision's history is a changelog: every claim it wrote, with its
@@ -3140,13 +3140,13 @@ pub(crate) async fn seed_routes(
 async fn prior_seed_retractions(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
-    revision: &str,
+    version: &str,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
     use futures_util::StreamExt as _;
 
-    let Some(version) = decode_seed_revision(revision) else {
+    let Some(version) = decode_seed_version(version) else {
         return Err(RepositoryError::Internal(format!(
-            "seed revision '{revision}' is not a version"
+            "seed version '{version}' does not decode"
         )));
     };
 
@@ -3180,15 +3180,15 @@ async fn prior_seed_retractions(
 /// log for a matching revision, which only works while the install is
 /// still recent.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-pub(crate) fn encode_seed_revision(version: &dialog_artifacts::history::Version) -> String {
+pub(crate) fn encode_seed_version(version: &dialog_artifacts::history::Version) -> String {
     use base58::ToBase58 as _;
 
     version.key_bytes().to_base58()
 }
 
-/// The inverse of [`encode_seed_revision`].
+/// The inverse of [`encode_seed_version`].
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn decode_seed_revision(encoded: &str) -> Option<dialog_artifacts::history::Version> {
+fn decode_seed_version(encoded: &str) -> Option<dialog_artifacts::history::Version> {
     use base58::FromBase58 as _;
 
     let bytes = encoded.from_base58().ok()?;
@@ -3210,13 +3210,13 @@ fn decode_seed_revision(encoded: &str) -> Option<dialog_artifacts::history::Vers
 /// version it overrode (dialog `it_keeps_a_fact_retracted_and_re_asserted_in_one_batch`).
 /// So an upgrade is atomic and the overlap between two seeds survives it.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_record_body(version: &str, url: &str, prior: &str, revision: &str) -> String {
+fn seed_record_body(seed: &str, url: &str, prior: &str, version: &str) -> String {
     format!(
         r#"space/seed!:
-  this: {version}
+  this: {seed}
   source: "{url}"
   prior: {prior}
-  revision: "{revision}"
+  version: "{version}"
 "#
     )
 }
@@ -4302,7 +4302,7 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
         &version,
         PROFILE_LIBRARY_URL,
         SEED_NONE,
-        &encode_seed_revision(&record_version),
+        &encode_seed_version(&record_version),
     );
     super::evaluate::evaluate_profile_body(
         tonk,
@@ -8383,21 +8383,21 @@ mod seed_tests {
 
     /// The record is the seed's identity, where it came from, what it
     /// replaced, and the commit it landed in — nothing about what it
-    /// installed, which the revision's history already carries.
+    /// installed, which that commit's history already carries.
     #[test]
     fn it_records_where_a_seed_came_from_and_where_it_landed() {
         let body = super::seed_record_body(
             "seed:v",
             "/library/core.yaml",
             super::SEED_NONE,
-            "revision-bytes",
+            "version-bytes",
         );
 
-        assert!(body.contains(r#"  revision: "revision-bytes""#), "{body}");
+        assert!(body.contains(r#"  version: "version-bytes""#), "{body}");
         assert!(body.contains("  prior: seed:none"), "{body}");
         assert!(
             !body.contains("route"),
-            "routes are read from the revision, not recorded: {body}"
+            "routes are read from the commit's history, not recorded: {body}"
         );
     }
 
@@ -8410,12 +8410,12 @@ mod seed_tests {
 
         let version = Version::new(Origin::from([7u8; 32]), Edition::new(3));
 
-        let encoded = super::encode_seed_revision(&version);
-        let decoded = super::decode_seed_revision(&encoded).expect("the encoding round-trips");
+        let encoded = super::encode_seed_version(&version);
+        let decoded = super::decode_seed_version(&encoded).expect("the encoding round-trips");
 
         assert_eq!(decoded, version);
         assert!(
-            super::decode_seed_revision("not-a-version").is_none(),
+            super::decode_seed_version("not-a-version").is_none(),
             "a value that is not a version decodes to nothing rather than a wrong one"
         );
     }
@@ -8488,13 +8488,13 @@ mod seed_tests {
         .expect("the document commits");
 
         assert_eq!(
-            super::encode_seed_revision(
+            super::encode_seed_version(
                 &outcome
                     .revision_after
                     .expect("a committing document has a revision")
                     .version()
             ),
-            super::encode_seed_revision(&predicted),
+            super::encode_seed_version(&predicted),
             "the version read before the commit is the one it minted"
         );
     }
@@ -8538,7 +8538,7 @@ route!: &probe/dropped
         )
         .await
         .expect("the old seed evaluates");
-        let old_revision = super::encode_seed_revision(
+        let old_revision = super::encode_seed_version(
             &seeded
                 .revision_after
                 .expect("a committing seed has a revision")
@@ -8688,7 +8688,7 @@ route!: &probe/dropped
             &super::seed_version(LIBRARY),
             super::STANDARD_LIBRARY_URL,
             super::SEED_NONE,
-            &super::encode_seed_revision(&version),
+            &super::encode_seed_version(&version),
         );
         crate::router::evaluate::evaluate_body(
             &tonk,
@@ -8715,7 +8715,7 @@ route!: &probe/dropped
                 this: Term::var("this"),
                 source: Term::var("source"),
                 prior: Term::var("prior"),
-                revision: Term::var("revision"),
+                version: Term::var("version"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -8723,14 +8723,14 @@ route!: &probe/dropped
             .expect("seed query");
         let seed = seeds.first().expect("the install is recorded");
         assert_eq!(
-            seed.revision.0,
-            super::encode_seed_revision(&version),
+            seed.version.0,
+            super::encode_seed_version(&version),
             "the record names the commit that carries it"
         );
 
         // The router reads which routes the seed installed from the same
         // revision, so nothing about them is recorded separately.
-        let seeded = super::seed_routes(&tonk, &session, &seed.revision.0.to_string())
+        let seeded = super::seed_routes(&tonk, &session, &seed.version.0.to_string())
             .await
             .expect("the seed's routes are readable");
         assert!(

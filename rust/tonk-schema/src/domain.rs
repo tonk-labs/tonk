@@ -375,17 +375,26 @@ pub mod seed {
     #[cardinality(one)]
     pub struct Prior(pub Entity);
 
-    /// The revision this seed committed at.
+    /// The version of the commit that installed this seed.
     ///
-    /// The record of what it installed: a revision's history is a
-    /// changelog, so an upgrade reads the prior seed's revision and
-    /// inverts its assertions rather than consulting a per-component
-    /// tag. Tagging each definition meant naming heads whose identity is
-    /// content-derived, which the source cannot do.
+    /// A version, not a revision: a revision includes the tree the commit
+    /// produces, so a fact inside a commit can never name it, while a
+    /// version — the issuer's line and a counter — is knowable before the
+    /// batch is written. That is what lets the record ride the same
+    /// commit as the claims it describes.
+    ///
+    /// It is also the record of WHAT the seed installed: a commit's
+    /// history lists every claim it wrote, so an upgrade inverts those
+    /// assertions and the router reads which of them were routes. Neither
+    /// needs a per-component tag, which could not name heads whose
+    /// identity is content-derived anyway.
+    ///
+    /// Base58 of the version's key bytes, which round-trip through
+    /// `Version::from_key_bytes` — its entity is a one-way hash.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
-    pub struct Revision(pub String);
+    pub struct Version(pub String);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers
