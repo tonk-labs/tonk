@@ -1542,7 +1542,7 @@ mod profile_name {
 
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
-/// A transient carrying the target `space` and the new `value`. Dispatched
+/// A transient carrying the target `space` and the new `name`. Dispatched
 /// routeless via `window.tonk.transact`, so it lands on the FAB's own
 /// `main@profile:tonk`; the worker's handler reads `space` to rename that
 /// repository — nothing space-side is required. `this` is omitted so the
@@ -1551,12 +1551,9 @@ mod profile_name {
 /// An empty `name` is omitted entirely: the extractor drops empty fields, so
 /// a blank would store no fact and the command would never fire.
 pub fn rename_repo_claim_json(space: &str, name: &str) -> Value {
-    let mut parameters = json!({
-        "space": space,
-        "rename-repository": "tonk:repository"
-    });
+    let mut parameters = json!({ "space": space });
     if !name.is_empty() {
-        parameters["value"] = json!(name);
+        parameters["name"] = json!(name);
     }
     json!({
         "claims": [{
@@ -1596,15 +1593,28 @@ mod rename_repo {
     #[test]
     fn it_omits_an_empty_name_rather_than_sending_a_blank() {
         // The extractor drops empty fields; a blank would store no fact and the
-        // handler would never fire. The descriptor's `with.value` mapping is
+        // handler would never fire. The descriptor's `with.name` mapping is
         // schema metadata and stays present regardless — what must be absent
-        // is the `value` PARAMETER, the thing that actually becomes a fact.
+        // is the `name` PARAMETER, the thing that actually becomes a fact.
         let claim = rename_repo_claim_json("did:key:z6Mk", "");
-        assert!(
-            claim["claims"][0]["application"]["parameters"]
-                .get("value")
-                .is_none()
-        );
+        let parameters = &claim["claims"][0]["application"]["parameters"];
+        assert!(parameters.get("name").is_none());
+        assert_eq!(parameters["space"], "did:key:z6Mk");
+    }
+
+    #[test]
+    fn it_sets_the_new_name_under_the_field_the_descriptor_declares() {
+        // Regression: the parameters carried `value` plus a
+        // `rename-repository` marker while the inlined descriptor declared
+        // `name` and `space`. The worker rejects a parameter the concept
+        // does not declare — `invalid claim: field "rename-repository" is
+        // not declared by this concept` — so every rename from the FAB
+        // failed with a 400 and the chip silently reverted.
+        let claim = rename_repo_claim_json("did:key:z6Mk", "Renamed");
+        let parameters = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(parameters["name"], "Renamed");
+        assert!(parameters.get("value").is_none());
+        assert!(parameters.get("rename-repository").is_none());
     }
 }
 
