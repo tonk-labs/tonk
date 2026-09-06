@@ -215,6 +215,9 @@ impl Command for CreateSpace {
 pub struct CreateNotebook {
     /// The command entity, minted per invocation.
     pub this: Entity,
+    /// The notebook entity, minted by the page so the handler writes at
+    /// a known address and the page navigates itself.
+    pub entity: crate::domain::command::current::create_notebook::Entity,
     /// The title typed into the heading.
     pub title: crate::domain::command::current::create_notebook::Title,
     /// The draft's document, blocks and all.
@@ -224,6 +227,7 @@ pub struct CreateNotebook {
 impl From<legacy::CreateNotebook> for CreateNotebook {
     fn from(legacy: legacy::CreateNotebook) -> Self {
         Self {
+            entity: crate::domain::command::current::create_notebook::Entity(legacy.entity.0),
             title: crate::domain::command::current::create_notebook::Title(legacy.title.0),
             body: crate::domain::command::current::create_notebook::Body(legacy.body.0),
             this: legacy.this,

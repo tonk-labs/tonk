@@ -1817,6 +1817,16 @@ async fn run_rename_repository(
 /// has no `window` to navigate with — the redirect goes back as a
 /// `navigate` message to the originating client, like the create-space and
 /// join redirects.
+///
+/// This handler is a WORKAROUND, and creating a notebook does not otherwise
+/// want a bespoke command: the library's own rules already turn a written
+/// intent into blocks and positions. It exists because a rule that derived
+/// the notebook could not then assert a navigation anything would act on —
+/// commit-time induction folds its rounds into one commit, so a
+/// rule-concluded transient is dropped before any handler can match it
+/// (dialog-db#483). Once a rule can conclude into an ephemeral-but-
+/// observable layer, this handler, `create_notebook_inner`, and the
+/// write-then-read-back-by-title dance below all go away.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct CreateNotebookHandler {
     /// Decodes the current shape, and the deprecated one a
@@ -1856,32 +1866,57 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
 
         Box::pin(async move {
             let Some(command) = decoded else { return };
+            let entity = command.entity.0.to_string();
             let title = command.title.0;
             let body = command.body.0;
             // The repository the command fired in. Read from the origin
             // rather than carried on the command: the notebook belongs to
             // the space whose page the author was on, and a command that
             // NAMED its target could be committed against any branch.
+            // An EMPTY repo is the profile, not a missing origin: a
+            // profile-branch commit carries no repository name because the
+            // profile is outside the named-repo namespace.
             let repo = env.origin().repo.clone();
-            if title.trim().is_empty() || repo.trim().is_empty() {
-                log!("CreateNotebook: blank title or origin repo, skipping");
+            if title.trim().is_empty() {
+                log!("CreateNotebook: blank title, skipping");
                 return;
             }
-            log!("command CreateNotebook title={title} repo={repo}");
+            log!("command CreateNotebook title={title} entity={entity} repo={repo}");
 
-            match create_notebook_inner(&env, &repo, &title, &body).await {
-                Ok(entity) => {
-                    // Drop the author into the notebook they just named.
-                    let href = format!("/space/{repo}/notebook/{entity}");
-                    crate::router::navigate::notify_navigate(env.client(), &href);
-                }
-                Err(error) => log!("CreateNotebook '{title}' failed: {error}"),
+            // No redirect: the page minted the entity, so it already knows
+            // where it is going and navigates itself once the write lands.
+            if let Err(error) = create_notebook_inner(&env, &repo, &entity, &title, &body).await {
+                log!("CreateNotebook '{title}' failed: {error}");
             }
         })
     }
 }
 
-/// Write the notebook and return its entity.
+/// Evaluate a notation document against the space the command fired in —
+/// a named repository, or the PROFILE when `repo` is empty.
+///
+/// A profile-branch commit carries an empty `origin.repo`: the profile lives
+/// outside the named-repo namespace, so there is no name to load it by (see
+/// `transact_profile`). Handlers that took that string as a repository name
+/// asked for repository `""` and failed, which is why creating a notebook
+/// from the index worked in a space and did nothing on a profile.
+///
+/// Both surfaces use branch `main`, so only the repository half differs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn evaluate_in_space(
+    tonk: &TonkState,
+    repo: &str,
+    document: String,
+    transact: bool,
+) -> Result<super::evaluate::EvaluateResponse, TonkWorkerError> {
+    if repo.is_empty() {
+        super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, document, transact).await
+    } else {
+        super::evaluate::evaluate_body(tonk, repo, CONTENT_BRANCH, document, transact).await
+    }
+}
+
+/// Write the notebook at the entity the page minted.
 ///
 /// Through notation rather than a typed assert: the notebook concept lives
 /// in the YAML library, not in `tonk-schema`, so the shape stays in one
@@ -1891,18 +1926,19 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
 async fn create_notebook_inner(
     env: &crate::router::CommandEnv,
     repo: &str,
+    entity: &str,
     title: &str,
     body: &str,
-) -> Result<String, RepositoryError> {
+) -> Result<(), RepositoryError> {
     let tonk = env.state().read().await;
     // The title is data, and goes in as a quoted scalar so a colon or a
     // quote in a notebook's name cannot change the document's shape.
     let document = format!(
-        "notebook/named!:\n  title: {}\n",
+        "notebook/named!:\n  this: {entity}\n  title: {}\n",
         serde_json::to_string(title)
             .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
     );
-    let response = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+    let response = evaluate_in_space(&tonk, repo, document, true)
         .await
         .map_err(|e| RepositoryError::Internal(format!("notebook create failed: {e}")))?;
 
@@ -1911,31 +1947,6 @@ async fn create_notebook_inner(
             "notebook create wrote nothing".to_owned(),
         ));
     }
-
-    // Read the entity back by title.
-    //
-    // The commit summary reports entities keyed by VARIABLE, and an
-    // anchor-less head has no variable — so a write whose identity derives
-    // from its body reports none at all. Querying for the title we just
-    // wrote is what recovers it, and the derivation is deterministic, so
-    // this finds exactly the notebook the write created.
-    let lookup = format!(
-        "notebook/named:\n  this: ?this\n  title: {}\n",
-        serde_json::to_string(title)
-            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
-    );
-    let found = super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, lookup, false)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("notebook lookup failed: {e}")))?;
-
-    let entity = found
-        .matches_after
-        .first()
-        .and_then(|block| block.results.first())
-        .map(|result| result.this.clone())
-        .ok_or_else(|| {
-            RepositoryError::Internal(format!("notebook '{title}' not readable after create"))
-        })?;
 
     // Carry the draft's body over, and always leave at least one block.
     //
@@ -1949,15 +1960,6 @@ async fn create_notebook_inner(
     // empty first block is also just what a new document is: somewhere to
     // start typing.
     let mut blocks = draft_blocks(body);
-    // At least one block, or the notebook does not satisfy `tonk:notebook`
-    // (which requires one) and the page reports a missing attribute
-    // instead of rendering.
-    //
-    // Only one, though: an empty trailing block would be invisible anyway.
-    // `project` drops empty blocks, and markdown collapses trailing blank
-    // lines, so a document ending in one parses back without it. Landing
-    // ready to type is the CARET's job (`caret="end"`), not an extra
-    // block's.
     if blocks.is_empty() {
         blocks.push(String::new());
     }
@@ -1979,12 +1981,12 @@ async fn create_notebook_inner(
             }
             document.push_str("  prev: tonk:notebook/edge\n\n");
         }
-        super::evaluate::evaluate_body(&tonk, repo, CONTENT_BRANCH, document, true)
+        evaluate_in_space(&tonk, repo, document, true)
             .await
             .map_err(|e| RepositoryError::Internal(format!("draft body failed: {e}")))?;
     }
 
-    Ok(entity)
+    Ok(())
 }
 
 /// The draft's blocks, heading and all.
@@ -6266,14 +6268,53 @@ block/insert!:
         );
     }
 
-    /// The create handler writes a titled notebook and reports its entity.
+    /// The index switcher creates a notebook on a PROFILE too.
     ///
-    /// The entity is what makes the redirect possible: the page cannot
-    /// learn it (the command is transient and swept before any
-    /// subscription sees it), so the handler that writes the notebook is
-    /// the one that navigates to it.
+    /// Typing a title and pressing Enter fires `notebook/create`, and the
+    /// handler writes the notebook then redirects into it. On a profile the
+    /// commit's origin carries an EMPTY repo (the profile is outside the
+    /// named-repo namespace), so a handler that reads `origin.repo` as the
+    /// repository to write bails out and the notebook is never created —
+    /// which is exactly what a profile author sees: Enter does nothing.
     #[dialog_common::test]
-    async fn it_creates_a_notebook_and_reports_its_entity() {
+    async fn it_creates_a_notebook_on_a_profile() {
+        let (_app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        {
+            let tonk = state.read().await;
+            const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+            for library in [PROFILE, NOTEBOOK] {
+                crate::router::evaluate::evaluate_profile_body(
+                    &tonk,
+                    "main",
+                    library.to_owned(),
+                    true,
+                )
+                .await
+                .expect("the library installs on the profile");
+            }
+        }
+
+        // An empty origin repo is what a profile-branch commit carries.
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: String::new(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+        );
+        super::create_notebook_inner(&env, "", "notebook:probe", "Groceries", "")
+            .await
+            .expect("the create writes a notebook on the profile");
+    }
+
+    /// The create handler writes a titled notebook at the page's entity.
+    ///
+    /// The page mints it, so it can navigate there itself — the handler
+    /// no longer writes-then-reads-back to discover a derived entity.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_at_the_minted_entity() {
         let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
         let repo = key.as_str();
         seed(&state, repo, CORE).await;
@@ -6287,10 +6328,10 @@ block/insert!:
                 client: None,
             },
         );
-        let entity = super::create_notebook_inner(&env, repo, "Groceries", "")
+        let entity = "notebook:minted";
+        super::create_notebook_inner(&env, repo, entity, "Groceries", "")
             .await
             .expect("the create writes a notebook");
-        assert!(!entity.is_empty(), "and reports the entity to navigate to");
 
         let named = rows(
             &state,
@@ -6309,8 +6350,8 @@ block/insert!:
         assert!(
             named
                 .iter()
-                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity.as_str())),
-            "and the reported entity is the one written: {entity} not in {named:#?}"
+                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity)),
+            "and the notebook lands at the entity the page minted: {entity} not in {named:#?}"
         );
     }
 
@@ -6331,7 +6372,7 @@ block/insert!:
             },
         );
         let awkward = r#"Notes: "on" quoting"#;
-        super::create_notebook_inner(&env, repo, awkward, "")
+        super::create_notebook_inner(&env, repo, "notebook:awkward", awkward, "")
             .await
             .expect("an awkward title still writes");
 
@@ -6371,9 +6412,11 @@ block/insert!:
                 client: None,
             },
         );
-        let entity = super::create_notebook_inner(
+        let entity = "notebook:draft";
+        super::create_notebook_inner(
             &env,
             repo,
+            entity,
             "Groceries",
             "# Groceries\n\nmilk and eggs\n\n```dialog-yaml\nconcept:\n```",
         )
@@ -6426,7 +6469,8 @@ block/insert!:
             },
         );
         // What the switcher sends for a title with nothing typed under it.
-        let entity = super::create_notebook_inner(&env, repo, "Counter", "# Counter")
+        let entity = "notebook:counter";
+        super::create_notebook_inner(&env, repo, entity, "Counter", "# Counter")
             .await
             .expect("a bare title creates a notebook");
 

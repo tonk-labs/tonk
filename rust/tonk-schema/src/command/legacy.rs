@@ -96,6 +96,8 @@ pub struct CreateSpace {
 pub struct CreateNotebook {
     /// The command entity, minted per invocation.
     pub this: Entity,
+    /// The notebook entity, minted by the page.
+    pub entity: crate::domain::command::notebook::CreatedEntity,
     /// The title typed into the heading.
     pub title: crate::domain::command::notebook::CreatedTitle,
     /// The draft's document, blocks and all.
