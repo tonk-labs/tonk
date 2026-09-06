@@ -2928,32 +2928,34 @@ async fn seed_and_initialize(
             })?;
 
         let name_body = repository_name_body(subject, display_name)?;
-        // Seeded first, recorded second: the record names the revision the
-        // seed committed at, which only exists once it has committed.
         let version = seed_version(&scaffold);
         let tonk = state.read().await;
         for branch_name in branches {
-            let body = format!("{scaffold}\n{name_body}");
-            let outcome = super::evaluate::evaluate_body(&tonk, key, branch_name, body, true)
+            // The record rides the SAME commit as the library it describes:
+            // it names the version that commit mints, and the version is
+            // knowable beforehand. Recording separately would name the
+            // record's own commit instead, and the seed's claims — which is
+            // what route provenance and an upgrade both read — would be in
+            // a revision nothing pointed at.
+            let record_version = super::evaluate::pending_version(&tonk, key, branch_name)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!("pending version '{branch_name}': {e}"))
+                })?
+                .ok_or_else(|| {
+                    RepositoryError::Internal(format!("branch '{branch_name}' has no version"))
+                })?;
+            // A fresh space has no predecessor.
+            let record = seed_record_body(
+                &version,
+                STANDARD_LIBRARY_URL,
+                SEED_NONE,
+                &encode_seed_revision(&record_version),
+            );
+            let body = format!("{scaffold}\n{record}\n{name_body}");
+            super::evaluate::evaluate_body(&tonk, key, branch_name, body, true)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
-
-            // A fresh space has no predecessor; an upgrade will pass the
-            // seed it replaces.
-            if let Some(revision) = outcome.revision_after {
-                let record = seed_record_body(
-                    &version,
-                    STANDARD_LIBRARY_URL,
-                    SEED_NONE,
-                    &encode_seed_revision(&revision.version()),
-                    &seed_route_entities(&outcome.commits.entities),
-                );
-                seed_standard_library(&tonk, key, branch_name, &record)
-                    .await
-                    .map_err(|e| {
-                        RepositoryError::Internal(format!("seed record '{branch_name}': {e}"))
-                    })?;
-            }
             log!(
                 "Seeded scaffold + name on '{}' branch '{}'",
                 key,
@@ -3055,13 +3057,6 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         retract.len()
     );
 
-    // A dry run first, only to learn the entities the library's routes
-    // will land on: the record names them, and they are derived from the
-    // document rather than written in it. Nothing commits here.
-    let preview = super::evaluate::evaluate_body(tonk, key, CONTENT_BRANCH, library.clone(), false)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("preview seed '{key}': {e}")))?;
-
     // The version the commit below will mint, so the record can name the
     // very batch that carries it — which is what makes this ONE commit.
     let Some(version) = super::evaluate::pending_version(tonk, key, CONTENT_BRANCH)
@@ -3078,7 +3073,6 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         &source,
         &current.this.to_string(),
         &encode_seed_revision(&version),
-        &seed_route_entities(&preview.commits.entities),
     );
 
     // Retractions, the new library, and the record naming this commit —
@@ -3095,6 +3089,44 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     .await
     .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
     Ok(true)
+}
+
+/// The routes the seed at `revision` installed.
+///
+/// Read from the revision's own history rather than recorded separately:
+/// a route the seed installed is a claim it asserted, so the changelog
+/// already names them. The router asks this to settle an
+/// equal-specificity tie — a route the seed installed loses to one the
+/// space authored.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn seed_routes(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    revision: &str,
+) -> Result<std::collections::HashSet<String>, RepositoryError> {
+    use futures_util::StreamExt as _;
+
+    let Some(version) = decode_seed_revision(revision) else {
+        return Ok(std::collections::HashSet::new());
+    };
+
+    let history = session.handle().history(&tonk.operator);
+    let records = history.select(version);
+    tokio::pin!(records);
+
+    let mut routes = std::collections::HashSet::new();
+    while let Some(record) = records.next().await {
+        let (_, record) =
+            record.map_err(|e| RepositoryError::Internal(format!("read seed history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        if claim.the.as_str() == "xyz.tonk.route/path" {
+            routes.insert(claim.of.to_string());
+        }
+    }
+    Ok(routes)
 }
 
 /// Retract everything the seed at `revision` asserted, as claims ready to
@@ -3148,7 +3180,7 @@ async fn prior_seed_retractions(
 /// log for a matching revision, which only works while the install is
 /// still recent.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn encode_seed_revision(version: &dialog_artifacts::history::Version) -> String {
+pub(crate) fn encode_seed_revision(version: &dialog_artifacts::history::Version) -> String {
     use base58::ToBase58 as _;
 
     version.key_bytes().to_base58()
@@ -3178,48 +3210,15 @@ fn decode_seed_revision(encoded: &str) -> Option<dialog_artifacts::history::Vers
 /// version it overrode (dialog `it_keeps_a_fact_retracted_and_re_asserted_in_one_batch`).
 /// So an upgrade is atomic and the overlap between two seeds survives it.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_record_body(
-    version: &str,
-    url: &str,
-    prior: &str,
-    revision: &str,
-    routes: &[String],
-) -> String {
-    let mut body = format!(
+fn seed_record_body(version: &str, url: &str, prior: &str, revision: &str) -> String {
+    format!(
         r#"space/seed!:
   this: {version}
   source: "{url}"
   prior: {prior}
-  revision: {revision}
+  revision: "{revision}"
 "#
-    );
-    // Routes are recorded individually as well, because the ROUTER needs
-    // them: a route named here came from the seed and loses an
-    // equal-specificity tie to one the space authored. That is a live read
-    // on every navigation, not upgrade bookkeeping, so it cannot wait on a
-    // history walk. One head each — the notation collapses duplicate keys.
-    for route in routes {
-        body.push_str("\nspace/seed-route!:\n  this: ");
-        body.push_str(version);
-        body.push_str("\n  route: ");
-        body.push_str(route);
-        body.push('\n');
-    }
-    body
-}
-
-/// The entity of every `route!:` head the document declared.
-///
-/// Routes carry an anchor in the library, so the evaluator reports them in
-/// its commit summary under that name.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn seed_route_entities(entities: &std::collections::BTreeMap<String, String>) -> Vec<String> {
-    entities
-        .iter()
-        .filter(|(name, _)| name.starts_with("route/"))
-        .map(|(_, entity)| entity.clone())
-        .collect()
+    )
 }
 
 /// The entity naming a seed version: `seed:{hash}` over the bytes actually
@@ -4291,27 +4290,29 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
     let version = seed_version(&library);
-    let outcome =
-        super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library.clone(), true)
-            .await
-            .map_err(|e| {
-                RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
-            })?;
-
-    let Some(revision) = outcome.revision_after else {
+    // The record rides the same commit as the library it describes — see
+    // the create path for why recording separately breaks provenance.
+    let Some(record_version) = super::evaluate::pending_profile_version(tonk, PROFILE_BRANCH)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("pending profile version: {e}")))?
+    else {
         return Ok(());
     };
     let record = seed_record_body(
         &version,
         PROFILE_LIBRARY_URL,
         SEED_NONE,
-        &encode_seed_revision(&revision.version()),
-        &seed_route_entities(&outcome.commits.entities),
+        &encode_seed_revision(&record_version),
     );
-    super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, record, true)
-        .await
-        .map(|_| ())
-        .map_err(|e| RepositoryError::Internal(format!("seed record on profile branch: {e}")))
+    super::evaluate::evaluate_profile_body(
+        tonk,
+        PROFILE_BRANCH,
+        format!("{library}\n{record}"),
+        true,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| RepositoryError::Internal(format!("seed standard library on profile branch: {e}")))
 }
 
 /// Native stub — no service-worker scope to fetch the served library.
@@ -8380,41 +8381,23 @@ mod seed_tests {
         );
     }
 
-    /// The record names the revision the seed committed at — the whole
-    /// record of what it installed — plus each route, which the router
-    /// reads on every navigation and cannot get from a history walk.
+    /// The record is the seed's identity, where it came from, what it
+    /// replaced, and the commit it landed in — nothing about what it
+    /// installed, which the revision's history already carries.
     #[test]
-    fn it_records_the_revision_and_the_routes() {
-        let routes = vec!["id:tonk:route/space".to_string()];
-
+    fn it_records_where_a_seed_came_from_and_where_it_landed() {
         let body = super::seed_record_body(
             "seed:v",
             "/library/core.yaml",
             super::SEED_NONE,
-            "revision:abc",
-            &routes,
+            "revision-bytes",
         );
 
-        assert!(body.contains("  revision: revision:abc"), "{body}");
+        assert!(body.contains(r#"  revision: "revision-bytes""#), "{body}");
         assert!(body.contains("  prior: seed:none"), "{body}");
         assert!(
-            body.contains("space/seed-route!:\n  this: seed:v\n  route: id:tonk:route/space"),
-            "one head per route: the notation collapses duplicate keys: {body}"
-        );
-    }
-
-    /// Only the anchors the library gives its routes are read back; a
-    /// concept or view anchor names a head the router has no use for.
-    #[test]
-    fn it_reads_back_only_route_anchors() {
-        let entities = std::collections::BTreeMap::from([
-            ("route/space".to_string(), "id:tonk:route/space".to_string()),
-            ("blank".to_string(), "tonk:blank".to_string()),
-        ]);
-
-        assert_eq!(
-            super::seed_route_entities(&entities),
-            vec!["id:tonk:route/space".to_string()]
+            !body.contains("route"),
+            "routes are read from the revision, not recorded: {body}"
         );
     }
 
@@ -8450,7 +8433,6 @@ mod seed_tests {
             "/library/custom.yaml",
             "seed:prior",
             "revision-bytes",
-            &[],
         );
 
         assert!(
@@ -8662,7 +8644,6 @@ route!: &probe/dropped
                     .expect("a committing seed has a revision")
                     .entity()
                     .to_string(),
-                &super::seed_route_entities(&outcome.commits.entities),
             );
             let recorded =
                 crate::router::evaluate::evaluate_body(&tonk, &key, "main", record, true).await;
@@ -8693,25 +8674,31 @@ route!: &probe/dropped
         let key = crate::router::tests::put_repo(&app, "seed-components").await;
 
         let tonk = state.read().await;
-        let outcome =
-            crate::router::evaluate::evaluate_body(&tonk, &key, "main", LIBRARY.to_owned(), true)
-                .await
-                .expect("the library evaluates");
+
+        // The record rides the SAME commit as the library, which is what
+        // makes the seed's claims findable afterwards: it names the
+        // version that commit mints. Recorded separately it would name
+        // its own commit, and the library's claims would sit in a
+        // revision nothing points at.
+        let version = crate::router::evaluate::pending_version(&tonk, &key, "main")
+            .await
+            .expect("the pending version reads")
+            .expect("a branch has one");
         let record = super::seed_record_body(
             &super::seed_version(LIBRARY),
             super::STANDARD_LIBRARY_URL,
             super::SEED_NONE,
-            &outcome
-                .revision_after
-                .clone()
-                .expect("a committing seed has a revision")
-                .entity()
-                .to_string(),
-            &super::seed_route_entities(&outcome.commits.entities),
+            &super::encode_seed_revision(&version),
         );
-        crate::router::evaluate::evaluate_body(&tonk, &key, "main", record, true)
-            .await
-            .expect("the seed record evaluates");
+        crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            format!("{LIBRARY}\n{record}"),
+            true,
+        )
+        .await
+        .expect("the library and its record commit together");
 
         let session = tonk
             .reactor
@@ -8734,39 +8721,39 @@ route!: &probe/dropped
             .try_vec()
             .await
             .expect("seed query");
-        let routes: Vec<tonk_schema::SeedRoute> = session
+        let seed = seeds.first().expect("the install is recorded");
+        assert_eq!(
+            seed.revision.0,
+            super::encode_seed_revision(&version),
+            "the record names the commit that carries it"
+        );
+
+        // The router reads which routes the seed installed from the same
+        // revision, so nothing about them is recorded separately.
+        let seeded = super::seed_routes(&tonk, &session, &seed.revision.0.to_string())
+            .await
+            .expect("the seed's routes are readable");
+        assert!(
+            seeded.len() > 1,
+            "the library must install several routes for this to mean anything: {seeded:?}"
+        );
+        let declared: Vec<tonk_schema::Route> = session
             .handle()
             .query()
-            .select(Query::<tonk_schema::SeedRoute> {
+            .select(Query::<tonk_schema::Route> {
                 this: Term::var("this"),
-                route: Term::var("route"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
             })
             .perform(&tonk.operator)
             .try_vec()
             .await
-            .expect("seed route query");
-
-        let seed = seeds.first().expect("the install is recorded");
-        assert_eq!(
-            seed.revision.0.to_string(),
-            outcome
-                .revision_after
-                .expect("a committing seed has a revision")
-                .entity()
-                .to_string(),
-            "the record names the revision the seed committed at — the whole \
-             record of what it installed"
-        );
-
-        let declared = super::seed_route_entities(&outcome.commits.entities);
-        assert!(
-            declared.len() > 1,
-            "the library must declare several routes for this to mean anything"
-        );
-        assert_eq!(
-            routes.len(),
-            declared.len(),
-            "every route is recorded: the router reads them on every navigation"
-        );
+            .expect("route query");
+        for route in &declared {
+            assert!(
+                seeded.contains(&route.this.to_string()),
+                "every route the library installed is attributed to the seed: {route:?}"
+            );
+        }
     }
 }

@@ -677,7 +677,7 @@ async fn match_route(
 ) -> Option<MatchedRoute> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::{Route, SeedRoute};
+    use tonk_schema::Route;
 
     let mut routes: Vec<Route> = state
         .handle()
@@ -692,23 +692,29 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Which routes the seed installed. These hang on the seed version's
-    // entity, not the route's, so a route the space authored is simply absent
-    // from the set.
-    let seed: std::collections::HashSet<String> = state
+    // Which routes the seed installed, read from the revision it committed
+    // at: a route it installed is a claim it asserted, so the changelog
+    // already names them and nothing has to be recorded twice. A route the
+    // space authored is simply absent.
+    let seeds: Vec<tonk_schema::Seed> = state
         .handle()
         .query()
-        .select(Query::<SeedRoute> {
+        .select(Query::<tonk_schema::Seed> {
             this: Term::var("this"),
-            route: Term::var("route"),
+            source: Term::var("source"),
+            prior: Term::var("prior"),
+            revision: Term::var("revision"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| row.route.0.to_string())
-        .collect();
+        .unwrap_or_default();
+    let seed = match seeds.first() {
+        Some(seed) => super::repository::seed_routes(tonk, state, &seed.revision.0.to_string())
+            .await
+            .unwrap_or_default(),
+        None => std::collections::HashSet::new(),
+    };
     route_order(&mut routes, &seed);
 
     let mut router = tonk_router::Router::new();
@@ -750,14 +756,55 @@ mod match_route_tests {
 
     /// Seed `body` onto a fresh repo's `main` and resolve `path` against it,
     /// answering with the matched route's entity.
-    async fn matched_route(body: &str, path: &str) -> Option<String> {
+    /// Install `seed` as a seed, optionally author `authored` on top, and
+    /// resolve `path` through the real router.
+    ///
+    /// The seed is recorded the way an install does — naming the revision
+    /// it committed at — because that record is how the router tells a
+    /// seed route from one the space wrote.
+    async fn matched_route(seed: &str, authored: Option<&str>, path: &str) -> Option<String> {
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
         let key = crate::router::tests::put_repo(&app, "route-e2e").await;
         let tonk = state.read().await;
-        crate::router::evaluate::evaluate_body(&tonk, &key, "main", body.to_owned(), true)
-            .await
-            .expect("the route body seeds");
+
+        let installed = crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            format!("{LIBRARY}\n{seed}"),
+            true,
+        )
+        .await
+        .expect("the seed installs");
+        let revision = installed
+            .revision_after
+            .expect("a committing seed has a revision")
+            .version();
+        let record = format!(
+            r#"space/seed!:
+  this: seed:probe
+  source: "/library/core.yaml"
+  prior: seed:none
+  revision: "{}"
+"#,
+            crate::router::repository::encode_seed_revision(&revision)
+        );
+        let recorded =
+            crate::router::evaluate::evaluate_body(&tonk, &key, "main", record.clone(), true).await;
+        assert!(
+            recorded.is_ok(),
+            "the seed record must commit: {recorded:?}\n{record}"
+        );
+
+        if let Some(authored) = authored {
+            crate::router::evaluate::evaluate_body(&tonk, &key, "main", authored.to_owned(), true)
+                .await
+                .expect("the space's own route commits");
+        }
+
         let session = tonk
             .reactor
             .repository(&key)
@@ -770,32 +817,39 @@ mod match_route_tests {
             .map(|matched| matched.route.to_string())
     }
 
-    /// The collision this whole mechanism exists for: the seed seeds `/`
-    /// and the space authors its own `/`. The space's must win — resolved
-    /// through the real router, not just the sort.
+    /// The collision this whole mechanism exists for: the seed installs
+    /// `/` and the space authors its own `/`. The space's must win —
+    /// resolved through the real router, not just the sort.
+    ///
+    /// Which routes came from the seed is read from the revision it
+    /// committed at, so the two must be SEPARATE commits here: a route
+    /// authored in the same batch as the seed is indistinguishable from
+    /// one the seed installed, and rightly so.
     #[dialog_common::test]
     async fn it_prefers_a_space_route_over_a_seed_route() {
-        // `id:` entities sort with the seed's FIRST, so a plain
-        // entity-URI order would pick the seed route. Only the
-        // `SeedRoute` query demotes it.
-        let body = r#"
+        // `id:` entities sort with the seed's FIRST, so a plain entity-URI
+        // order would pick the seed route. Only its provenance demotes it.
+        let matched = matched_route(
+            r#"
 route!:
   this: id:aaa/seed-home
   path: "/"
   concept: tonk:blank
-
+"#,
+            Some(
+                r#"
 route!:
   this: id:zzz/space-home
   path: "/"
   concept: tonk:blank
-
-seed!:
-  this: tonk:seed/current
-  route: id:aaa/seed-home
-"#;
+"#,
+            ),
+            "/",
+        )
+        .await;
 
         assert_eq!(
-            matched_route(body, "/").await.as_deref(),
+            matched.as_deref(),
             Some("id:zzz/space-home"),
             "the space's own route must win the tie against the seed's"
         );
@@ -805,19 +859,20 @@ seed!:
     /// them must not mean dropping them.
     #[dialog_common::test]
     async fn it_falls_back_to_a_seed_route() {
-        let body = r#"
+        let matched = matched_route(
+            r#"
 route!:
   this: id:aaa/seed-home
   path: "/"
   concept: tonk:blank
-
-seed!:
-  this: tonk:seed/current
-  route: id:aaa/seed-home
-"#;
+"#,
+            None,
+            "/",
+        )
+        .await;
 
         assert_eq!(
-            matched_route(body, "/").await.as_deref(),
+            matched.as_deref(),
             Some("id:aaa/seed-home"),
             "a seed route still resolves when the space authored none"
         );

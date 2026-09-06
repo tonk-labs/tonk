@@ -1477,19 +1477,7 @@ concept!: &space/seed
         is content-derived, which the source cannot do.
       the: xyz.tonk.seed/revision
       cardinality: one
-      as: entity
-
-concept!: &space/seed-route
-  with:
-    route:
-      description: >
-        A route this seed installed. Also the router's precedence
-        signal: a route named here came from the seed, and one that is
-        not was authored in the space, which wins an equal-specificity
-        tie.
-      the: xyz.tonk.seed/route
-      cardinality: many
-      as: entity
+      as: text
 
 
 

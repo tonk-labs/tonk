@@ -385,18 +385,7 @@ pub mod seed {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
-    pub struct Revision(pub Entity);
-
-    /// A route this seed version seeded.
-    ///
-    /// Also the router's precedence signal: a route named here came from
-    /// the seed, and one that is not came from the space, which wins an
-    /// equal-specificity tie. Specificity still decides first; this only
-    /// settles what used to fall through to insertion order.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.seed")]
-    #[cardinality(many)]
-    pub struct Route(pub Entity);
+    pub struct Revision(pub String);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers

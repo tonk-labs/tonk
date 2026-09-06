@@ -142,18 +142,3 @@ pub struct Seed {
     /// The revision it committed at.
     pub revision: crate::domain::seed::Revision,
 }
-
-/// A route a seed version seeded, hanging on the seed version's
-/// entity rather than the route's.
-///
-/// The router reads these to tell a seed route from one the space
-/// authored: a route named here loses an equal-specificity tie to one
-/// that is not. A seed upgrade reads the same facts to retract what
-/// the previous version seeded.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedRoute {
-    /// The seed version's entity.
-    pub this: Entity,
-    /// The route this seed version seeded.
-    pub route: crate::domain::seed::Route,
-}

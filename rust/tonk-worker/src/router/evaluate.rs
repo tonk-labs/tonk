@@ -506,6 +506,27 @@ pub async fn pending_version(
         .map_err(|e| TonkWorkerError::Internal(format!("read pending version: {e}")))
 }
 
+/// [`pending_version`] against the **profile** repository's branch.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn pending_profile_version(
+    tonk_state: &crate::worker::TonkState,
+    branch: &str,
+) -> Result<Option<dialog_artifacts::history::Version>, TonkWorkerError> {
+    let session = tonk_state
+        .reactor
+        .profile_repository()
+        .branch(branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    session
+        .handle()
+        .transaction()
+        .version(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("read pending version: {e}")))
+}
+
 /// [`evaluate_body`], with `retract` folded into the same commit.
 ///
 /// The seed upgrade's entry point: withdrawing the previous seed and
