@@ -33,8 +33,10 @@ use ipld_core::ipld::Ipld;
 
 pub mod bindings;
 pub mod event;
+pub mod fields;
 pub mod fold;
 pub mod resolve;
+pub mod scan;
 
 /// One chunk of an interpolated string.
 #[derive(Debug, Clone, PartialEq, Eq)]

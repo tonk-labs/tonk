@@ -114,41 +114,39 @@ impl Bindings {
     }
 }
 
-/// Every `on:<name>=<command>` binding a template's raw HTML makes, in
-/// document order, deduplicated.
+/// Every `on:<name>=<command>` binding a template's raw HTML makes,
+/// deduplicated, ordered by what the binding says.
 ///
-/// A text scan rather than a DOM walk, because the analyzer has no DOM
-/// and the browser's `preprocess` walk is not available to it. It
-/// mirrors that walk on the two points that matter: only attribute
-/// positions inside a tag count, and an HTML comment carries none —
-/// the parser drops comment content, so a binding mentioned in prose
-/// inside `<!-- -->` must not become a dangling reference here.
+/// The walk is [`crate::scan::walk`], shared with the interpolation
+/// scan so the two cannot disagree about what a template contains —
+/// only attribute positions inside a tag count, and a comment carries
+/// none.
 pub fn scan(template: &str) -> Vec<EventBinding> {
-    let bytes = template.as_bytes();
     let mut out: Vec<EventBinding> = Vec::new();
-    let mut index = 0usize;
-
-    while index < bytes.len() {
-        if bytes[index] != b'<' {
-            index += 1;
-            continue;
+    crate::scan::walk(template, &mut |found| {
+        let crate::scan::Found::Attribute {
+            name,
+            name_offset,
+            value,
+            ..
+        } = found
+        else {
+            return;
+        };
+        let Some(event_name) = event_name_for_attribute(name) else {
+            return;
+        };
+        let command = value.trim();
+        if command.is_empty() {
+            return;
         }
-        if template[index..].starts_with("<!--") {
-            index = match template[index + 4..].find("-->") {
-                Some(offset) => index + 4 + offset + 3,
-                None => bytes.len(),
-            };
-            continue;
-        }
-        // `<` that opens no tag (a stray less-than in text) is not a
-        // tag start; only a name or a closing slash follows one.
-        let after = index + 1;
-        if after >= bytes.len() || !(bytes[after].is_ascii_alphabetic() || bytes[after] == b'/') {
-            index += 1;
-            continue;
-        }
-        index = scan_tag(template, after, &mut out);
-    }
+        out.push(EventBinding {
+            attribute: name.to_owned(),
+            event_name,
+            command: command.to_owned(),
+            offset: name_offset,
+        });
+    });
 
     // The derived order puts the offset last, so a repeated binding's
     // occurrences land next to each other and `dedup_by` — which keeps
@@ -159,93 +157,6 @@ pub fn scan(template: &str) -> Vec<EventBinding> {
             == (&right.attribute, &right.event_name, &right.command)
     });
     out
-}
-
-/// Read one tag's attributes starting just after its `<`. Returns the
-/// offset just past the tag's `>` (or the end of input).
-fn scan_tag(template: &str, mut index: usize, out: &mut Vec<EventBinding>) -> usize {
-    let bytes = template.as_bytes();
-    // Skip the tag name (and a closing tag's slash).
-    while index < bytes.len() && !bytes[index].is_ascii_whitespace() && bytes[index] != b'>' {
-        index += 1;
-    }
-
-    while index < bytes.len() {
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= bytes.len() || bytes[index] == b'>' {
-            return (index + 1).min(bytes.len());
-        }
-        // A self-closing `/` before `>` is not an attribute name.
-        if bytes[index] == b'/' {
-            index += 1;
-            continue;
-        }
-
-        let name_start = index;
-        while index < bytes.len()
-            && !bytes[index].is_ascii_whitespace()
-            && !matches!(bytes[index], b'=' | b'>' | b'/')
-        {
-            index += 1;
-        }
-        let name = &template[name_start..index];
-
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= bytes.len() || bytes[index] != b'=' {
-            // A valueless attribute — nothing to bind.
-            continue;
-        }
-        index += 1;
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= bytes.len() {
-            return bytes.len();
-        }
-
-        let value_start;
-        let value_end;
-        match bytes[index] {
-            quote @ (b'"' | b'\'') => {
-                index += 1;
-                value_start = index;
-                while index < bytes.len() && bytes[index] != quote {
-                    index += 1;
-                }
-                value_end = index;
-                index = (index + 1).min(bytes.len());
-            }
-            _ => {
-                value_start = index;
-                while index < bytes.len()
-                    && !bytes[index].is_ascii_whitespace()
-                    && bytes[index] != b'>'
-                {
-                    index += 1;
-                }
-                value_end = index;
-            }
-        }
-
-        let Some(event_name) = event_name_for_attribute(name) else {
-            continue;
-        };
-        let command = template[value_start..value_end].trim();
-        if command.is_empty() {
-            continue;
-        }
-        out.push(EventBinding {
-            attribute: name.to_owned(),
-            event_name,
-            command: command.to_owned(),
-            offset: name_start,
-        });
-    }
-    bytes.len()
 }
 
 #[cfg(test)]

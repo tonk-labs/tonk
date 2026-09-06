@@ -4973,6 +4973,73 @@ mod library_analysis_tests {
         );
     }
 
+    /// The interpolation checks reach the shipped libraries' own
+    /// templates, not just the fixtures.
+    ///
+    /// Both checks are silent when they succeed, so
+    /// [`it_analyzes_the_shipped_libraries`] passes just as happily if
+    /// they never resolve a model and skip every view. This introduces
+    /// the exact typo each check exists to catch, into a real library,
+    /// and requires the lowering to fail.
+    ///
+    /// The substitution is applied to the *target* file before it is
+    /// concatenated with its prelude, because `core.yaml` contains the
+    /// same strings and comes first: mutating the joined text would
+    /// silently break the wrong file.
+    #[test]
+    fn the_interpolation_checks_reach_the_shipped_libraries() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
+        let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let prose = include_str!("../../tonk-core/assets/library/prose.yaml");
+
+        for (name, prelude, target, from, to, expected) in [
+            (
+                "notebook.yaml template",
+                core,
+                notebook,
+                "{title}",
+                "{titel}",
+                "E_UNKNOWN_TEMPLATE_FIELD",
+            ),
+            (
+                "profile.yaml template",
+                "",
+                profile,
+                "{provider}",
+                "{provideer}",
+                "E_UNKNOWN_TEMPLATE_FIELD",
+            ),
+            // The only bound declaration in the libraries that sources
+            // a command field from an interpolation rather than a DOM
+            // property path. The rest read `.detail.*` / `.currentTarget.*`,
+            // which this check does not look at.
+            (
+                "prose.yaml event source",
+                core,
+                prose,
+                "subject: \"{this}\"",
+                "subject: \"{nope}\"",
+                "E_UNKNOWN_EVENT_SOURCE_FIELD",
+            ),
+        ] {
+            let broken = target.replacen(from, to, 1);
+            assert_ne!(
+                broken, target,
+                "{name} no longer contains {from:?}; point this gate at a live interpolation",
+            );
+            let source = format!("{prelude}\n{broken}");
+            let parsed = tonk_notation::parse(&source);
+            let syntax = parsed
+                .syntax
+                .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+            let error = analyze_local(&syntax)
+                .err()
+                .unwrap_or_else(|| panic!("{name} with {to:?} must not lower"));
+            assert_eq!(error.kind.code(), expected, "{name}: {error}");
+        }
+    }
+
     /// Every `event!:` declaration name the document's views inlined.
     fn inlined_declarations(name: &str, source: &str) -> Vec<String> {
         use dialog_artifacts::Value as ArtifactValue;
