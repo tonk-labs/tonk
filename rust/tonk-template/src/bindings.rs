@@ -38,6 +38,12 @@ pub struct EventBinding {
     /// The command it posts — a bare name (`space/create`) or a URI
     /// (`tonk:invite`).
     pub command: String,
+    /// Byte offset of the attribute name within the template, so a
+    /// diagnostic can underline `on:click` rather than the whole
+    /// template. When one binding is written twice, this is the first
+    /// of them — the report has to point somewhere, and the earliest
+    /// occurrence is the one an author reads first.
+    pub offset: usize,
 }
 
 /// What every bindings artifact says it is, in its own `kind` field.
@@ -144,8 +150,14 @@ pub fn scan(template: &str) -> Vec<EventBinding> {
         index = scan_tag(template, after, &mut out);
     }
 
+    // The derived order puts the offset last, so a repeated binding's
+    // occurrences land next to each other and `dedup_by` — which keeps
+    // the first of a run — keeps the earliest place it is written.
     out.sort();
-    out.dedup();
+    out.dedup_by(|left, right| {
+        (&left.attribute, &left.event_name, &left.command)
+            == (&right.attribute, &right.event_name, &right.command)
+    });
     out
 }
 
@@ -230,6 +242,7 @@ fn scan_tag(template: &str, mut index: usize, out: &mut Vec<EventBinding>) -> us
             attribute: name.to_owned(),
             event_name,
             command: command.to_owned(),
+            offset: name_start,
         });
     }
     bytes.len()
@@ -269,6 +282,25 @@ mod tests {
         let found = scan(r##"<use xlink:href="#x" bind:base=a on:click=go />"##);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].event_name, "on/click");
+    }
+
+    /// The offset points at the attribute name, which is what a
+    /// diagnostic underlines. A repeated binding keeps the first one.
+    #[dialog_common::test]
+    fn it_records_where_each_attribute_is_written() {
+        let template =
+            "<p>hi</p>\n<button on:click=demo/act>go</button>\n<a on:click=demo/act>x</a>";
+        let found = scan(template);
+        assert_eq!(found.len(), 1, "the repeat is one binding, not two");
+        assert_eq!(
+            &template[found[0].offset..found[0].offset + found[0].attribute.len()],
+            "on:click",
+        );
+        assert_eq!(
+            found[0].offset,
+            template.find("on:click").expect("it is in there"),
+            "the earliest occurrence is the one reported",
+        );
     }
 
     #[dialog_common::test]

@@ -164,11 +164,10 @@ pub(crate) fn compile_bindings(
             let Some(template) = field_text(&entry.value) else {
                 continue;
             };
-            found.extend(
-                scan(&template)
-                    .into_iter()
-                    .map(|binding| (binding, entry.value_range)),
-            );
+            found.extend(scan(&template).into_iter().map(|binding| {
+                let range = attribute_range(entry.value_range, &template, &binding);
+                (binding, range)
+            }));
         }
     }
     if found.is_empty() {
@@ -208,6 +207,46 @@ pub(crate) fn compile_bindings(
         return Ok(None);
     }
     Ok(Some(Bindings::new(events)))
+}
+
+/// Where a binding's attribute is written, in the document's own
+/// coordinates.
+///
+/// A template is a block scalar: its value range starts at the first
+/// content character, and every content line carries that same
+/// indentation. So a position inside the template maps to the source
+/// by adding the range's start — line offset by line offset, and the
+/// indentation added to the column. That is exact for the block form,
+/// which is how every template in the corpus is written.
+///
+/// Anything else — a flow scalar whose escapes shift the columns, a
+/// computed position past the end of the value — falls back to the
+/// whole value. A range that is merely wide is a worse report; one
+/// that points outside the value is a wrong one.
+fn attribute_range(
+    value_range: lsp_types::Range,
+    template: &str,
+    binding: &EventBinding,
+) -> lsp_types::Range {
+    let Some(head) = template.get(..binding.offset) else {
+        return value_range;
+    };
+    let line = head.matches('\n').count() as u32;
+    // Every content line of a block scalar starts at the same column
+    // the value range does, so the same offset applies to all of them.
+    let column = head.rsplit('\n').next().unwrap_or(head).chars().count() as u32;
+    let start = lsp_types::Position {
+        line: value_range.start.line + line,
+        character: value_range.start.character + column,
+    };
+    let end = lsp_types::Position {
+        line: start.line,
+        character: start.character + binding.attribute.chars().count() as u32,
+    };
+    if (end.line, end.character) > (value_range.end.line, value_range.end.character) {
+        return value_range;
+    }
+    lsp_types::Range { start, end }
 }
 
 /// The concept a binding's command half names — by bare name or by
@@ -412,6 +451,30 @@ view!:
         let source = document("on:demo=demo/act", "{this}").replace("subject: \"{", "topic: \"{");
         let error = lower(&source).expect_err("an unfillable command must not lower");
         assert_eq!(error.kind.code(), "E_EVENT_COMMAND_MISMATCH", "{error}");
+    }
+
+    /// The report points at the attribute, not at the template.
+    ///
+    /// A block scalar is many lines wide; underlining all of it says
+    /// "something in here is wrong" when the analyzer knows exactly
+    /// which eight characters are.
+    #[dialog_common::test]
+    fn a_dangling_binding_is_reported_where_it_is_written() {
+        let source = document("on:missing=demo/act", "{this}");
+        let error = lower(&source).expect_err("a dangling declaration must not lower");
+        let range = error.range.expect("the report is placed");
+        let line = source
+            .lines()
+            .nth(range.start.line as usize)
+            .expect("the line is in the document");
+        let start = range.start.character as usize;
+        let end = range.end.character as usize;
+        assert_eq!(
+            &line[start..end],
+            "on:missing",
+            "the range covers the attribute alone, in `{line}`",
+        );
+        assert_eq!(range.start.line, range.end.line, "one line, not the block");
     }
 
     /// The `bindings` field's type is spellable in an author's own
