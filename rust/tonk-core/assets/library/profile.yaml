@@ -317,6 +317,53 @@ command!: &profile/rename
 # names WHICH replica to flip; the worker's PauseSyncHandler reads it in place
 # of the dispatch origin. `time` makes each click a distinct transient so the
 # toggle reliably re-fires; `marker` keeps the shape distinct from `tonk:invite`.
+# Ask whether a newer seed is waiting for a space, without installing it.
+# The handler fetches the space's own seed source, compares the bytes
+# against what it is running, and asserts the answer as an OVERLAY fact:
+# the result is this device's observation at this moment, not something
+# true of the space, so it must not replicate. `time` makes each ask a
+# distinct transient; `marker` keeps the shape distinct from other
+# commands carrying `{this, time}`.
+command!: &tonk/check-update
+  this: tonk:check-update
+  description: Ask whether a newer seed is waiting for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each ask a distinct transient.
+      the: dom.event/time-stamp
+      as: float
+    space:
+      description: The space to check, as its subject DID.
+      the: xyz.tonk.check-update/space
+      as: entity
+    marker:
+      description: Per-command marker keeping the shape distinct.
+      the: dom.event.current-target.dataset/check-update
+      as: entity
+
+# What a check found, overlay-only. `status` alone resolves while one is
+# in flight, so a view can show "checking" and "update ready" as distinct
+# states rather than waiting for both fields.
+concept!: &space/update
+  this: tonk:space/update
+  description: What a seed-update check found for a space.
+  with:
+    status:
+      description: '`case:current`, `case:available`, `case:unreachable`, or `case:unrecorded`.'
+      the: xyz.tonk.update/status
+      cardinality: one
+      as: entity
+
+concept!: &space/update-available
+  this: tonk:space/update-available
+  description: The seed a check found waiting.
+  with:
+    available:
+      description: The waiting seed, identified by the hash of its bytes.
+      the: xyz.tonk.update/available
+      cardinality: one
+      as: entity
+
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.

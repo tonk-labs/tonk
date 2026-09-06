@@ -344,6 +344,29 @@ pub mod route {
     pub struct Concept(pub Entity);
 }
 
+/// Attributes describing a seed update this device has looked for —
+/// overlay-only, so they die with the worker rather than replicating a
+/// device-local observation.
+pub mod update {
+    use super::{Attribute, Entity};
+
+    /// What the check found: `case:current`, `case:available`, or
+    /// `case:unreachable` when the source could not be fetched.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.update")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// The seed the check found waiting, when one is.
+    ///
+    /// Its identity is the hash of the fetched bytes, so a caller can
+    /// tell one available update from the next without re-fetching.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.update")]
+    #[cardinality(one)]
+    pub struct Available(pub Entity);
+}
+
 /// Attributes recording what a seed version seeded, one per component
 /// kind, on the seed version's own entity.
 ///
@@ -663,6 +686,23 @@ pub mod command {
     }
 
     /// Attributes the `tonk:pause-sync` command carries.
+    pub mod check_update {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The per-command marker, so this transient never shares a shape
+        /// with another command (see [`super::pause_sync::PauseSync`] for
+        /// why every command carries one).
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct CheckUpdate(pub Entity);
+
+        /// The space to check, as its subject `did:key`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.check-update")]
+        pub struct Space(pub Entity);
+    }
+
     pub mod pause_sync {
         use super::super::Entity;
         use super::Attribute;

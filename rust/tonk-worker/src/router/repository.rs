@@ -1450,6 +1450,77 @@ fn long_invite_url(
 /// [`InviteHandler`].
 ///
 /// [`PauseSync`]: tonk_schema::command::PauseSync
+/// Runs [`check_seed_update`] for the space the command names.
+///
+/// A command rather than a background sweep: looking costs a fetch, and
+/// the answer goes stale, so it happens when something asks — a view
+/// mounting, a user clicking — not on a timer.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct CheckUpdateHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl CheckUpdateHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::CheckUpdate::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckUpdateHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::CheckUpdate::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decoded synchronously, like every handler: the caller still holds
+        // the lock, so the owned target and an env clone go to the future.
+        let target = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::CheckUpdate::decode(entity, facts))
+            .and_then(|command| {
+                command
+                    .space
+                    .0
+                    .to_string()
+                    .parse::<dialog_varsig::Did>()
+                    .ok()
+            });
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(subject) = target else {
+                log!("CheckUpdate: no/unparseable target space, skipping");
+                return;
+            };
+            let tonk = env.state().read().await;
+            if let Err(error) = check_seed_update(&tonk, &subject).await {
+                log!("CheckUpdate '{subject}': {error}");
+            }
+        })
+    }
+}
+
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct PauseSyncHandler {
@@ -2994,6 +3065,120 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// the SW-scoped profile seed path.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
+
+/// Look for a newer seed without installing one.
+///
+/// Fetches the space's own seed source and compares the bytes against
+/// what it is running, then publishes the answer to the profile-main
+/// OVERLAY: the result is this device's observation at this moment, not
+/// a fact about the space, so it must not replicate.
+///
+/// The check is the cheap half of [`upgrade_seed`] — a fetch and a hash —
+/// so an affordance can offer the update and leave installing it to the
+/// user.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn check_seed_update(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{SeedUpdate, SeedUpdateAvailable};
+
+    let key = subject.repo_key();
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}': {e}")))?;
+
+    let installed: Vec<tonk_schema::Seed> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Seed> {
+            this: Term::var("this"),
+            source: Term::var("source"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e:?}")))?;
+
+    let Some(current) = installed.into_iter().next() else {
+        // A space seeded before this worker recorded one. Nothing names
+        // its definitions, so an upgrade could not withdraw them and
+        // there is nothing to offer.
+        publish_update_status(tonk, subject, "case:unrecorded", None).await;
+        return Ok(());
+    };
+
+    let source = current.source.0.clone();
+    let Ok(library) = fetch_standard_library(&source).await else {
+        // Offline, or a custom source that has gone. Distinguished from
+        // "current" so a view does not claim a space is up to date when
+        // it simply could not look.
+        publish_update_status(tonk, subject, "case:unreachable", None).await;
+        return Ok(());
+    };
+
+    let available = seed_version(&library);
+    if available == current.this.to_string() {
+        publish_update_status(tonk, subject, "case:current", None).await;
+    } else {
+        publish_update_status(tonk, subject, "case:available", Some(&available)).await;
+    }
+    Ok(())
+}
+
+/// Stamp a check's answer into the profile-main overlay.
+///
+/// Overlay rather than durable: the answer is what THIS device saw just
+/// now, and it goes stale the moment the source changes.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_update_status(
+    tonk: &TonkState,
+    subject: &Did,
+    status: &str,
+    available: Option<&str>,
+) {
+    use tonk_schema::{SeedUpdate, SeedUpdateAvailable};
+
+    let Ok(status_entity) = status.parse() else {
+        log!("update check: '{status}' is not an entity");
+        return;
+    };
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("update check: open profile main: {error}");
+            return;
+        }
+    };
+    main.state.assert_overlay(SeedUpdate {
+        this: subject.this(),
+        status: tonk_schema::domain::update::Status(status_entity),
+    });
+    if let Some(available) = available
+        && let Ok(entity) = available.parse()
+    {
+        main.state.assert_overlay(SeedUpdateAvailable {
+            this: subject.this(),
+            available: tonk_schema::domain::update::Available(entity),
+        });
+    }
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
 
 /// Bring a space's seed up to the one this worker ships, if it is behind.
 ///
@@ -8443,6 +8628,104 @@ mod seed_tests {
         assert!(
             body.contains("  prior: seed:prior"),
             "and the seed it replaced, so the chain is walkable: {body}"
+        );
+    }
+
+    /// A check reports whether an update is waiting, without installing
+    /// one.
+    ///
+    /// The three answers a view has to tell apart: a space already on the
+    /// shipped seed, one with a newer seed waiting, and one whose seed
+    /// predates the record — which cannot be upgraded at all, since
+    /// nothing names its definitions to withdraw.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_reports_whether_an_update_is_waiting() {
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-check").await;
+        let tonk = state.read().await;
+
+        let subject: dialog_varsig::Did = {
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+
+        async fn status_of(tonk: &crate::worker::TonkState) -> Option<String> {
+            use dialog_query::{Output as _, Query, Term};
+
+            let main = tonk
+                .reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile main acquires");
+            let rows: Vec<tonk_schema::SeedUpdate> = main
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedUpdate> {
+                    this: Term::var("this"),
+                    status: Term::var("status"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("update status query");
+            rows.into_iter().next().map(|row| row.status.0.to_string())
+        }
+
+        // No record: the space predates one, so there is nothing to offer.
+        super::check_seed_update(&tonk, &subject)
+            .await
+            .expect("the check runs");
+        assert_eq!(
+            status_of(&tonk).await.as_deref(),
+            Some("case:unrecorded"),
+            "a space with no seed record cannot be upgraded"
+        );
+
+        // Install the shipped seed, recording it the way creation does.
+        let version = crate::router::evaluate::pending_version(&tonk, &key, "main")
+            .await
+            .expect("the pending version reads")
+            .expect("a branch has one");
+        let record = super::seed_record_body(
+            &super::seed_version(LIBRARY),
+            super::STANDARD_LIBRARY_URL,
+            super::SEED_NONE,
+            &super::encode_seed_version(&version),
+        );
+        crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            format!("{LIBRARY}\n{record}"),
+            true,
+        )
+        .await
+        .expect("the seed installs");
+
+        // With a record but no served library, the answer is that the
+        // check could not look — distinct from "up to date", so a view
+        // never claims a space is current when it simply could not fetch.
+        // (The harness serves no assets; a browser serves the library.)
+        super::check_seed_update(&tonk, &subject)
+            .await
+            .expect("the check runs");
+        assert_eq!(
+            status_of(&tonk).await.as_deref(),
+            Some("case:unreachable"),
+            "an unfetchable source is not the same as being up to date"
         );
     }
 

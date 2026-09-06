@@ -360,7 +360,37 @@ pub struct PauseSync {
     pub marker: crate::domain::command::pause_sync::PauseSync,
 }
 
-/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
+/// Ask whether a newer seed is waiting for a space.
+///
+/// Fetches the space's own seed source and compares the bytes against
+/// what it is running, then asserts the answer as an overlay fact — so a
+/// view can offer the update without an upgrade having happened, and the
+/// answer dies with the worker rather than replicating a device-local
+/// observation.
+///
+/// Carries `space` for the same reason [`PauseSync`] does: the handler
+/// reads its target from the command rather than the dispatch origin, so
+/// the affordance needs nothing seeded on the space's own branch.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct CheckUpdate {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The click's timestamp, so a repeat check re-fires rather than
+    /// decoding as the same transient.
+    pub time: crate::domain::command::invite::TimeStamp,
+    /// The space to check, read in place of the dispatch origin.
+    pub space: crate::domain::command::check_update::Space,
+    /// Per-command marker, so this never shares a shape with another
+    /// command carrying `{this, time}`.
+    pub marker: crate::domain::command::check_update::CheckUpdate,
+}
+
+impl Command for CheckUpdate {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {
     type Input = Self;

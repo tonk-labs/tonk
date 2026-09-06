@@ -125,8 +125,31 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
-/// A seed install: what it was, where it came from, and the revision it
-/// committed at.
+/// What a seed-update check found — overlay-only, so it dies with the
+/// worker rather than replicating a device-local observation.
+///
+/// `status` alone resolves while a check is in flight; `available` only
+/// exists once one has been found, so a view can render "checking" and
+/// "update ready" as distinct states.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedUpdate {
+    /// The space checked.
+    pub this: Entity,
+    /// `case:current`, `case:available`, or `case:unreachable`.
+    pub status: crate::domain::update::Status,
+}
+
+/// The seed a check found waiting, on the same entity as its status.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedUpdateAvailable {
+    /// The space checked.
+    pub this: Entity,
+    /// The waiting seed, identified by the hash of its bytes.
+    pub available: crate::domain::update::Available,
+}
+
+/// A seed install: what it was, where it came from, and the version of
+/// the commit that installed it.
 ///
 /// The version names the commit that installed it, and a commit's history
 /// is a changelog — so an upgrade inverts that commit's assertions rather
