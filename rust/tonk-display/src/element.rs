@@ -2882,6 +2882,290 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// A `<tonk-display>` stand-in mounted in the document, optionally
+    /// with a `tonk-query` host behind it.
+    ///
+    /// Every wasm test in this crate shares one page, so a fixture that
+    /// leaves an element or a `body` listener behind changes what the
+    /// *next* test sees — a `tonk-query` listener especially, since it
+    /// claims queries for whoever dispatches them. Both are torn down
+    /// on drop.
+    #[cfg(target_arch = "wasm32")]
+    struct StubHost {
+        host: Element,
+        listener: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Drop for StubHost {
+        fn drop(&mut self) {
+            if let Some(listener) = self.listener.take()
+                && let Some(body) = window()
+                    .and_then(|w| w.document())
+                    .and_then(|document| document.body())
+            {
+                let _ = body.remove_event_listener_with_callback(
+                    "tonk-query",
+                    listener.as_ref().unchecked_ref(),
+                );
+            }
+            if let Some(parent) = self.host.parent_node() {
+                let _ = parent.remove_child(&self.host);
+            }
+        }
+    }
+
+    /// A host element in the document that nothing answers queries for.
+    #[cfg(target_arch = "wasm32")]
+    fn unclaimed_host() -> StubHost {
+        let document = window().expect("window").document().expect("document");
+        let host = document.create_element("div").expect("host");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("append");
+        StubHost {
+            host,
+            listener: None,
+        }
+    }
+
+    /// A host whose queries are all claimed and answered with `rows`,
+    /// running `before` first.
+    ///
+    /// The listener runs *synchronously* inside `dispatch_event`, which
+    /// is what makes `before` useful: it executes at the exact moment
+    /// the display is mid-query, so a hook that takes a state borrow
+    /// there stands in for a frame handler firing during the round
+    /// trip.
+    #[cfg(target_arch = "wasm32")]
+    fn stub_query_host(rows: Vec<Conclusion>, before: impl Fn(&CustomEvent) + 'static) -> StubHost {
+        let mut stub = unclaimed_host();
+        let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(event) = event.dyn_ref::<CustomEvent>() else {
+                return;
+            };
+            before(event);
+            event.prevent_default();
+            let detail = event.detail();
+            let value = serde_wasm_bindgen::to_value(&rows).expect("rows serialize");
+            let _ = Reflect::set(&detail, &"result".into(), &Promise::resolve(&value));
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let body = window()
+            .expect("window")
+            .document()
+            .expect("document")
+            .body()
+            .expect("body");
+        body.add_event_listener_with_callback("tonk-query", callback.as_ref().unchecked_ref())
+            .expect("listener installs");
+        stub.listener = Some(callback);
+        stub
+    }
+
+    /// One event declaration, as the analyzer would have inlined it.
+    #[cfg(target_arch = "wasm32")]
+    fn one_inlined_declaration() -> BTreeMap<String, tonk_template::event::EventDescriptor> {
+        BTreeMap::from([(
+            "on/click".to_string(),
+            tonk_template::event::EventDescriptor {
+                event_type: "click".into(),
+                prevent_default: false,
+                stop_propagation: false,
+                sources: BTreeMap::from([(
+                    "subject".to_string(),
+                    tonk_template::event::Source::Field("this".into()),
+                )]),
+            },
+        )])
+    }
+
+    /// A declaration the artifact carries costs no query at all.
+    ///
+    /// This is the claim the whole change rests on, so it is asserted
+    /// the strictest way available: no `tonk-query` host is installed,
+    /// so *any* query the table tried to make would fail to be claimed
+    /// and the declaration would be dropped with a warning. It resolves
+    /// anyway, which it can only do from the artifact.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_resolves_an_inlined_declaration_without_querying() {
+        let stub = unclaimed_host();
+        let names = BTreeSet::from(["on/click".to_string()]);
+        let table = resolve_event_table(&stub.host, &names, one_inlined_declaration()).await;
+
+        let descriptor = table
+            .get("on/click")
+            .expect("the artifact answers without a host to query");
+        assert_eq!(descriptor.event_type, "click");
+        assert_eq!(
+            descriptor.sources.get("subject"),
+            Some(&tonk_template::event::Source::Field("this".into())),
+            "the `where:` source rides the artifact, not a per-name read",
+        );
+    }
+
+    /// A declaration the artifact does NOT carry still goes to the
+    /// branch — the fallback a view seeded before this field existed
+    /// depends on.
+    ///
+    /// Same no-host setup, so the fallback cannot succeed; what is
+    /// asserted is that it was *attempted*, which is the difference
+    /// between falling back and silently ignoring the binding.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_falls_back_for_a_declaration_the_artifact_omits() {
+        let stub = unclaimed_host();
+        let names = BTreeSet::from(["on/elsewhere".to_string()]);
+        let table = resolve_event_table(&stub.host, &names, one_inlined_declaration()).await;
+
+        assert!(
+            table.get("on/elsewhere").is_none(),
+            "an uncovered name is resolved against the branch, which no host answered",
+        );
+    }
+
+    /// The stored artifact is read back through the view-bindings query.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_decodes_the_stored_bindings_artifact() {
+        let encoded = tonk_template::bindings::Bindings::new(one_inlined_declaration())
+            .encode()
+            .expect("artifact encodes");
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:demo".into(),
+                fields: BTreeMap::from([("bindings".to_string(), Ipld::Bytes(encoded))]),
+            }],
+            |_| {},
+        );
+
+        let events = resolve_inlined_bindings(&stub.host, "tonk:demo").await;
+        assert_eq!(
+            events.get("on/click").map(|d| d.event_type.as_str()),
+            Some("click"),
+        );
+    }
+
+    /// Bytes that are not this artifact resolve to nothing rather than
+    /// to an empty table read as authoritative — the display falls back
+    /// to per-name resolution, which is what an older view needs.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_ignores_a_bindings_value_it_cannot_decode() {
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:demo".into(),
+                fields: BTreeMap::from([(
+                    "bindings".to_string(),
+                    Ipld::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+                )]),
+            }],
+            |_| {},
+        );
+
+        assert!(
+            resolve_inlined_bindings(&stub.host, "tonk:demo")
+                .await
+                .is_empty()
+        );
+    }
+
+    /// Drive one delegate refresh, returning `(queries seen, whether
+    /// the state was free to borrow on every one of them)`.
+    ///
+    /// `model_entity` decides whether the refresh reaches the bindings
+    /// query at all, which is what lets the caller tell the two runs
+    /// apart by count rather than by inspecting a query body — the
+    /// bodies arrive as JS `Map`s, which `JSON.stringify` renders as
+    /// `{}`.
+    #[cfg(target_arch = "wasm32")]
+    async fn refresh_with(model_entity: Option<&str>) -> (usize, bool) {
+        let document = window().expect("window").document().expect("document");
+        let state = Rc::new(RefCell::new(Inner::new()));
+
+        // A slide whose template binds one command, so the refresh
+        // installs a delegate rather than bailing early.
+        let view_el = document.create_element("div").expect("view element");
+        view_el
+            .set_attribute(
+                "data-event-bindings",
+                r#"{"events":[],"concepts":["demo/act"],"declarations":["on/click"]}"#,
+            )
+            .expect("bindings attribute");
+        let item = document.create_element("div").expect("item");
+        item.append_child(&view_el).ok();
+        {
+            let mut inner = state.borrow_mut();
+            inner.model_entity = model_entity.map(str::to_owned);
+            inner.slides.insert(
+                "tonk:demo".into(),
+                Slide {
+                    display: String::new(),
+                    item,
+                    view_el,
+                },
+            );
+        }
+
+        // Observed rather than asserted by panicking: an exception
+        // raised inside a DOM listener is swallowed by `dispatch_event`
+        // and would only make that one query answer nothing, which the
+        // fallback path treats as an ordinary miss. A panic here would
+        // therefore be invisible.
+        let queries = Rc::new(std::cell::Cell::new(0usize));
+        let borrow_was_free = Rc::new(std::cell::Cell::new(true));
+        let stub = {
+            let state = state.clone();
+            let queries = queries.clone();
+            let borrow_was_free = borrow_was_free.clone();
+            stub_query_host(Vec::new(), move |_| {
+                queries.set(queries.get() + 1);
+                if state.try_borrow_mut().is_err() {
+                    borrow_was_free.set(false);
+                }
+            })
+        };
+
+        let generation = state.borrow().delegate_generation;
+        refresh_delegate(&stub.host, &state, generation).await;
+        (queries.get(), borrow_was_free.get())
+    }
+
+    /// The state must not be borrowed while the bindings query is in
+    /// flight.
+    ///
+    /// Regression: `match state.borrow().model_entity.clone() { … }`
+    /// keeps the scrutinee's `Ref` alive for the whole match, so the
+    /// `RefCell` stayed borrowed across the awaited query and any frame
+    /// handler that fired meanwhile panicked. The window is open only
+    /// while that one query is in flight, which is why the defect
+    /// surfaced as browser jobs failing in one CI run and passing in
+    /// the next.
+    ///
+    /// A refresh with no resolved model makes every other query but
+    /// skips the bindings one, so the count difference proves the run
+    /// with a model actually reached it. Without that, a refresh that
+    /// stopped querying bindings at all would leave this passing
+    /// vacuously.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_does_not_hold_the_state_borrow_across_the_bindings_query() {
+        let (without_model, free_without) = refresh_with(None).await;
+        let (with_model, free_with) = refresh_with(Some("tonk:demo")).await;
+
+        assert_eq!(
+            with_model,
+            without_model + 1,
+            "a resolved model must add exactly the bindings query, or this pins nothing",
+        );
+        assert!(
+            free_without && free_with,
+            "the state was still borrowed while a query was in flight",
+        );
+    }
+
     /// A model nested inside a DIFFERENT model is not recursion.
     ///
     /// Nesting is the normal case — a board of tiles, a workspace of
