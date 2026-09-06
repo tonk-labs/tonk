@@ -158,15 +158,24 @@ fn view_descriptor() -> ConceptDefinition {
                 // One compiled artifact, not a queryable map: the
                 // bindings are resolved together and mean nothing
                 // apart, so there is no per-key supersession to model.
-                // CBOR rather than JSON text because this is a build
-                // product the display decodes, never something a person
-                // reads or a rule matches on.
+                // dag-cbor rather than JSON text because this is a
+                // build product the display decodes, never something a
+                // person reads or a rule matches on.
+                //
+                // `Record`, not `Bytes`: dialog's type for "one struct,
+                // one fact" — the same one a revision record uses, and
+                // what keeps this distinguishable from an opaque blob
+                // in storage and in a `Value` match. The tag says
+                // "structured", not *which* structure, and it flattens
+                // to plain bytes on every wire projection, so the
+                // payload also names its own format
+                // (`tonk_template::bindings::KIND`).
                 "bindings": {
                     "the": "xyz.tonk.view/bindings",
-                    "as": "Bytes",
+                    "as": "Record",
                     "cardinality": "one",
                     "optional": true,
-                    "description": "CBOR of the event + command descriptors resolved at lowering"
+                    "description": "dag-cbor of the event descriptors resolved at lowering"
                 }
             }
         }))

@@ -227,7 +227,7 @@ pub fn view_bindings_query(model_entity: &str) -> Result<Query, serde_json::Erro
         "with": {
             "bindings": {
                 "the": "xyz.tonk.view/bindings",
-                "as": "Bytes",
+                "as": "Record",
                 "cardinality": "one"
             }
         }

@@ -1712,6 +1712,10 @@ async fn resolve_inlined_bindings(
         return empty;
     };
     let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(rows).unwrap_or_default();
+    // `Ipld::Bytes`, even though the field is declared `Record`: the
+    // wire projection flattens both to the same shape, which is why
+    // the payload names its own format rather than relying on the
+    // value's type tag to have survived.
     let Some(Ipld::Bytes(bytes)) = conclusions
         .first()
         .and_then(|conclusion| conclusion.fields.get("bindings"))

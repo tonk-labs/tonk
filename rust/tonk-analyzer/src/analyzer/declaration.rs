@@ -937,6 +937,11 @@ fn normalize_type_name(name: &str) -> Option<&'static str> {
         "boolean" | "Boolean" => Some("Boolean"),
         "entity" | "Entity" => Some("Entity"),
         "bytes" | "Bytes" => Some("Bytes"),
+        // Dialog's type for "one struct, one fact" — a value whose
+        // bytes are a serialized record rather than an opaque blob.
+        // Spellable here because the built-in `view` declares one and
+        // an author's concept must be able to say the same thing.
+        "record" | "Record" => Some("Record"),
         _ => None,
     }
 }

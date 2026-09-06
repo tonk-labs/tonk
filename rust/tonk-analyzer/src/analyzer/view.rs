@@ -207,7 +207,7 @@ pub(crate) fn compile_bindings(
     if events.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Bindings { events }))
+    Ok(Some(Bindings::new(events)))
 }
 
 /// The concept a binding's command half names — by bare name or by
@@ -351,7 +351,7 @@ view!:
             let Statement::Assert(Application::Concept { query, .. }) = statement else {
                 continue;
             };
-            if let Some(Term::Constant(Value::Bytes(bytes))) = query.terms.get("bindings") {
+            if let Some(Term::Constant(Value::Record(bytes))) = query.terms.get("bindings") {
                 return Some(Bindings::decode(bytes).expect("the artifact decodes"));
             }
         }
@@ -412,6 +412,25 @@ view!:
         let source = document("on:demo=demo/act", "{this}").replace("subject: \"{", "topic: \"{");
         let error = lower(&source).expect_err("an unfillable command must not lower");
         assert_eq!(error.kind.code(), "E_EVENT_COMMAND_MISMATCH", "{error}");
+    }
+
+    /// The `bindings` field's type is spellable in an author's own
+    /// `concept!:`, not only in the hand-built built-in.
+    ///
+    /// Lives with the view tests because the built-in is the reason
+    /// `record` entered the `as:` vocabulary: a type the analyzer
+    /// writes but cannot parse would be a schema only the compiler
+    /// could author.
+    #[dialog_common::test]
+    fn record_is_a_spellable_value_type() {
+        let source = r#"
+attribute!: &demo/blob
+  the: xyz.tonk.demo/blob
+  as: record
+  cardinality: one
+  description: A compiled artifact.
+"#;
+        lower(source).expect("`as: record` is a declarable value type");
     }
 
     /// A binding mentioned in an HTML comment is not a binding: the

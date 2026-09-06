@@ -4989,7 +4989,7 @@ mod library_analysis_tests {
             let Statement::Assert(Application::Concept { query, .. }) = &planned.statement else {
                 continue;
             };
-            let Some(QueryTerm::Constant(ArtifactValue::Bytes(bytes))) =
+            let Some(QueryTerm::Constant(ArtifactValue::Record(bytes))) =
                 query.terms.get("bindings")
             else {
                 continue;

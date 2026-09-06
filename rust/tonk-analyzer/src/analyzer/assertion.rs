@@ -354,7 +354,7 @@ pub(crate) fn build_assertion_application(
                     })?;
                     assert_terms.insert(
                         super::view::BINDINGS_FIELD.into(),
-                        Term::Constant(Value::Bytes(encoded)),
+                        Term::Constant(Value::Record(encoded)),
                     );
                     retract_terms.insert(
                         super::view::BINDINGS_FIELD.into(),
