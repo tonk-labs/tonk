@@ -3055,29 +3055,45 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         retract.len()
     );
 
-    let outcome = super::evaluate::evaluate_with_retractions(
-        tonk,
-        key,
-        CONTENT_BRANCH,
-        library.clone(),
-        retract,
-    )
-    .await
-    .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
+    // A dry run first, only to learn the entities the library's routes
+    // will land on: the record names them, and they are derived from the
+    // document rather than written in it. Nothing commits here.
+    let preview = super::evaluate::evaluate_body(tonk, key, CONTENT_BRANCH, library.clone(), false)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("preview seed '{key}': {e}")))?;
 
-    let Some(revision) = outcome.revision_after else {
-        return Ok(false);
+    // The version the commit below will mint, so the record can name the
+    // very batch that carries it — which is what makes this ONE commit.
+    let Some(version) = super::evaluate::pending_version(tonk, key, CONTENT_BRANCH)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("pending version '{key}': {e}")))?
+    else {
+        return Err(RepositoryError::Internal(format!(
+            "branch '{CONTENT_BRANCH}' of '{key}' has no pending version"
+        )));
     };
+
     let record = seed_record_body(
         &shipped,
         &source,
         &current.this.to_string(),
-        &encode_seed_revision(&revision.version()),
-        &seed_route_entities(&outcome.commits.entities),
+        &encode_seed_revision(&version),
+        &seed_route_entities(&preview.commits.entities),
     );
-    seed_standard_library(tonk, key, CONTENT_BRANCH, &record)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("record upgraded seed '{key}': {e}")))?;
+
+    // Retractions, the new library, and the record naming this commit —
+    // one batch. A retract followed by an assert of the same fact keeps
+    // it, so what both seeds carry survives while what only the old one
+    // had goes.
+    super::evaluate::evaluate_with_retractions(
+        tonk,
+        key,
+        CONTENT_BRANCH,
+        format!("{library}\n{record}"),
+        retract,
+    )
+    .await
+    .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
     Ok(true)
 }
 
@@ -8445,6 +8461,59 @@ mod seed_tests {
         assert!(
             body.contains("  prior: seed:prior"),
             "and the seed it replaced, so the chain is walkable: {body}"
+        );
+    }
+
+    /// A seed record names the very commit that carries it.
+    ///
+    /// This is what makes an upgrade ONE commit: the record can only ride
+    /// the same batch as the claims it describes if the version is known
+    /// before the batch is written. If the two ever diverged, the record
+    /// would point at a revision that never existed and the next upgrade
+    /// would withdraw nothing.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_the_commit_that_carries_it() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-self-named").await;
+        let tonk = state.read().await;
+
+        // The library first: a bare `route!:` needs the concepts it names.
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        crate::router::evaluate::evaluate_body(&tonk, &key, "main", LIBRARY.to_owned(), true)
+            .await
+            .expect("the library seeds");
+
+        let predicted = crate::router::evaluate::pending_version(&tonk, &key, "main")
+            .await
+            .expect("the pending version reads")
+            .expect("a branch has one");
+
+        let outcome = crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            r#"route!: &probe
+  this: id:probe
+  path: "/probe"
+  concept: tonk:blank
+"#
+            .to_string(),
+            true,
+        )
+        .await
+        .expect("the document commits");
+
+        assert_eq!(
+            super::encode_seed_revision(
+                &outcome
+                    .revision_after
+                    .expect("a committing document has a revision")
+                    .version()
+            ),
+            super::encode_seed_revision(&predicted),
+            "the version read before the commit is the one it minted"
         );
     }
 

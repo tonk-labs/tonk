@@ -480,6 +480,32 @@ pub async fn evaluate_body(
         .map(|Json(r)| r)
 }
 
+/// The version the next commit on `repo`/`branch` will mint.
+///
+/// A caller that wants to record a fact NAMING its own commit — the seed
+/// record does, so an upgrade is one batch rather than two — builds the
+/// document with this in hand.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn pending_version(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> Result<Option<dialog_artifacts::history::Version>, TonkWorkerError> {
+    let session = tonk_state
+        .reactor
+        .repository(repo)
+        .branch(branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    session
+        .handle()
+        .transaction()
+        .version(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("read pending version: {e}")))
+}
+
 /// [`evaluate_body`], with `retract` folded into the same commit.
 ///
 /// The seed upgrade's entry point: withdrawing the previous seed and
