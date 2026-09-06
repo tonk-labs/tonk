@@ -1979,9 +1979,18 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         }
     }
 
+    // Snapshot the model entity in its own statement, so the `Ref`
+    // is dropped before the query below awaits. A `match
+    // state.borrow()… { … }` keeps the scrutinee's temporary alive
+    // for the whole match, which would hold the `RefCell` borrowed
+    // across the await and panic any frame handler that fires
+    // meanwhile — the same reason the view elements above are
+    // snapshotted rather than read through a live borrow.
+    let model_entity = state.borrow().model_entity.clone();
+
     // Build the delegate before acquiring the borrow so its
     // `addEventListener` calls don't run inside the lock.
-    let inlined = match state.borrow().model_entity.clone() {
+    let inlined = match model_entity {
         Some(model_entity) => resolve_inlined_bindings(host, &model_entity).await,
         None => std::collections::BTreeMap::new(),
     };
