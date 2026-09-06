@@ -350,6 +350,51 @@ pub enum AnalyzeErrorKind {
         /// The concept name that failed to resolve.
         name: String,
     },
+    /// A `on:<name>=<command>` binding in a view template names an
+    /// `event!:` declaration nothing declares. The binding would
+    /// install no listener and report nothing — the element would
+    /// simply be inert — so it fails the lowering instead.
+    #[error(
+        "`{attribute}` names the event declaration `{name}`, which no `event!:` declares          in this document or on the branch"
+    )]
+    UnknownEventDeclaration {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The declaration it names (`on/click`).
+        name: String,
+    },
+    /// A `on:<name>=<command>` binding names a command that resolves
+    /// to no concept. Same failure mode as an unknown declaration: the
+    /// click would post nothing.
+    #[error("`{attribute}={command}` names no command")]
+    UnknownBoundCommand {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The command name or URI the binding carries.
+        command: String,
+    },
+    /// The bound declaration cannot fill the bound command: a required
+    /// field has no source, or a source names a field the command does
+    /// not declare. The first posts a command no rule premise matches;
+    /// the second is a typo that silently does nothing.
+    #[error("`{attribute}={command}` cannot fill the command — {detail}")]
+    EventCommandMismatch {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The command the binding posts.
+        command: String,
+        /// What is wrong, rendered: the required fields with no
+        /// source and the sources naming fields the command does not
+        /// declare. One string rather than two lists so the error
+        /// type stays small enough to return by value.
+        detail: String,
+    },
+    /// The resolved bindings could not be encoded.
+    #[error("view bindings could not be encoded: {reason}")]
+    InvalidViewBindings {
+        /// Underlying encoder message.
+        reason: String,
+    },
     /// A field in the body doesn't appear in the head concept's
     /// `with` map.
     #[error("field {field:?} is not part of concept {concept:?}")]
@@ -561,6 +606,10 @@ impl AnalyzeErrorKind {
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::ReservedName { .. } => "E_RESERVED_NAME",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
+            Self::UnknownEventDeclaration { .. } => "E_UNKNOWN_EVENT_DECLARATION",
+            Self::UnknownBoundCommand { .. } => "E_UNKNOWN_BOUND_COMMAND",
+            Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
+            Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",

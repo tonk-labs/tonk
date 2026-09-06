@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 
+pub mod bindings;
 pub mod event;
 pub mod fold;
 pub mod resolve;

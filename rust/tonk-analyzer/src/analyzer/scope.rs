@@ -15,6 +15,7 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::builtin_kind;
 use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 use tonk_schema::rule::Rule;
+use tonk_template::event::EventDescriptor;
 
 /// Layered name index built during analysis.
 ///
@@ -76,6 +77,15 @@ pub(crate) struct Scope {
     /// means the entity holds no concept (retracting from something
     /// absent).
     pub(crate) resolved_concepts: Mutex<HashMap<String, Option<ConceptDefinition>>>,
+    /// Declaration name (`on/click`) -> the `event!:` instance the
+    /// document declares under it, parsed once.
+    ///
+    /// An `event!:` block is an ordinary instance assertion, not a
+    /// meta head, so nothing else in the analyzer needs its *content*
+    /// — only the view-binding pass, which inlines it. Indexed here so
+    /// that pass reads it synchronously, the same way a concept body
+    /// reads an in-document attribute.
+    pub(crate) event_declarations: Mutex<HashMap<String, EventDescriptor>>,
 }
 
 impl Scope {
@@ -91,6 +101,7 @@ impl Scope {
             named_entities: Mutex::new(HashMap::new()),
             resolved_rules: Mutex::new(HashMap::new()),
             resolved_concepts: Mutex::new(HashMap::new()),
+            event_declarations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -233,6 +244,16 @@ impl Scope {
         self.named_entities.lock().insert(name.to_owned(), entity);
     }
 
+    /// Sync concept-by-entity lookup — in-doc declarations and
+    /// branch concepts the resolve phase recorded. The form a
+    /// URI-spelled reference (`on:join=tonk:join`) needs.
+    pub(crate) fn concept_by_entity(&self, entity: &Entity) -> Option<ConceptDefinition> {
+        self.in_doc_concepts_by_entity
+            .lock()
+            .get(&entity.to_string())
+            .cloned()
+    }
+
     /// Sync attribute-by-name lookup — in-doc attributes only.
     pub(crate) fn attribute(&self, name: &str) -> Option<AttributeDefinition> {
         self.in_doc_attributes.lock().get(name).cloned()
@@ -337,5 +358,18 @@ impl Scope {
         self.resolved_concepts
             .lock()
             .insert(entity.to_string(), concept);
+    }
+
+    /// Record an `event!:` declaration the document makes, under the
+    /// name its anchor published (`on/click`).
+    pub(crate) fn record_event_declaration(&self, name: &str, descriptor: EventDescriptor) {
+        self.event_declarations
+            .lock()
+            .insert(name.to_owned(), descriptor);
+    }
+
+    /// Sync lookup of a declaration the document makes.
+    pub(crate) fn event_declaration(&self, name: &str) -> Option<EventDescriptor> {
+        self.event_declarations.lock().get(name).cloned()
     }
 }

@@ -1688,15 +1688,57 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
     });
 }
 
+/// Read the bindings the analyzer resolved onto this view.
+///
+/// A view lowered by a current analyzer carries every declaration its
+/// templates bind, already resolved, as one CBOR artifact — so the
+/// per-name reads below are skipped entirely. An empty result means
+/// the view predates the field (or binds nothing), and the caller
+/// falls back to resolving by name.
+async fn resolve_inlined_bindings(
+    host: &Element,
+    model_entity: &str,
+) -> std::collections::BTreeMap<String, tonk_template::event::EventDescriptor> {
+    use tonk_template::resolve::view_bindings_query;
+
+    let empty = std::collections::BTreeMap::new();
+    let Ok(query) = view_bindings_query(model_entity) else {
+        return empty;
+    };
+    let Ok(body) = to_body(&query) else {
+        return empty;
+    };
+    let Ok(rows) = host_consumer::query(host, &body).await else {
+        return empty;
+    };
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(rows).unwrap_or_default();
+    let Some(Ipld::Bytes(bytes)) = conclusions
+        .first()
+        .and_then(|conclusion| conclusion.fields.get("bindings"))
+    else {
+        return empty;
+    };
+    match tonk_template::bindings::Bindings::decode(bytes) {
+        Ok(bindings) => bindings.events,
+        Err(error) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "<tonk-display>: this view's compiled bindings did not decode ({error}); \
+                 resolving each declaration by name instead"
+            )));
+            empty
+        }
+    }
+}
+
 /// Resolve the `event!:` declarations a template's `on:<name>`
 /// bindings reference into a dispatch table.
 ///
-/// Each declaration is an *instance* of `tonk:event`, not a concept, so
-/// this is a name lookup followed by an entity read — not the phase-1
-/// descriptor path the command names take. Two reads per declaration:
-/// the required `type`/`where`, then the optional side-effect flags,
-/// which are separate because a declaration that omits them must still
-/// resolve.
+/// `inlined` is what the analyzer already resolved onto the view; a
+/// name it covers costs no reads at all. Anything left over is an
+/// *instance* of `tonk:event` read the old way — a name lookup
+/// followed by an entity read, two reads per declaration (the required
+/// `type`/`where`, then the optional side-effect flags, separate
+/// because a declaration that omits them must still resolve).
 ///
 /// A declaration that does not resolve is skipped with a warning rather
 /// than aborting the whole delegate, so one bad binding cannot silence
@@ -1704,12 +1746,17 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
 async fn resolve_event_table(
     host: &Element,
     event_names: &std::collections::BTreeSet<String>,
+    inlined: std::collections::BTreeMap<String, tonk_template::event::EventDescriptor>,
 ) -> tonk_template::event::EventTable {
     use tonk_template::event::event_descriptor;
     use tonk_template::resolve::event_query;
 
     let mut declarations = std::collections::BTreeMap::new();
     for name in event_names {
+        if let Some(descriptor) = inlined.get(name) {
+            declarations.insert(name.clone(), descriptor.clone());
+            continue;
+        }
         let Some(entity) = resolve_event_entity(host, name).await else {
             web_sys::console::warn_1(&JsValue::from_str(&format!(
                 "<tonk-display>: no `event!:` declaration named `{name}` \
@@ -1930,7 +1977,11 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 
     // Build the delegate before acquiring the borrow so its
     // `addEventListener` calls don't run inside the lock.
-    let table = resolve_event_table(host, &event_names).await;
+    let inlined = match state.borrow().model_entity.clone() {
+        Some(model_entity) => resolve_inlined_bindings(host, &model_entity).await,
+        None => std::collections::BTreeMap::new(),
+    };
+    let table = resolve_event_table(host, &event_names, inlined).await;
     let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors, table);
     // Re-check the per-refresh generation: if a newer refresh has
     // started while we were resolving descriptors, drop our delegate

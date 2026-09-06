@@ -211,6 +211,33 @@ pub fn view_predicate() -> Value {
     })
 }
 
+/// Build the query that reads a view's compiled bindings — the
+/// `event!:` declarations its templates bind, resolved at lowering.
+///
+/// Separate from [`view_query`] for the same reason
+/// [`event_flags_query`] is separate from [`event_query`]: `bindings`
+/// is optional, so pinning it in the view query would make a view that
+/// binds nothing — or one lowered before the field existed — match
+/// nothing, and the display would render no template at all.
+///
+/// An empty result is the fallback signal: resolve the declarations by
+/// name, the way every view was resolved before lowering did it.
+pub fn view_bindings_query(model_entity: &str) -> Result<Query, serde_json::Error> {
+    let predicate = json!({
+        "with": {
+            "bindings": {
+                "the": "xyz.tonk.view/bindings",
+                "as": "Bytes",
+                "cardinality": "one"
+            }
+        }
+    });
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(model_entity));
+    terms.insert("bindings".into(), json!({ "?": { "name": "bindings" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
 /// Build the live **directory** subscription query: like
 /// [`entity_query`] but with `this` left as a variable instead of
 /// pinned, so the query matches *every* instance of the model. The

@@ -1085,6 +1085,69 @@ fn the_event_query_predicate_matches_the_builtin() {
     );
 }
 
+/// The wire query the display builds for a view must describe the same
+/// concept the analyzer lowers against.
+///
+/// `view` is a built-in now, so the two can drift the way `event`'s
+/// pair could: the display's predicate is hand-mirrored JSON, and a
+/// `the` or a cardinality that disagrees resolves nothing at render
+/// time with no error anywhere. The `bindings` field is checked
+/// through its own query for the same reason the event flags are —
+/// it is optional, so pinning it in the view query would make a view
+/// that carries none match nothing.
+#[dialog_common::test]
+fn the_view_queries_match_the_builtin() {
+    let builtin = tonk_schema::builtin::lookup_concept("view").expect("`view` is a built-in");
+    let serialized =
+        serde_json::to_value(builtin.descriptor.concept()).expect("descriptor serializes");
+    let builtin_with = serialized
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the built-in has a `with` map");
+
+    let predicate = tonk_template::resolve::view_predicate();
+    let query_with = predicate
+        .get("with")
+        .and_then(serde_json::Value::as_object)
+        .expect("the predicate has a `with` map");
+    assert!(
+        query_with.contains_key("show") && !query_with.contains_key("bindings"),
+        "the view query pins `show` only; `bindings` is optional and read separately",
+    );
+
+    // The bindings query carries its own copy of the field, so check
+    // it against the built-in too.
+    let bindings_query = tonk_template::resolve::view_bindings_query("tonk:demo")
+        .expect("the bindings query builds");
+    let bindings_query =
+        serde_json::to_value(&bindings_query).expect("the bindings query serializes");
+    let bindings_with = bindings_query
+        .get("predicate")
+        .and_then(|predicate| predicate.get("with"))
+        .and_then(serde_json::Value::as_object)
+        .expect("the bindings query has a `with` map");
+
+    for (field, ours) in query_with.iter().chain(bindings_with.iter()) {
+        let theirs = builtin_with
+            .get(field)
+            .unwrap_or_else(|| panic!("the built-in has no `{field}` field"));
+        assert_eq!(
+            ours.get("the"),
+            theirs.get("the"),
+            "`{field}`: the query and the built-in disagree on `the`",
+        );
+        assert_eq!(
+            ours.get("cardinality"),
+            theirs.get("cardinality"),
+            "`{field}`: the query and the built-in disagree on cardinality",
+        );
+    }
+    assert!(
+        bindings_with.contains_key("bindings"),
+        "the bindings query must pin the field it exists to read",
+    );
+}
+
 /// A command with a Rust handler must match on attributes its notation
 /// declaration actually carries.
 ///
