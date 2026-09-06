@@ -3007,11 +3007,6 @@ const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
     use dialog_query::{Output as _, Query, Term};
 
-    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
-    let shipped = seed_version(&library);
-
     let session = tonk
         .reactor
         .repository(key)
@@ -3041,6 +3036,15 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         log!("seed upgrade: '{key}' predates the seed record, leaving it alone");
         return Ok(false);
     };
+
+    // Re-fetch the space's OWN source, not the shipped one. A space on a
+    // custom seed follows that seed; comparing against `core.yaml` would
+    // force it onto the built-in library on its next mount.
+    let source = current.source.0.clone();
+    let library = fetch_standard_library(&source)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
+    let shipped = seed_version(&library);
     if current.this.to_string() == shipped {
         return Ok(false);
     }
@@ -3066,7 +3070,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     };
     let record = seed_record_body(
         &shipped,
-        STANDARD_LIBRARY_URL,
+        &source,
         &current.this.to_string(),
         &encode_seed_revision(&revision.version()),
         &seed_route_entities(&outcome.commits.entities),
@@ -8414,6 +8418,33 @@ mod seed_tests {
         assert!(
             super::decode_seed_revision("not-a-version").is_none(),
             "a value that is not a version decodes to nothing rather than a wrong one"
+        );
+    }
+
+    /// An upgrade follows the space's OWN seed source, not the shipped
+    /// one.
+    ///
+    /// A space on a custom seed must not be dragged onto `core.yaml` the
+    /// next time it is opened — comparing against the shipped library
+    /// unconditionally did exactly that.
+    #[test]
+    fn it_records_the_source_it_upgrades_from() {
+        let body = super::seed_record_body(
+            "seed:v",
+            "/library/custom.yaml",
+            "seed:prior",
+            "revision-bytes",
+            &[],
+        );
+
+        assert!(
+            body.contains(r#"source: "/library/custom.yaml""#),
+            "the record carries the source it came from, so the next upgrade \
+             re-fetches THAT: {body}"
+        );
+        assert!(
+            body.contains("  prior: seed:prior"),
+            "and the seed it replaced, so the chain is walkable: {body}"
         );
     }
 
