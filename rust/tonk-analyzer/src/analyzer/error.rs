@@ -355,7 +355,7 @@ pub enum AnalyzeErrorKind {
     /// install no listener and report nothing — the element would
     /// simply be inert — so it fails the lowering instead.
     #[error(
-        "`{attribute}` names the event declaration `{name}`, which no `event!:` declares          in this document or on the branch"
+        "`{attribute}` names the event declaration `{name}`, which no `event!:` declares in this document or on the branch"
     )]
     UnknownEventDeclaration {
         /// The attribute as written (`on:click`).
@@ -419,9 +419,9 @@ pub enum AnalyzeErrorKind {
         attribute: String,
         /// The name between the braces, as written.
         field: String,
-        /// The command field it fills and the model that does not
-        /// declare it, rendered. One string rather than two so the
-        /// error type stays small enough to return by value.
+        /// The command field it fills, the model, and the undeclared
+        /// name, rendered. One string rather than three so the error
+        /// type stays small enough to return by value.
         detail: String,
     },
     /// The resolved bindings could not be encoded.
