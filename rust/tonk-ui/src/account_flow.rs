@@ -1676,68 +1676,13 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_join_targets_accessible_at_phone_sizes(env: TestEnvironment) -> Result<()> {
+    async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
 
-        for (width, height) in [(320_u32, 568_u32), (390, 844)] {
-            emulate_phone(&driver, width, height).await?;
-            goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-            enter_guest(&driver).await?;
-            element(&driver, ".join-view").await?;
-
-            for dark in [false, true] {
-                let geometry = driver
-                    .execute(
-                        r#"const dark = arguments[0];
-                           document.documentElement.classList.toggle('wa-dark', dark);
-                           document.documentElement.classList.toggle('wa-light', !dark);
-                           const visible = [...document.querySelectorAll('a,button,input:not([type=hidden])')]
-                             .filter(el => el.getClientRects().length > 0);
-                           const mast = document.querySelector('.edge-mast').getBoundingClientRect();
-                           const wordmark = document.querySelector('.edge-mast img').getBoundingClientRect();
-                           const input = document.querySelector('.edge-input');
-                           return {
-                             width: innerWidth,
-                             height: innerHeight,
-                             overflow: document.documentElement.scrollWidth > innerWidth,
-                             mast: { width: mast.width, height: mast.height },
-                             wordmark: { width: wordmark.width, height: wordmark.height },
-                             inputFont: getComputedStyle(input).fontSize,
-                             undersized: visible.flatMap(el => {
-                               const rect = el.getBoundingClientRect();
-                               if (rect.width >= 44 && rect.height >= 44) return [];
-                               return [{
-                                 selector: el.className || el.id || el.tagName.toLowerCase(),
-                                 width: rect.width,
-                                 height: rect.height
-                               }];
-                             })
-                           };"#,
-                        vec![serde_json::json!(dark)],
-                    )
-                    .await?;
-                let geometry = geometry.json();
-                assert_eq!(geometry["width"], width);
-                assert_eq!(geometry["height"], height);
-                assert_eq!(geometry["overflow"], false);
-                assert_eq!(geometry["undersized"], serde_json::json!([]));
-                assert_eq!(geometry["inputFont"], "16px");
-                assert_eq!(geometry["mast"]["width"], 98.0);
-                assert!(
-                    geometry["mast"]["height"].as_f64().unwrap_or_default() >= 44.0,
-                    "the wordmark link needs a 44px hit area: {geometry}"
-                );
-                assert_eq!(geometry["wordmark"]["width"], 98.0);
-                assert!(
-                    geometry["wordmark"]["height"]
-                        .as_f64()
-                        .is_some_and(|height| height < 44.0),
-                    "the visual wordmark must keep its existing scale: {geometry}"
-                );
-            }
-            driver.enter_default_frame().await?;
-        }
+        goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
+        await_url_path(&driver, "/").await?;
+        enter_hub(&driver).await?;
 
         driver.quit().await?;
         Ok(())
