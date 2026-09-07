@@ -5894,7 +5894,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-layout"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "taffy",
  "unicode-segmentation",
@@ -6085,7 +6085,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-tui-poc"
-version = "0.6.11"
+version = "0.6.13"
 dependencies = [
  "ipld-core",
  "ratatui",
