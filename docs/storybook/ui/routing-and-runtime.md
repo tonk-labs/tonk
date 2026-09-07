@@ -42,8 +42,16 @@ return either uses a coherent cached build or shows a recoverable boot error.
 The boot shell is destination-neutral: before routing settles it shows the
 shared pulse instead of previewing Hub branding or a progress bar. Download
 progress remains available through the live status region, while a detected or
-watchdog-terminal failure makes the status visible with reload guidance.
-Reduced-motion mode keeps a static pulse.
+watchdog-terminal failure replaces the pulse with a clear heading and an
+announced explanation. Reduced-motion mode keeps a static pulse while loading.
+
+When the browser does not expose service workers, or Safari explicitly denies
+the capability, the explanation names the observable recovery instead of
+treating every case as an old browser. An insecure origin asks the person to
+reopen Tonk over HTTPS. Safari points Private Browsing users to a normal Safari
+tab and also covers an outdated Safari build. Every other browser gets a short
+explanation that Tonk needs service workers for device-local spaces and offline
+use, followed by current-browser guidance.
 
 The same pulse occupies transient space-content loading, missing-entity, and
 missing-model slots. Those states must heal in place when the route stamp or
@@ -148,11 +156,14 @@ before exactly one guarded reload.
 
 An explicit readiness rejection is a terminal boot result, not an unobserved
 stall. Before returning without an application root, the UI asks the static
-shell to show “Tonk couldn’t start. Check your connection, then reload. Your
-local data is safe.” The first terminal result wins, clears the watchdog's
-per-tab retry counter, and disables later automatic recovery. It does not
-reload, delete CacheStorage, or unregister workers. Silent boots that stop
-making progress without an error retain the bounded watchdog ladder.
+shell to show the cause-specific heading and explanation. Missing service-worker
+support uses the HTTPS, Safari, or catchall guidance above; registration,
+activation, and other readiness failures retain “Tonk couldn’t start. Check your
+connection, then reload. Your local data is safe.” The first terminal result
+wins, clears the watchdog's per-tab retry counter, and disables later automatic
+recovery. It does not reload, delete CacheStorage, or unregister workers. Silent
+boots that stop making progress without an error retain the bounded watchdog
+ladder.
 
 ### Remain in flight
 

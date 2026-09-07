@@ -734,6 +734,30 @@ enum SpaceCommand {
         name: String,
     },
 
+    /// Re-root a space under a fresh key, keeping data and history
+    ///
+    /// The recovery for lost space keys, or the deliberate retirement
+    /// of a subject. Every fact and the whole history stay in place;
+    /// the space's identity file is replaced, the old one is archived
+    /// beside it, and the first commit under the new key records the
+    /// transplant so the seam stays visible.
+    ///
+    /// Everything minted for the old subject stops working: invites,
+    /// member grants, hosting. Signed in, the space is provisioned and
+    /// pushed under its new identity; either way, share fresh invites.
+    #[command(
+        after_help = "Examples:\n  tonk space transplant garden\n  tonk space transplant garden --in-place"
+    )]
+    Transplant {
+        /// Registered space name.
+        #[arg(value_name = "SPACE")]
+        name: String,
+        /// Operate on the site directory directly instead of copying
+        /// it aside to `<site>.pre-transplant` first.
+        #[arg(long)]
+        in_place: bool,
+    },
+
     /// Delete a space and its data from disk
     ///
     /// This destroys the space's facts, not just its registration.
@@ -1050,6 +1074,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 Some(SpaceCommand::New { .. }) => "new",
                 Some(SpaceCommand::Use { .. }) => "use",
                 Some(SpaceCommand::Link { .. }) => "link",
+                Some(SpaceCommand::Transplant { .. }) => "transplant",
                 Some(SpaceCommand::Rm { .. }) => "rm",
                 Some(SpaceCommand::Unbind { .. }) => "unbind",
                 Some(SpaceCommand::Home { .. }) => "home",
@@ -2417,6 +2442,83 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
                     println!("account: {}", outcome.account);
                     println!("site: {}", outcome.site.display());
                     ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
+        }
+        Some(SpaceCommand::Transplant { name, in_place }) => {
+            // Same account gate as `space new`: signed in, the re-rooted
+            // space is the account's from its first commit — custodied,
+            // provisioned, and pushed under the fresh subject.
+            let account = match account_for_new_space(&store).await {
+                Ok(account) => account,
+                Err(exit) => return exit,
+            };
+            let mut transplant_config = config.clone();
+            transplant_config.require_account =
+                account.is_some() && std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none();
+            transplant_config.provision_account_spaces = account.is_some();
+            match tonk_cli::space::transplant(&store, &name, in_place, transplant_config.clone())
+                .await
+            {
+                Ok(outcome) => {
+                    println!("transplanted\t{}\t{}", outcome.name, outcome.did);
+                    println!("origin: {}", outcome.origin);
+                    println!("site: {}", outcome.site.display());
+                    if let Some(backup) = &outcome.backup {
+                        println!("backup: {}", backup.display());
+                    }
+                    println!(
+                        "Invites and member grants for the origin subject no longer \
+                         apply; share fresh invites."
+                    );
+                    let Some(account) = account else {
+                        println!(
+                            "local-only: sign in and run `tonk space link {}` to host \
+                             the transplanted space",
+                            outcome.name
+                        );
+                        return ExitCode::Success;
+                    };
+                    let Some(access) = &account.access_remote else {
+                        unreachable!("checked before the space was transplanted");
+                    };
+                    // Mirror `space new`: wire the account's remote for
+                    // the fresh subject and push — the full re-upload
+                    // that gives the new identity an upstream.
+                    match site::TonkSite::open_with(&outcome.site, transplant_config).await {
+                        Ok(site) => {
+                            if let Err(error) = site::record_founder_membership(&site).await {
+                                return print_failure(error);
+                            }
+                            if let Err(error) = remote::add(
+                                &site,
+                                remote::DEFAULT_REMOTE,
+                                access,
+                                Some(site.repository.did()),
+                            )
+                            .await
+                            {
+                                return print_failure(error);
+                            }
+                            if let Err(error) =
+                                remote::set_upstream(&site, remote::DEFAULT_REMOTE).await
+                            {
+                                return print_failure(error);
+                            }
+                            if let Err(error) = sync::push(&site).await {
+                                return print_failure(error);
+                            }
+                            if let Err(error) =
+                                account_spaces::record_site_in(&outcome.name, &site, &store).await
+                            {
+                                return print_failure(error);
+                            }
+                            println!("account: {}", account.root);
+                            ExitCode::Success
+                        }
+                        Err(error) => print_failure(error),
+                    }
                 }
                 Err(error) => print_failure(error),
             }

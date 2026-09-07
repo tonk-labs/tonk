@@ -20,6 +20,10 @@ import { dirname, join } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SW_PATH = join(HERE, "..", "assets", "service_worker.js");
 const CACHE_RS_PATH = join(HERE, "..", "..", "tonk-worker", "src", "cache.rs");
+// Ceiling for "the background fill got as far as requesting the shell". Only a
+// fill that never starts should reach it, so it is generous enough that a
+// contended runner cannot trip it on timing alone.
+const FILL_START_TIMEOUT_MS = 30_000;
 const source = readFileSync(SW_PATH, "utf8");
 
 /** A minimal Cache/CacheStorage good enough for the decisions here. */
@@ -774,8 +778,15 @@ describe("immutable generation install", () => {
     });
     const manifestHash = await sha256Hex(utf8(manifestText));
     let releaseShell;
-    let shellRequested = false;
+    let announceShellRequest;
     const shellReady = new Promise((resolve) => { releaseShell = resolve; });
+    // Settles the moment the fill asks for the shell, so the assertion below
+    // waits on that event instead of a fixed number of event-loop turns. The
+    // fill reaches this request only after reading the generation marker and
+    // digesting the manifest; on a loaded runner a turn budget drains while
+    // that work is still outstanding, which failed the test for timing rather
+    // than for behaviour.
+    const shellRequested = new Promise((resolve) => { announceShellRequest = resolve; });
     const { self, caches } = withGlobals({
       registration: { active: null, waiting: null, installing: {}, addEventListener() {} },
       fetchImpl: async (input) => {
@@ -783,7 +794,7 @@ describe("immutable generation install", () => {
         if (path === "/worker_bg.wasm") return new Response(wasm, { status: 200 });
         if (path === "/asset-manifest.json") return new Response(manifestText, { status: 200 });
         if (path === "/") {
-          shellRequested = true;
+          announceShellRequest();
           await shellReady;
           return new Response(shellBody, { status: 200 });
         }
@@ -809,12 +820,17 @@ describe("immutable generation install", () => {
       data: { type: "claim" },
       waitUntil: (promise) => pending.push(promise),
     });
-    for (let turns = 0; !shellRequested && turns < 20; turns += 1) {
-      await new Promise(setImmediate);
-    }
+    const fillStarted = await Promise.race([
+      shellRequested.then(() => true),
+      new Promise((resolve) => {
+        setTimeout(() => resolve(false), FILL_START_TIMEOUT_MS).unref?.();
+      }),
+    ]);
 
+    // Both hold while the shell response is still withheld: control landed
+    // without waiting for the offline copy, and the fill is already fetching.
     assert.equal(claimed, true, "control must not wait for the offline shell");
-    assert.equal(shellRequested, true, "claim starts the background fill");
+    assert.equal(fillStarted, true, "claim starts the background fill");
     assert.equal(
       await caches.match("/", { cacheName: mod.SHELL_CACHE }),
       undefined,

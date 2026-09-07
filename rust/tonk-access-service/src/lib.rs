@@ -102,6 +102,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .put_async("/@", handlers::shortcut::handle_put)
         .options_async("/@/:hash", handlers::shortcut::handle_options)
         .get_async("/@/:hash", handlers::shortcut::handle_get)
+        // `HEAD` redirects exactly as `GET` does. A caller expanding a
+        // short link only needs the URL the redirect lands on, so
+        // serving it here spares them the app shell's body; without
+        // this the router answers 405 and there is no redirect to
+        // follow at all.
+        .head_async("/@/:hash", handlers::shortcut::handle_get)
         // 404 for everything else
         .run(req, env)
         .await

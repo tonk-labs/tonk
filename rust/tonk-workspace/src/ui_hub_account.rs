@@ -104,9 +104,10 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
     }
 
     // The current account is the TAB itself, so the page holds only ways
-    // onward: one row per other account, wearing its switch verb.
+    // onward: one row per other linked account, wearing its switch verb.
+    // Provider-free profiles are local workspaces, not account-switch targets.
     for profile in &response.profiles {
-        if profile.active || profile.profile_name == response.active {
+        if profile.active || profile.profile_name == response.active || profile.provider.is_none() {
             continue;
         }
         let Ok(row) = document.create_element("button") else {
@@ -1273,7 +1274,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_renders_the_existing_profile_roster_in_the_account_menu() {
+    fn it_renders_only_existing_accounts_in_the_account_menu() {
         let host = account_element();
         let response = ProfilesResponse {
             active: "primary".into(),
@@ -1312,7 +1313,7 @@ mod tests {
             "the current account is the tab itself, not a row"
         );
         let switches = host.query_selector_all("button[data-profile]").unwrap();
-        assert_eq!(switches.length(), 2);
+        assert_eq!(switches.length(), 1);
         let second = switches.item(0).unwrap().text_content().unwrap();
         assert!(second.contains("grace@example.com"));
         assert!(
@@ -1320,12 +1321,10 @@ mod tests {
             "a roster row carries its switch verb"
         );
         assert!(
-            switches
-                .item(1)
+            host.query_selector("[data-profile=\"Local workspace\"]")
                 .unwrap()
-                .text_content()
-                .unwrap()
-                .contains("Local workspace")
+                .is_none(),
+            "a local fallback profile is not an account-switch target"
         );
         assert!(host.query_selector("[data-add-profile]").unwrap().is_some());
         assert!(

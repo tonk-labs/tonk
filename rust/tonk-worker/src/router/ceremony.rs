@@ -85,15 +85,19 @@ pub(crate) async fn ask_for_passkey(
 /// `tonk:add-passkey`: seal the account under a second passkey.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct AddPasskeyHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command: crate::reactor::Migrated<
+        tonk_schema::command::AddPasskey,
+        tonk_schema::command::legacy::AddPasskey,
+    >,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl AddPasskeyHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::AddPasskey::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -101,16 +105,11 @@ impl AddPasskeyHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for AddPasskeyHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::AddPasskey::decode(entity, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(

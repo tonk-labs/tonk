@@ -48,6 +48,7 @@ mod resolver_registry;
 mod rule;
 mod scan;
 mod scope;
+mod view;
 
 use std::collections::{HashMap, HashSet};
 
@@ -4982,6 +4983,186 @@ mod library_analysis_tests {
   version: "1@abc"
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
+    }
+
+    /// The notebook library must also lower onto the PROFILE branch.
+    ///
+    /// A profile is a space like any other as far as guest content is
+    /// concerned, so a notebook has to install there too. But the profile
+    /// branch carries `profile.yaml`, not `core.yaml` — so anything
+    /// `notebook.yaml` leans on from core must also be declared there, or the
+    /// install fails with an unknown concept.
+    #[test]
+    fn it_analyzes_the_notebook_library_on_the_profile_branch() {
+        let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
+        assert_analyzes(
+            "notebook.yaml on profile",
+            &format!("{profile}\n{notebook}"),
+        );
+    }
+
+    /// Every shipped library that binds an interaction must carry the
+    /// resolved bindings on its views.
+    ///
+    /// The inlining pass is silent when it succeeds, so
+    /// [`it_analyzes_the_shipped_libraries`] would pass just as well
+    /// if the pass stopped finding anything. This is the check that it
+    /// still reaches real templates: `on:` bindings exist in these
+    /// files, so `bindings` artifacts must too.
+    #[test]
+    fn it_inlines_the_bindings_the_shipped_libraries_make() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        for (name, body) in [
+            (
+                "notebook.yaml",
+                include_str!("../../tonk-core/assets/library/notebook.yaml"),
+            ),
+            (
+                "table.yaml",
+                include_str!("../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "prose.yaml",
+                include_str!("../../tonk-core/assets/library/prose.yaml"),
+            ),
+        ] {
+            let inlined = inlined_declarations(name, &format!("{core}\n{body}"));
+            assert!(
+                !inlined.is_empty(),
+                "{name} binds interactions, so its views must carry resolved bindings",
+            );
+        }
+        let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let inlined = inlined_declarations("profile.yaml", profile);
+        assert!(
+            inlined.contains(&"on/space-create".to_string()),
+            "profile.yaml's create form must carry its declaration inlined, got {inlined:?}",
+        );
+    }
+
+    /// The binding and interpolation checks reach the shipped
+    /// libraries' own templates, not just the fixtures.
+    ///
+    /// Every one of these checks is silent when it succeeds, so
+    /// [`it_analyzes_the_shipped_libraries`] passes just as happily if
+    /// they never resolve a model and skip every view. This introduces
+    /// the exact typo each check exists to catch, into a real library,
+    /// and requires the lowering to fail. The binding rows also stand
+    /// in for the retired string-scanning gates in
+    /// `tonk-worker/tests/standard_library.rs`, which enforced the
+    /// same invariants with a second, drift-prone parser.
+    ///
+    /// The substitution is applied to the *target* file before it is
+    /// concatenated with its prelude, because `core.yaml` contains the
+    /// same strings and comes first: mutating the joined text would
+    /// silently break the wrong file.
+    #[test]
+    fn the_binding_and_interpolation_checks_reach_the_shipped_libraries() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
+        let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let prose = include_str!("../../tonk-core/assets/library/prose.yaml");
+        let table = include_str!("../../tonk-core/assets/library/table.yaml");
+
+        for (name, prelude, target, from, to, expected) in [
+            (
+                "notebook.yaml template",
+                core,
+                notebook,
+                "{title}",
+                "{titel}",
+                "E_UNKNOWN_TEMPLATE_FIELD",
+            ),
+            (
+                "profile.yaml template",
+                "",
+                profile,
+                "{provider}",
+                "{provideer}",
+                "E_UNKNOWN_TEMPLATE_FIELD",
+            ),
+            // The only bound declaration in the libraries that sources
+            // a command field from an interpolation rather than a DOM
+            // property path. The rest read `.detail.*` / `.currentTarget.*`,
+            // which this check does not look at.
+            (
+                "prose.yaml event source",
+                core,
+                prose,
+                "subject: \"{this}\"",
+                "subject: \"{nope}\"",
+                "E_UNKNOWN_EVENT_SOURCE_FIELD",
+            ),
+            // A binding whose `on:<name>` names no declaration would
+            // install no listener and report nothing at runtime.
+            (
+                "notebook.yaml binding",
+                core,
+                notebook,
+                "on:notebook-retitle=notebook/retitle",
+                "on:notebook-retitel=notebook/retitle",
+                "E_UNKNOWN_EVENT_DECLARATION",
+            ),
+            // A declaration that cannot fill its bound command's
+            // required field posts a command no rule premise matches.
+            // The first `time:` source in the file belongs to
+            // `on/table-create-sheet`, bound to `table/create-sheet`,
+            // which requires `time`.
+            (
+                "table.yaml event fill",
+                core,
+                table,
+                "    time: \".detail.time\"",
+                "    tiem: \".detail.time\"",
+                "E_EVENT_COMMAND_MISMATCH",
+            ),
+        ] {
+            let broken = target.replacen(from, to, 1);
+            assert_ne!(
+                broken, target,
+                "{name} no longer contains {from:?}; point this gate at a live interpolation",
+            );
+            let source = format!("{prelude}\n{broken}");
+            let parsed = tonk_notation::parse(&source);
+            let syntax = parsed
+                .syntax
+                .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+            let error = analyze_local(&syntax)
+                .err()
+                .unwrap_or_else(|| panic!("{name} with {to:?} must not lower"));
+            assert_eq!(error.kind.code(), expected, "{name}: {error}");
+        }
+    }
+
+    /// Every `event!:` declaration name the document's views inlined.
+    fn inlined_declarations(name: &str, source: &str) -> Vec<String> {
+        use dialog_artifacts::Value as ArtifactValue;
+        use dialog_query::Term as QueryTerm;
+
+        let parsed = tonk_notation::parse(source);
+        let syntax = parsed
+            .syntax
+            .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+        let tree =
+            analyze_local(&syntax).unwrap_or_else(|error| panic!("{name} must analyze: {error:?}"));
+        let mut out = Vec::new();
+        for planned in tree.analysis.statements() {
+            let Statement::Assert(Application::Concept { query, .. }) = &planned.statement else {
+                continue;
+            };
+            let Some(QueryTerm::Constant(ArtifactValue::Record(bytes))) =
+                query.terms.get("bindings")
+            else {
+                continue;
+            };
+            let bindings = tonk_template::bindings::Bindings::decode(bytes)
+                .unwrap_or_else(|error| panic!("{name}'s artifact must decode: {error}"));
+            out.extend(bindings.events.into_keys());
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     fn assert_analyzes(name: &str, source: &str) {

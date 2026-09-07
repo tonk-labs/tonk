@@ -29,7 +29,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event};
 
+use super::binding;
 use super::extract::build_transact_body;
+use tonk_template::event::EventTable;
 
 /// Concept name → pre-parsed descriptor. Built once at mount time
 /// from the worker's phase-1 results; each click reads from this
@@ -68,16 +70,34 @@ impl Delegate {
         host: Element,
         event_types: impl IntoIterator<Item = String>,
         descriptors: Descriptors,
+        table: EventTable,
     ) -> Self {
         let descriptors = Rc::new(descriptors);
+        let table = Rc::new(table);
         let mut listeners: Vec<ListenerEntry> = Vec::new();
 
-        for event_type in event_types {
+        // One listener per distinct platform event type across both
+        // forms. The `on:` set comes from the resolved declarations
+        // rather than from attribute names, which is what lets two
+        // declarations read the same event differently.
+        let mut types: std::collections::BTreeSet<String> = event_types.into_iter().collect();
+        types.extend(table.event_types());
+
+        for event_type in types {
             let descriptors = Rc::clone(&descriptors);
+            let table = Rc::clone(&table);
             let attr_name = format!("data-on{event_type}");
+            let fired_type = event_type.clone();
             let host_for_handler = host.clone();
             let closure = Closure::wrap(Box::new(move |event: Event| {
-                handle_event(&event, &attr_name, descriptors.as_ref(), &host_for_handler);
+                handle_event(
+                    &event,
+                    &attr_name,
+                    &fired_type,
+                    descriptors.as_ref(),
+                    table.as_ref(),
+                    &host_for_handler,
+                );
             }) as Box<dyn FnMut(Event)>);
             let _ = host
                 .add_event_listener_with_callback(&event_type, closure.as_ref().unchecked_ref());
@@ -111,8 +131,22 @@ impl Drop for Delegate {
 /// side effects (`preventDefault`, `stopPropagation`) only fire for
 /// the binding that wins, because `build_transact_body` queues them
 /// and applies them only after the body is known-good.
-fn handle_event(event: &Event, attr_name: &str, descriptors: &Descriptors, host: &Element) {
-    let Some(body) = resolve_actionable_binding(event, attr_name, descriptors, host) else {
+fn handle_event(
+    event: &Event,
+    attr_name: &str,
+    event_type: &str,
+    descriptors: &Descriptors,
+    table: &EventTable,
+    host: &Element,
+) {
+    // The `on:<name>` form is tried first, then the legacy
+    // `on<event>=` form. An element can carry either; nothing carries
+    // both for one event type, so the order only decides which wins in
+    // a half-migrated template — and preferring the new form is what
+    // makes migrating one element at a time observable.
+    let body = binding::resolve_binding(event, event_type, table, descriptors, host)
+        .or_else(|| resolve_actionable_binding(event, attr_name, descriptors, host));
+    let Some(body) = body else {
         return;
     };
     let request_js = match serde_wasm_bindgen::to_value(&body) {

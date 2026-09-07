@@ -80,6 +80,11 @@ pub use sync::{
 /// The inline `with:` block must stay identical to the descriptor in
 /// `profile.yaml`, or the transient mints a different entity and no
 /// handler fires.
+///
+/// The attribute is the command's own (`xyz.tonk.command.create-space/name`),
+/// not the DOM read path that used to fill it. A branch seeded before that
+/// change still asserts the old path; the worker's handler accepts both and
+/// converts (`tonk_schema::command::legacy::CreateSpace`).
 pub fn create_space_claim_json(name: &str) -> Value {
     json!({
         "claims": [{
@@ -90,7 +95,7 @@ pub fn create_space_claim_json(name: &str) -> Value {
                     "concept": {
                         "description": "A request to create a new space.",
                         "with": {
-                            "name": { "the": "dom.event.current-target.elements.name/value", "as": "Text" }
+                            "name": { "the": "xyz.tonk.command.create-space/name", "as": "Text" }
                         }
                     }
                 },

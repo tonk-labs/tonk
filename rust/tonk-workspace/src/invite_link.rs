@@ -12,9 +12,9 @@
 //! where the chain and remote live behind that origin's shortcut service
 //! and only the seed rides the fragment. Those must be expanded on the
 //! origin that minted them — a local shortcut service has never seen the
-//! hash. So this element resolves a short link first (`GET /@/{hash}`
-//! answers a relative `Location` and the route is permissionless and
-//! `Access-Control-Allow-Origin: *`), then rewrites the expanded query
+//! hash. So this element resolves a short link first (`HEAD /@/{hash}`
+//! answers a relative `Location`, and both that route and the `/join` it
+//! redirects to allow this origin), then rewrites the expanded query
 //! onto this deployment's `/join`. The seed never leaves the browser: it
 //! is a fragment, so it is never sent with the request, and this code
 //! carries it across from the pasted link itself.
@@ -239,12 +239,17 @@ fn carries_access(url: &web_sys::Url) -> bool {
 /// whose `Location` is the stored path + query, relative and verbatim,
 /// so the URL the fetch lands on carries the invite.
 ///
-/// `redirect: "manual"` would give an opaque response no script can read,
-/// so the redirect is followed normally and the landing URL's query is
-/// what the shortcut stored. The join route answers the app shell for any
-/// path, so following costs one document fetch and reveals the query.
+/// `redirect: "manual"` would give an opaque response no script can read
+/// — its status is 0 and its headers are empty — so the redirect is
+/// followed normally and the landing URL's query is what the shortcut
+/// stored. Both hops must therefore allow this origin: the shortcut
+/// route sends `Access-Control-Allow-Origin: *`, and the join route it
+/// lands on is granted the same in the deployment's `_headers`.
+///
+/// `HEAD` rather than `GET`: the landing URL is the whole answer, so
+/// there is no reason to download the app shell behind it.
 async fn resolve_invite(url: &web_sys::Url) -> Option<String> {
-    let response = reqwest::Client::new().get(url.href()).send().await.ok()?;
+    let response = reqwest::Client::new().head(url.href()).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }

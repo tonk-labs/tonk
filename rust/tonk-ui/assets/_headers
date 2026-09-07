@@ -41,6 +41,22 @@
 /index.html
   Cache-Control: no-cache
 
+# ---- Join: readable across origins ----------------------------------
+#
+# A short invite link (`/@/{hash}`) is expanded by fetching it and reading
+# the URL the redirect lands on. That landing hop is this route, so without
+# a CORS header the fetch fails on the redirect target rather than the
+# shortcut, and a link minted on another deployment cannot be pasted into
+# this one's join screen at all.
+#
+# The shell served here is the same public HTML any visitor gets, and it
+# carries nothing origin-specific: an invite's capability rides the query
+# the caller already holds, and its seed rides a fragment that is never
+# sent to a server.
+/join
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache
+
 # ---- Content-hashed assets: immutable -------------------------------
 #
 # Trunk stamps a content hash into these names, and `hash-guest.sh` does the

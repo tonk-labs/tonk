@@ -37,6 +37,15 @@ pub struct Bindings {
     /// renderer to resolve descriptors up front so the listener
     /// can build assertions without an async hop on each click.
     pub concept_names: BTreeSet<String>,
+    /// Event declarations referenced by `on:<name>=<command>`
+    /// bindings, as declaration names (`on/click`).
+    ///
+    /// These carry no event *type* — that lives on the declaration,
+    /// which the renderer resolves alongside the command descriptors.
+    /// So the listener set is derived from resolved data rather than
+    /// from the attribute names, which is what lets two declarations
+    /// read the same platform event differently.
+    pub event_names: BTreeSet<String>,
 }
 
 /// Walk `fragment`, rewriting every `on<event>=<value>` attribute
@@ -72,6 +81,21 @@ fn rewrite_element(el: &Element, bindings: &mut Bindings) {
             continue;
         };
         let name = attr.name();
+        // The `on:<name>` form needs no rewrite: `on:click` is not one
+        // of HTML's event-handler content attributes, so the browser
+        // never tries to evaluate it as inline JS. It is left in place
+        // and read back at dispatch time.
+        if let Some(event_name) = tonk_template::event::event_name_for_attribute(&name) {
+            let command = attr.value().trim().to_string();
+            if !command.is_empty() {
+                // The command still needs its descriptor resolved, the
+                // same way the legacy form's does — only the field
+                // *sources* moved to the declaration.
+                bindings.concept_names.insert(command);
+                bindings.event_names.insert(event_name);
+            }
+            continue;
+        }
         if let Some(event_type) = strip_on_prefix(&name) {
             // Empty event type (just `on=`) is meaningless; skip.
             if !event_type.is_empty() {

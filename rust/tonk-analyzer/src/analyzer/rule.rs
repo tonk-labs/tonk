@@ -2484,7 +2484,7 @@ rule!:
 
     /// The notation analyzer's `Derived` lowering and the wire-path
     /// [`application_plan_from_predicate`] hash `(predicate, payload)`
-    /// the same way, so a `view!:` written in YAML and a `view`
+    /// the same way, so a `card!:` written in YAML and a `card`
     /// command issued over `/transact` with matching attributes
     /// converge on the same subject entity.
     #[dialog_common::test]
@@ -2498,13 +2498,13 @@ rule!:
         };
 
         let fixture = new_fixture().await;
-        let descriptor = one_text_field("xyz.tonk.view", "name");
-        fixture.declare("view", descriptor.clone()).await;
+        let descriptor = one_text_field("xyz.tonk.card", "name");
+        fixture.declare("card", descriptor.clone()).await;
 
-        // Notation path: a `view!:` with one literal field. No
+        // Notation path: a `card!:` with one literal field. No
         // `this:` and no `&anchor`, so the lowering falls into
         // `ThisIntent::Derived` and hashes `(predicate, body)`.
-        let doc = r#"view!:
+        let doc = r#"card!:
   name: Basic
 "#;
         let syntax = parse(doc).syntax.expect("parsed syntax");
@@ -2554,7 +2554,7 @@ rule!:
 
     /// Entity derivation includes reference fields, not just
     /// literals — so a concept identified by an entity *reference*
-    /// (e.g. a view's `model`) gets a distinct, correct entity.
+    /// (e.g. a card's `model`) gets a distinct, correct entity.
     ///
     /// Regression guard for a `body_digest` defect: it used to
     /// include only literal scalars and skip references, so two
@@ -2576,10 +2576,10 @@ rule!:
 
         let fixture = new_fixture().await;
 
-        // A `view` concept whose sole field, `model`, is an entity
+        // A `card` concept whose sole field, `model`, is an entity
         // reference, plus two distinct concepts it can point at.
-        let view = one_entity_field("xyz.tonk.view", "model");
-        fixture.declare("view", view.clone()).await;
+        let card = one_entity_field("xyz.tonk.card", "model");
+        fixture.declare("card", card.clone()).await;
         fixture
             .declare("counter", one_text_field("xyz.tonk.counter", "count"))
             .await;
@@ -2587,10 +2587,10 @@ rule!:
             .declare("greeting", one_text_field("xyz.tonk.greeting", "message"))
             .await;
 
-        // Helper: lower a `view!: { model: <name> }` document and
+        // Helper: lower a `card!: { model: <name> }` document and
         // pull the derived `this` entity out of the lone statement.
         async fn notation_this_for(fixture: &Fixture<impl FixtureEnv>, model_name: &str) -> Entity {
-            let doc = format!("view!:\n  model: {model_name}\n");
+            let doc = format!("card!:\n  model: {model_name}\n");
             let syntax = parse(&doc).syntax.expect("parsed syntax");
             let analysis = fixture
                 .analyze(&syntax)
@@ -2607,14 +2607,14 @@ rule!:
             }
         }
 
-        let view_of_counter = notation_this_for(&fixture, "counter").await;
-        let view_of_greeting = notation_this_for(&fixture, "greeting").await;
+        let card_of_counter = notation_this_for(&fixture, "counter").await;
+        let card_of_greeting = notation_this_for(&fixture, "greeting").await;
 
         // Facet 1 — distinctness. Today both drop `model` from the
-        // digest and collide on `derive_this(view, {})`.
+        // digest and collide on `derive_this(card, {})`.
         assert_ne!(
-            view_of_counter, view_of_greeting,
-            "views for different models must be different entities; \
+            card_of_counter, card_of_greeting,
+            "instances for different models must be different entities; \
              body_digest dropping the `model` reference makes them collide"
         );
 
@@ -2629,7 +2629,7 @@ rule!:
         parameters.insert("model".into(), Value::Entity(counter_concept));
         let wire_plan = application_plan_from_predicate(
             SourceApplication {
-                predicate: DurableConceptDescriptor::Durable(view),
+                predicate: DurableConceptDescriptor::Durable(card),
                 parameters,
                 name: None,
             }
@@ -2647,7 +2647,7 @@ rule!:
         };
 
         assert_eq!(
-            view_of_counter, wire_this,
+            card_of_counter, wire_this,
             "notation and wire paths must derive the same entity when the body \
              carries a `model` reference"
         );
@@ -2655,20 +2655,20 @@ rule!:
 
     /// A reference field that doesn't resolve is an error, not a
     /// silent skip. Dropping the unresolved `model` from the digest
-    /// would fold the view into the entity it would have had with
+    /// would fold the instance into the entity it would have had with
     /// no model at all — deriving the wrong subject. The anchor
     /// (`&broken`) routes derivation through `body_digest` in the
     /// resolve pass, so this exercises that path specifically.
     #[dialog_common::test]
     async fn it_rejects_unresolved_reference_in_derived_entity() {
         let fixture = new_fixture().await;
-        // Declare `view` (so the head concept resolves) but NOT the
+        // Declare `card` (so the head concept resolves) but NOT the
         // concept its `model` points at.
         fixture
-            .declare("view", one_entity_field("xyz.tonk.view", "model"))
+            .declare("card", one_entity_field("xyz.tonk.card", "model"))
             .await;
 
-        let doc = r#"view!: &broken
+        let doc = r#"card!: &broken
   model: nonexistent
 "#;
         let syntax = parse(doc).syntax.expect("parsed syntax");

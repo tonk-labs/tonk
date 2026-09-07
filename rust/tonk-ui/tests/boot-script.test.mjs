@@ -45,20 +45,32 @@ class FakeBroadcastChannel {
   close() {}
 }
 
-function bootHarness({ serviceWorkers = null } = {}) {
+function bootHarness({
+  serviceWorkers = null,
+  userAgent = "Mozilla/5.0 Firefox/142.0",
+  vendor = "",
+  isSecureContext = true,
+} = {}) {
   const logs = [];
-  const terminalMessages = [];
+  const terminalFailures = [];
   const status = {
     textContent: "loading…",
     setAttribute() {},
   };
   const self = eventTarget({
-    tonkBootTerminal(message) { terminalMessages.push(message); },
+    isSecureContext,
+    tonkBootTerminal(message, title) {
+      terminalFailures.push({ message, title });
+    },
   });
   const context = {
     self,
     window: self,
-    navigator: serviceWorkers ? { serviceWorker: serviceWorkers } : {},
+    navigator: {
+      ...(serviceWorkers ? { serviceWorker: serviceWorkers } : {}),
+      userAgent,
+      vendor,
+    },
     document: eventTarget({
       querySelector(selector) {
         return selector === "[data-boot-status]" ? status : null;
@@ -83,7 +95,7 @@ function bootHarness({ serviceWorkers = null } = {}) {
     setTimeout,
     clearTimeout,
   };
-  return { context, logs, self, status, terminalMessages };
+  return { context, logs, self, status, terminalFailures };
 }
 
 describe("boot script contract", () => {
@@ -152,11 +164,64 @@ describe("boot script contract", () => {
   test("activation failures retain safe actionable copy", () => {
     const lifecycle = moduleBlockContaining("serviceWorkerActivation.catch");
     assert.match(lifecycle, /Your local data is safe\./);
-    assert.match(lifecycle, /Safari 16\.4\+/);
+    assert.match(lifecycle, /normal Safari tab/);
+    assert.match(lifecycle, /service workers/);
     assert.doesNotMatch(lifecycle, /Tonk could not start:\s*\$\{/);
   });
 
-  test("an unsupported browser reaches explicit terminal guidance without API access", async () => {
+  test("unsupported Safari gives Private Browsing guidance without API access", async () => {
+    const result = bootHarness({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+      vendor: "Apple Computer, Inc.",
+    });
+    assert.doesNotThrow(() =>
+      runInNewContext(moduleBlockContaining("serviceWorkerActivation.catch"), result.context),
+    );
+    await assert.rejects(
+      result.self.serviceWorkerActivates(),
+      /Service workers not supported/,
+    );
+    await new Promise(setImmediate);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "Open Tonk in a normal Safari tab",
+      message:
+        "Tonk can’t use the browser storage it needs in this Safari tab. " +
+        "If you’re using Private Browsing, open this page in a normal Safari tab. " +
+        "Otherwise, update Safari and try again.",
+    }]);
+  });
+
+  test("Safari capability rejection gets the same normal-tab guidance", async () => {
+    const serviceWorkers = eventTarget({
+      controller: null,
+      async register() {
+        const error = new Error("Service workers are unavailable");
+        error.name = "SecurityError";
+        throw error;
+      },
+    });
+    const result = bootHarness({
+      serviceWorkers,
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
+      vendor: "Apple Computer, Inc.",
+    });
+    runInNewContext(moduleBlockContaining("serviceWorkerActivation.catch"), result.context);
+    await assert.rejects(result.self.serviceWorkerActivates(), /unavailable/);
+    await new Promise(setImmediate);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "Open Tonk in a normal Safari tab",
+      message:
+        "Tonk can’t use the browser storage it needs in this Safari tab. " +
+        "If you’re using Private Browsing, open this page in a normal Safari tab. " +
+        "Otherwise, update Safari and try again.",
+    }]);
+  });
+
+  test("an unknown unsupported browser gets a service-worker explanation", async () => {
     const result = bootHarness();
     assert.doesNotThrow(() =>
       runInNewContext(moduleBlockContaining("serviceWorkerActivation.catch"), result.context),
@@ -166,12 +231,31 @@ describe("boot script contract", () => {
       /Service workers not supported/,
     );
     await new Promise(setImmediate);
-    assert.deepEqual(result.terminalMessages, [
-      "This browser is too old to run Tonk. Safari 16.4+, or a recent Chrome or Firefox.",
-    ]);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "This browser can’t run Tonk",
+      message:
+        "Tonk needs service workers to keep your spaces available on this device and work offline. " +
+        "Try a current version of Safari, Chrome, Firefox, or Edge.",
+    }]);
   });
 
-  test("a supported registration MIME failure receives generic recovery", async () => {
+  test("an insecure page explains that Tonk must be opened over HTTPS", async () => {
+    const result = bootHarness({ isSecureContext: false });
+    runInNewContext(moduleBlockContaining("serviceWorkerActivation.catch"), result.context);
+    await assert.rejects(
+      result.self.serviceWorkerActivates(),
+      /Service workers not supported/,
+    );
+    await new Promise(setImmediate);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "Tonk needs a secure connection",
+      message:
+        "Tonk can’t access the browser storage it needs from this address. " +
+        "Open this page over HTTPS to continue.",
+    }]);
+  });
+
+  test("a Safari registration MIME failure receives generic recovery", async () => {
     let registrations = 0;
     const serviceWorkers = eventTarget({
       controller: null,
@@ -180,14 +264,21 @@ describe("boot script contract", () => {
         throw new TypeError("module script has an unsupported MIME type");
       },
     });
-    const result = bootHarness({ serviceWorkers });
+    const result = bootHarness({
+      serviceWorkers,
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+      vendor: "Apple Computer, Inc.",
+    });
     runInNewContext(moduleBlockContaining("serviceWorkerActivation.catch"), result.context);
     await assert.rejects(result.self.serviceWorkerActivates(), /MIME type/);
     await new Promise(setImmediate);
     assert.equal(registrations, 1);
-    assert.deepEqual(result.terminalMessages, [
-      "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
-    ]);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "Tonk couldn’t start",
+      message: "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+    }]);
   });
 
   test("a rejected registration has one observer, one terminal report, and no module rethrow", async () => {
@@ -208,8 +299,9 @@ describe("boot script contract", () => {
       ).length,
       1,
     );
-    assert.deepEqual(result.terminalMessages, [
-      "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
-    ]);
+    assert.deepEqual(result.terminalFailures, [{
+      title: "Tonk couldn’t start",
+      message: "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+    }]);
   });
 });

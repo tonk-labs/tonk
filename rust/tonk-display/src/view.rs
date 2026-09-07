@@ -105,10 +105,14 @@ impl CustomElement for TonkView {
         // structural views (layout containers, etc.).
         if let Some(renderer) = &renderer {
             let bindings = renderer.event_bindings();
-            if !bindings.event_types.is_empty() || !bindings.concept_names.is_empty() {
+            if !bindings.event_types.is_empty()
+                || !bindings.concept_names.is_empty()
+                || !bindings.event_names.is_empty()
+            {
                 let json = serde_json::json!({
                     "events": bindings.event_types.iter().collect::<Vec<_>>(),
                     "concepts": bindings.concept_names.iter().collect::<Vec<_>>(),
+                    "declarations": bindings.event_names.iter().collect::<Vec<_>>(),
                 });
                 if let Ok(serialized) = serde_json::to_string(&json) {
                     let _ = host.set_attribute("data-event-bindings", &serialized);

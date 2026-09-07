@@ -41,16 +41,25 @@ concept!: &prose
 # element's `data-subject` so the rule knows which document to write.
 # ---------------------------------------------------------------------------
 
+# How `<tonk-prose>`'s change event fills the command. The element's
+# own payload key is `content`; the subject needs no `data-*` attribute
+# because `{this}` is the entity the view is rendering.
+event!: &on/prose-change
+  type: "change"
+  where:
+    subject: "{this}"
+    content: ".detail.content"
+
 command!: &prose/edit
   description: Edit a prose document.
   with:
     subject:
-      description: The document entity, stamped on the editor's data-subject.
-      the: dom.event.current-target.dataset/subject
+      description: The document being edited.
+      the: xyz.tonk.prose.edit/subject
       as: entity
     content:
-      description: The new content envelope, read from the change event.
-      the: dom.event.detail/content
+      description: The new content envelope.
+      the: xyz.tonk.prose.edit/content
       as: text
 
 # ---------------------------------------------------------------------------
@@ -73,8 +82,9 @@ rule!:
 # element's TEXT (between the tags), the way a <textarea> carries its value:
 # the store's `content` envelope is written via set_text_content, which is
 # newline- and markup-safe (an attribute value can be normalized in transit,
-# corrupting the multi-line envelope). `data-subject={this}` carries identity
-# for the command; `onchange=prose/edit` fires the command on each idle edit.
+# corrupting the multi-line envelope). `on:prose-change=prose/edit` fires the
+# command on each idle edit; identity comes from the declaration's `{this}`,
+# so the editor needs no `data-subject` to stash and read back.
 # ---------------------------------------------------------------------------
 
 view!:
@@ -82,8 +92,7 @@ view!:
   show:
     ui: |
       <tonk-prose
-        onchange=prose/edit
-        data-subject={this}
+        on:prose-change=prose/edit
         placeholder="Write something…"
         auto-focus
         style="display: block; min-height: 12rem;"
