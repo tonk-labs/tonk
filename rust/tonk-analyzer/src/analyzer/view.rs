@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tonk_notation::{Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar};
 use tonk_schema::resolution::ConceptDefinition;
 use tonk_template::bindings::{Bindings, EventBinding, scan};
-use tonk_template::event::{EventDescriptor, Source, event_descriptor};
+use tonk_template::event::{EventDescriptor, Source, event_descriptor, parse_string_source};
 use tonk_template::fields::{self, FieldReference};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
@@ -90,10 +90,14 @@ pub(crate) fn index_event_declarations(syntax: &tonk_notation::Syntax, scope: &S
             .into_iter()
             .filter_map(|name| scope.symbol(&name).map(|entity| (name, entity.to_string())))
             .collect();
-        // Names left unresolved stay `Source::Reference`. They are not
-        // this pass's to report — the binding pass reaches them only
-        // if a template actually binds this declaration, and that is
-        // where the diagnostic has a template to point at.
+        // Names left unresolved stay `Source::Reference`. They are
+        // not this pass's to report: a bare symbol in a claim body
+        // must resolve for the claim itself to lower (the mutation
+        // pass raises `E_UNKNOWN_NAME_REFERENCE` at the value), so a
+        // residual reference here only occurs in a document that is
+        // already failing. The graph prefetches `where:` symbols
+        // (`collect_event_source_needs`) so a branch-named source
+        // resolves rather than tripping that check.
         let _ = descriptor.resolve_references(&resolved);
         scope.record_event_declaration(&anchor.name, descriptor);
     }
@@ -106,7 +110,7 @@ fn parse_event_declaration(fields: &[Field]) -> Option<EventDescriptor> {
     let mut event_type = None;
     let mut prevent_default = false;
     let mut stop_propagation = false;
-    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut sources: Vec<(String, Source)> = Vec::new();
 
     for field in fields {
         match field.name.as_str() {
@@ -116,8 +120,8 @@ fn parse_event_declaration(fields: &[Field]) -> Option<EventDescriptor> {
             "where" => {
                 if let FieldValue::Nested(entries) = &field.value {
                     for entry in entries {
-                        if let Some(text) = field_text(&entry.value) {
-                            sources.push((entry.name.clone(), text));
+                        if let Some(source) = field_source(&entry.value) {
+                            sources.push((entry.name.clone(), source));
                         }
                     }
                 }
@@ -135,11 +139,30 @@ fn parse_event_declaration(fields: &[Field]) -> Option<EventDescriptor> {
     .ok()
 }
 
-/// A field value as the source text `parse_source` classifies.
-///
-/// A bare symbol stays a bare symbol and a URI stays a URI, so the
-/// classification a source gets here is the one it would get anywhere
-/// else in the notation.
+/// A field value as a [`Source`], keeping the notation's own
+/// classification: a bare symbol is a reference, a URI is an entity,
+/// and a quoted string is read by [`parse_string_source`] — the
+/// grammar's `"{field}"` / `".path"` forms, or the constant it looks
+/// like. Flattening to text first and re-classifying by charset would
+/// turn a quoted `"draft"` into a reference, which is exactly the
+/// distinction the notation's quotes exist to make.
+fn field_source(value: &FieldValue) -> Option<Source> {
+    match value {
+        FieldValue::Literal(Scalar::String(text)) => Some(parse_string_source(text)),
+        FieldValue::Literal(Scalar::Integer(number)) => Some(Source::Literal(number.to_string())),
+        FieldValue::Literal(Scalar::UnsignedInteger(number)) => {
+            Some(Source::Literal(number.to_string()))
+        }
+        FieldValue::Literal(Scalar::Float(number)) => Some(Source::Literal(number.to_string())),
+        FieldValue::Literal(Scalar::Boolean(flag)) => Some(Source::Literal(flag.to_string())),
+        FieldValue::Symbol(name) => Some(Source::Reference(name.clone())),
+        FieldValue::Uri(uri) => Some(Source::Entity(uri.clone())),
+        _ => None,
+    }
+}
+
+/// A field value as plain text — the `type:` of a declaration, or a
+/// `show:` template.
 fn field_text(value: &FieldValue) -> Option<String> {
     match value {
         FieldValue::Literal(Scalar::String(text)) => Some(text.clone()),
@@ -444,7 +467,10 @@ fn check_event_sources(
             AnalyzeErrorKind::UnknownEventSourceField {
                 attribute: binding.attribute.clone(),
                 field: name.clone(),
-                detail: format!("`{command_field}`, which `{}` does not declare", model.name),
+                detail: format!(
+                    "`{command_field}`, but `{}` does not declare `{name}`",
+                    model.name
+                ),
             },
             range,
         ));
@@ -855,6 +881,69 @@ view!: &counter/view
         // The same document with the typo fixed must still lower, so
         // the test cannot pass by rejecting the shape wholesale.
         lower(&source.replace("{counter}", "{count}")).expect("`{count}` is declared");
+    }
+
+    /// A bare-symbol source is a name reference like any other value
+    /// in a claim body, so a name nothing declares fails the
+    /// declaration itself — the language's own check, not a special
+    /// case of this pass. Pinned here because the *event-time*
+    /// alternative is an inlined artifact carrying the name
+    /// unresolved, which the dispatch path reads as "does not apply":
+    /// silently inert.
+    #[dialog_common::test]
+    fn a_declaration_referencing_an_unknown_name_fails_the_lowering() {
+        let source = modelled("<button on:bump=counter/increment>+</button>", "{this}")
+            .replace("    subject: \"{this}\"", "    subject: galery");
+        let error = lower(&source).expect_err("a dangling source reference must not lower");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_NAME_REFERENCE", "{error}");
+    }
+
+    /// The same reference resolved by an in-document anchor rides
+    /// along as the entity it names.
+    #[dialog_common::test]
+    fn a_bound_declaration_referencing_a_declared_name_lowers() {
+        let source = format!(
+            "{}\ncounter/model!: &tally\n  count: 1\n",
+            modelled("<button on:bump=counter/increment>+</button>", "{this}")
+                .replace("    subject: \"{this}\"", "    subject: tally")
+        );
+        let statements = lower(&source).expect("`tally` is declared in the document");
+        let bindings = bindings(&statements).expect("the view carries its bindings");
+        let descriptor = bindings
+            .events
+            .get("on/bump")
+            .expect("`on/bump` is inlined");
+        assert!(
+            matches!(
+                descriptor.sources.get("subject"),
+                Some(tonk_template::event::Source::Entity(_))
+            ),
+            "the reference is inlined resolved, so the event-time path never looks it up: {:?}",
+            descriptor.sources.get("subject"),
+        );
+    }
+
+    /// The notation's quotes are load-bearing: `"draft"` is the
+    /// constant it looks like, not a reference to an entity named
+    /// `draft`. Flattening to text and re-classifying by charset
+    /// made it a `Source::Reference` — which no check gates (a
+    /// *quoted* value is not a name to the claim's own field check)
+    /// and nothing at event time resolves, so the binding shipped
+    /// silently inert. The constant must survive into the artifact.
+    #[dialog_common::test]
+    fn a_quoted_source_is_a_constant_not_a_reference() {
+        let source = modelled("<button on:bump=counter/increment>+</button>", "{this}")
+            .replace("    subject: \"{this}\"", "    subject: \"draft\"");
+        let statements = lower(&source).expect("a quoted string is a constant");
+        let bindings = bindings(&statements).expect("the view carries its bindings");
+        let descriptor = bindings
+            .events
+            .get("on/bump")
+            .expect("`on/bump` is inlined");
+        assert_eq!(
+            descriptor.sources.get("subject"),
+            Some(&tonk_template::event::Source::Literal("draft".into())),
+        );
     }
 
     /// A portal document is mounted verbatim, so its braces are not

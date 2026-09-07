@@ -388,6 +388,17 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
             collect_view_needs(fields, &mut needs);
         }
 
+        // An `event!:` declaration's `where:` sources reference
+        // entities by bare symbol, nested one level down — so the
+        // top-level symbol sweep above never sees them. They must be
+        // in scope by lowering for the same reason a view's model
+        // must: `index_event_declarations` resolves them through
+        // `Scope`, and a name the resolve phase was not asked to
+        // prefetch is a silent miss, not an error.
+        if is_claim && matches!(&head.name, HeadName::Concept(n) if n == "event") {
+            collect_event_source_needs(fields, &mut needs);
+        }
+
         // `rule!:` bodies reference concepts (head + premises) and,
         // on retract, the installed rule.
         if let Expression::Claim(c) = expression
@@ -489,6 +500,31 @@ fn collect_view_binding_needs(fields: &[Field], needs: &mut Vec<Need>) {
                 needs.push(Need::Symbol {
                     name: binding.event_name,
                     range,
+                });
+            }
+        }
+    }
+}
+
+/// The entities an `event!:` declaration's `where:` sources name by
+/// bare symbol. A source that is not a bare symbol — a `"{field}"`
+/// interpolation, a `.path` property read, a literal — references
+/// nothing and needs nothing. A need that resolves to nothing is not
+/// an error here either: the binding pass reports an unresolved
+/// reference only when a template actually binds the declaration.
+fn collect_event_source_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    for field in fields {
+        if field.name != "where" {
+            continue;
+        }
+        let FieldValue::Nested(entries) = &field.value else {
+            continue;
+        };
+        for entry in entries {
+            if let FieldValue::Symbol(name) = &entry.value {
+                needs.push(Need::Symbol {
+                    name: name.clone(),
+                    range: entry.value_range,
                 });
             }
         }
@@ -949,7 +985,6 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// A resolver that counts how many external lookups it served,
     /// A view whose model lives on the *branch* is still checked.
     ///
     /// This is the case every self-contained fixture misses. The
@@ -996,7 +1031,53 @@ view!: &counter/view
         assert_eq!(error.kind.code(), "E_UNKNOWN_TEMPLATE_FIELD", "{error}");
     }
 
-    /// A branch carrying the counter model and the command it posts.
+    /// A declaration's bare-symbol source resolved from the *branch*,
+    /// not the document.
+    ///
+    /// Same shape of gap as the model prefetch above: a symbol
+    /// resolves through `Scope`, and `Scope` only holds what the
+    /// resolve phase was asked to prefetch. A `where:` symbol is
+    /// nested one level down, so the top-level symbol sweep never
+    /// sees it — without `collect_event_source_needs` the name misses
+    /// and the claim's own field check fails the document with
+    /// `E_UNKNOWN_NAME_REFERENCE`, even though the branch names the
+    /// entity. Every fixture that anchors the entity in the same
+    /// document passes either way, which is what kept this invisible.
+    /// Verified failing with the need collection removed.
+    #[dialog_common::test]
+    async fn an_event_source_resolved_from_the_branch_still_lowers() {
+        let syntax = parse(
+            r#"
+event!: &on/click
+  type: "click"
+  where:
+    subject: gallery
+
+view!: &counter/view
+  this: counter/model
+  show:
+    ui: |
+      <form>
+        <button on:click=counter/+1>+</button>
+        <h1>{count}</h1>
+      </form>
+"#,
+        )
+        .syntax
+        .expect("the fixture parses");
+
+        let scope = Scope::new();
+        let graph = push(&syntax).expect("push");
+        let resolved = graph
+            .resolve(&syntax, &scope, &Branch)
+            .await
+            .expect("resolve");
+        super::super::expand(&syntax, &scope, resolved)
+            .expect("the branch names `gallery`, so the source inlines resolved");
+    }
+
+    /// A branch carrying the counter model, the command it posts, and
+    /// an entity named `gallery`.
     struct Branch;
 
     impl Branch {
@@ -1048,14 +1129,15 @@ view!: &counter/view
         ) -> Result<Option<AttributeDefinition>, ResolveError> {
             Ok(None)
         }
-        async fn named_entity(&self, _: &str) -> Result<Option<Entity>, ResolveError> {
-            Ok(None)
+        async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError> {
+            Ok((name == "gallery").then(|| "tonk:gallery".parse().expect("an entity")))
         }
         async fn rule(&self, _: &Entity) -> Result<Option<Rule>, StoredRuleError> {
             Ok(None)
         }
     }
 
+    /// A resolver that counts how many external lookups it served,
     /// answering each with `None`. `AtomicUsize` keeps it `Sync` so
     /// it satisfies `Graph::resolve`'s `ConditionalSync` bound on
     /// native. Used to assert a self-contained document drives zero

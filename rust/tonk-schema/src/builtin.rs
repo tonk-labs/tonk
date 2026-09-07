@@ -114,19 +114,7 @@ fn command_descriptor() -> ConceptDefinition {
     }
 }
 
-/// Built-in `event` concept — how a platform event fills a command's
-/// fields.
-///
-/// A peer of `command`: an `event!:` declaration is schema an author
-/// writes, so it must resolve on any branch rather than only where the
-/// standard library has been seeded. Its instances (`on/click`, and a
-/// terminal's own set) are ordinary data and stay in the library.
-///
-/// Hand-built rather than `derive(Concept)` for the same reason
-/// [`command_descriptor`] and [`rule_descriptor`] are: `where` is a
-/// keyed dictionary, which no Rust fixed-record shape expresses — the
-/// same reason the `view` concept is still declared in the library.
-/// `view` — a model's presentations, keyed by facet.
+/// Built-in `view` concept — a model's presentations, keyed by facet.
 ///
 /// Built in rather than declared in a library because the analyzer has
 /// to understand a view structurally: a `show:` template can bind
@@ -141,6 +129,10 @@ fn command_descriptor() -> ConceptDefinition {
 /// `command!:` descriptors for every `on:` binding the templates carry,
 /// as one CBOR artifact. Optional, so a view seeded before this existed
 /// carries none and the display falls back to resolving at runtime.
+///
+/// Hand-built rather than `derive(Concept)` for the same reason
+/// [`event_descriptor`] is: `show` is a keyed dictionary, which no
+/// Rust fixed-record shape expresses.
 fn view_descriptor() -> ConceptDefinition {
     static DESCRIPTOR: std::sync::OnceLock<DialogConceptDescriptor> = std::sync::OnceLock::new();
     let descriptor = DESCRIPTOR.get_or_init(|| {
@@ -187,6 +179,17 @@ fn view_descriptor() -> ConceptDefinition {
     }
 }
 
+/// Built-in `event` concept — how a platform event fills a command's
+/// fields.
+///
+/// A peer of `command`: an `event!:` declaration is schema an author
+/// writes, so it must resolve on any branch rather than only where the
+/// standard library has been seeded. Its instances (`on/click`, and a
+/// terminal's own set) are ordinary data and stay in the library.
+///
+/// Hand-built rather than `derive(Concept)` for the same reason
+/// [`command_descriptor`] and [`rule_descriptor`] are: `where` is a
+/// keyed dictionary, which no Rust fixed-record shape expresses.
 fn event_descriptor() -> ConceptDefinition {
     static DESCRIPTOR: std::sync::OnceLock<DialogConceptDescriptor> = std::sync::OnceLock::new();
     let descriptor = DESCRIPTOR.get_or_init(|| {

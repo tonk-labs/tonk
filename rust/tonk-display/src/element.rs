@@ -1785,7 +1785,9 @@ async fn resolve_event_table(
         };
 
         let event_type = conclusion.fields.get("type").and_then(ipld_text);
-        let sources: Vec<(String, String)> = conclusion
+        // A stored `where:` value is bare text — the notation's
+        // quoting is gone — so `parse_source` classifies by charset.
+        let sources: Vec<(String, tonk_template::event::Source)> = conclusion
             .fields
             .get("where")
             .and_then(|value| match value {
@@ -1794,7 +1796,10 @@ async fn resolve_event_table(
             })
             .map(|map| {
                 map.iter()
-                    .filter_map(|(field, value)| ipld_text(value).map(|raw| (field.clone(), raw)))
+                    .filter_map(|(field, value)| {
+                        ipld_text(value)
+                            .map(|raw| (field.clone(), tonk_template::event::parse_source(&raw)))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1989,10 +1994,15 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     let model_entity = state.borrow().model_entity.clone();
 
     // Build the delegate before acquiring the borrow so its
-    // `addEventListener` calls don't run inside the lock.
+    // `addEventListener` calls don't run inside the lock. The inlined
+    // artifact only feeds the named `on:` bindings, so a view with
+    // none (a legacy `on<event>=` template) skips the query rather
+    // than paying a round-trip for a result nothing reads.
     let inlined = match model_entity {
-        Some(model_entity) => resolve_inlined_bindings(host, &model_entity).await,
-        None => std::collections::BTreeMap::new(),
+        Some(model_entity) if !event_names.is_empty() => {
+            resolve_inlined_bindings(host, &model_entity).await
+        }
+        _ => std::collections::BTreeMap::new(),
     };
     let table = resolve_event_table(host, &event_names, inlined).await;
     let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors, table);

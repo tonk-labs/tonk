@@ -39,9 +39,11 @@ pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsE
 /// Asynchronously sleep for the specified duration (non-wasm placeholder).
 ///
 /// This is a placeholder implementation for non-wasm targets. The worker
-/// has no use case for being used in non-wasm contexts at this time.
+/// has no use case for being used in non-wasm contexts at this time. It
+/// cannot fail; the error type matches the wasm implementation so both
+/// targets present one signature.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn sleep(duration: web_time::Duration) -> Result<(), ()> {
+pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsError> {
     tokio::time::sleep(duration).await;
     Ok(())
 }

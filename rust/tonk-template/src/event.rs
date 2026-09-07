@@ -59,7 +59,12 @@ pub enum Source {
     Property(Vec<String>),
     /// `"text"` — a constant, for defaults the interaction never
     /// supplies. Quotes are load-bearing: a bare word is a
-    /// [`Source::Reference`], not a string.
+    /// [`Source::Reference`], not a string. The notation's parser
+    /// keeps the distinction ([`parse_string_source`] reads a value
+    /// it already classified as a string); text read back from a
+    /// stored fact has lost it, so [`parse_source`] falls back to
+    /// classifying by charset, where only an *inner* pair of quotes
+    /// can spell a symbol-shaped constant.
     Literal(String),
     /// A bare lowercase identifier — a reference to the entity the
     /// symbol currently names, resolved through the name table.
@@ -101,34 +106,8 @@ pub enum Source {
 pub fn parse_source(raw: &str) -> Source {
     let raw = raw.trim();
 
-    if let Some(name) = raw
-        .strip_prefix('{')
-        .and_then(|rest| rest.strip_suffix('}'))
-        .map(str::trim)
-        .filter(|name| !name.is_empty() && !name.contains(['{', '}']))
-    {
-        return Source::Field(name.to_string());
-    }
-
-    if let Some(segments) = raw.strip_prefix('.').and_then(|rest| {
-        let segments: Vec<String> = rest.split('.').map(str::to_string).collect();
-        (!segments.iter().any(String::is_empty)).then_some(segments)
-    }) {
-        return Source::Property(segments);
-    }
-
-    // An explicitly quoted value is a literal. YAML normally strips the
-    // quotes long before this, which is fine: the classifier decides by
-    // charset, not by quoting.
-    if let Some(inner) = raw
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .or_else(|| {
-            raw.strip_prefix('\'')
-                .and_then(|rest| rest.strip_suffix('\''))
-        })
-    {
-        return Source::Literal(inner.to_string());
+    if let Some(source) = parse_source_form(raw) {
+        return source;
     }
 
     match tonk_notation::parse::classify_plain_value(raw) {
@@ -141,6 +120,62 @@ pub fn parse_source(raw: &str) -> Source {
         // which fails the one binding instead of the declaration.
         _ => Source::Literal(raw.to_string()),
     }
+}
+
+/// Read a `where:` value the notation has already classified as a
+/// *string* — a quoted scalar.
+///
+/// The grammar's own forms can only be written inside quotes (`{` and
+/// `.` are not symbol characters, and a bare `{this}` is a flow
+/// mapping to the surrounding syntax), so they keep their meaning
+/// here. Any other quoted text is the constant it looks like:
+/// re-reading it by charset would turn `"draft"` into a
+/// [`Source::Reference`], which is exactly the distinction the quotes
+/// exist to make. This is [`parse_source`] minus that fallback, for
+/// the caller that still has the parser's classification in hand.
+pub fn parse_string_source(raw: &str) -> Source {
+    let raw = raw.trim();
+    parse_source_form(raw).unwrap_or_else(|| Source::Literal(raw.to_string()))
+}
+
+/// The two forms this grammar owns, plus the inner-quote escape —
+/// `None` for anything that needs the caller's classification.
+///
+/// The inner quotes exist for text that has lost its outer quoting: a
+/// value read back from a stored fact is bare text, so `"draft"`
+/// *inside* the stored value is the one way that path can spell a
+/// symbol-shaped constant. A value still carrying the parser's
+/// string classification never needs them, but they mean the same
+/// thing there, so both paths accept them.
+fn parse_source_form(raw: &str) -> Option<Source> {
+    if let Some(name) = raw
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.contains(['{', '}']))
+    {
+        return Some(Source::Field(name.to_string()));
+    }
+
+    if let Some(segments) = raw.strip_prefix('.').and_then(|rest| {
+        let segments: Vec<String> = rest.split('.').map(str::to_string).collect();
+        (!segments.iter().any(String::is_empty)).then_some(segments)
+    }) {
+        return Some(Source::Property(segments));
+    }
+
+    if let Some(inner) = raw
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            raw.strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+    {
+        return Some(Source::Literal(inner.to_string()));
+    }
+
+    None
 }
 
 /// A literal scalar as the text the runtime coerces to the field's
@@ -238,24 +273,25 @@ impl fmt::Display for EventError {
 /// Build a descriptor from an event instance's already-projected
 /// fields: `type`, `prevent-default`, `stop-propagation`, and the
 /// `where` dictionary.
+///
+/// The sources arrive classified because the two callers hold
+/// different evidence: the analyzer still has the notation's parse of
+/// each value ([`parse_string_source`] for a quoted string, the
+/// `FieldValue` itself otherwise), while a reader of stored facts has
+/// only bare text and classifies with [`parse_source`]. Taking text
+/// here would force both through the weaker path.
 pub fn event_descriptor(
     event_type: Option<&str>,
     prevent_default: bool,
     stop_propagation: bool,
-    where_entries: impl IntoIterator<Item = (String, String)>,
+    where_entries: impl IntoIterator<Item = (String, Source)>,
 ) -> Result<EventDescriptor, EventError> {
     let event_type = event_type
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or(EventError::MissingType)?;
 
-    let sources = where_entries
-        .into_iter()
-        .map(|(field, raw)| {
-            let source = parse_source(&raw);
-            (field, source)
-        })
-        .collect();
+    let sources = where_entries.into_iter().collect();
 
     Ok(EventDescriptor {
         event_type: event_type.to_string(),
@@ -423,6 +459,33 @@ mod tests {
     }
 
     #[test]
+    fn a_string_keeps_its_forms_but_skips_the_charset_classification() {
+        // The caller vouches the value was a *quoted* scalar, so the
+        // grammar's own forms still mean themselves…
+        assert_eq!(parse_string_source("{this}"), Source::Field("this".into()));
+        assert_eq!(
+            parse_string_source(".timeStamp"),
+            Source::Property(vec!["timeStamp".into()])
+        );
+        // …but symbol- and URI-shaped text stays the constant the
+        // quotes made it, where `parse_source` would read a reference
+        // and an entity.
+        assert_eq!(
+            parse_string_source("draft"),
+            Source::Literal("draft".into())
+        );
+        assert_eq!(
+            parse_string_source("tonk:invite"),
+            Source::Literal("tonk:invite".into())
+        );
+        // The inner-quote escape means the same thing on both paths.
+        assert_eq!(
+            parse_string_source("\"draft\""),
+            Source::Literal("draft".into())
+        );
+    }
+
+    #[test]
     fn a_bare_symbol_is_a_named_entity_reference() {
         // What a bare symbol means everywhere else in the notation
         // (`FieldValue::Symbol`): the entity the name currently refers
@@ -497,7 +560,7 @@ mod tests {
             Some("click"),
             false,
             false,
-            [("subject".to_string(), "counter".to_string())],
+            [("subject".to_string(), parse_source("counter"))],
         )
         .expect("descriptor");
         let unresolved = event.resolve_references(&BTreeMap::from([(
@@ -517,7 +580,7 @@ mod tests {
             Some("click"),
             false,
             false,
-            [("subject".to_string(), "counter".to_string())],
+            [("subject".to_string(), parse_source("counter"))],
         )
         .expect("descriptor");
         let unresolved = event.resolve_references(&BTreeMap::new());
@@ -554,8 +617,8 @@ mod tests {
             false,
             false,
             [
-                ("subject".to_string(), "{this}".to_string()),
-                ("time".to_string(), "{oops".to_string()),
+                ("subject".to_string(), parse_source("{this}")),
+                ("time".to_string(), parse_source("{oops")),
             ],
         )
         .expect("descriptor");
@@ -590,7 +653,7 @@ mod tests {
             Some("click"),
             false,
             false,
-            [("time".to_string(), ".timeStamp".to_string())],
+            [("time".to_string(), parse_source(".timeStamp"))],
         )
         .expect("descriptor");
         let mismatch = check(&event, &required(&["subject", "time"]), &BTreeSet::new());
@@ -609,7 +672,7 @@ mod tests {
             Some("click"),
             false,
             false,
-            [("subject".to_string(), "{this}".to_string())],
+            [("subject".to_string(), parse_source("{this}"))],
         )
         .expect("descriptor");
         let mismatch = check(&event, &required(&["subject"]), &required(&["time"]));
@@ -623,8 +686,8 @@ mod tests {
             false,
             false,
             [
-                ("subject".to_string(), "{this}".to_string()),
-                ("tiem".to_string(), ".timeStamp".to_string()),
+                ("subject".to_string(), parse_source("{this}")),
+                ("tiem".to_string(), parse_source(".timeStamp")),
             ],
         )
         .expect("descriptor");
@@ -802,7 +865,7 @@ mod dispatch_tests {
             false,
             sources
                 .iter()
-                .map(|(field, raw)| ((*field).to_string(), (*raw).to_string())),
+                .map(|(field, raw)| ((*field).to_string(), parse_source(raw))),
         )
         .expect("descriptor")
     }

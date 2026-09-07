@@ -285,7 +285,7 @@ mod tests {
                 email: "pending@example.com",
                 plan: SIGNUP_PLAN,
                 ledger: &subject,
-                custody: &format!("{}-custody", &subject),
+                custody: &format!("{}-custody", subject),
                 now: 0,
                 expires_at: u64::MAX,
             })
