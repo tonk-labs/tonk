@@ -191,8 +191,9 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
 ///
 /// Idempotent: reads the roster first and commits only when the row is
 /// missing or stale, so the sweep can run it on every pass without
-/// touching the branch. A linked profile's rename also clears the
-/// device-keyed row a pre-link join left behind (cardinality-one on a
+/// touching the branch. First reconciles a retired onboarding founder's
+/// complete membership bundle when retained grants establish the association.
+/// A linked profile's rename also clears the device-keyed row a pre-link join left behind (cardinality-one on a
 /// different entity, so the assert alone would not overwrite it).
 ///
 /// Returns whether anything was written, so the caller knows to queue
@@ -215,6 +216,11 @@ pub(crate) async fn project_member_name(
         .await
         .map_err(|e| RepositoryError::Internal(format!("acquire content branch '{key}': {e}")))?;
     let repo_did = session.handle().of().clone();
+    let repaired = super::rotation::reconcile_founder_membership(tonk, &repo_did, member)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("reconcile founder in '{key}': {error}"))
+        })?;
     let membership = Membership::new(member.clone(), repo_did.clone());
     let names: Vec<MemberName> = session
         .handle()
@@ -242,7 +248,7 @@ pub(crate) async fn project_member_name(
             .collect()
     };
     if !stale && obsolete.is_empty() {
-        return Ok(false);
+        return Ok(repaired);
     }
 
     let mut txn = tonk

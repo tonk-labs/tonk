@@ -3,8 +3,8 @@
 //! It wraps the share button (authored directly in `markup.rs` — the deleted
 //! `tonk:repository/fab-share` view used to supply it) and turns a click into
 //! a single control that mints a fresh invite AND puts the resulting URL on
-//! the clipboard, without a second click, then reverts to offering "share"
-//! again.
+//! the clipboard. Once the browser confirms the write, the row answers
+//! "copied", pauses, and asks the bar to close the share stack.
 //!
 //! ## Why this needs an element at all
 //!
@@ -131,6 +131,7 @@ struct PendingCopy {
 pub(crate) struct PendingClipboard {
     resolve: Function,
     reject: Function,
+    completion: Promise,
 }
 
 impl PendingClipboard {
@@ -257,6 +258,7 @@ impl Repair {
 #[derive(Default)]
 struct ShareStateCell {
     pending: Option<PendingCopy>,
+    generation: u64,
     /// The `setTimeout` that reverts a `Copied`/`Failed` confirmation to
     /// `Idle`. Cleared and re-armed on each settle so a fresh result always
     /// gets its full linger, and cancelled on disconnect.
@@ -539,6 +541,7 @@ impl CustomElement for TonkShare {
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        self.state.borrow_mut().generation += 1;
         self.scaffold.disconnect();
         for (event_type, closure) in self.listeners.drain(..) {
             let target: &web_sys::EventTarget = this.unchecked_ref();
@@ -802,6 +805,7 @@ fn open_clipboard_write(
     stale: Option<String>,
 ) -> Result<(), JsValue> {
     let clipboard = open_deferred_clipboard_write()?;
+    state.borrow_mut().generation += 1;
     state.borrow_mut().pending = Some(PendingCopy { clipboard, stale });
     Ok(())
 }
@@ -845,10 +849,15 @@ pub(crate) fn open_deferred_clipboard_write() -> Result<PendingClipboard, JsValu
     let on_rejected = Closure::<dyn FnMut(JsValue)>::new(|e: JsValue| {
         warn(&format!("share: clipboard write failed: {e:?}"));
     });
-    let _ = clipboard.write(&Array::of1(&item)).catch(&on_rejected);
+    let completion = clipboard.write(&Array::of1(&item));
+    let _ = completion.catch(&on_rejected);
     on_rejected.forget();
 
-    Ok(PendingClipboard { resolve, reject })
+    Ok(PendingClipboard {
+        resolve,
+        reject,
+        completion,
+    })
 }
 
 /// `new ClipboardItem(init)` via the global constructor. web-sys does not
@@ -868,6 +877,9 @@ const MIME_TEXT: &str = "text/plain";
 /// Complete (or abandon) the clipboard write the click opened, and move the
 /// control to its confirmation state.
 fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Result<String, &str>) {
+    let Some(pending) = state.borrow_mut().pending.take() else {
+        return;
+    };
     {
         let mut cell = state.borrow_mut();
         // The click this answers is answered: nothing later may claim it.
@@ -876,21 +888,41 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
             clear_timeout(id);
         }
     }
-    let Some(pending) = state.borrow_mut().pending.take() else {
-        return;
-    };
-    let settled = match result {
+    match result {
         Ok(link) => {
+            arm_timeout(host, state);
+            let completion = pending.clipboard.completion.clone();
             pending.clipboard.resolve(&link);
-            ShareState::Copied
+            let host = host.clone();
+            let state = Rc::clone(state);
+            let generation = state.borrow().generation;
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = wasm_bindgen_futures::JsFuture::from(completion).await;
+                if state.borrow().generation != generation
+                    || read_state(&host) != ShareState::Copying
+                {
+                    return;
+                }
+                if let Some(id) = state.borrow_mut().timeout.take() {
+                    clear_timeout(id);
+                }
+                set_state(
+                    &host,
+                    if result.is_ok() {
+                        ShareState::Copied
+                    } else {
+                        ShareState::Failed
+                    },
+                );
+                arm_revert(&host, &state);
+            });
         }
         Err(reason) => {
             pending.clipboard.reject(reason);
-            ShareState::Failed
+            set_state(host, ShareState::Failed);
+            arm_revert(host, state);
         }
-    };
-    set_state(host, settled);
-    arm_revert(host, state);
+    }
 }
 
 /// Revert a confirmation to `Idle` after [`COPIED_LINGER_MS`], so the control
@@ -907,6 +939,9 @@ fn arm_revert(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>) {
         state_for_timer.borrow_mut().revert = None;
         // Don't stomp a mint the user started during the linger.
         if read_state(&host).is_transient() {
+            if read_state(&host) == ShareState::Copied {
+                crate::shadow::emit(&host, "fabb-share-copied", &JsValue::NULL);
+            }
             set_state(&host, ShareState::Idle);
         }
     });
@@ -952,6 +987,13 @@ fn arm_timeout(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>) {
 fn fail_copy(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, reason: &str) {
     settle(host, state, Err(reason));
     if read_state(host) == ShareState::Copying {
+        {
+            let mut cell = state.borrow_mut();
+            cell.pending_time = None;
+            if let Some(id) = cell.timeout.take() {
+                clear_timeout(id);
+            }
+        }
         set_state(host, ShareState::Failed);
         arm_revert(host, state);
     }
@@ -1255,6 +1297,37 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
+    // Model the browser write as a promise fulfilled when the supplied text arrives.
+    // These state tests do not depend on clipboard permission or user activation.
+    fn fake_clipboard_write(
+        state: Rc<RefCell<ShareStateCell>>,
+        stale: Option<String>,
+    ) -> Result<(), JsValue> {
+        let mut callbacks = None;
+        let completion = Promise::new(&mut |resolve, reject| callbacks = Some((resolve, reject)));
+        let (resolve, reject) = callbacks.unwrap();
+        let ignore = Closure::<dyn FnMut(JsValue)>::new(|_| {});
+        let _ = completion.catch(&ignore);
+        ignore.forget();
+        state.borrow_mut().generation += 1;
+        state.borrow_mut().pending = Some(PendingCopy {
+            clipboard: PendingClipboard {
+                resolve,
+                reject,
+                completion,
+            },
+            stale,
+        });
+        Ok(())
+    }
+
+    async fn flush_clipboard() {
+        let tick = Promise::new(&mut |resolve, _| {
+            set_timeout(&resolve, 0);
+        });
+        wasm_bindgen_futures::JsFuture::from(tick).await.unwrap();
+    }
+
     /// A fresh, unconnected host — plenty for tests that only exercise the
     /// state-machine helpers (`set_state`/`read_state`/`settle`), not a
     /// delivered subscription frame.
@@ -1264,21 +1337,6 @@ mod tests {
             .create_element("div")
             .expect("create host")
             .unchecked_into()
-    }
-
-    /// A host mounted inside an OPEN share segment, the way the FAB nests it:
-    /// `.fab__share.is-open > <tonk-share>`. Returns the segment so a test can
-    /// assert on its classes.
-    fn host_in_open_segment() -> (HtmlElement, Element) {
-        let document = window().expect("window").document().expect("document");
-        let segment = document.create_element("span").expect("create segment");
-        segment.set_class_name("fab__seg fab__share is-open");
-        let host: HtmlElement = document
-            .create_element("tonk-share")
-            .expect("create host")
-            .unchecked_into();
-        segment.append_child(&host).expect("nest host");
-        (host, segment)
     }
 
     /// A subscription row, in the shape a real delivered conclusion takes:
@@ -1487,13 +1545,13 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_settles_a_pending_copy_when_a_fresh_link_lands() {
+    async fn it_settles_a_pending_copy_when_a_fresh_link_lands() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         // The link on screen at click time — what the click captured as
         // `stale`.
-        open_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
+        fake_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
             .expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
@@ -1504,6 +1562,7 @@ mod tests {
             "https://tonk.xyz/@/new".to_owned(),
         );
 
+        flush_clipboard().await;
         assert_eq!(read_state(&host), ShareState::Copied);
         assert!(
             state.borrow().pending.is_none(),
@@ -1518,7 +1577,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         let current_link: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        open_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
+        fake_clipboard_write(Rc::clone(&state), Some("https://tonk.xyz/@/old".to_owned()))
             .expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
@@ -1564,15 +1623,16 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_settles_a_pending_copy_and_shows_copied() {
+    async fn it_settles_a_pending_copy_and_shows_copied() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         assert!(state.borrow().pending.is_some(), "the copy is pending");
 
         settle(&host, &state, Ok("https://tonk.xyz/@/new".to_owned()));
 
+        flush_clipboard().await;
         assert_eq!(read_state(&host), ShareState::Copied);
         assert!(
             state.borrow().pending.is_none(),
@@ -1581,29 +1641,93 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_leaves_the_roster_alone_when_the_copy_settles() {
-        // `<tonk-share>` does not touch the dropdown. `<tonk-fab>` toggles
-        // `.is-open` on the segment for every click in the share zone, so the
-        // menu opens on the first click and closes on the second. Force-closing
-        // it here would desync that toggle: the click after an auto-close would
-        // re-OPEN the menu instead of closing it.
-        let (host, segment) = host_in_open_segment();
+    async fn it_keeps_copy_open_until_clipboard_confirmation_then_lingers() {
+        crate::register();
+        let bar = mounted_bar();
+        let host: HtmlElement = bar
+            .query_selector("tonk-share")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
-
-        settle(&host, &state, Ok("https://tonk.xyz/@/new".to_owned()));
-
+        fake_clipboard_write(state.clone(), None).unwrap();
+        let mut confirm = None;
+        let completion = Promise::new(&mut |resolve, _| confirm = Some(resolve));
+        state
+            .borrow_mut()
+            .pending
+            .as_mut()
+            .unwrap()
+            .clipboard
+            .completion = completion;
+        set_state(&host, ShareState::Copying);
+        Reflect::get(&bar, &"open".into())
+            .unwrap()
+            .unchecked_into::<Function>()
+            .call1(&bar, &"share".into())
+            .unwrap();
+        let menu = bar.query_selector("[data-for=share]").unwrap().unwrap();
+        let copy = bar.query_selector("[data-share-link]").unwrap().unwrap();
+        copy.remove_attribute("hidden").unwrap();
+        copy.shadow_root()
+            .unwrap()
+            .query_selector(".row")
+            .unwrap()
+            .unwrap()
+            .unchecked_into::<HtmlElement>()
+            .click();
         assert!(
-            segment.class_list().contains("is-open"),
-            "settling must leave the menu's open state to <tonk-fab>'s toggle",
+            !menu.has_attribute("hidden"),
+            "copy selection must keep the stack open"
         );
+        settle(&host, &state, Ok("https://example.test/join".to_owned()));
+        flush_clipboard().await;
+        assert_eq!(
+            read_state(&host),
+            ShareState::Copying,
+            "minting alone is not a successful copy"
+        );
+        confirm.unwrap().call0(&JsValue::NULL).unwrap();
+        flush_clipboard().await;
+        assert_eq!(
+            copy.get_attribute("data-share-state").as_deref(),
+            Some("copied")
+        );
+        assert!(!menu.has_attribute("hidden"));
+        let pause = Promise::new(&mut |resolve, _| {
+            set_timeout(&resolve, COPIED_LINGER_MS + 50);
+        });
+        wasm_bindgen_futures::JsFuture::from(pause).await.unwrap();
+        assert!(menu.has_attribute("hidden"));
+        assert_eq!(read_state(&host), ShareState::Idle);
+        bar.remove();
+        remove_refusal_dialog();
+    }
+
+    #[wasm_bindgen_test]
+    async fn it_reports_clipboard_rejection_after_a_successful_mint() {
+        let host = fresh_host();
+        let state = Rc::new(RefCell::new(ShareStateCell::default()));
+        fake_clipboard_write(state.clone(), None).unwrap();
+        state
+            .borrow_mut()
+            .pending
+            .as_mut()
+            .unwrap()
+            .clipboard
+            .completion = Promise::reject(&"permission denied".into());
+        set_state(&host, ShareState::Copying);
+        settle(&host, &state, Ok("https://example.test/join".to_owned()));
+        flush_clipboard().await;
+        assert_eq!(read_state(&host), ShareState::Failed);
+        assert!(state.borrow().timeout.is_none());
     }
 
     #[wasm_bindgen_test]
     fn it_shows_failed_when_the_mint_errors() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         settle(&host, &state, Err("mint failed"));
@@ -1672,7 +1796,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         state.borrow_mut().pending_time = Some(42.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         handle_blocked(
@@ -1699,7 +1823,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         state.borrow_mut().pending_time = Some(99.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         handle_blocked(
@@ -1729,7 +1853,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         state.borrow_mut().pending_time = Some(42.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         handle_blocked(
@@ -1753,7 +1877,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         state.borrow_mut().pending_time = Some(7.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         handle_blocked(
@@ -1785,7 +1909,7 @@ mod tests {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
         state.borrow_mut().pending_time = Some(7.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         handle_blocked(
@@ -1932,7 +2056,7 @@ mod tests {
     fn it_frees_the_button_when_a_copy_times_out() {
         let with_write = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&with_write, ShareState::Copying);
 
         fail_copy(&with_write, &state, "share: timed out");
@@ -1958,10 +2082,10 @@ mod tests {
     /// The backstop is armed by the click and cancelled by the result, so a
     /// settled copy leaves no timer behind to fail it later.
     #[dialog_common::test]
-    fn it_clears_the_backstop_when_a_copy_settles() {
+    async fn it_clears_the_backstop_when_a_copy_settles() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
 
         arm_timeout(&host, &state);
@@ -1969,6 +2093,7 @@ mod tests {
 
         settle(&host, &state, Ok("https://tonk.xyz/@/new".to_owned()));
 
+        flush_clipboard().await;
         assert_eq!(read_state(&host), ShareState::Copied);
         assert!(
             state.borrow().timeout.is_none(),
@@ -2037,7 +2162,7 @@ mod tests {
         let mut element = TonkShare::default();
         let state = Rc::clone(&element.state);
         state.borrow_mut().pending_time = Some(42.0);
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         arm_timeout(&host, &state);
         set_state(&host, ShareState::Copying);
 
@@ -2059,7 +2184,7 @@ mod tests {
     fn it_fails_the_copy_on_a_terminal_status() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2079,7 +2204,7 @@ mod tests {
     fn it_fails_the_copy_on_a_terminal_status_delivered_as_a_delta() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2100,7 +2225,7 @@ mod tests {
     fn it_treats_an_unknown_status_as_a_failure() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2121,7 +2246,7 @@ mod tests {
     fn it_keeps_waiting_while_the_request_is_open() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2135,10 +2260,10 @@ mod tests {
 
     /// A granted row settles the pending copy with its url.
     #[dialog_common::test]
-    fn it_settles_the_copy_when_the_invite_is_granted() {
+    async fn it_settles_the_copy_when_the_invite_is_granted() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2150,6 +2275,7 @@ mod tests {
             &invite_reset_payload("invite:granted", Some("https://example.com/join#seed")),
         );
 
+        flush_clipboard().await;
         assert_eq!(read_state(&host), ShareState::Copied);
     }
 
@@ -2159,7 +2285,7 @@ mod tests {
     fn it_keeps_waiting_when_a_granted_row_carries_no_url() {
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
         set_state(&host, ShareState::Copying);
         let behaviour = InviteStateBehaviour {
             state: Rc::clone(&state),
@@ -2259,14 +2385,16 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn it_settles_only_once() {
+    async fn it_settles_only_once() {
         // Only the first frame after a click may settle the copy; a later
         // one must find nothing pending and leave the confirmation alone.
         let host = fresh_host();
         let state = Rc::new(RefCell::new(ShareStateCell::default()));
-        open_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
+        fake_clipboard_write(Rc::clone(&state), None).expect("clipboard write opens");
 
+        set_state(&host, ShareState::Copying);
         settle(&host, &state, Ok("https://tonk.xyz/@/first".to_owned()));
+        flush_clipboard().await;
         assert_eq!(read_state(&host), ShareState::Copied);
 
         // A second frame with no pending copy: a no-op, not a state change.

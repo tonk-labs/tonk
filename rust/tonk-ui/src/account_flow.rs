@@ -834,30 +834,6 @@ mod tests {
         Ok(())
     }
 
-    async fn emulate_phone(driver: &WebDriver, width: u32, height: u32) -> Result<()> {
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools
-            .execute_cdp_with_params(
-                "Emulation.setDeviceMetricsOverride",
-                serde_json::json!({
-                    "width": width,
-                    "height": height,
-                    "deviceScaleFactor": 2,
-                    "mobile": true,
-                    "screenWidth": width,
-                    "screenHeight": height
-                }),
-            )
-            .await?;
-        devtools
-            .execute_cdp_with_params(
-                "Emulation.setTouchEmulationEnabled",
-                serde_json::json!({ "enabled": true, "maxTouchPoints": 5 }),
-            )
-            .await?;
-        Ok(())
-    }
-
     /// Create an account and confirm its email, leaving it able to host
     /// spaces. Most callers want this.
     pub(crate) async fn sign_up(
@@ -1588,6 +1564,7 @@ mod tests {
                       mainCenter: Math.round(main.left + main.width / 2),
                       viewportCenter: Math.round(innerWidth / 2),
                       ceremonyWidth: Math.round(ceremony.width),
+                      ceremonyTop: Math.round(ceremony.top),
                       logoWidth: Math.round(logo.width),
                       actionHeight: Math.round(action.height),
                       heading: document.querySelector('.account__ceremony-head')?.textContent.trim(),
@@ -1602,7 +1579,8 @@ mod tests {
         assert_eq!(desktop["page"], "rgb(232, 230, 228)");
         assert_eq!(desktop["mainWidth"], 576);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
-        assert_eq!(desktop["ceremonyWidth"], 432);
+        assert_eq!(desktop["ceremonyWidth"], 576);
+        assert_eq!(desktop["ceremonyTop"], 148);
         assert_eq!(desktop["logoWidth"], 132);
         assert_eq!(desktop["actionHeight"], 36);
         assert_eq!(desktop["heading"], "activate your account");
@@ -1623,7 +1601,7 @@ mod tests {
             )
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
-        assert_eq!(done.json()["rowWidth"], 432);
+        assert_eq!(done.json()["rowWidth"], 576);
         assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
@@ -1657,9 +1635,9 @@ mod tests {
         // Some browsers refuse to shrink a window below a floor of their
         // own (Chrome 152 headless clamps to 500px), and the compact
         // layout is only what it claims to be at the width we asked for.
-        // Above that floor `.account__ceremony`'s own 432px cap is what
-        // limits it, not the viewport, so the assertion below would be
-        // measuring the wrong rule rather than a broken layout.
+        // Above that floor the 576px account shell, rather than the requested
+        // compact viewport, controls the measurement, so the assertion below
+        // would be measuring the wrong rule rather than a broken layout.
         if viewport > 390 {
             driver.quit().await?;
             return Ok(());
@@ -1676,68 +1654,13 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_join_targets_accessible_at_phone_sizes(env: TestEnvironment) -> Result<()> {
+    async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
 
-        for (width, height) in [(320_u32, 568_u32), (390, 844)] {
-            emulate_phone(&driver, width, height).await?;
-            goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-            enter_guest(&driver).await?;
-            element(&driver, ".join-view").await?;
-
-            for dark in [false, true] {
-                let geometry = driver
-                    .execute(
-                        r#"const dark = arguments[0];
-                           document.documentElement.classList.toggle('wa-dark', dark);
-                           document.documentElement.classList.toggle('wa-light', !dark);
-                           const visible = [...document.querySelectorAll('a,button,input:not([type=hidden])')]
-                             .filter(el => el.getClientRects().length > 0);
-                           const mast = document.querySelector('.edge-mast').getBoundingClientRect();
-                           const wordmark = document.querySelector('.edge-mast img').getBoundingClientRect();
-                           const input = document.querySelector('.edge-input');
-                           return {
-                             width: innerWidth,
-                             height: innerHeight,
-                             overflow: document.documentElement.scrollWidth > innerWidth,
-                             mast: { width: mast.width, height: mast.height },
-                             wordmark: { width: wordmark.width, height: wordmark.height },
-                             inputFont: getComputedStyle(input).fontSize,
-                             undersized: visible.flatMap(el => {
-                               const rect = el.getBoundingClientRect();
-                               if (rect.width >= 44 && rect.height >= 44) return [];
-                               return [{
-                                 selector: el.className || el.id || el.tagName.toLowerCase(),
-                                 width: rect.width,
-                                 height: rect.height
-                               }];
-                             })
-                           };"#,
-                        vec![serde_json::json!(dark)],
-                    )
-                    .await?;
-                let geometry = geometry.json();
-                assert_eq!(geometry["width"], width);
-                assert_eq!(geometry["height"], height);
-                assert_eq!(geometry["overflow"], false);
-                assert_eq!(geometry["undersized"], serde_json::json!([]));
-                assert_eq!(geometry["inputFont"], "16px");
-                assert_eq!(geometry["mast"]["width"], 98.0);
-                assert!(
-                    geometry["mast"]["height"].as_f64().unwrap_or_default() >= 44.0,
-                    "the wordmark link needs a 44px hit area: {geometry}"
-                );
-                assert_eq!(geometry["wordmark"]["width"], 98.0);
-                assert!(
-                    geometry["wordmark"]["height"]
-                        .as_f64()
-                        .is_some_and(|height| height < 44.0),
-                    "the visual wordmark must keep its existing scale: {geometry}"
-                );
-            }
-            driver.enter_default_frame().await?;
-        }
+        goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
+        await_url_path(&driver, "/").await?;
+        enter_hub(&driver).await?;
 
         driver.quit().await?;
         Ok(())

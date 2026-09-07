@@ -187,9 +187,19 @@ tonk-fab > tonk-share[headless]{ display:none; }
    hold nothing themselves — laid out they would only add a stack gap where
    they sit */
 tonk-fab ui-space-switcher, tonk-fab ui-member-roster{ display:none; }
+/* DESIGN.md card surface: opaque so content cannot show through the roster. */
+.fabb-members{ --fabb-panel:#fcfbfb; }
+.fabb-members .mem-row{ display:flex; align-items:baseline; gap:8px; padding:8px 2px; border-bottom:1px solid rgba(127,127,120,.25); font-size:13.5px; overflow-wrap:anywhere; }
+.fabb-members .mem-row:last-child{ border-bottom:none; }
+.fabb-members .mem-you{ font-size:11px; opacity:.65; flex-shrink:0; }
+.fabb-members .mem-self{ font-weight:600; }
+tonk-fab [data-share-members]{ font-variant-numeric:tabular-nums; }
 /* the share row answers in place: one word at a time, the copy state
    choosing which. idle is the default, so a row that has never been used —
    and one whose element never stamped a state — still reads "copy link". */
+/* Copy always touches the bar side of the stack, including the overflow route. */
+tonk-fab [data-share-link]{ order:-1; }
+tonk-fab[up] [data-share-link]{ order:1; }
 tonk-fab [data-share-link] .say{ display:none; }
 /* idle before the element has ever stamped a state, and whenever it says so.
    `blocked` also reads as idle: a prompt is up asking the user a question,
