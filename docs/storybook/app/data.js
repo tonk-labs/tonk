@@ -38,7 +38,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "area": "Account and space membership",
-      "decision": "fix reconciliation",
+      "decision": "fixed",
       "id": "B-07",
       "severity": "medium",
       "title": "Renamed account retains an old founder membership in a space"

@@ -51,8 +51,9 @@ clears the previous membership. Existing account and activation gates still
 apply to copying links. The members popup uses the opaque `#fcfbfb` card
 surface from `DESIGN.md`; the specified aubergine backdrop remains.
 
-A confirmed account/membership identity mismatch can leave an old owner name
-in this roster after a successful rename; see [B-07](../bug-triage.md#b-07-renamed-account-retains-an-old-founder-membership-in-a-space).
+Account linking migrates the founder membership together with its name and
+role. Account-name sweeps also repair older retired-founder rows when retained
+delegations establish the identity association; see [B-07](../bug-triage.md#b-07-renamed-account-retains-an-old-founder-membership-in-a-space).
 
 This source-derived update covers `COLLAB-01`, `COLLAB-05`, `WEB-04`, and
 `WEB-05`. Browser component regressions exercise copy completion and popup
