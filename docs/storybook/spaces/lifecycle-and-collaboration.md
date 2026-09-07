@@ -36,15 +36,27 @@ handled according to the documented local authority boundary.
 
 ### Share-menu presentation decision
 
-The browser calls the transferable artifact a **share link**. When its FABB
-panel opens, the share stack matches the share rung rather than inheriting the
-width of another action. A long member roster scrolls inside the space
-available above or below the bar, stays within the viewport margin, and keeps
-compact rows usable instead of extending the page beyond the visible area.
+The browser calls the transferable artifact a **share link**. Opening Share
+shows **copy link** closest to the FABB, with the live member count farther
+away. Copy is the bottom row when opening upward and the top row when opening
+downward. Copy stays open while minting
+and writing the clipboard; only a successful browser write changes the label
+to **copied**. After 1.2 seconds the share stack closes. A failed write shows
+**couldn’t copy** and leaves the stack available for retry.
 
-This is a source-derived presentation decision for `COLLAB-01`, `WEB-04`, and
-`WEB-05`, pinned to `a3f8657d3`. No FABB screenshot was recaptured, so the
-existing images retain their older visual provenance.
+Selecting the member count opens a scrollable **members** dialog with names,
+owner/admin labels, and **you** marking the current profile. The share stack
+stays compact even with a long roster. Changing spaces closes the popup and
+clears the previous membership. Existing account and activation gates still
+apply to copying links. The members popup uses the opaque `#fcfbfb` card
+surface from `DESIGN.md`; the specified aubergine backdrop remains.
+
+A confirmed account/membership identity mismatch can leave an old owner name
+in this roster after a successful rename; see [B-07](../bug-triage.md#b-07-renamed-account-retains-an-old-founder-membership-in-a-space).
+
+This source-derived update covers `COLLAB-01`, `COLLAB-05`, `WEB-04`, and
+`WEB-05`. Browser component regressions exercise copy completion and popup
+geometry; existing screenshots retain their older visual provenance.
 
 ### FABB naming and blank-space prompt decision
 

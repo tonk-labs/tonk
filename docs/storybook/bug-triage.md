@@ -1,19 +1,19 @@
 # Bug triage
 
-A consolidated list of likely defects and behavioral contradictions raised by
-the storybook audit. Each entry is pinned to current source or an existing test;
-none has yet been confirmed in a fresh running-product pass. The list exists so
+A consolidated list of defects and behavioral contradictions raised by
+source audits and running-product checks. Each entry identifies its evidence;
+`B-07` is confirmed in the running local product. The list exists so
 the product team can decide whether to fix, document as intended, or replace a
 stale design contract before implementation work begins.
 
 ## Summary
 
-Four findings remain after merging related observations: two high and two
+Five findings remain after merging related observations: two high and three
 medium; `B-02` is fixed and kept for its history. `B-06` is gone with the
 account service it described. The high findings share one theme: a
 user-visible account transition can cross an irreversible authority or
 durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
-duplicate activation results ambiguous. Coverage gaps without a concrete wrong
+duplicate activation results ambiguous, or leave member identity stale after a rename. Coverage gaps without a concrete wrong
 behavior remain in the verification backlog rather than this file.
 
 | ID | Title | Severity | Area | Decision needed | Issue |
@@ -23,6 +23,7 @@ behavior remain in the verification backlog rather than this file.
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
+| `B-07` | Renamed account retains an old founder membership in a space | medium | Account and space membership | fix reconciliation | — |
 
 ## High
 
@@ -204,6 +205,50 @@ behavior remain in the verification backlog rather than this file.
 - **Raised by:** [browser runtime](ui/routing-and-runtime.md#edge-cases),
   [journey `ACCT-B04`](journey-catalog.md#accounts-browser-lifecycle).
 - **Status:** Not run. Source-audit finding at `a3f8670b1`.
+
+### B-07: Renamed account retains an old founder membership in a space
+
+- **Where the user meets it:** FABB → Share → members, after changing their
+  display name to `jack`.
+- **What happens / what was expected:** The roster still shows `tidy-badger`
+  as owner. It should resolve the user's membership to the current account
+  and show the saved name without creating a duplicate or losing their role.
+- **Observed evidence:** Read-only queries against the user's local running
+  product on 2026-09-07 returned HTTP 200 and showed:
+  - Profile display-name: `jack`.
+  - Account display-name: `jack`.
+  - Space membership/name records: both `jack` and `tidy-badger`.
+  - The complete membership/name + member + role query returned only
+    `tidy-badger`, with role `tonk:founder`. Its member DID did not equal
+    the active account display-name record's subject.
+  The rename persisted; the new name and the old founder roster entry are
+  attached to different membership records. These reads did not change data.
+- **Reproduce / remaining uncertainty:** The mismatch is confirmed in the
+  existing local space. The exact account-linking or adoption sequence that
+  created it has not yet been reproduced from a fresh profile. Cover a space
+  created before account linking, link/adopt it, rename the account, then
+  query the full roster and reopen the members popup. Test both existing
+  affected data and a fresh transition; do not assume that sequence is proved.
+- **Source boundary:**
+  [`member_roster.rs`](../../rust/tonk-fab/src/member_roster.rs) displays the
+  space's full membership rows, using the predicate in
+  [`logic.rs`](../../rust/tonk-fab/src/logic.rs).
+  [`account_state.rs`](../../rust/tonk-worker/src/router/account_state.rs)
+  projects renamed account names through
+  [`profile_name.rs`](../../rust/tonk-worker/src/router/profile_name.rs).
+  Inspect reconciliation of the old member identity with the active account;
+  an isolated name assertion does not repair a stale member/role record.
+- **Severity:** `medium`. Saved account names and the visible owner identity
+  disagree. No loss of access or incorrect permission grant was demonstrated.
+- **Decision needed:** `fix reconciliation`. Preserve role and authority,
+  repair existing affected memberships idempotently, and verify live roster
+  delivery and peer convergence. Do not hide the mismatch with a UI-only name
+  substitution or reset local storage.
+- **Raised by:** [Share-menu presentation](spaces/lifecycle-and-collaboration.md#share-menu-presentation-decision),
+  `COLLAB-05`.
+- **Status:** Confirmed locally; not fixed. Source inspected at `e5f2c1e36`
+  plus the uncommitted FABB share changes. Running worker build identity was
+  not independently pinned; fresh-transition and peer checks remain unrun.
 
 ## Not triaged as defects yet
 

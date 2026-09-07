@@ -415,7 +415,7 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
 }
 
 #[dialog_common::test]
-async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
+async fn the_share_stack_opens_a_scrollable_members_dialog() {
     tonk_fab::register();
     let document = window().expect("window").document().expect("document");
     let parent = document
@@ -452,11 +452,24 @@ async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
     let menu = light_element(&fab, "tonk-menu[data-for=share]");
     let copy = light_element(&fab, "[data-share-link]");
     copy.remove_attribute("hidden").expect("show copy row");
-    for index in 0..40 {
-        let member = document.create_element("tonk-mi").expect("member row");
-        member.set_text_content(Some(&format!("member {index}")));
-        menu.append_child(&member).expect("append member row");
-    }
+    let roster = light_element(&fab, "ui-member-roster");
+    roster
+        .set_attribute("space", "did:key:z6MkTestSpace")
+        .unwrap();
+    let rows: Vec<_> = (0..40).map(|index| serde_json::json!({
+        "this": format!("membership-{index}"),
+        "fields": { "name": format!("member {index}"), "member": format!("did:key:member{index}"), "role": "tonk:member" }
+    })).collect();
+    let reset = js_sys::Reflect::get(&roster, &"__tonkReset".into())
+        .unwrap()
+        .dyn_into::<js_sys::Function>()
+        .unwrap();
+    reset
+        .call1(
+            &roster,
+            &js_sys::JSON::parse(&serde_json::to_string(&rows).unwrap()).unwrap(),
+        )
+        .unwrap();
     yield_for(20).await;
 
     assert!(
@@ -471,32 +484,67 @@ async fn the_share_stack_matches_its_rung_and_scrolls_with_a_long_roster() {
         "144px"
     );
 
-    // The scrollport is a dedicated element wrapping the stack, not the
-    // menu itself: `.w::before` is the glass underlay at `z-index:-1`, and
-    // a negative-z child cannot escape a scroll container's paint context
-    // -- put the overflow on `.w` or on the host and the underlay paints
-    // behind the scroller, costing every row its ring.
-    let scrollport: HtmlElement = menu
-        .shadow_root()
-        .expect("menu shadow root")
-        .query_selector(".port")
-        .ok()
-        .flatten()
-        .expect("the scrollport")
+    let count = light_element(&fab, "[data-share-members]");
+    assert_eq!(count.text_content().as_deref(), Some("40 members"));
+    assert_eq!(
+        menu.query_selector_all("[data-row-owner=ui-member-roster]")
+            .unwrap()
+            .length(),
+        1
+    );
+    for up in [true, false, true] {
+        if up {
+            fab.set_attribute("up", "").unwrap();
+        } else {
+            fab.remove_attribute("up").unwrap();
+        }
+        yield_for(20).await;
+        let copy_rect = menu_row(&copy).get_bounding_client_rect();
+        let members_rect = menu_row(&count).get_bounding_client_rect();
+        if up {
+            assert!(
+                copy_rect.top() > members_rect.bottom(),
+                "copy is the bottom row when opening upward"
+            );
+        } else {
+            assert!(
+                copy_rect.bottom() < members_rect.top(),
+                "copy is the top row when opening downward"
+            );
+        }
+    }
+    click_item(&count);
+    yield_for(20).await;
+    assert!(menu.has_attribute("hidden"));
+    let dialog = document.query_selector(".fabb-members").unwrap().unwrap();
+    let root = dialog.shadow_root().unwrap();
+    let native = root.query_selector("dialog").unwrap().unwrap();
+    assert!(native.has_attribute("open"));
+    assert_eq!(dialog.query_selector_all(".mem-row").unwrap().length(), 40);
+    let scrollport: HtmlElement = root
+        .query_selector(".body")
+        .unwrap()
+        .unwrap()
         .unchecked_into();
     assert_eq!(computed(scrollport.unchecked_ref(), "overflow-y"), "auto");
     assert!(
-        scrollport.client_height() > 0,
-        "an upward stack must have space above its bottom-docked bar"
-    );
-    assert!(
         scrollport.scroll_height() > scrollport.client_height(),
-        "a long member roster must scroll inside the share stack"
+        "members scroll inside the dialog"
     );
-    let copy_row = menu_row(&copy).get_bounding_client_rect();
-    let viewport = menu.get_bounding_client_rect();
-    assert!(copy_row.top() >= viewport.top());
-    assert!(copy_row.bottom() <= viewport.bottom());
+    let rect = native.get_bounding_client_rect();
+    assert!(rect.top() >= 0.0);
+    assert!(rect.bottom() <= window().unwrap().inner_height().unwrap().as_f64().unwrap());
+    roster
+        .set_attribute("space", "did:key:another-space")
+        .unwrap();
+    assert!(!native.has_attribute("open"));
+    assert_eq!(
+        light_element(&fab, "[data-share-members]")
+            .text_content()
+            .as_deref(),
+        Some("0 members")
+    );
+    assert_eq!(dialog.query_selector_all(".mem-row").unwrap().length(), 0);
 
     parent.remove();
 }

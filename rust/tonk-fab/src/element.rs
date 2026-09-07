@@ -548,7 +548,7 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
 fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
     let host = this.clone();
     let shared = state.clone();
-    vec![crate::shadow::bind(this, "fabb-pick", move |event| {
+    let mut listeners = vec![crate::shadow::bind(this, "fabb-pick", move |event| {
         let Some(row) = event
             .dyn_ref::<web_sys::CustomEvent>()
             .map(|e| e.detail())
@@ -624,6 +624,12 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             });
             return;
         }
+        if row.has_attribute("data-share-members") {
+            if let Ok(Some(roster)) = host.query_selector("ui-member-roster") {
+                crate::shadow::emit(roster.unchecked_ref(), "fabb-show-members", &JsValue::NULL);
+            }
+            return;
+        }
         if row.has_attribute("data-share-link") {
             // Forward into the headless `<tonk-share>`, which owns the mint
             // and the clipboard write. Synchronously, and in this same click
@@ -636,7 +642,19 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 share.click();
             }
         }
-    })]
+    })];
+    let host = this.clone();
+    let shared = state.clone();
+    listeners.push(crate::shadow::bind(this, "fabb-share-copied", move |_| {
+        if shared
+            .borrow()
+            .open_panel
+            .is_some_and(|panel| panel.panel == bar::Panel::Share)
+        {
+            bar::close(&host, &shared);
+        }
+    }));
+    listeners
 }
 
 /// Leave for `path` in the top document.
