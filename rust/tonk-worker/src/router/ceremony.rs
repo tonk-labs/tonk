@@ -57,11 +57,20 @@ pub(crate) async fn ask_for_passkey(
     let credential_id = {
         let tonk = env.state().read().await;
         report(&tonk, ceremony, ceremony_state::PENDING_CEREMONY, "").await;
-        super::identity::local_root(&tonk)
-            .await
-            .ok()
-            .map(|root| root.credential_id)
-            .filter(|id| !id.is_empty())
+        // A CLI authorization may use any passkey belonging to the signed-in
+        // account. Pinning it to this profile's original credential prevents
+        // another enrolled provider (for example 1Password) from offering its
+        // passkey. The authorization handler verifies the recovered root DID
+        // against this profile before minting the device grant.
+        if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+            None
+        } else {
+            super::identity::local_root(&tonk)
+                .await
+                .ok()
+                .map(|root| root.credential_id)
+                .filter(|id| !id.is_empty())
+        }
     };
     if let Err(error) = super::navigate::request_webauthn_with(
         client,

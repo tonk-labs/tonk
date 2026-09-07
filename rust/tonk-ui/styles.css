@@ -2196,7 +2196,8 @@ ui-account-settings .srowd { display: flex; justify-content: space-between;
 ui-account-settings .srowd b { font-family: var(--cond); font-weight: 600;
     font-size: 13.5px; color: var(--ink); text-align: right;
     white-space: nowrap; }
-ui-account-settings .srowd b.lft { text-align: left; white-space: normal; }
+ui-account-settings .srowd b.lft { min-width: 0; text-align: left;
+    white-space: normal; overflow-wrap: anywhere; }
 ui-account-settings .sect { margin-top: 18px; padding-bottom: 7px;
     font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
     text-transform: lowercase; color: var(--ink);

@@ -256,3 +256,48 @@ from loopback browser history before the bridge creates or submits form fields.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
+
+## Agent handoff prototype
+
+A fresh empty space says “Build this space with an agent”. It explains that the
+person should copy the prompt, give it to their preferred agent, and describe
+what to build. Machine instructions are hidden in the copy button value.
+
+The development CLI's `tonk connect INVITE --via ORIGIN/settings/link` reuses an
+active CLI account, or runs the browser approval described above. It then joins
+and pulls the invite's exact space and pushes a receipt. “Agent connection
+confirmed” appears through the space subscription, including in the workspace
+shell after the agent changes the home view. The receipt confirms a completed
+round trip; it does not indicate that the agent is still online.
+
+Prototype boundaries: an existing CLI account is printed and reused, so use an
+unlinked CLI and the source browser for the same-account walkthrough. There is
+no OTP exchange, expiring presence, or automatic account switch. The invite is
+still a reusable space capability. An explicitly requested occupied local name fails before linking. Without
+`--name`, connect reads the pulled space’s RepositoryName, makes a CLI-safe local
+alias, and adds a numeric suffix only when needed to avoid a local collision. Join or sync failures retain local data and must not be
+reported as a confirmed connection. Published npm builds do not have `connect`.
+
+Automated evidence: `rust/tonk-cli/tests/handoff.rs` exercises receipt visibility
+and isolation between spaces. Browser approval through the new command, clipboard
+contents, subscription arrival, and the post-home-change badge require a manual
+end-to-end run; these are not yet verified.
+
+### Interrupted agent connection
+
+The first manual prototype attempt joined and pulled successfully, then the agent
+runner killed `connect` after 45 seconds. `status` subsequently said `synced`,
+but the `agent-connection` query returned no rows: no receipt had been committed.
+The agent path now skips the ordinary join's account-directory refresh, keeping
+that unrelated account push out of the acknowledgement path. Ordinary `join`
+continues to update the account directory.
+
+After an interruption, run `tonk --space NAME connect` against the already joined
+space. It pulls and publishes the receipt without another invite, account login,
+or new local space. Only “Agent connection confirmed” is a success signal;
+`status: synced` alone is insufficient. The hidden prompt teaches this distinction.
+
+The copied prompt no longer assumes `agent-space`. Commands can use the working
+folder binding made by `connect`; outside it, use the local name printed by the
+command. The local alias does not overwrite the shared display name. Existing
+local aliases are retained; subsequent shared renames do not rekey local bindings.
