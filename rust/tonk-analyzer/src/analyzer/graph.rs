@@ -377,14 +377,15 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
             }
         }
 
-        // A `view!:` body's `show:` templates bind commands with
-        // `on:<name>=<command>`. Both halves are resolved at lowering
-        // (`super::view::compile_bindings`), so both must be in scope
-        // by then: the command as a concept, the declaration as a
-        // name. Gathered here for the same reason a rule's premise
-        // concepts are — the pass that needs them is synchronous.
+        // A `view!:` body is resolved at lowering
+        // (`super::view::compile_bindings`), so everything that pass
+        // consults must be in scope by then: the model it renders, the
+        // command each `on:<name>=<command>` posts, and each
+        // declaration's name. Gathered here for the same reason a
+        // rule's premise concepts are — the pass that needs them is
+        // synchronous.
         if is_claim && matches!(&head.name, HeadName::Concept(n) if n == "view") {
-            collect_view_binding_needs(fields, &mut needs);
+            collect_view_needs(fields, &mut needs);
         }
 
         // `rule!:` bodies reference concepts (head + premises) and,
@@ -413,13 +414,52 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
     })
 }
 
-/// Gather what a `view!:` body's `on:<name>=<command>` bindings must
-/// have in scope by lowering: the command's concept (by name or, for a
-/// URI-spelled binding, by entity) and the declaration's name.
+/// Gather what a `view!:` body must have in scope by lowering.
+///
+/// Two things, and missing either is silent rather than loud:
+///
+/// * The **model** the view renders, named by its `this:`. The
+///   interpolation check reads its declared fields, and a model it
+///   cannot resolve is one it skips — so a view whose concept lives on
+///   the branch rather than in the document would go unchecked if the
+///   need were not registered here. Every test that lowers a
+///   self-contained document passes either way, which is exactly what
+///   makes the omission hard to see.
+/// * Each `on:<name>=<command>` binding's halves: the command's
+///   concept (by name or, for a URI-spelled binding, by entity) and
+///   the declaration's name.
 ///
 /// A need that resolves to nothing is not an error here — the binding
 /// pass is where an unresolvable reference gets a diagnostic with a
 /// template to point at.
+fn collect_view_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    collect_view_model_needs(fields, needs);
+    collect_view_binding_needs(fields, needs);
+}
+
+/// The concept a view's `this:` names, in both spellings a reference
+/// takes — a published name and a URI — for the same reason the
+/// command half prefetches both: the one that does not apply resolves
+/// to nothing, which costs a lookup and no correctness.
+fn collect_view_model_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    for field in fields {
+        if field.name != "this" {
+            continue;
+        }
+        let name = match &field.value {
+            FieldValue::Symbol(name) => name.clone(),
+            FieldValue::Uri(uri) => uri.clone(),
+            FieldValue::Literal(tonk_notation::Scalar::String(text)) => text.clone(),
+            _ => continue,
+        };
+        let range = field.value_range;
+        if let Ok(entity) = name.parse::<Entity>() {
+            needs.push(Need::ConceptByEntity { entity, range });
+        }
+        needs.push(Need::Concept { name, range });
+    }
+}
+
 fn collect_view_binding_needs(fields: &[Field], needs: &mut Vec<Need>) {
     for field in fields {
         if field.name != "show" {
@@ -910,6 +950,112 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     /// A resolver that counts how many external lookups it served,
+    /// A view whose model lives on the *branch* is still checked.
+    ///
+    /// This is the case every self-contained fixture misses. The
+    /// interpolation check resolves the view's `this:` through
+    /// `Scope`, and `Scope` only holds what the resolve phase was
+    /// asked to prefetch — so a view whose concept is not in the
+    /// document went unchecked until `collect_view_model_needs`
+    /// registered the need. Every test that lowers the concept and the
+    /// view together passes either way, which is exactly what made the
+    /// omission invisible: it reproduces only against a real branch.
+    #[dialog_common::test]
+    async fn a_view_whose_model_is_on_the_branch_is_still_checked() {
+        // Only the view and its declaration are written here. The
+        // model and the command it posts stand in for facts already
+        // seeded on the branch, served by the resolver below.
+        let syntax = parse(
+            r#"
+event!: &on/click
+  type: "click"
+  where:
+    subject: "{this}"
+
+view!: &counter/view
+  this: counter/model
+  show:
+    ui: |
+      <form>
+        <button on:click=counter/+1>+</button>
+        <h1>{counter}</h1>
+      </form>
+"#,
+        )
+        .syntax
+        .expect("the fixture parses");
+
+        let scope = Scope::new();
+        let graph = push(&syntax).expect("push");
+        let resolved = graph
+            .resolve(&syntax, &scope, &Branch)
+            .await
+            .expect("resolve");
+        let error = super::super::expand(&syntax, &scope, resolved)
+            .expect_err("`{counter}` is not a field of the branch's `counter/model`");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_TEMPLATE_FIELD", "{error}");
+    }
+
+    /// A branch carrying the counter model and the command it posts.
+    struct Branch;
+
+    impl Branch {
+        /// One concept, from the JSON shape a resolved descriptor takes.
+        fn definition(entity: &str, descriptor: &str) -> ConceptDefinition {
+            ConceptDefinition {
+                entity: entity.parse().expect("an entity"),
+                descriptor: tonk_core::claim::ConceptDescriptor::Durable(
+                    serde_json::from_str(descriptor).expect("a descriptor"),
+                ),
+            }
+        }
+    }
+
+    impl Resolve for Branch {
+        async fn concept(&self, name: &str) -> Result<Option<ConceptDefinition>, ResolveError> {
+            Ok(match name {
+                "counter/model" => Some(Self::definition(
+                    "tonk:counter-model",
+                    r#"{"with":{"count":{"the":"xyz.tonk.counter/count",
+                       "as":"SignedInteger","cardinality":"one"}}}"#,
+                )),
+                "counter/+1" => Some(Self::definition(
+                    "tonk:counter-increment",
+                    r#"{"with":{"subject":{"the":"xyz.tonk.counter.increment/subject",
+                       "as":"Entity","cardinality":"one"}}}"#,
+                )),
+                _ => None,
+            })
+        }
+        async fn concept_by_entity(
+            &self,
+            _: &Entity,
+        ) -> Result<Option<ConceptDefinition>, ResolveError> {
+            Ok(None)
+        }
+        async fn attribute(&self, _: &str) -> Result<Option<AttributeDefinition>, ResolveError> {
+            Ok(None)
+        }
+        async fn attribute_by_entity(
+            &self,
+            _: &Entity,
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
+            Ok(None)
+        }
+        async fn attribute_by_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
+            Ok(None)
+        }
+        async fn named_entity(&self, _: &str) -> Result<Option<Entity>, ResolveError> {
+            Ok(None)
+        }
+        async fn rule(&self, _: &Entity) -> Result<Option<Rule>, StoredRuleError> {
+            Ok(None)
+        }
+    }
+
     /// answering each with `None`. `AtomicUsize` keeps it `Sync` so
     /// it satisfies `Graph::resolve`'s `ConditionalSync` bound on
     /// native. Used to assert a self-contained document drives zero
