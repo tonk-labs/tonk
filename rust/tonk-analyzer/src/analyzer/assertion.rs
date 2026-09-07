@@ -336,6 +336,34 @@ pub(crate) fn build_assertion_application(
                 }
             }
 
+            // A view's `on:<name>=<command>` bindings are resolved
+            // here, not at render time: the declaration and the
+            // command are both in scope, so an unresolvable reference
+            // fails the lowering instead of producing an inert
+            // element. The resolved table rides the view as one CBOR
+            // artifact, so the display decodes it rather than issuing
+            // a query per declaration name on every refresh.
+            if super::view::is_view(&resolved) {
+                user_fields.remove(super::view::BINDINGS_FIELD);
+                if let Some(bindings) = super::view::compile_bindings(assertion, scope)? {
+                    let encoded = bindings.encode().map_err(|reason| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidViewBindings { reason },
+                            head_range,
+                        )
+                    })?;
+                    assert_terms.insert(
+                        super::view::BINDINGS_FIELD.into(),
+                        Term::Constant(Value::Record(encoded)),
+                    );
+                    retract_terms.insert(
+                        super::view::BINDINGS_FIELD.into(),
+                        Term::<dialog_query::Any>::blank(),
+                    );
+                    any_assert = true;
+                }
+            }
+
             if let Some((unknown, _)) = user_fields.into_iter().next() {
                 let unknown_range = assertion
                     .fields

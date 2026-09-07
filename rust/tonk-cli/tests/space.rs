@@ -263,3 +263,106 @@ mod when_registering_an_existing_account_space {
         Ok(())
     }
 }
+
+mod when_transplanting_a_space {
+    use super::*;
+    use tonk_schema::Transplant;
+
+    /// The registered name and every fact survive; the subject, the
+    /// credential slot, and the roster's anchor are what change.
+    #[dialog_common::test]
+    async fn it_re_roots_the_space_under_a_fresh_subject() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpaceStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+
+        let created = space::create(&store, "garden", None, None, config.clone()).await?;
+        let outcome = space::transplant(&store, "garden", false, config.clone()).await?;
+
+        assert_eq!(outcome.origin, created.did);
+        assert_ne!(
+            outcome.did, created.did,
+            "the transplant mints a fresh subject"
+        );
+
+        // The origin-keyed store survives twice over: the site copied
+        // aside, and the origin credential archived beside the new one.
+        let backup = outcome.backup.as_ref().expect("the default keeps a copy");
+        assert!(
+            backup.join("main/credential/key/self").exists(),
+            "the copy keeps the origin's credential slot"
+        );
+        assert!(
+            outcome
+                .site
+                .join("main/credential/key")
+                .join(&created.did)
+                .exists(),
+            "the origin credential is archived under its DID"
+        );
+
+        let site = TonkSite::open_with(&outcome.site, config).await?;
+        assert_eq!(site.repository.did().to_string(), outcome.did);
+
+        let origin: dialog_varsig::Did = created.did.parse()?;
+        let branch = site.branch().await?;
+        let scars: Vec<Transplant> = branch
+            .handle()
+            .query()
+            .select(Query::<Transplant> {
+                this: Term::var("this"),
+                origin: Term::var("origin"),
+                revision: Term::var("revision"),
+                tree: Term::var("tree"),
+            })
+            .perform(&site.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(scars.len(), 1, "the first commit records the scar");
+        assert_eq!(scars[0].origin.0, origin.this());
+        assert!(!scars[0].revision.0.is_empty());
+        assert!(!scars[0].tree.0.is_empty());
+
+        // The name is restamped on the new subject, and the origin's
+        // own row survives untouched — the history is adopted, not
+        // rewritten.
+        for subject in [site.repository.did().this(), origin.this()] {
+            let rows: Vec<RepositoryName> = branch
+                .handle()
+                .query()
+                .select(Query::<RepositoryName> {
+                    this: Term::from(subject),
+                    name: Term::var("name"),
+                })
+                .perform(&site.operator)
+                .try_vec()
+                .await?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].name.0, "garden");
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_transplants_in_place_without_a_backup() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SpaceStore::at(tmp.path().join("state"));
+        let config = common::isolated_config(&tmp.path().canonicalize()?)?;
+
+        let created = space::create(&store, "garden", None, None, config.clone()).await?;
+        let outcome = space::transplant(&store, "garden", true, config.clone()).await?;
+
+        assert!(outcome.backup.is_none());
+        assert_ne!(outcome.did, created.did);
+        let sibling = outcome
+            .site
+            .parent()
+            .expect("sites live under spaces/")
+            .join("garden.pre-transplant");
+        assert!(!sibling.exists(), "in place leaves no copy behind");
+
+        let site = TonkSite::open_with(&outcome.site, config).await?;
+        assert_eq!(site.repository.did().to_string(), outcome.did);
+        Ok(())
+    }
+}

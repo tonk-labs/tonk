@@ -196,6 +196,32 @@ impl SpaceProvider {
     }
 }
 
+/// Where a space syncs, on the directory entity.
+///
+/// The queryable twin of the `home.address` the space's grants carry in
+/// their signed meta: the meta rides inside the delegation envelope and
+/// cannot be queried, so the directory carries the same address as a
+/// fact. Written wherever the mount configuration is mirrored into the
+/// directory — attaching an upstream, creating with a remote, mounting a
+/// joined space. A local-only space has none.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceHomeAddress {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// The UCAN endpoint `main`'s upstream syncs through.
+    pub home_address: crate::domain::space::HomeAddress,
+}
+
+impl SpaceHomeAddress {
+    /// Record that `subject` syncs through `address`.
+    pub fn new(subject: &Did, address: impl Into<String>) -> Self {
+        Self {
+            this: subject.this(),
+            home_address: crate::domain::space::HomeAddress(address.into()),
+        }
+    }
+}
+
 /// Who founded a space and when, on the directory entity.
 ///
 /// Founding is distinct from mounting: [`record_space_mount`] runs for

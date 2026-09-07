@@ -188,6 +188,24 @@ impl TonkNotebookIndexElement {
     }
 }
 
+/// A random UUID for a page-minted entity, mirroring `<tonk-site>`'s own
+/// minting. Falls back to a timestamp where `crypto.randomUUID` is absent
+/// (an insecure context), which is unique enough for one tab's create.
+fn random_uuid() -> String {
+    use wasm_bindgen::JsValue;
+    use web_sys::js_sys::{Function, Reflect};
+    (|| {
+        let win = web_sys::window()?;
+        let crypto = Reflect::get(&win, &JsValue::from_str("crypto")).ok()?;
+        let f = Reflect::get(&crypto, &JsValue::from_str("randomUUID"))
+            .ok()?
+            .dyn_into::<Function>()
+            .ok()?;
+        f.call0(&crypto).ok()?.as_string()
+    })()
+    .unwrap_or_else(|| format!("{:x}", web_sys::js_sys::Date::now() as u64))
+}
+
 impl CustomElement for TonkNotebookIndexElement {
     fn shadow() -> bool {
         // Light DOM: the directory rows are rendered into this element's
@@ -254,10 +272,15 @@ impl CustomElement for TonkNotebookIndexElement {
         let _ = host.add_event_listener_with_callback("switch", on_switch.as_ref().unchecked_ref());
         on_switch.forget();
 
-        // Creating one. The worker's `CreateNotebook` handler writes the
-        // notebook AND performs the redirect: it is the only place that
-        // knows the entity the write derives, and the page cannot learn it
-        // from a transient that is swept before any subscription sees it.
+        // Creating one. The page MINTS the notebook's entity, so it knows
+        // where it is going and navigates itself; the worker's
+        // `CreateNotebook` handler only writes.
+        //
+        // Minted rather than derived: an anchor-less write takes its entity
+        // from its body digest, which this element never learns, and a rule
+        // cannot derive one either — every branch-metadata attribute
+        // (`dialog.branch/revision` & co) describes the head BEFORE the
+        // commit, so two creates from one head would collide on the same id.
         let creating = host.clone();
         let on_create = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
             let Some(title) = js_sys::Reflect::get(&event.detail(), &"title".into())
@@ -273,7 +296,9 @@ impl CustomElement for TonkNotebookIndexElement {
                 .ok()
                 .and_then(|v| v.as_string())
                 .unwrap_or_default();
+            let entity = format!("notebook:{}", random_uuid());
             let detail = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&detail, &"createdEntity".into(), &entity.as_str().into());
             let _ = js_sys::Reflect::set(&detail, &"createdTitle".into(), &title.into());
             let _ = js_sys::Reflect::set(&detail, &"createdBody".into(), &document.into());
             let init = web_sys::CustomEventInit::new();
@@ -282,6 +307,11 @@ impl CustomElement for TonkNotebookIndexElement {
             init.set_composed(true);
             if let Ok(event) = CustomEvent::new_with_event_init_dict("notebookcreate", &init) {
                 let _ = creating.dispatch_event(&event);
+                // The claim the command rides is issued by the host as this
+                // event bubbles, and the write lands before the notebook's
+                // page queries for it — the same ordering the worker's own
+                // redirect relied on.
+                TonkNotebookIndexElement::navigate(&format!("notebook/{entity}"));
             }
         });
         let _ = host.add_event_listener_with_callback("create", on_create.as_ref().unchecked_ref());

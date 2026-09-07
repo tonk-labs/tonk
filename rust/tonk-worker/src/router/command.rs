@@ -14,6 +14,7 @@
 //! [`TonkState`]: crate::worker::TonkState
 
 use dialog_artifacts::Changes;
+use tonk_common::log;
 
 use super::AppState;
 use crate::reactor::CommandRegistry;
@@ -142,6 +143,11 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry.register(Box::new(super::customer::EnrollCustomerHandler::new()));
         registry.register(Box::new(super::customer::ResendActivationHandler::new()));
         registry.register(Box::new(super::session::LoadHandler::new()));
+        registry.register(Box::new(
+            super::account_deletion::DeleteAccountHandler::new(),
+        ));
+        registry.register(Box::new(super::ceremony::AuthorizeDeviceHandler::new()));
+        registry.register(Box::new(super::ceremony::AddPasskeyHandler::new()));
         registry
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -185,8 +191,29 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
             Vec::new()
         } else {
             let env = CommandEnv::new(state.clone(), origin);
-            tonk.commands
-                .match_transients(&transients)
+            let fired = tonk.commands.match_transients(&transients);
+            // The one place a command that decodes as nothing can be
+            // seen: the transient committed, so the page believes it
+            // asked, and nothing else says which attributes reached
+            // the registry.
+            if fired.is_empty() {
+                let attributes: std::collections::BTreeSet<String> = transients
+                    .clone()
+                    .into_instructions()
+                    .into_iter()
+                    .map(|instruction| match instruction {
+                        dialog_artifacts::Instruction::Assert(artifact)
+                        | dialog_artifacts::Instruction::Replace(artifact)
+                        | dialog_artifacts::Instruction::Retract(artifact) => {
+                            artifact.the.to_string()
+                        }
+                    })
+                    .collect();
+                if !attributes.is_empty() {
+                    log!("commands: no handler matched a transient over {attributes:?}");
+                }
+            }
+            fired
                 .into_iter()
                 .map(|(handler, facts)| handler.run(&facts, &env))
                 .collect::<Vec<_>>()

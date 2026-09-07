@@ -62,17 +62,18 @@ all owned hosted spaces and a joined-space count. Exact-space review must match
 one owned subject. A stale, joined, missing, or already-deleted subject cannot
 expand or redirect the requested scope.
 
-The confirmation is armed only when the trimmed email exactly equals the
-verified account email and the consequences checkbox is checked. Account
-deletion also requires a root-matching passkey assertion. Selected-space
-deletion is authorized by the account/worker for that exact owned subject and
-does not ask for an extra passkey in the current implementation.
+The confirmation is armed only when the displayed destructive phrase is typed
+exactly. The reviewed plan's verified account email is bound into the command
+without making the person retype it. Account deletion also requires a
+root-matching passkey assertion. Selected-space deletion is authorized by the
+account/worker for that exact owned subject and does not ask for an extra
+passkey in the current implementation.
 
 ### Exit early
 
-Loading failure, missing target, wrong email, unchecked acknowledgement, or
-Cancel commits nothing. Closing the confirmation returns to settings. A revoke
-deep link on an unlinked browser explains that the account must be linked first.
+Loading failure, missing target, wrong confirmation phrase, or Cancel commits
+nothing. Closing the confirmation returns to settings. A revoke deep link on an
+unlinked browser explains that the account must be linked first.
 
 Revoking an already-removed device or deleting an already-removed scope should
 settle as a stable idempotent result or a specific stale-target message, never
@@ -87,10 +88,11 @@ may need to converge. Removing a row before publication is complete would
 misrepresent authority.
 
 Hosted-space deletion crosses a remote destructive boundary for exactly one
-repository subject. Whole-account deletion crosses the boundary after the
-passkey proves the current root and the final request carries the reviewed plan.
-Its result may contain multiple per-space outcomes; success cannot be inferred
-from the first deletion alone.
+repository subject. Whole-account deletion crosses the boundary once: the
+passkey recovers the current root, the root signs a single purge, and the
+service denies every space the account provides in one write before removing
+anything. A purge that stops partway leaves nothing servable and resumes when
+presented again.
 
 Adding a passkey crosses a WebAuthn and repository-fact boundary. A new
 credential is not useful until its root/custody relationship and shared fact are
@@ -205,8 +207,8 @@ subject or profile identity.
 - Whole-account plan has zero owned spaces or a mix of owned and joined spaces.
 - Exact-space plan names a joined, deleted, or renamed space.
 - Two spaces share a display name but have different subjects.
-- Email differs only in case or surrounding whitespace; the documented exact
-  comparison after trimming must be settled as a product rule.
+- Confirmation phrase differs in case or surrounding whitespace; the field
+  trims its value but otherwise requires the displayed phrase exactly.
 - Delete commits remotely, the response is lost, and the user reloads.
 - One owned space purge fails after the account record is removed.
 - Another browser profile remains valid and must not be rotated or deleted.

@@ -46,7 +46,10 @@ impl<'a> Subscribe<'a> {
         Env: LoadProvider + BranchOpenProvider + SelectProvider,
     {
         let session = self.branch.acquire(env).await?;
-        let subscriber = session.subscribe(self.query, self.client)?;
+        let subscriber =
+            self.branch
+                .reactor()
+                .register_subscription(&session, self.query, self.client)?;
         session
             .subscription(subscriber.hash.clone())
             .poll()

@@ -25,6 +25,7 @@ import { dirname, resolve } from "node:path";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { languages as catalog } from "@codemirror/language-data";
+import { sourceFingerprint, SOURCE_FINGERPRINT_PREFIX } from "./source-fingerprint.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -158,6 +159,27 @@ for (const [chunkId, entryPath] of catalogChunks) {
   entryPoints[`tonk-code-lang-${chunkId}`] = entryPath;
 }
 
+const artifactFingerprintPlugin = {
+  name: "tonk-code-source-fingerprint",
+  setup(build) {
+    build.onEnd((result) => {
+      if (result.errors.length > 0) return;
+      const bundlePath = resolve(outdir, "tonk-code.js");
+      const bundle = readFileSync(bundlePath, "utf8");
+      const fingerprintBanner =
+        `// ${SOURCE_FINGERPRINT_PREFIX}${sourceFingerprint(root)}`;
+      writeFileSync(bundlePath, `${fingerprintBanner}\n${bundle}`);
+
+      // The banner adds one generated line. Preserve source-map accuracy
+      // instead of leaving every original mapping shifted down by one.
+      const mapPath = `${bundlePath}.map`;
+      const map = JSON.parse(readFileSync(mapPath, "utf8"));
+      map.mappings = `;${map.mappings}`;
+      writeFileSync(mapPath, JSON.stringify(map));
+    });
+  },
+};
+
 /** @type {import('esbuild').BuildOptions} */
 const options = {
   entryPoints,
@@ -184,6 +206,10 @@ const options = {
   splitting: true,
   external: [],
   logLevel: "info",
+  // The checked-in main bundle is copied verbatim by tonk-ui. Stamp only that
+  // stable entry: stamping every split chunk changes its content-addressed
+  // name and leaves an unnecessary duplicate of the whole language graph.
+  plugins: [artifactFingerprintPlugin],
 };
 
 const watch = process.argv.includes("--watch");

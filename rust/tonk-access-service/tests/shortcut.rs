@@ -140,6 +140,70 @@ mod http {
             .unwrap_or_default();
         assert_eq!(location, target);
 
+        // Public campaign tags added to the short URL survive expansion;
+        // capability and space-attribution overrides do not.
+        let response = client
+            .get(format!(
+                "{}/@/{hash}?tonk_source=reddit&tonk_channel=outreach&access=EVIL&tonk_space=EVIL",
+                env.access_service_url
+            ))
+            .send()
+            .await?;
+        assert_eq!(response.status(), 301);
+        let location = response
+            .headers()
+            .get("Location")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let redirected = url::Url::parse(&format!("https://tonk.invalid{location}"))?;
+        let query_value = |name: &str| {
+            redirected
+                .query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.into_owned())
+        };
+        assert_eq!(query_value("access").as_deref(), Some("abc123"));
+        assert_eq!(query_value("tonk_source").as_deref(), Some("reddit"));
+        assert_eq!(query_value("tonk_channel").as_deref(), Some("outreach"));
+        assert_eq!(query_value("tonk_space"), None);
+
+        // `HEAD` redirects exactly as `GET` does, with no body. This is
+        // how a short link is expanded from another origin: the caller
+        // follows the redirect and reads the URL it lands on, and only
+        // that URL is wanted, never the app shell behind it.
+        let response = client
+            .head(format!("{}/@/{hash}", env.access_service_url))
+            .send()
+            .await?;
+        assert_eq!(response.status(), 301);
+        let location = response
+            .headers()
+            .get("Location")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(location, target);
+        assert!(
+            response.bytes().await?.is_empty(),
+            "a HEAD answer carries no body"
+        );
+
+        // Following that redirect must keep the method as HEAD. 301 and
+        // 302 historically rewrite POST to GET, but never HEAD; still,
+        // the property the caller depends on is asserted rather than
+        // assumed, because a rewrite here would silently pull down the
+        // whole app shell on every resolve.
+        let following = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::default())
+            .build()?;
+        let response = following
+            .head(format!("{}/@/{hash}", env.access_service_url))
+            .send()
+            .await?;
+        assert!(
+            response.bytes().await?.is_empty(),
+            "HEAD must survive the redirect, not be rewritten to GET"
+        );
+
         // Unknown (well-formed) hash → 404; malformed → 400.
         let missing = Shortcut::new(b"/never-stored").unwrap().hash_str();
         let response = client

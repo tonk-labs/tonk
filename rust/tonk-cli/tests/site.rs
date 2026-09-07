@@ -447,7 +447,13 @@ mod when_claiming_an_invite_with_a_remote {
         let invite_outcome =
             invite::mint_with_relay(&inviter.site, None, Some(ENDPOINT), Some(REVOCATION_RELAY))
                 .await?;
-        assert!(invite_outcome.url.contains("remote="));
+        // The endpoint rides inside the signed chain, not the URL.
+        assert!(!invite_outcome.url.contains("remote="));
+        let parsed = tonk_invite::Invite::parse_url(&invite_outcome.url).await?;
+        assert_eq!(
+            parsed.remote_url.as_ref().map(url::Url::as_str),
+            Some(ENDPOINT)
+        );
 
         // Claimer joins into a fresh tempdir.
         let claimer_tmp = tempfile::tempdir()?;
@@ -744,6 +750,14 @@ mod when_minting_and_claiming_an_invite {
         let inviter = common::TestSite::new().await?;
         let outcome = invite::mint(&inviter.site, Some("https://example.test/join"), None).await?;
         assert!(outcome.url.starts_with("https://example.test/join"));
+        let url = url::Url::parse(&outcome.url)?;
+        assert!(url.query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(url.query_pairs().any(|(name, value)| {
+            name == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize(outcome.subject.as_str())
+        }));
         Ok(())
     }
 
@@ -979,7 +993,7 @@ mod when_authoring_an_html_view {
     /// 1. `attribute! the: text/html` is accepted by parse +
     ///    analyzer (the dialog layer permits `text/html` even
     ///    though the domain is dotless).
-    /// 2. A `view!` head whose body field references that
+    /// 2. A `page!` head whose body field references that
     ///    attribute lands as a literal `(text/html, ?, body)`
     ///    claim — i.e. the URI on the wire really is `text/html`,
     ///    not a synthesised concept-namespace URI.
@@ -990,7 +1004,7 @@ mod when_authoring_an_html_view {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &my-view
+            r#"page!: &my-view
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1015,7 +1029,7 @@ mod when_authoring_an_html_view {
         // Re-asserting the same body is a no-op: same content →
         // same entity, same claim. The claim count must stay 1.
         test.eval_inline(
-            r#"view!: &my-view
+            r#"page!: &my-view
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1196,13 +1210,13 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &todo-list
+            r#"page!: &todo-list
   body: "<ul><li>buy milk</li></ul>"
 "#,
         )
         .await?;
         test.eval_inline(
-            r#"view!: &welcome
+            r#"page!: &welcome
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1223,7 +1237,7 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &welcome
+            r#"page!: &welcome
   body: "<h1>hi</h1>"
 "#,
         )

@@ -117,7 +117,7 @@ async fn it_lists_devices_promptly_after_another_principal_revokes_this_one(
 
     let listed = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        tonk_cli::account::devices_in(&fixture.profile, &fixture.store, None),
+        tonk_cli::account::devices_in(&fixture.profile, &fixture.store),
     )
     .await;
     anyhow::ensure!(
@@ -172,7 +172,7 @@ async fn it_lists_devices_promptly_after_a_delegated_revocation(
     let started = std::time::Instant::now();
     let listed = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        tonk_cli::account::devices_in(&fixture.profile, &fixture.store, None),
+        tonk_cli::account::devices_in(&fixture.profile, &fixture.store),
     )
     .await;
     eprintln!(
@@ -242,7 +242,7 @@ async fn it_lists_devices_promptly_after_another_device_pushed(
         let started = std::time::Instant::now();
         let listed = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            tonk_cli::account::devices_in(&this.profile, &this.store, None),
+            tonk_cli::account::devices_in(&this.profile, &this.store),
         )
         .await;
         eprintln!("round {round}: devices took {:?}", started.elapsed());

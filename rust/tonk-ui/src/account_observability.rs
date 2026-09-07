@@ -39,32 +39,6 @@ thread_local! {
     static FALLBACK_ID: RefCell<u64> = const { RefCell::new(0) };
 }
 
-const PENDING_SETTLE: &str = "tonk:account-observability:pending-settle";
-
-/// Remember that a completed activation still needs to converge into the
-/// account dashboard. Session storage survives the activation-page detour but
-/// does not create a stable cross-session identifier.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn mark_settle_pending() {
-    let _ = web_sys::window()
-        .and_then(|window| window.session_storage().ok().flatten())
-        .and_then(|storage| storage.set_item(PENDING_SETTLE, "1").ok());
-}
-
-/// Consume the page-local activation convergence marker exactly once.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn take_settle_pending() -> bool {
-    web_sys::window()
-        .and_then(|window| window.session_storage().ok().flatten())
-        .is_some_and(|storage| {
-            let pending = storage.get_item(PENDING_SETTLE).ok().flatten().is_some();
-            if pending {
-                let _ = storage.remove_item(PENDING_SETTLE);
-            }
-            pending
-        })
-}
-
 trait Recorder {
     fn capture(&self, event: AccountEvent);
 }

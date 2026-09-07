@@ -31,35 +31,25 @@ pub async fn handle(body: &[u8], env: &worker::Env) -> worker::Result<worker::Re
     }
 }
 
-/// Handle root-authenticated customer inventory and finalization commands.
+/// Handle the customer purge.
 #[cfg(target_arch = "wasm32")]
-pub async fn handle_customer(body: &[u8], env: &worker::Env) -> worker::Result<worker::Response> {
+pub async fn handle_purge(body: &[u8], env: &worker::Env) -> worker::Result<worker::Response> {
     let store = crate::store::d1::D1Store::new(env.d1("CONTROL")?);
     let purger = crate::deletion::R2SpacePurger::new(env.bucket("BUCKET")?);
     let now = worker::Date::now().as_millis() / 1_000;
-    let result = if crate::deletion::command_for_handler(body)
-        == crate::deletion::CUSTOMER_PLAN_COMMAND.map(str::to_string)
-    {
-        crate::deletion::customer_plan(&store, body, now)
-            .await
-            .map(|plan| serde_json::to_value(plan).expect("plan serializes"))
-    } else {
-        match crate::deletion::delete_customer(&store, &purger, body, now).await {
-            Ok(receipt) => {
-                forget_verdict(&receipt.customer, env).await;
-                // The customer-row replica goes with it; the address
-                // key is unreachable from the DID once the row is gone
-                // and rides out its own validity instead.
-                if let Some(kv) = crate::handlers::ucan::servability_kv(env) {
-                    crate::store::replica::forget(&kv, &receipt.customer).await;
-                }
-                Ok(serde_json::to_value(receipt).expect("receipt serializes"))
+    match crate::deletion::purge(&store, &purger, body, now).await {
+        Ok(receipt) => {
+            for consumer in &receipt.consumers {
+                forget_verdict(consumer, env).await;
             }
-            Err(error) => Err(error),
+            // The customer-row replica goes with it; the address key is
+            // unreachable from the DID once the row is gone and rides
+            // out its own validity instead.
+            if let Some(kv) = crate::handlers::ucan::servability_kv(env) {
+                crate::store::replica::forget(&kv, &receipt.customer).await;
+            }
+            worker::Response::from_json(&receipt)
         }
-    };
-    match result {
-        Ok(receipt) => worker::Response::from_json(&receipt),
         Err(error) => worker::Response::from_json(&serde_json::json!({ "error": error }))
             .map(|response| response.with_status(error.status())),
     }

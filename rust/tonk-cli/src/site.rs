@@ -1235,6 +1235,110 @@ async fn derive_operator_for_profile(
     Ok(operator)
 }
 
+/// Outcome of [`transplant_at_with`].
+pub struct Transplanted {
+    /// The reopened site, now under the fresh subject.
+    pub site: TonkSite,
+    /// The subject the history was adopted from.
+    pub origin: String,
+}
+
+/// Re-root the site at `root` under a freshly minted subject, keeping
+/// every block, branch cell, and the whole history in place.
+///
+/// A space's identity is its self-asserted `credential/key/self`, so
+/// the re-root archives that file under the origin's own DID and runs
+/// the same bootstrap a fresh creation runs — seed sealed to the
+/// account, repo → root delegation minted and retained — over the
+/// store that already holds the data. History is not rewritten: the
+/// first commit under the new subject opens a new origin whose parent
+/// is the old head, and it records the [`tonk_schema::Transplant`]
+/// scar plus a restamped repository name, so the seam stays queryable.
+///
+/// Everything minted for the origin subject dies with it — delegations,
+/// outstanding invites, provisioning. The caller re-wires sync and
+/// hands out fresh invites.
+pub async fn transplant_at_with(
+    root: &Path,
+    name: &str,
+    config: SiteConfig,
+) -> Result<Transplanted> {
+    use tonk_schema::prelude::DidExt as _;
+    use tonk_schema::{RepositoryName, Transplant};
+
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("could not canonicalize {}", root.display()))?;
+
+    // Collect what the scar records through a normal open, so the data
+    // proves readable before anything is touched.
+    let (origin, tree) = {
+        let site = TonkSite::open_with(&root, config.clone()).await?;
+        let session = site
+            .branch()
+            .await
+            .context("failed to open the main branch")?;
+        let revision = session
+            .handle()
+            .revision()
+            .context("the space has no head revision to transplant")?;
+        (site.repository.did(), revision.tree.to_string())
+    };
+    // The raw head record, byte-exact — the same layout-level read
+    // `open_with` performs, and for the same reason (dialog-db#449).
+    let head = std::fs::read(root.join(tonk_account::revision_path(REPO_NAME, BRANCH_NAME)))
+        .context("failed to read the head revision record")?;
+
+    // The credential slot IS the identity, so the rename is the
+    // re-root. Archived under the origin's DID it stays as provenance,
+    // and keeps the origin signer around when the transplant was
+    // voluntary rather than forced by lost keys.
+    let keys = root.join(REPO_NAME).join("credential").join("key");
+    std::fs::rename(keys.join("self"), keys.join(origin.to_string()))
+        .context("failed to archive the origin credential")?;
+
+    let minted = mint_fresh_subject(&root, &config).await;
+    if minted.is_err() && !keys.join("self").exists() {
+        // A site with no self credential at all is strictly worse than
+        // the origin-keyed one this started from, so put it back. When
+        // the bootstrap died after writing the new credential, the slot
+        // is occupied and the retry archives it like any origin.
+        let _ = std::fs::rename(keys.join(origin.to_string()), keys.join("self"));
+    }
+    minted?;
+
+    let site = TonkSite::open_with(&root, config).await?;
+    let session = site
+        .branch()
+        .await
+        .context("failed to reopen the main branch")?;
+    session
+        .handle()
+        .transaction()
+        .assert(RepositoryName {
+            this: site.repository.did().this(),
+            name: tonk_schema::domain::repo::Name(name.to_owned()),
+        })
+        .assert(Transplant::new(&origin, head, tree))
+        .commit()
+        .perform(&site.operator)
+        .await
+        .context("failed to record the transplant")?;
+
+    Ok(Transplanted {
+        site,
+        origin: origin.to_string(),
+    })
+}
+
+/// The identity-minting half of a transplant: the same bootstrap a
+/// fresh creation runs, over a store that already holds the data.
+async fn mint_fresh_subject(root: &Path, config: &SiteConfig) -> Result<()> {
+    let (profile, operator) = build_profile_and_operator(root, config).await?;
+    bootstrap_repository(&profile, &operator, config).await?;
+    Ok(())
+}
+
 pub(crate) async fn build_profile_and_operator(
     root: &Path,
     config: &SiteConfig,

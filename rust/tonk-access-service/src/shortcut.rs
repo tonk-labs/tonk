@@ -48,6 +48,22 @@ pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 /// bucket lifecycle rule on [`KEY_PREFIX`] does the physical cleanup.
 pub const EXPIRES_METADATA_KEY: &str = "expires";
 
+/// Public attribution parameters that a caller may add to a short URL.
+///
+/// The stored invite target owns all capability and space-attribution fields.
+/// Only these campaign/source fields may override their stored counterparts
+/// when `GET /@/{hash}` builds its redirect.
+const REFERRAL_PARAMETERS: &[&str] = &[
+    "tonk_source",
+    "tonk_channel",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+];
+
+/// Maximum decoded length of one forwarded attribution value.
+const MAX_REFERRAL_VALUE_SIZE: usize = 128;
+
 /// Standalone recovery page for a missing or expired invite shortcut.
 ///
 /// The shortcut is the only part available at this boundary: an invite's
@@ -252,6 +268,45 @@ pub fn requested_ttl(query: Option<&str>) -> Result<u64, String> {
     Ok(DEFAULT_TTL_DAYS * SECONDS_PER_DAY)
 }
 
+/// Merge public campaign/source tags from a short-link request into its stored
+/// redirect target.
+///
+/// This lets `https://.../@/{hash}?tonk_source=reddit#seed` retain the source
+/// tag when it expands to `/join?...#seed`. Capability parameters and the
+/// stored `tonk_space` token can never be supplied or replaced here. If the
+/// request carries no accepted values, the stored target is returned byte for
+/// byte so existing shortcut behaviour stays unchanged.
+pub fn referral_redirect_target(target: &str, request_query: Option<&str>) -> String {
+    let overrides: Vec<(String, String)> = request_query
+        .into_iter()
+        .flat_map(|query| url::form_urlencoded::parse(query.as_bytes()))
+        .filter(|(key, value)| {
+            REFERRAL_PARAMETERS.contains(&key.as_ref()) && value.len() <= MAX_REFERRAL_VALUE_SIZE
+        })
+        .fold(Vec::new(), |mut values, (key, value)| {
+            if !values
+                .iter()
+                .any(|(existing, _): &(String, String)| existing == key.as_ref())
+            {
+                values.push((key.into_owned(), value.into_owned()));
+            }
+            values
+        });
+    if overrides.is_empty() {
+        return target.to_owned();
+    }
+
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let overridden: Vec<&str> = overrides.iter().map(|(key, _)| key.as_str()).collect();
+    let existing = url::form_urlencoded::parse(query.as_bytes())
+        .filter(|(key, _)| !overridden.contains(&key.as_ref()));
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.extend_pairs(existing);
+    serializer.extend_pairs(&overrides);
+    let query = serializer.finish();
+    format!("{path}?{query}")
+}
+
 /// A validated shortcut: the target string and its content hash.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shortcut {
@@ -335,4 +390,44 @@ pub fn object_key_for(hash: &str) -> Result<String, String> {
         return Err(format!("hash must be 32 bytes, got {}", bytes.len()));
     }
     Ok(format!("{KEY_PREFIX}{hash}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn referral_redirects_override_only_public_attribution_fields() {
+        let target = "/join?access=SECRET&tonk_channel=reshare&tonk_space=0123456789abcdef";
+        assert_eq!(referral_redirect_target(target, None), target);
+
+        let redirected = referral_redirect_target(
+            target,
+            Some(
+                "tonk_source=reddit&tonk_channel=outreach&tonk_space=ffffffffffffffff&access=EVIL",
+            ),
+        );
+        let url = Url::parse(&format!("https://tonk.invalid{redirected}")).unwrap();
+        let value = |name: &str| {
+            url.query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.into_owned())
+        };
+        assert_eq!(value("access").as_deref(), Some("SECRET"));
+        assert_eq!(value("tonk_space").as_deref(), Some("0123456789abcdef"));
+        assert_eq!(value("tonk_source").as_deref(), Some("reddit"));
+        assert_eq!(value("tonk_channel").as_deref(), Some("outreach"));
+    }
+
+    #[test]
+    fn referral_redirects_drop_duplicate_and_oversized_values() {
+        let oversized = "x".repeat(MAX_REFERRAL_VALUE_SIZE + 1);
+        let redirected = referral_redirect_target(
+            "/join?access=abc",
+            Some(&format!(
+                "tonk_source=slack&tonk_source=discord&utm_campaign={oversized}"
+            )),
+        );
+        assert_eq!(redirected, "/join?access=abc&tonk_source=slack");
+    }
 }

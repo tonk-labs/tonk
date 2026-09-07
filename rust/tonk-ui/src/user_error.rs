@@ -307,38 +307,6 @@ pub(crate) fn api_problem(action: AccountAction, error: &TonkUiError) -> Account
     }
 }
 
-/// Classify a dispatched destructive mutation. A missing or malformed reply
-/// cannot prove that the service did not commit the mutation.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-pub(crate) fn mutation_api_problem(action: AccountAction, error: &TonkUiError) -> AccountProblem {
-    let problem = api_problem(action, error);
-    if matches!(
-        action,
-        AccountAction::DeleteAccount | AccountAction::DeleteSpace | AccountAction::RevokeDevice
-    ) && matches!(
-        error,
-        TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Network,
-            ..
-        } | TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Decode,
-            status: None | Some(200..=299) | Some(500..=599),
-            ..
-        } | TonkUiError::AccountApi {
-            transport_kind: crate::error::AccountTransportKind::Http,
-            status: None | Some(500..=599),
-            ..
-        }
-    ) {
-        let kind = problem
-            .outcome
-            .failure_kind()
-            .unwrap_or(FailureKind::Unknown);
-        return AccountProblem::new(problem.message, AccountOutcome::unknown_commit(kind));
-    }
-    problem
-}
-
 fn fallback(action: AccountAction) -> &'static str {
     match action {
         AccountAction::OpenRegistration => {
@@ -451,7 +419,7 @@ mod tests {
             ),
             (
                 AccountAction::DeleteAccount,
-                "identity ceremony verifyPasskey is unavailable",
+                "identity ceremony usePasskey is unavailable",
                 "Passkeys are not available in this browser right now. Reload the page, or try another supported browser or device.",
             ),
         ];
@@ -588,62 +556,6 @@ mod tests {
             assert!(!problem.message.contains("did:key"));
             assert!(!problem.message.contains("response body"));
         }
-    }
-
-    #[test]
-    fn destructive_mutations_distinguish_unknown_commit_from_proved_rejection() {
-        for transport_kind in [AccountTransportKind::Network, AccountTransportKind::Decode] {
-            let error = TonkUiError::AccountApi {
-                transport_kind,
-                status: (transport_kind == AccountTransportKind::Decode).then_some(200),
-                service_code: None,
-                diagnostic: "person@example.com response was lost after dispatch".to_owned(),
-            };
-            let problem = mutation_api_problem(AccountAction::DeleteAccount, &error);
-            assert_eq!(
-                problem.outcome.result(),
-                tonk_analytics::account::AccountResult::UnknownCommit
-            );
-            assert!(!problem.message.contains("person@example.com"));
-        }
-
-        let rejected = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Http,
-            status: Some(409),
-            service_code: Some("customer_active".to_owned()),
-            diagnostic: "server proved the deletion did not commit".to_owned(),
-        };
-        let problem = mutation_api_problem(AccountAction::DeleteAccount, &rejected);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::TerminalFailure
-        );
-        assert_eq!(problem.outcome.failure_kind(), Some(FailureKind::Conflict));
-
-        let unreadable_server_response = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Decode,
-            status: Some(503),
-            service_code: None,
-            diagnostic: "server rejected the mutation with an unreadable body".to_owned(),
-        };
-        let problem =
-            mutation_api_problem(AccountAction::DeleteAccount, &unreadable_server_response);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::UnknownCommit
-        );
-
-        let server_failure = TonkUiError::AccountApi {
-            transport_kind: AccountTransportKind::Http,
-            status: Some(503),
-            service_code: Some("upstream_unavailable".to_owned()),
-            diagnostic: "service failed after accepting the mutation".to_owned(),
-        };
-        let problem = mutation_api_problem(AccountAction::RevokeDevice, &server_failure);
-        assert_eq!(
-            problem.outcome.result(),
-            tonk_analytics::account::AccountResult::UnknownCommit
-        );
     }
 
     #[test]

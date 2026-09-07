@@ -16,7 +16,10 @@
 //! - `access`: base58-encoded [`DelegationChain`] bytes. The chain's subject
 //!   must be [`Subject::Specific`]; chains with [`Subject::Any`] are rejected
 //!   because an invite must always scope to a specific repository.
-//! - `remote` (optional): UCAN access service endpoint for sync.
+//! - `remote` (optional): UCAN access service endpoint for sync. A chain
+//!   whose delegations carry a [`HOME_ADDRESS`] entry names its own endpoint;
+//!   the signed value wins over this parameter, which stays as the carrier
+//!   for chains minted before the meta rode the delegation.
 //! - `#fragment` (optional): base58 of a 32-byte Ed25519 seed. Presence marks
 //!   the invite as **audience-open** — any redeemer can claim it by
 //!   redelegating from the embedded ephemeral key. Absence marks it as
@@ -40,6 +43,8 @@ use dialog_ucan_core::{
     time::timestamp::{Duration, SystemTime},
 };
 use dialog_varsig::{Did, Principal};
+use ipld_core::ipld::Ipld;
+use std::collections::BTreeMap;
 use url::Url;
 
 /// Canonical base URL for tonk invite links, and the fallback for a repo
@@ -56,6 +61,43 @@ pub const DEFAULT_BASE_URL: &str = "https://tonk.network/join";
 /// A visit is intentionally useful long enough to inspect a shared space but
 /// cannot become a permanent identity or membership grant by accident.
 pub const VISIT_TTL_SECONDS: u64 = 60 * 60;
+
+/// UCAN delegation `meta` key naming the sync endpoint the granted subject
+/// is served from: a space invite carries the space's upstream, an account
+/// grant carries the account's `xyz.tonk.account/provider-address`.
+///
+/// A delegation that carries it makes the endpoint part of the signed
+/// payload, so the grant and the address travel together and cannot be
+/// swapped independently. Read it with [`home_address`].
+pub const HOME_ADDRESS: &str = "home.address";
+
+/// The sync endpoint a delegation chain names for itself, when it does.
+///
+/// Scans the chain leaf-to-root and returns the first [`HOME_ADDRESS`]
+/// entry: the delegation minted closest to the recipient is the one minted
+/// at handoff time, so its address is the most specific.
+///
+/// # Errors
+///
+/// Returns an error when a delegation carries the key but its value is not
+/// a string holding a valid URL — a grant that names its endpoint illegibly
+/// is malformed, not endpoint-less.
+pub fn home_address(chain: &DelegationChain) -> Result<Option<Url>> {
+    let Some(value) = chain.meta(HOME_ADDRESS) else {
+        return Ok(None);
+    };
+    let Ipld::String(address) = value else {
+        anyhow::bail!("delegation `{HOME_ADDRESS}` meta is not a string");
+    };
+    let url = Url::parse(address)
+        .with_context(|| format!("delegation `{HOME_ADDRESS}` meta is not a valid URL"))?;
+    Ok(Some(url))
+}
+
+/// A [`HOME_ADDRESS`] entry ready to hand to a delegation builder's `meta`.
+pub fn home_address_meta(address: &Url) -> BTreeMap<String, Ipld> {
+    BTreeMap::from([(HOME_ADDRESS.to_owned(), Ipld::String(address.to_string()))])
+}
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
@@ -177,7 +219,9 @@ impl Invite {
     /// chain fails to parse or has no specific subject
     /// ([`Subject::Any`][dialog_ucan_core::subject::Subject::Any] is
     /// rejected), if the `remote` parameter is present but not a valid
-    /// URL, if the fragment is present but does not decode to exactly
+    /// URL, if a delegation carries a [`HOME_ADDRESS`] entry that is not
+    /// a string holding a valid URL, if the fragment is present but does
+    /// not decode to exactly
     /// 32 bytes of base58, or if the fragment seed does not derive the
     /// chain's tail audience DID (enforced by [`Invite::new`]).
     pub async fn parse_url(url: &str) -> Result<Self> {
@@ -213,6 +257,11 @@ impl Invite {
                 chain_bytes.len()
             )
         })?;
+
+        // The chain's own signed address wins over the loose parameter,
+        // which stays as the carrier for chains minted before the meta
+        // rode the delegation.
+        let remote_url = home_address(&chain)?.or(remote_url);
 
         let audience = match parsed.fragment() {
             Some(frag) => {
@@ -263,10 +312,18 @@ impl Invite {
             "invite base URL must not already contain a fragment"
         );
 
+        // A chain that names its own endpoint carries it signed; writing
+        // the loose parameter beside it would hand a reader two answers.
+        // The parameter is written only for chains from before the meta
+        // rode the delegation.
+        let loose_remote = match home_address(&self.chain)? {
+            Some(_) => None,
+            None => self.remote_url.as_ref(),
+        };
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("access", &access);
-            if let Some(remote) = &self.remote_url {
+            if let Some(remote) = loose_remote {
                 pairs.append_pair("remote", remote.as_str());
             }
             if let Some(relay) = &self.revocation_url {
@@ -528,6 +585,61 @@ mod tests {
 
     async fn signer(seed: &[u8; 32]) -> Ed25519Signer {
         Ed25519Signer::import(seed).await.unwrap()
+    }
+
+    /// Like [`make_chain`], with a [`HOME_ADDRESS`] entry on the delegation.
+    async fn make_chain_with_remote(
+        issuer_seed: &[u8; 32],
+        audience_did: &Did,
+        subject_did: &Did,
+        remote: &Url,
+    ) -> DelegationChain {
+        let issuer = Ed25519Signer::import(issuer_seed).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(issuer))
+            .audience(audience_did)
+            .subject(UcanSubject::Specific(subject_did.clone()))
+            .command(vec![])
+            .meta(home_address_meta(remote))
+            .try_build()
+            .await
+            .unwrap();
+        DelegationChain::new(delegation)
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_the_remote_from_the_delegation_meta() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let remote = Url::parse("https://staging.tonk.xyz/ucan/").unwrap();
+        let chain = make_chain_with_remote(&ISSUER_SEED, &audience, &subject, &remote).await;
+
+        // No `remote=` parameter on the URL at all: the chain names it.
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
+        let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
+        assert!(!url.contains("remote="), "{url}");
+
+        let decoded = Invite::parse_url(&url).await.unwrap();
+        assert_eq!(decoded.remote_url, Some(remote));
+    }
+
+    #[dialog_common::test]
+    async fn it_prefers_the_signed_remote_over_the_url_parameter() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let signed = Url::parse("https://staging.tonk.xyz/ucan/").unwrap();
+        let tampered = Url::parse("https://attacker.example/ucan/").unwrap();
+        let chain = make_chain_with_remote(&ISSUER_SEED, &audience, &subject, &signed).await;
+
+        let invite = Invite::new(chain, InviteAudience::Scoped, Some(tampered))
+            .await
+            .unwrap();
+        let decoded = Invite::parse_url(&invite.to_url(DEFAULT_BASE_URL).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(decoded.remote_url, Some(signed));
     }
 
     #[dialog_common::test]

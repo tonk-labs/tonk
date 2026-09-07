@@ -1,49 +1,24 @@
-//! `<ui-copy-link>` — a verb that copies a URL and answers in place.
+//! `<ui-copy-link>` — the Hub verb that mints and copies a space invite.
 //!
-//! The word IS the feedback: it becomes "copied" (or "couldn't copy") for a
-//! moment and then goes back to offering. No toast, no icon swap — the same
-//! word-answers grammar the FAB's share row uses.
-//!
-//! ## What it copies, and what it does not
-//!
-//! The `url` it is given, verbatim. On a Hub row that is the space's own
-//! address, which is a bookmark and a pointer for people who are ALREADY
-//! members — it is not an invite, and it grants nobody access. Minting an
-//! invite is the bar's `share`, which delegates authority and can be refused;
-//! this cannot fail in that way because it asks for nothing.
-//!
-//! Relative URLs are resolved against the page so what lands on the clipboard
-//! is something that can be pasted somewhere else and still work.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Profiles retain their seeded Hub view for life, so older profiles still
+//! render this element with `url="/space/{subject}"`. The current view names
+//! the subject directly with `space={subject}`. Both forms are accepted here:
+//! the runtime wraps the shared `<tonk-share>` control, which mints a fresh
+//! authorization and settles the clipboard with the resulting invite URL.
+//! A member-only `/space/...` route is never itself copied.
 
 use custom_elements::CustomElement;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Element, HtmlElement, window};
 
-/// How long the answer stands before the verb goes back to offering.
-const ANSWER_MS: i32 = 1_200;
-
-/// The class this element renders on its button, for the host view to style.
+/// The class the Hub stylesheet uses for its action button.
 const VERB_CLASS: &str = "copy-verb";
 
-/// The resting label. Overridable with `label`, so the same element can read
-/// as "copy link" in one place and something else in another.
+/// The resting label. Overridable for seeded views that supplied `label`.
 const DEFAULT_LABEL: &str = "copy link";
 
-type ClickClosure = Closure<dyn FnMut(web_sys::Event)>;
-
-/// Per-element state.
+/// Per-element state lives in the nested `<tonk-share>` control.
 #[derive(Default)]
-pub(crate) struct UiCopyLink {
-    click: Option<ClickClosure>,
-    /// The pending revert, so a second click restarts the timer instead of
-    /// letting the first one snap the word back mid-answer.
-    revert: Rc<RefCell<Option<i32>>>,
-}
+pub(crate) struct UiCopyLink;
 
 impl CustomElement for UiCopyLink {
     fn shadow() -> bool {
@@ -51,18 +26,17 @@ impl CustomElement for UiCopyLink {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["label"]
+        &["label", "space", "url"]
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        // Reuse an existing control rather than appending a second one:
-        // `inject_children` runs again whenever the element is re-created or
-        // re-parented, and an unguarded append stacks duplicates. Mirrors
-        // `ui_sync_status::paint`.
-        if button_of(this).is_some() {
+        if share_of(this).is_some() {
             return;
         }
         let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let Ok(share) = document.create_element("tonk-share") else {
             return;
         };
         let Ok(button) = document.create_element("button") else {
@@ -70,37 +44,28 @@ impl CustomElement for UiCopyLink {
         };
         let _ = button.set_attribute("type", "button");
         let _ = button.set_attribute("class", VERB_CLASS);
-        button.set_text_content(Some(&label_of(this)));
-        let _ = this.append_child(&button);
+
+        for (state, text) in [
+            ("idle", label_of(this)),
+            ("copying", "copying…".to_owned()),
+            ("copied", "copied".to_owned()),
+            ("failed", "couldn't copy".to_owned()),
+        ] {
+            let Ok(label) = document.create_element("span") else {
+                continue;
+            };
+            let _ = label.set_attribute("data-share-copy-label", state);
+            label.set_text_content(Some(&text));
+            let _ = button.append_child(&label);
+        }
+
+        let _ = share.append_child(&button);
+        let _ = this.append_child(&share);
+        sync_space(this);
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        if self.click.is_some() {
-            return;
-        }
-        let host = this.clone();
-        let revert = self.revert.clone();
-        let click: ClickClosure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-            // The row around this verb is a link to the space. Copying is
-            // not opening it.
-            event.stop_propagation();
-            event.prevent_default();
-            copy(&host, &revert);
-        }));
-        if let Some(button) = button_of(this) {
-            let _ =
-                button.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
-        }
-        self.click = Some(click);
-    }
-
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        self.click = None;
-        if let Some(handle) = self.revert.borrow_mut().take()
-            && let Some(win) = window()
-        {
-            win.clear_timeout_with_handle(handle);
-        }
+        sync_space(this);
     }
 
     fn attribute_changed_callback(
@@ -110,20 +75,19 @@ impl CustomElement for UiCopyLink {
         old: Option<String>,
         new: Option<String>,
     ) {
-        if name != "label" || old == new {
+        if old == new {
             return;
         }
-        // Only while resting — relabelling mid-answer would wipe "copied".
-        if self.revert.borrow().is_none() {
-            say(this, &label_of(this));
+        match name.as_str() {
+            "label" => sync_label(this),
+            "space" | "url" => sync_space(this),
+            _ => {}
         }
     }
 }
 
-fn button_of(this: &HtmlElement) -> Option<Element> {
-    this.query_selector(&format!(".{VERB_CLASS}"))
-        .ok()
-        .flatten()
+fn share_of(this: &HtmlElement) -> Option<Element> {
+    this.query_selector("tonk-share").ok().flatten()
 }
 
 fn label_of(this: &HtmlElement) -> String {
@@ -132,56 +96,43 @@ fn label_of(this: &HtmlElement) -> String {
         .unwrap_or_else(|| DEFAULT_LABEL.to_owned())
 }
 
-fn say(this: &HtmlElement, word: &str) {
-    if let Some(button) = button_of(this) {
-        button.set_text_content(Some(word));
-    }
-}
-
-/// Resolve `url` against the page, so what is copied works when pasted.
-fn absolute(this: &HtmlElement) -> Option<String> {
-    let raw = this.get_attribute("url").filter(|url| !url.is_empty())?;
-    let base = window()?.location().href().ok()?;
-    web_sys::Url::new_with_base(&raw, &base)
-        .ok()
-        .map(|url| url.href())
-        .or(Some(raw))
-}
-
-fn copy(this: &HtmlElement, revert: &Rc<RefCell<Option<i32>>>) {
-    let Some(url) = absolute(this) else { return };
-    let Some(clipboard) = window().map(|w| w.navigator().clipboard()) else {
+fn sync_label(this: &HtmlElement) {
+    let Ok(Some(label)) = this.query_selector("[data-share-copy-label=\"idle\"]") else {
         return;
     };
-
-    let host = this.clone();
-    let pending = revert.clone();
-    spawn_local(async move {
-        let ok = JsFuture::from(clipboard.write_text(&url)).await.is_ok();
-        // Only claim success when the write actually resolved. A refusal —
-        // an insecure context, a denied permission — has to say so, or the
-        // user walks away believing they hold a link they do not.
-        say(&host, if ok { "copied" } else { "couldn't copy" });
-        schedule_revert(&host, &pending);
-    });
+    label.set_text_content(Some(&label_of(this)));
 }
 
-/// Put the resting word back after the answer has been read.
-fn schedule_revert(this: &HtmlElement, revert: &Rc<RefCell<Option<i32>>>) {
-    let Some(win) = window() else { return };
-    if let Some(previous) = revert.borrow_mut().take() {
-        win.clear_timeout_with_handle(previous);
-    }
-    let host = this.clone();
-    let pending = revert.clone();
-    let back = Closure::once_into_js(move || {
-        *pending.borrow_mut() = None;
-        say(&host, &label_of(&host));
-    });
-    if let Ok(handle) =
-        win.set_timeout_with_callback_and_timeout_and_arguments_0(back.unchecked_ref(), ANSWER_MS)
+/// Resolve the target from the current `space` contract or an older seeded
+/// `/space/{subject}` URL. The route is only an address carrier; it is never
+/// handed to the clipboard.
+fn space_of(this: &HtmlElement) -> Option<String> {
+    if let Some(space) = this
+        .get_attribute("space")
+        .filter(|space| !space.is_empty())
     {
-        *revert.borrow_mut() = Some(handle);
+        return Some(space);
+    }
+    let raw = this.get_attribute("url").filter(|url| !url.is_empty())?;
+    let base = window()?.location().href().ok()?;
+    let path = web_sys::Url::new_with_base(&raw, &base).ok()?.pathname();
+    path.strip_prefix("/space/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|subject| !subject.is_empty())
+        .map(str::to_owned)
+}
+
+fn sync_space(this: &HtmlElement) {
+    let Some(share) = share_of(this) else {
+        return;
+    };
+    match space_of(this) {
+        Some(space) => {
+            let _ = share.set_attribute("space", &space);
+        }
+        None => {
+            let _ = share.remove_attribute("space");
+        }
     }
 }
 
@@ -192,5 +143,61 @@ pub(crate) fn register() {
     };
     if win.custom_elements().get("ui-copy-link").is_undefined() {
         UiCopyLink::define("ui-copy-link");
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn mount(markup: &str) -> HtmlElement {
+        // Production registers workspace elements before FABB elements. The
+        // nested `<tonk-share>` must therefore survive creation while still
+        // unknown and upgrade once its implementation is registered.
+        register();
+        let document = window().unwrap().document().unwrap();
+        let fixture = document.create_element("div").unwrap();
+        fixture.set_inner_html(markup);
+        document.body().unwrap().append_child(&fixture).unwrap();
+        tonk_fab::register();
+        fixture.unchecked_into()
+    }
+
+    #[wasm_bindgen_test]
+    fn it_routes_the_current_space_contract_into_the_invite_control() {
+        let fixture = mount(r#"<ui-copy-link space="did:key:z6MkCurrent"></ui-copy-link>"#);
+        let share = fixture.query_selector("tonk-share").unwrap().unwrap();
+        assert_eq!(
+            share.get_attribute("space").as_deref(),
+            Some("did:key:z6MkCurrent")
+        );
+        assert!(share.query_selector("button.copy-verb").unwrap().is_some());
+        fixture.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_upgrades_a_seeded_route_without_copying_that_route() {
+        let fixture = mount(
+            r#"<ui-copy-link url="/space/did:key:z6MkSeeded" label="copy link"></ui-copy-link>"#,
+        );
+        let share = fixture.query_selector("tonk-share").unwrap().unwrap();
+        assert_eq!(
+            share.get_attribute("space").as_deref(),
+            Some("did:key:z6MkSeeded")
+        );
+        assert_eq!(
+            fixture
+                .query_selector("[data-share-copy-label=\"idle\"]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("copy link")
+        );
+        fixture.remove();
     }
 }

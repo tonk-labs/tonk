@@ -89,7 +89,7 @@ fn claim_event(ev: &CustomEvent) {
 /// reconnect re-pins the OLD worker with a fresh wave of streams before
 /// the replacement can take over, and the release/reconnect cycle churns
 /// until the renderer gives out. The jitter breaks the herd; the base
-/// delay gives the waiting worker room to activate.
+/// delay gives the successor room to claim the client.
 fn retry_close_ms() -> i32 {
     2_000 + (js_sys::Math::random() * 3_000.0) as i32
 }

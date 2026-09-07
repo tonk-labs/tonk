@@ -57,6 +57,8 @@ fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
         ("attribute", builtin::<AnonymousAttribute>("attribute")),
         ("concept", concept_descriptor()),
         ("command", command_descriptor()),
+        ("event", event_descriptor()),
+        ("view", view_descriptor()),
         ("rule", rule_descriptor()),
         ("name", builtin::<Name>("name")),
         ("branch", builtin::<Branch>("branch")),
@@ -109,6 +111,133 @@ fn command_descriptor() -> ConceptDefinition {
             .parse()
             .expect("`db:command` is a valid entity URI"),
         descriptor: ConceptDescriptor::Durable(command_of_command_descriptor().clone()),
+    }
+}
+
+/// Built-in `view` concept — a model's presentations, keyed by facet.
+///
+/// Built in rather than declared in a library because the analyzer has
+/// to understand a view structurally: a `show:` template can bind
+/// `on:<name>=<command>`, and resolving those at lowering (rather than
+/// re-querying per name on every refresh) means the analyzer must know
+/// which instances are views and where their templates live. A library
+/// `concept!: &view` shadows a builtin inside its own document, so the
+/// declaration moves here and the libraries keep only `view!:`
+/// instances — the same split `event` already has.
+///
+/// `bindings` is what lowering writes: the resolved `event!:` and
+/// `command!:` descriptors for every `on:` binding the templates carry,
+/// as one CBOR artifact. Optional, so a view seeded before this existed
+/// carries none and the display falls back to resolving at runtime.
+///
+/// Hand-built rather than `derive(Concept)` for the same reason
+/// [`event_descriptor`] is: `show` is a keyed dictionary, which no
+/// Rust fixed-record shape expresses.
+fn view_descriptor() -> ConceptDefinition {
+    static DESCRIPTOR: std::sync::OnceLock<DialogConceptDescriptor> = std::sync::OnceLock::new();
+    let descriptor = DESCRIPTOR.get_or_init(|| {
+        serde_json::from_value(serde_json::json!({
+            "description": "A model's presentations, keyed by facet (ui, directory, label, title, ...)",
+            "with": {
+                // Keyed collection: the facet supplies the key half, so
+                // one facet can be superseded without restating the map.
+                "show": {
+                    "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
+                    "as": "Text",
+                    "cardinality": "one",
+                    "description": "HTML templates keyed by facet"
+                },
+                // One compiled artifact, not a queryable map: the
+                // bindings are resolved together and mean nothing
+                // apart, so there is no per-key supersession to model.
+                // dag-cbor rather than JSON text because this is a
+                // build product the display decodes, never something a
+                // person reads or a rule matches on.
+                //
+                // `Record`, not `Bytes`: dialog's type for "one struct,
+                // one fact" — the same one a revision record uses, and
+                // what keeps this distinguishable from an opaque blob
+                // in storage and in a `Value` match. The tag says
+                // "structured", not *which* structure, and it flattens
+                // to plain bytes on every wire projection, so the
+                // payload also names its own format
+                // (`tonk_template::bindings::KIND`).
+                "bindings": {
+                    "the": "xyz.tonk.view/bindings",
+                    "as": "Record",
+                    "cardinality": "one",
+                    "optional": true,
+                    "description": "dag-cbor of the event descriptors resolved at lowering"
+                }
+            }
+        }))
+        .expect("view descriptor is valid")
+    });
+    ConceptDefinition {
+        entity: "db:view".parse().expect("`db:view` is a valid entity URI"),
+        descriptor: ConceptDescriptor::Durable(descriptor.clone()),
+    }
+}
+
+/// Built-in `event` concept — how a platform event fills a command's
+/// fields.
+///
+/// A peer of `command`: an `event!:` declaration is schema an author
+/// writes, so it must resolve on any branch rather than only where the
+/// standard library has been seeded. Its instances (`on/click`, and a
+/// terminal's own set) are ordinary data and stay in the library.
+///
+/// Hand-built rather than `derive(Concept)` for the same reason
+/// [`command_descriptor`] and [`rule_descriptor`] are: `where` is a
+/// keyed dictionary, which no Rust fixed-record shape expresses.
+fn event_descriptor() -> ConceptDefinition {
+    static DESCRIPTOR: std::sync::OnceLock<DialogConceptDescriptor> = std::sync::OnceLock::new();
+    let descriptor = DESCRIPTOR.get_or_init(|| {
+        serde_json::from_value(serde_json::json!({
+            "description": "How a platform event fills a command's fields.",
+            "with": {
+                "type": {
+                    "the": "xyz.tonk.event/type",
+                    "as": "Text",
+                    "cardinality": "one",
+                    "description": "The platform event name to listen for"
+                },
+                // A keyed collection: the `the` names a domain and the
+                // key supplies the name half, so each source lands as
+                // its own fact and a space can supersede one without
+                // restating the map. Its own domain, so a command field
+                // called `type` cannot collide with `type` above.
+                "where": {
+                    "the": { "domain": "xyz.tonk.event.where", "keyed": "dictionary" },
+                    "as": "Text",
+                    "cardinality": "one",
+                    "description": "Command field name to source"
+                },
+                // Optional: a declaration that suppresses neither must
+                // still resolve, so these cannot be required.
+                "prevent-default": {
+                    "the": "xyz.tonk.event/prevent-default",
+                    "as": "Boolean",
+                    "cardinality": "one",
+                    "optional": true,
+                    "description": "Suppress the platform's default handling"
+                },
+                "stop-propagation": {
+                    "the": "xyz.tonk.event/stop-propagation",
+                    "as": "Boolean",
+                    "cardinality": "one",
+                    "optional": true,
+                    "description": "Stop the event propagating further"
+                }
+            }
+        }))
+        .expect("event descriptor is well-formed")
+    });
+    ConceptDefinition {
+        entity: "db:event"
+            .parse()
+            .expect("`db:event` is a valid entity URI"),
+        descriptor: ConceptDescriptor::Durable(descriptor.clone()),
     }
 }
 

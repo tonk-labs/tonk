@@ -5,15 +5,15 @@
 # fixed names (`guest.js`, `guest_bg.wasm`) — workers are named at runtime,
 # so trunk deliberately skips hashing them. The esbuild-produced `wa.js` /
 # `wa.css` ride along via copy-dir and aren't hashed either. Unhashed names
-# on a stable URL are stale-cache bait: the SW serves the previous build
-# until stale-while-revalidate catches up a load later.
+# on a stable URL are stale-cache bait unless their exact bytes are bound into
+# the generation that installs them.
 #
 # This post_build hook (TRUNK_STAGING_DIR is the staged dist before serving)
 # renames each guest asset to `<name>-<hash>.<ext>` and writes a tiny
 # `guest/manifest.json` mapping logical -> hashed name. The portal fetches
-# the manifest (cache: no-store, it's ~120 bytes) then loads the hashed
-# assets, which can be cached immutably. A content change => new hash => new
-# URL => cache miss => fresh, with no one-load-behind lag.
+# the manifest, then loads the hashed assets. The outer build publisher records
+# the manifest and all of those files in its full-digest resource graph, so a
+# generation installs them together and serves them immutably offline.
 #
 # The guest's own `snippets/*` are imported by RELATIVE path inside
 # guest.js and fetched as-is by the portal, so they stay unhashed (their

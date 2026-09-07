@@ -31,10 +31,10 @@ pub async fn access_origin_in(
     else {
         return Ok(None);
     };
-    let Some(remote) = provider.remote() else {
-        return Ok(None);
-    };
-    let remote: Url = remote.parse().context("the account remote is not a URL")?;
+    let remote: Url = provider
+        .address()
+        .parse()
+        .context("the account remote is not a URL")?;
     let origin: Url = remote
         .origin()
         .ascii_serialization()

@@ -33,6 +33,7 @@ thiserror = { workspace = true }
 tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-template = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

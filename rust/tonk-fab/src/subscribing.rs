@@ -21,7 +21,7 @@
 //! What elements differ on is the query body and how a frame renders, so
 //! that is exactly the seam [`Subscribing`] exposes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use js_sys::{Function, JSON, Reflect};
@@ -105,6 +105,8 @@ pub struct Scaffold {
     subscriptions: Rc<RefCell<Vec<(String, Subscription)>>>,
     reset: Rc<RefCell<Option<FrameClosure>>>,
     update: Rc<RefCell<Option<FrameClosure>>>,
+    /// Invalidates delayed subscribe attempts when the element disconnects.
+    generation: Rc<Cell<u64>>,
 }
 
 impl Scaffold {
@@ -157,17 +159,27 @@ impl Scaffold {
         for behaviour in behaviours {
             let subscriptions = self.subscriptions.clone();
             let host = this.clone();
+            let generation = self.generation.clone();
+            let expected_generation = generation.get();
             // Each behaviour gets its own retry budget: one query failing to
             // build must not spend the other's attempts.
             let retry = Rc::new(RefCell::new(RetryPolicy::default()));
             spawn_local(async move {
                 let tag = behaviour.tag().to_owned();
                 if !host.is_connected()
+                    || generation.get() != expected_generation
                     || subscriptions.borrow().iter().any(|(open, _)| *open == tag)
                 {
                     return;
                 }
-                subscribe(&host, behaviour.as_ref(), subscriptions, retry);
+                subscribe(
+                    host,
+                    behaviour,
+                    subscriptions,
+                    retry,
+                    generation,
+                    expected_generation,
+                );
             });
         }
     }
@@ -175,6 +187,7 @@ impl Scaffold {
     /// Run from `disconnected_callback`: drop every subscription and the frame
     /// delegates.
     pub fn disconnect(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
         self.subscriptions.borrow_mut().clear();
         self.reset.borrow_mut().take();
         self.update.borrow_mut().take();
@@ -215,13 +228,21 @@ fn route<'a>(
 }
 
 fn subscribe(
-    host: &HtmlElement,
-    behaviour: &dyn Subscribing,
+    host: HtmlElement,
+    behaviour: Rc<dyn Subscribing>,
     subscriptions: Rc<RefCell<Vec<(String, Subscription)>>>,
     retry: Rc<RefCell<RetryPolicy>>,
+    generation: Rc<Cell<u64>>,
+    expected_generation: u64,
 ) {
     let tag = behaviour.tag();
-    let body = match behaviour.query_body(host) {
+    if !host.is_connected()
+        || generation.get() != expected_generation
+        || subscriptions.borrow().iter().any(|(open, _)| open == tag)
+    {
+        return;
+    }
+    let body = match behaviour.query_body(&host) {
         Ok(body) => body,
         Err(err) => {
             tonk_common::log!("{tag}: query build failed: {err}");
@@ -236,21 +257,57 @@ fn subscribe(
     let tag_val = JsValue::from_str(tag);
     match consumer::subscribe(&consumer_el, &parsed, Some(&tag_val)) {
         Ok(sub) => {
+            if !host.is_connected() || generation.get() != expected_generation {
+                return;
+            }
             retry.borrow_mut().reset();
-            subscriptions.borrow_mut().push((tag.to_owned(), sub));
+            let mut subscriptions = subscriptions.borrow_mut();
+            if !subscriptions.iter().any(|(open, _)| open == tag) {
+                subscriptions.push((tag.to_owned(), sub));
+            }
         }
         Err(err) => {
             // Bounded, unlike the host's default resubscribe loop.
             let delay = retry.borrow_mut().next_delay_ms();
             match delay {
-                Some(_) => tonk_common::log!("{tag}: subscribe failed, will retry: {err:?}"),
+                Some(delay) => {
+                    tonk_common::log!("{tag}: subscribe failed, will retry: {err:?}");
+                    spawn_local(async move {
+                        wait_ms(delay).await;
+                        subscribe(
+                            host,
+                            behaviour,
+                            subscriptions,
+                            retry,
+                            generation,
+                            expected_generation,
+                        );
+                    });
+                }
                 None => {
                     tonk_common::log!("{tag}: subscribe failed, giving up: {err:?}");
-                    let _ = host.set_attribute("data-state", "unavailable");
+                    if host.is_connected() && generation.get() == expected_generation {
+                        let _ = host.set_attribute("data-state", "unavailable");
+                    }
                 }
             }
         }
     }
+}
+
+async fn wait_ms(ms: i32) {
+    let Some(win) = window() else {
+        return;
+    };
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if win
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .is_err()
+        {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 /// Whether `tag` is already a registered custom element.
@@ -290,11 +347,27 @@ pub fn install_frame_shims(tag: &str) {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
+    use js_sys::Promise;
+    use std::cell::Cell;
+    use wasm_bindgen::closure::Closure;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
+    use web_sys::CustomEvent;
     wasm_bindgen_test_configure!(run_in_browser);
 
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    async fn wait_ms(ms: i32) {
+        let promise = Promise::new(&mut |resolve, _| {
+            window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .expect("timeout");
+        });
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .expect("timeout resolves");
+    }
 
     /// A behaviour that records which payloads it was handed.
     struct Recorder {
@@ -427,5 +500,64 @@ mod tests {
 
         assert!(first.borrow().is_empty(), "not delivered to \"one\"");
         assert!(second.borrow().is_empty(), "not delivered to \"two\"");
+    }
+
+    /// A newly joined space boots its sealed guest while the host is still
+    /// establishing subscriptions. The host can claim `tonk-subscribe`
+    /// before it has a handle to return; `<tonk-share>` must retry that
+    /// incomplete handshake or it never receives the minted invite URL and
+    /// the clipboard waits until the 15-second timeout.
+    #[dialog_common::test]
+    async fn it_retries_an_incomplete_subscription_handshake() {
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        host.set_attribute("space", "did:key:z6MkJoined").unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+
+        let attempts = Rc::new(Cell::new(0_u32));
+        let attempts_for_listener = attempts.clone();
+        let listener = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            event.prevent_default();
+            event.stop_propagation();
+            let attempt = attempts_for_listener.get() + 1;
+            attempts_for_listener.set(attempt);
+            if attempt == 1 {
+                return;
+            }
+
+            let detail = event.detail();
+            let subscription = js_sys::Object::new();
+            let cancel = js_sys::Function::new_no_args("");
+            Reflect::set(&subscription, &"cancel".into(), cancel.as_ref()).unwrap();
+            Reflect::set(&detail, &"subscription".into(), subscription.as_ref()).unwrap();
+        });
+        host.add_event_listener_with_callback(
+            tonk_host::events::SUBSCRIBE,
+            listener.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+
+        let scaffold = Scaffold::default();
+        scaffold.connect(
+            &host,
+            Rc::new(Recorder {
+                tag: "joined-share",
+                seen: Rc::new(RefCell::new(Vec::new())),
+            }),
+        );
+
+        wait_ms(750).await;
+        assert_eq!(
+            attempts.get(),
+            2,
+            "the incomplete first handshake must be retried",
+        );
+        assert_eq!(
+            scaffold.subscriptions.borrow().len(),
+            1,
+            "the retry must retain the live subscription handle",
+        );
+
+        host.remove();
     }
 }

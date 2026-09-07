@@ -5,6 +5,8 @@ use dialog_credentials::Signer;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
+use tonk_invite::home_address_meta;
+use url::Url;
 
 /// Mint the `root → device` delegation: subject-open, audience-specific —
 /// "this device may act as me, for anything". Deliberately the opposite
@@ -13,11 +15,34 @@ pub async fn mint_device_delegation(
     root: impl Into<Signer>,
     device: &Did,
 ) -> Result<DelegationChain> {
-    let delegation = DelegationBuilder::new()
-        .issuer(root.into())
+    mint(root.into(), device, None).await
+}
+
+/// [`mint_device_delegation`], naming the sync endpoint the account is
+/// served from in the delegation's `meta`.
+///
+/// The address rides inside the signed payload, so wherever the grant
+/// travels — a callback handoff, a stored credential — the endpoint
+/// travels with it and cannot be swapped independently. Read it back with
+/// [`tonk_invite::home_address`].
+pub async fn mint_addressed_device_delegation(
+    root: impl Into<Signer>,
+    device: &Did,
+    remote: &Url,
+) -> Result<DelegationChain> {
+    mint(root.into(), device, Some(remote)).await
+}
+
+async fn mint(root: Signer, device: &Did, remote: Option<&Url>) -> Result<DelegationChain> {
+    let mut builder = DelegationBuilder::new()
+        .issuer(root)
         .audience(device)
         .subject(UcanSubject::Any)
-        .command(vec![])
+        .command(vec![]);
+    if let Some(remote) = remote {
+        builder = builder.meta(home_address_meta(remote));
+    }
+    let delegation = builder
         .try_build()
         .await
         .map_err(|e| anyhow::anyhow!("failed to mint the device delegation: {e}"))?;

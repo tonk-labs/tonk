@@ -22,10 +22,10 @@ use crate::store::{Store, SubscriptionKind};
 
 /// The deprovisioning command: the reverse of `/provider/add`.
 pub const COMMAND: [&str; 2] = ["provider", "remove"];
-/// Root-authenticated inventory command used before a destructive ceremony.
-pub const CUSTOMER_PLAN_COMMAND: [&str; 3] = ["customer", "deletion", "plan"];
-/// Root-authenticated access-service customer finalization command.
-pub const CUSTOMER_DELETE_COMMAND: [&str; 2] = ["customer", "delete"];
+/// Purge the customer and everything it provides. Deliberately under
+/// `/void`, the destructive level of the capability hierarchy, so a
+/// grant over `/use` can never reach it by accident.
+pub const PURGE_COMMAND: [&str; 3] = ["void", "customer", "purge"];
 
 /// Successful, idempotent hosted-space deletion receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,33 +36,16 @@ pub struct Receipt {
     pub deleted_at: u64,
 }
 
-/// One hosted space the access service associates with the deleting account.
+/// The customer is gone: every consumer it provided is denied and
+/// purged, and the row holding its address is removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HostedSpace {
-    pub space: String,
-    /// When deletion began, if a purge is already in flight. A finished
-    /// deletion takes the row with it, so such a space is simply absent
-    /// from the plan rather than listed as gone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deleting_since: Option<u64>,
-}
-
-/// Authoritative access-service inventory of the customer's owned
-/// hosted spaces.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CustomerDeletionPlan {
-    pub customer: String,
-    pub spaces: Vec<HostedSpace>,
-}
-
-/// Successful removal of access-service customer state and its email.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CustomerDeletionReceipt {
+pub struct PurgeReceipt {
     pub customer: String,
     pub state: String,
+    /// Every consumer this purge removed, the account's own included,
+    /// so the caller can drop whatever it cached about them.
+    pub consumers: Vec<String>,
 }
 
 /// Stable deletion refusal returned by Worker and native helper routes.
@@ -86,8 +69,6 @@ pub enum Error {
     Forbidden,
     #[error("hosted-space deletion is temporarily incomplete: {0}")]
     Incomplete(String),
-    #[error("owned hosted spaces must be deleted first: {0:?}")]
-    OwnedSpacesRemain(Vec<String>),
     #[error("hosted-space deletion failed internally: {0}")]
     Internal(String),
 }
@@ -112,7 +93,6 @@ impl Error {
             Self::WrongGrant => "WrongGrant",
             Self::Forbidden => "Forbidden",
             Self::Incomplete(_) => "Incomplete",
-            Self::OwnedSpacesRemain(_) => "OwnedSpacesRemain",
             Self::Internal(_) => "Internal",
         }
     }
@@ -124,7 +104,6 @@ impl Error {
             Self::NotRegistered => 404,
             Self::WrongGrant | Self::Forbidden => 403,
             Self::Incomplete(_) => 503,
-            Self::OwnedSpacesRemain(_) => 409,
             Self::Internal(_) => 500,
         }
     }
@@ -151,12 +130,9 @@ pub fn is_deletion(container: &[u8]) -> bool {
     invocation.command().0 == COMMAND.map(str::to_string)
 }
 
-/// Whether a container names either root-authenticated customer deletion command.
-pub fn is_customer_deletion(container: &[u8]) -> bool {
-    command(container).is_some_and(|command| {
-        command == CUSTOMER_PLAN_COMMAND.map(str::to_string)
-            || command == CUSTOMER_DELETE_COMMAND.map(str::to_string)
-    })
+/// Whether a container names the customer purge.
+pub fn is_purge(container: &[u8]) -> bool {
+    command(container).is_some_and(|command| command == PURGE_COMMAND.map(str::to_string))
 }
 
 fn command(container: &[u8]) -> Option<Vec<String>> {
@@ -164,18 +140,6 @@ fn command(container: &[u8]) -> Option<Vec<String>> {
     let invocation =
         serde_ipld_dagcbor::from_slice::<Invocation<AnySignature>>(tokens.first()?).ok()?;
     Some(invocation.command().0.clone())
-}
-
-/// Parsed command for the thin HTTP adapter; authority is never inferred here.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn command_for_handler(container: &[u8]) -> Vec<String> {
-    command(container).unwrap_or_default()
-}
-
-/// Parsed command for the native HTTP adapter.
-#[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
-pub(crate) fn command_for_native_handler(container: &[u8]) -> Vec<String> {
-    command(container).unwrap_or_default()
 }
 
 /// Subject named before authorization, used only to locate the row whose
@@ -194,7 +158,7 @@ pub async fn delete<S: Store, P: SpacePurger>(
     container: &[u8],
     now: u64,
 ) -> Result<Receipt, Error> {
-    let customer = verify_customer_command(store, container, &COMMAND, now, true).await?;
+    let customer = verify_customer_command(store, container, &COMMAND, now).await?;
     let space = consumer_argument(container)?;
     if space.as_str() == customer {
         // The customer's own account space is finalized through
@@ -274,141 +238,94 @@ fn consumer_argument(container: &[u8]) -> Result<Did, Error> {
     }
 }
 
-/// List every non-account consumer originally associated with this customer.
-pub async fn customer_plan<S: Store>(
-    store: &S,
-    container: &[u8],
-    now: u64,
-) -> Result<CustomerDeletionPlan, Error> {
-    let customer =
-        verify_customer_command(store, container, &CUSTOMER_PLAN_COMMAND, now, true).await?;
-    let spaces = store
-        .subscriptions_by_provider(customer.as_str())
-        .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-        .into_iter()
-        .filter(|consumer| {
-            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
-        })
-        .map(|consumer| HostedSpace {
-            space: consumer.consumer,
-            deleting_since: consumer.deleted_at,
-        })
-        .collect();
-    Ok(CustomerDeletionPlan { customer, spaces })
-}
-
-/// Purge the account space and remove access-service customer state only after
-/// every other owned hosted space has completed its capability-authorized purge.
-pub async fn delete_customer<S: Store, P: SpacePurger>(
+/// Purge a customer: deny every consumer it provides in one write,
+/// then take the data and the rows, the customer's own last.
+///
+/// Authority is the chain itself: the invocation must verify against
+/// its subject, the customer, under `/void/customer/purge`: root-signed
+/// or through whatever delegation the root chose to issue for it. No
+/// registration lookup gates it, so a purge of an account that is
+/// already gone verifies the same way and answers the same receipt.
+///
+/// The denial is the atomic step: one statement stamps `deleted_at` on
+/// every subscription the customer provides, and the gate refuses each
+/// from then on. The purge that follows is neither atomic nor certain
+/// to finish in one attempt, so a failure there leaves a service that
+/// serves nothing and a row set a retry resumes from.
+pub async fn purge<S: Store, P: SpacePurger>(
     store: &S,
     purger: &P,
     container: &[u8],
     now: u64,
-) -> Result<CustomerDeletionReceipt, Error> {
-    let customer = match verify_customer_command(
-        store,
-        container,
-        &CUSTOMER_DELETE_COMMAND,
-        now,
-        true,
-    )
-    .await
-    {
-        Ok(customer) => customer,
-        // No customer row is the finished state: finalization takes
-        // it with the data, so a repeat lands here. The worker's
-        // deletion sequence repeats deliberately when the account
-        // and access services share a deployment — both halves post
-        // the same finalization — and the second half must join the
-        // first rather than 404 a deletion that succeeded. The
-        // refusal escapes `verify_customer_command` only after the
-        // chain verified cryptographically, so this answers no one
-        // but the (former) customer.
-        Err(Error::NotRegistered) => {
-            let customer = subject(container)
-                .ok_or_else(|| Error::Malformed("invocation names no subject".into()))?;
-            return Ok(CustomerDeletionReceipt {
-                customer: customer.to_string(),
-                state: "deleted".into(),
-            });
-        }
-        Err(error) => return Err(error),
-    };
-    let consumers = store
+) -> Result<PurgeReceipt, Error> {
+    let customer = verify_purge(container, now).await?;
+    store
+        .deny_customer(&customer, now)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+
+    // Data spaces, then the account's plumbing, then the account's own
+    // space: nothing that could still need the account's key material
+    // is taken before what needed it.
+    let mut consumers = store
         .subscriptions_by_provider(&customer)
         .await
         .map_err(|error| Error::Internal(error.to_string()))?;
-    let remaining: Vec<_> = consumers
-        .iter()
-        .filter(|consumer| {
-            consumer.consumer != customer && consumer.kind == SubscriptionKind::Space
-        })
-        .map(|consumer| consumer.consumer.clone())
-        .collect();
-    if !remaining.is_empty() {
-        return Err(Error::OwnedSpacesRemain(remaining));
-    }
-
-    // Custody namespaces are purged here — after every data space is
-    // gone and the finalization is already authorized, so nothing that
-    // could still need the account's key material can be left waiting
-    // on it. Denial-first like any other purge, and idempotent.
+    consumers.sort_by_key(|consumer| {
+        if consumer.consumer == customer {
+            2
+        } else if consumer.kind == SubscriptionKind::Space {
+            0
+        } else {
+            1
+        }
+    });
+    let mut purged = Vec::with_capacity(consumers.len());
     for consumer in &consumers {
-        if consumer.kind != SubscriptionKind::Custody {
-            continue;
-        }
-        if consumer.deleted_at.is_none() {
-            let _ = store
-                .mark_consumer_deleting(&consumer.consumer, now)
-                .await
-                .map_err(|error| Error::Internal(error.to_string()))?;
-        }
         purger
             .purge(&format!("{}/", consumer.consumer))
             .await
             .map_err(Error::Incomplete)?;
-        let _ = store
-            .finish_consumer_deletion(&consumer.consumer)
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?;
+        purged.push(consumer.consumer.clone());
     }
-
-    // An absent self consumer is a finalization already past this
-    // point (the row goes before the customer row does): join it and
-    // finish the rest, rather than 404 a retry of a deletion that is
-    // mostly done.
-    if let Some(self_consumer) = store
-        .consumer(&customer)
-        .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-        && self_consumer.deleted_at.is_none()
-        && !store
-            .mark_self_consumer_deleting(&customer, now)
-            .await
-            .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        return Err(Error::Internal(
-            "could not deny the account-space consumer".into(),
-        ));
-    }
-    purger
-        .purge(&format!("{customer}/"))
-        .await
-        .map_err(Error::Incomplete)?;
-    if !store
+    // The rows go with the data, the customer row with them. A customer
+    // already gone answers false here, which is the finished state.
+    store
         .delete_customer(&customer)
         .await
-        .map_err(|error| Error::Internal(error.to_string()))?
-    {
-        return Err(Error::Internal(
-            "could not remove access-service customer state".into(),
-        ));
-    }
-    Ok(CustomerDeletionReceipt {
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    Ok(PurgeReceipt {
         customer,
         state: "deleted".into(),
+        consumers: purged,
     })
+}
+
+/// Verify a purge: structure, signatures, command, and freshness. The
+/// subject is the customer, and any chain the root issued for this
+/// command reaches it.
+async fn verify_purge(container: &[u8], now: u64) -> Result<String, Error> {
+    let chain = InvocationChain::try_from(container)
+        .map_err(|error| Error::Malformed(error.to_string()))?;
+    chain
+        .verify(&VerificationContext::new(&Environment::new(
+            chain.proof_store(),
+            DidKeyResolver,
+            UnverifiedRevocations,
+        )))
+        .await
+        .map_err(|error| Error::Unauthorized(error.to_string()))?;
+    if chain.command().0 != PURGE_COMMAND.map(str::to_string) {
+        return Err(Error::Forbidden);
+    }
+    let expiration = chain
+        .invocation
+        .expiration()
+        .ok_or_else(|| Error::Unauthorized("invocation must expire".into()))?;
+    if expiration.to_unix() < now {
+        return Err(Error::Unauthorized("invocation has expired".into()));
+    }
+    Ok(chain.subject().to_string())
 }
 
 async fn verify_customer_command<S: Store, const N: usize>(
@@ -416,7 +333,6 @@ async fn verify_customer_command<S: Store, const N: usize>(
     container: &[u8],
     expected: &[&str; N],
     now: u64,
-    allow_device: bool,
 ) -> Result<String, Error> {
     let chain = InvocationChain::try_from(container)
         .map_err(|error| Error::Malformed(error.to_string()))?;
@@ -452,7 +368,7 @@ async fn verify_customer_command<S: Store, const N: usize>(
             return Err(Error::Forbidden);
         }
     } else {
-        if !allow_device || chain.proofs().len() != 1 {
+        if chain.proofs().len() != 1 {
             return Err(Error::Forbidden);
         }
         let cid = chain.proofs()[0].to_string();
@@ -636,7 +552,6 @@ mod serialization_tests {
             Error::WrongGrant,
             Error::Forbidden,
             Error::Incomplete("purge failed".into()),
-            Error::OwnedSpacesRemain(vec!["did:key:z6MkSpace".into()]),
             Error::Internal("boom".into()),
         ];
         for refusal in refusals {
@@ -811,15 +726,33 @@ mod tests {
         );
     }
 
-    /// The bug this pins: the deletion machinery treated the account's
-    /// custody namespaces (the passkey-sealed key material) as ordinary
-    /// owned spaces, deprovisioned one mid-flight, and thereby
-    /// destroyed the account's own ability to retry — a permanent
-    /// half-deleted lockout. Custody consumers must be invisible to the
-    /// review plan, must refuse /provider/remove, and must be purged
-    /// only by customer finalization, last.
+    /// A root-signed purge, the shape the page mints after the passkey
+    /// recovers the account.
+    async fn purge_container(root: Ed25519Signer) -> Vec<u8> {
+        root_container(root, &PURGE_COMMAND).await
+    }
+
+    async fn enroll(store: &SqliteStore, root: &Ed25519Signer, email: &str, at: u64) {
+        store
+            .enroll_customer(Enrollment {
+                did: root.did().as_str(),
+                email,
+                plan: SIGNUP_PLAN,
+                ledger: root.did().as_str(),
+                custody: &format!("{}-custody", root.did().as_str()),
+                now: at,
+                expires_at: u64::MAX,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// The custody namespace holds the passkey-sealed key material the
+    /// account needs to retry anything. It refuses `/provider/remove`,
+    /// and the purge takes it after every data space and before the
+    /// account's own space.
     #[dialog_common::test]
-    async fn custody_namespaces_are_finalization_scope_not_review_scope() {
+    async fn it_purges_data_spaces_then_custody_then_the_account_space() {
         let store = SqliteStore::in_memory().unwrap();
         let root = Ed25519Signer::import(&[91; 32]).await.unwrap();
         let device = Ed25519Signer::import(&[92; 32]).await.unwrap();
@@ -856,22 +789,6 @@ mod tests {
             )
             .await
             .unwrap();
-        let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
-            .await
-            .unwrap();
-
-        // The review plan shows only the data space.
-        let plan_invocation = tonk_identity::request::build_device_invocation(
-            device.clone(),
-            &link,
-            CUSTOMER_PLAN_COMMAND.map(str::to_string).to_vec(),
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        let plan = customer_plan(&store, &plan_invocation, at).await.unwrap();
-        assert_eq!(plan.spaces.len(), 1);
-        assert_eq!(plan.spaces[0].space, space.did().to_string());
 
         // Deprovisioning the custody namespace is refused outright.
         let purger = RecordingPurger(Mutex::new(Vec::new()));
@@ -882,26 +799,16 @@ mod tests {
         ));
         assert!(purger.0.lock().unwrap().is_empty());
 
-        // Data space deleted; a still-active custody namespace does NOT
-        // block finalization — finalization is what purges it, last.
-        let remove_space = remove_container(&root, &device, &space.did()).await;
-        delete(&store, &purger, &remove_space, at + 2)
-            .await
-            .unwrap();
-        let customer_invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
-        let receipt = delete_customer(&store, &purger, &customer_invocation, at + 3)
-            .await
-            .unwrap();
+        let receipt = purge(
+            &store,
+            &purger,
+            &purge_container(root.clone()).await,
+            at + 2,
+        )
+        .await
+        .unwrap();
         assert_eq!(receipt.customer, root.did().to_string());
-        // Finalization takes the subscription rows with the customer:
-        // a subscription names who pays for it, and nobody does now.
-        assert!(
-            store
-                .consumer(custody.did().as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(receipt.state, "deleted");
         assert_eq!(
             purger.0.lock().unwrap().as_slice(),
             &[
@@ -909,31 +816,111 @@ mod tests {
                 format!("{}/", custody.did()),
                 format!("{}/", root.did()),
             ],
-            "custody purges inside finalization, after every data space and before the account space"
+            "custody purges after every data space and before the account space"
         );
+        assert_eq!(
+            receipt.consumers,
+            vec![
+                space.did().to_string(),
+                custody.did().to_string(),
+                root.did().to_string()
+            ]
+        );
+        assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
+        assert!(
+            store
+                .subscriptions_by_provider(root.did().as_str())
+                .await
+                .unwrap()
+                .is_empty(),
+            "the rows go with the customer that paid for them"
+        );
+        // Nothing marks the space DID as spent: only the holder of that
+        // space's key can present the DID, and a customer who deletes
+        // their account and comes back with the same space is a
+        // customer rather than an attacker.
+        assert!(
+            store
+                .consumer(space.did().as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// The denial is the atomic step. Every subscription the customer
+    /// provides is refused before any object goes, so a purge that
+    /// fails midway leaves a service that serves nothing, and the
+    /// retry finishes from the rows that remain.
+    #[dialog_common::test]
+    async fn it_denies_everything_first_and_resumes_a_failed_purge() {
+        let store = SqliteStore::in_memory().unwrap();
+        let root = Ed25519Signer::import(&[81; 32]).await.unwrap();
+        let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
+        let other = Ed25519Signer::import(&[84; 32]).await.unwrap();
+        let at = now();
+        enroll(&store, &root, "delete@example.com", at).await;
+        for did in [space.did(), other.did()] {
+            store
+                .add_subscription(
+                    did.as_str(),
+                    root.did().as_str(),
+                    at,
+                    SubscriptionKind::Space,
+                )
+                .await
+                .unwrap();
+        }
+        let purger = FlakyPurger {
+            fail_once: Mutex::new(true),
+            prefixes: Mutex::new(Vec::new()),
+        };
+        let invocation = purge_container(root.clone()).await;
+
+        assert!(matches!(
+            purge(&store, &purger, &invocation, at + 1).await,
+            Err(Error::Incomplete(_))
+        ));
+        // Every row carries the moment deletion began, the untouched
+        // ones included: service is already refused for all of them.
+        let rows = store
+            .subscriptions_by_provider(root.did().as_str())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 4, "space, space, custody, self");
+        assert!(rows.iter().all(|row| row.deleted_at == Some(at + 1)));
+        assert!(
+            store.customer(root.did().as_str()).await.unwrap().is_some(),
+            "the address stays claimed until the purge finishes"
+        );
+
+        let receipt = purge(&store, &purger, &invocation, at + 2).await.unwrap();
+        assert_eq!(receipt.consumers.len(), 4);
+        assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
+        assert!(
+            store
+                .subscriptions_by_provider(root.did().as_str())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Deleting the account again: still no account.
+        let replay = purge(&store, &purger, &invocation, at + 3).await.unwrap();
+        assert_eq!(replay.state, "deleted");
+        assert!(replay.consumers.is_empty());
     }
 
     /// Deleting a customer releases the address: the row holds it under
     /// a unique index, so an account that is gone must not keep an email
     /// claimed. The whole point of releasing it is enrolling again.
     #[dialog_common::test]
-    async fn deleting_a_customer_frees_the_address_for_another_account() {
+    async fn it_frees_the_address_for_another_account() {
         let store = SqliteStore::in_memory().unwrap();
         let purger = RecordingPurger(Mutex::new(Vec::new()));
         let root = Ed25519Signer::generate().await.unwrap();
         let at = now();
-        store
-            .enroll_customer(Enrollment {
-                did: root.did().as_str(),
-                email: "alice@example.com",
-                plan: SIGNUP_PLAN,
-                ledger: root.did().as_str(),
-                custody: &format!("{}-custody", root.did().as_str()),
-                now: at,
-                expires_at: u64::MAX,
-            })
-            .await
-            .unwrap();
+        enroll(&store, &root, "alice@example.com", at).await;
         assert!(
             store
                 .customer_by_email("alice@example.com")
@@ -942,10 +929,14 @@ mod tests {
                 .is_some()
         );
 
-        let invocation = root_container(root.clone(), &CUSTOMER_DELETE_COMMAND).await;
-        delete_customer(&store, &purger, &invocation, at + 1)
-            .await
-            .expect("a customer with no other spaces finalizes");
+        purge(
+            &store,
+            &purger,
+            &purge_container(root.clone()).await,
+            at + 1,
+        )
+        .await
+        .expect("a customer with no other spaces purges");
 
         assert!(
             store
@@ -958,120 +949,131 @@ mod tests {
 
         // And a different account may take it.
         let other = Ed25519Signer::generate().await.unwrap();
-        store
-            .enroll_customer(Enrollment {
-                did: other.did().as_str(),
-                email: "alice@example.com",
-                plan: SIGNUP_PLAN,
-                ledger: other.did().as_str(),
-                custody: &format!("{}-custody", other.did().as_str()),
-                now: at + 2,
-                expires_at: u64::MAX,
-            })
-            .await
-            .expect("the released address enrolls again");
+        enroll(&store, &other, "alice@example.com", at + 2).await;
     }
 
+    /// After the purge the gate serves nothing of the account's: not
+    /// its own space, and not any space it provided. Someone else's
+    /// space is untouched.
     #[dialog_common::test]
-    async fn customer_finalization_requires_every_owned_space_then_removes_email_state() {
+    async fn it_denies_the_account_and_every_space_it_provided_after_the_purge() {
+        use crate::provisioning::screen;
+
         let store = SqliteStore::in_memory().unwrap();
-        let root = Ed25519Signer::import(&[81; 32]).await.unwrap();
-        let space = Ed25519Signer::import(&[82; 32]).await.unwrap();
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let root = Ed25519Signer::import(&[51; 32]).await.unwrap();
+        let other = Ed25519Signer::import(&[52; 32]).await.unwrap();
+        let mine = Ed25519Signer::import(&[53; 32]).await.unwrap();
+        let theirs = Ed25519Signer::import(&[54; 32]).await.unwrap();
         let at = now();
-        store
-            .enroll_customer(Enrollment {
-                did: root.did().as_str(),
-                email: "delete@example.com",
-                plan: SIGNUP_PLAN,
-                ledger: root.did().as_str(),
-                custody: &format!("{}-custody", root.did().as_str()),
-                now: at,
-                expires_at: u64::MAX,
-            })
-            .await
-            .unwrap();
+        for (customer, email) in [(&root, "mine@example.com"), (&other, "theirs@example.com")] {
+            enroll(&store, customer, email, at).await;
+            store
+                .activate_customer(customer.did().as_str(), "2026-08", at)
+                .await
+                .unwrap();
+        }
         store
             .add_subscription(
-                space.did().as_str(),
+                mine.did().as_str(),
                 root.did().as_str(),
                 at,
                 SubscriptionKind::Space,
             )
             .await
             .unwrap();
-        let device = Ed25519Signer::import(&[83; 32]).await.unwrap();
+        store
+            .add_subscription(
+                theirs.did().as_str(),
+                other.did().as_str(),
+                at,
+                SubscriptionKind::Space,
+            )
+            .await
+            .unwrap();
+        let served = |did: String| {
+            let store = &store;
+            async move { screen(store, &did, at + 1).await.unwrap().is_ok() }
+        };
+        assert!(
+            served(root.did().to_string()).await,
+            "the account is served before"
+        );
+        assert!(
+            served(mine.did().to_string()).await,
+            "its space is served before"
+        );
+
+        purge(
+            &store,
+            &purger,
+            &purge_container(root.clone()).await,
+            at + 1,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !served(root.did().to_string()).await,
+            "the account is refused after"
+        );
+        assert!(
+            !served(mine.did().to_string()).await,
+            "its space is refused after"
+        );
+        assert!(
+            served(theirs.did().to_string()).await,
+            "another customer's space is not the purge's business"
+        );
+    }
+
+    /// The chain is the authority. A device the root delegated to
+    /// purges as well as the root does; a chain rooted elsewhere, or
+    /// one over the wrong command, does not.
+    #[dialog_common::test]
+    async fn it_accepts_any_chain_the_root_issued_for_the_purge() {
+        let store = SqliteStore::in_memory().unwrap();
+        let purger = RecordingPurger(Mutex::new(Vec::new()));
+        let root = Ed25519Signer::import(&[61; 32]).await.unwrap();
+        let device = Ed25519Signer::import(&[62; 32]).await.unwrap();
+        let stranger = Ed25519Signer::import(&[63; 32]).await.unwrap();
+        let at = now();
+        enroll(&store, &root, "chain@example.com", at).await;
+
         let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &device.did())
             .await
             .unwrap();
-        let plan_invocation = tonk_identity::request::build_device_invocation(
+        let wrong_command = tonk_identity::request::build_device_invocation(
             device.clone(),
             &link,
-            CUSTOMER_PLAN_COMMAND.map(str::to_string).to_vec(),
-            Default::default(),
+            vec!["customer".into(), "delete".into()],
+            BTreeMap::new(),
         )
         .await
         .unwrap();
-        let plan = customer_plan(&store, &plan_invocation, at).await.unwrap();
-        assert_eq!(plan.spaces.len(), 1);
-        assert_eq!(plan.spaces[0].space, space.did().to_string());
-
-        // Finalization arrives device-signed, exactly as the worker
-        // builds it: the account's chain to this device is the
-        // deletion authority, no root-key signature involved.
-        let customer_invocation = tonk_identity::request::build_device_invocation(
-            device.clone(),
-            &link,
-            CUSTOMER_DELETE_COMMAND.map(str::to_string).to_vec(),
-            Default::default(),
-        )
-        .await
-        .unwrap();
-        let purger = RecordingPurger(Mutex::new(Vec::new()));
         assert!(matches!(
-            delete_customer(&store, &purger, &customer_invocation, at + 1).await,
-            Err(Error::OwnedSpacesRemain(spaces)) if spaces == vec![space.did().to_string()]
+            purge(&store, &purger, &wrong_command, at + 1).await,
+            Err(Error::Forbidden)
         ));
+
+        // A stranger's chain names a stranger: it verifies, and purges
+        // the stranger's (nonexistent) account, not this one.
+        let strangers = purge_container(stranger.clone()).await;
+        let receipt = purge(&store, &purger, &strangers, at + 1).await.unwrap();
+        assert_eq!(receipt.customer, stranger.did().to_string());
+        assert!(receipt.consumers.is_empty());
         assert!(store.customer(root.did().as_str()).await.unwrap().is_some());
 
-        let space_invocation = remove_container(&root, &device, &space.did()).await;
-        delete(&store, &purger, &space_invocation, at + 2)
-            .await
-            .unwrap();
-        let receipt = delete_customer(&store, &purger, &customer_invocation, at + 3)
-            .await
-            .unwrap();
+        let delegated = tonk_identity::request::build_device_invocation(
+            device.clone(),
+            &link,
+            PURGE_COMMAND.map(str::to_string).to_vec(),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        let receipt = purge(&store, &purger, &delegated, at + 2).await.unwrap();
         assert_eq!(receipt.customer, root.did().to_string());
         assert!(store.customer(root.did().as_str()).await.unwrap().is_none());
-        assert!(
-            store
-                .subscriptions_by_provider(root.did().as_str())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        // Finalization leaves nothing behind: the subscription rows go
-        // with the customer that paid for them. Nothing marks the space
-        // DID as spent, so provisioning it again succeeds — only the
-        // holder of that space's key can present the DID, and a customer
-        // who deletes their account and comes back with the same space
-        // is a customer rather than an attacker.
-        assert!(
-            store
-                .consumer(space.did().as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            purger.0.lock().unwrap().as_slice(),
-            &[
-                format!("{}/", space.did()),
-                // Enrollment claims the passkey's custody space, so
-                // finalization purges it: after the data spaces, before
-                // the account's own.
-                format!("{}-custody/", root.did()),
-                format!("{}/", root.did()),
-            ]
-        );
     }
 }

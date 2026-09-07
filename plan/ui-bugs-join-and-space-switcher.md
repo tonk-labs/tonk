@@ -23,7 +23,7 @@
 - `cargo test -p tonk-worker --test standard_library` — 16 passed.
 - `cargo test -p tonk-fab --lib` — 109 passed.
 - `cargo clippy -p tonk-fab --lib -- -D warnings` — pass.
-- `nix develop path:. -c cargo nextest run --workspace-remap ./ --archive-file /nix/store/qx1xc5dic9ci3d6d7vlifwwajbw73ic8-tests-web-debug-0.6.9/tests-web-debug.tar.zst -E 'package(tonk-fab)'` — 75 Wasm/Chrome tests passed, including both switcher regressions.
+- `nix develop . -c cargo nextest run --workspace-remap ./ --archive-file /nix/store/qx1xc5dic9ci3d6d7vlifwwajbw73ic8-tests-web-debug-0.6.9/tests-web-debug.tar.zst -E 'package(tonk-fab)'` — 75 Wasm/Chrome tests passed, including both switcher regressions.
 - `python3 docs/storybook/scripts/build.py --check` — 26 screens, 78 journeys, 115 verification items, 6 triage findings.
 - `python3 docs/storybook/scripts/check-links.py docs/storybook` — 173 local references valid.
 - `git diff --check` — pass.

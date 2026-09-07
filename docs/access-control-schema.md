@@ -149,13 +149,16 @@ customer invoking `suspend` on a space they own is refused.
 | `/use/put/subscription/archive` | `archived_at` | dropped | kept, for billing | on re-provisioning |
 | `/provider/add` | the row itself | — | created | — |
 | `/provider/remove` | `deleted_at`, then removes the row | dropped | removed | no |
-| `/customer/delete` | the same, for every space at once | dropped | removed | no |
+| `/void/customer/purge` | `deleted_at` on every row the customer provides in one write, then removes them and the customer | dropped | removed | no |
 
 Deletion is the customer's own request rather than an operator's, which
-is why it lives under `/provider` and `/customer` rather than in the
-`/use/put/subscription` namespace. `/customer/deletion/plan` reads the
-scope without changing anything: it is what the confirmation screen
-shows before you agree. `expires_at` has no command yet: renewal is the
+is why it lives under `/provider` rather than in the
+`/use/put/subscription` namespace. The purge lives under `/void`, the
+destructive level of the capability hierarchy, so no `/use` grant
+reaches it; the denial is its atomic step, and a purge that fails
+partway leaves a service that serves nothing and rows a retry resumes
+from. The confirmation screen reads its scope from the account db, not
+from the service. `expires_at` has no command yet: renewal is the
 increment that will write it.
 
 ```mermaid

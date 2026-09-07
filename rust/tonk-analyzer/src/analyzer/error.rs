@@ -350,6 +350,86 @@ pub enum AnalyzeErrorKind {
         /// The concept name that failed to resolve.
         name: String,
     },
+    /// A `on:<name>=<command>` binding in a view template names an
+    /// `event!:` declaration nothing declares. The binding would
+    /// install no listener and report nothing — the element would
+    /// simply be inert — so it fails the lowering instead.
+    #[error(
+        "`{attribute}` names the event declaration `{name}`, which no `event!:` declares in this document or on the branch"
+    )]
+    UnknownEventDeclaration {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The declaration it names (`on/click`).
+        name: String,
+    },
+    /// A `on:<name>=<command>` binding names a command that resolves
+    /// to no concept. Same failure mode as an unknown declaration: the
+    /// click would post nothing.
+    #[error("`{attribute}={command}` names no command")]
+    UnknownBoundCommand {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The command name or URI the binding carries.
+        command: String,
+    },
+    /// The bound declaration cannot fill the bound command: a required
+    /// field has no source, or a source names a field the command does
+    /// not declare. The first posts a command no rule premise matches;
+    /// the second is a typo that silently does nothing.
+    #[error("`{attribute}={command}` cannot fill the command — {detail}")]
+    EventCommandMismatch {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The command the binding posts.
+        command: String,
+        /// What is wrong, rendered: the required fields with no
+        /// source and the sources naming fields the command does not
+        /// declare. One string rather than two lists so the error
+        /// type stays small enough to return by value.
+        detail: String,
+    },
+    /// A `show:` template interpolates a name the model concept does
+    /// not declare. The renderer resolves `{name}` against the row it
+    /// is rendering and a miss renders nothing at all — no gap, no
+    /// warning — so a typo is invisible until someone notices a value
+    /// missing from the page.
+    #[error("`{{{field}}}` is not a field of `{model}` — it renders as nothing. {known}")]
+    UnknownTemplateField {
+        /// The name between the braces, as written.
+        field: String,
+        /// The concept the view renders.
+        model: String,
+        /// The fields it does declare, rendered. One string rather
+        /// than a list so the error type stays small enough to return
+        /// by value.
+        known: String,
+    },
+    /// A bound `event!:` sources a command field from a `{name}` the
+    /// view's model does not declare. The interpolation is resolved in
+    /// the same scope a template's is, so the same miss applies: the
+    /// command is posted with that field empty.
+    ///
+    /// Only reported for a field the command actually declares. A
+    /// source the command has no field for fills nothing either way,
+    /// and is already the subject of `E_EVENT_COMMAND_MISMATCH`.
+    #[error("`{attribute}` sources `{{{field}}}` into {detail}")]
+    UnknownEventSourceField {
+        /// The attribute as written (`on:click`).
+        attribute: String,
+        /// The name between the braces, as written.
+        field: String,
+        /// The command field it fills, the model, and the undeclared
+        /// name, rendered. One string rather than three so the error
+        /// type stays small enough to return by value.
+        detail: String,
+    },
+    /// The resolved bindings could not be encoded.
+    #[error("view bindings could not be encoded: {reason}")]
+    InvalidViewBindings {
+        /// Underlying encoder message.
+        reason: String,
+    },
     /// A field in the body doesn't appear in the head concept's
     /// `with` map.
     #[error("field {field:?} is not part of concept {concept:?}")]
@@ -561,6 +641,12 @@ impl AnalyzeErrorKind {
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::ReservedName { .. } => "E_RESERVED_NAME",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
+            Self::UnknownEventDeclaration { .. } => "E_UNKNOWN_EVENT_DECLARATION",
+            Self::UnknownBoundCommand { .. } => "E_UNKNOWN_BOUND_COMMAND",
+            Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
+            Self::UnknownTemplateField { .. } => "E_UNKNOWN_TEMPLATE_FIELD",
+            Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
+            Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",

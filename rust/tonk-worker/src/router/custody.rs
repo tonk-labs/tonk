@@ -139,7 +139,8 @@ pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) 
     if let Err(error) = super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
-        Some(enrollment),
+        Some(tonk_worker_api::CustodyIntent::Enroll(enrollment)),
+        None,
     )
     .await
     {
@@ -195,7 +196,12 @@ fn split_refusal(error: &str) -> (Option<&str>, &str) {
 /// reply goes back over the transferred port, and the custodian is
 /// dropped when this returns.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports: js_sys::Array) {
+pub(crate) async fn receive(
+    state: AppState,
+    source: Option<ClientId>,
+    data: wasm_bindgen::JsValue,
+    ports: js_sys::Array,
+) {
     use wasm_bindgen::{JsCast, JsValue};
 
     let Some(port) = ports.get(0).dyn_into::<web_sys::MessagePort>().ok() else {
@@ -203,9 +209,20 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
         return;
     };
 
-    let answer = match custodian_from(&data).await {
-        Ok(custodian) => perform(state, &data, custodian).await,
-        Err(error) => Err(error),
+    let context_current = match source.as_ref() {
+        Some(client) => {
+            let tonk = state.read().await;
+            super::session::client_context_is_current(&tonk, client).await
+        }
+        None => true,
+    };
+    let answer = if !context_current {
+        Err("profile changed; reload required".to_string())
+    } else {
+        match custodian_from(&data).await {
+            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+            Err(error) => Err(error),
+        }
     };
 
     let reply = js_sys::Object::new();
@@ -247,6 +264,7 @@ pub(crate) async fn receive(state: AppState, data: wasm_bindgen::JsValue, ports:
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn perform(
     state: AppState,
+    source: Option<&ClientId>,
     data: &wasm_bindgen::JsValue,
     custodian: tonk_identity::custodian::Custodian,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -271,19 +289,82 @@ async fn perform(
                 Some(account) => account,
                 None => open(&custodian).await?,
             };
-            enroll(&state, &custodian, &account, enrollment.email, None).await
+            let tonk = state.read().await;
+            enroll(&tonk, &custodian, &account, enrollment.email, None).await
         }
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => {
-            create(&state, &custodian, creation).await
+            create(&state, source, &custodian, creation).await
         }
-        tonk_worker_api::CustodyIntent::Login(link) => login(&state, &custodian, link).await,
+        tonk_worker_api::CustodyIntent::Login(link) => {
+            login(&state, source, &custodian, link).await
+        }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
             let holder = custodian_named(data, "holder")
                 .await?
                 .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
             add_passkey(&state, &custodian, &holder, addition).await
         }
+        // Both answer with where the page goes next: the guest that
+        // asked is on a page the outcome retires (a purged profile, or
+        // a handoff to a waiting process), and the page is what
+        // navigates.
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => {
+            super::account_deletion::purge(&state, source, &custodian).await?;
+            navigate_reply("/")
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+            let target =
+                super::ceremony::authorize_device(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
     }
+}
+
+/// A custody reply telling the page where to go: `{ navigate: href }`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn navigate_reply(href: &str) -> Result<wasm_bindgen::JsValue, String> {
+    let reply = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &reply,
+        &wasm_bindgen::JsValue::from_str("navigate"),
+        &wasm_bindgen::JsValue::from_str(href),
+    )
+    .map_err(|_| "the reply could not be built".to_string())?;
+    Ok(reply.into())
+}
+
+/// A custody reply that reloads the initiating top-level page after the reply
+/// port has delivered success. Sibling tabs are notified separately.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn reload_reply() -> Result<wasm_bindgen::JsValue, String> {
+    let reply = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &reply,
+        &wasm_bindgen::JsValue::from_str("reload"),
+        &wasm_bindgen::JsValue::TRUE,
+    )
+    .map_err(|_| "the reload reply could not be built".to_string())?;
+    Ok(reply.into())
+}
+
+/// The account this passkey holds, opened from its custody cell at this
+/// deployment's own `/ucan/`: what every root-signed ceremony the worker
+/// runs on the page's behalf starts from.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn held_account(
+    custodian: &tonk_identity::custodian::Custodian,
+) -> Result<tonk_identity::account::Account, String> {
+    let endpoint = super::customer::ucan_endpoint(
+        &super::customer::service_origin().map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    custodian
+        .account()
+        .load(endpoint.to_string())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| refusal("the custody cell did not open", &error))?
+        .ok_or_else(|| "this passkey holds no account".to_string())
 }
 
 /// Seal the account a first passkey holds under a second one.
@@ -327,7 +408,8 @@ async fn add_passkey(
         .await
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
-    enroll(state, added, &sealed, None, None).await
+    let tonk = state.read().await;
+    enroll(&tonk, added, &sealed, None, None).await
 }
 
 /// Open the account this passkey holds and link this browser to it.
@@ -338,6 +420,7 @@ async fn add_passkey(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn login(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     link: tonk_worker_api::DeviceLink,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -379,8 +462,13 @@ async fn login(
         "this passkey has published no account yet; create one on the browser that holds it"
             .to_string()
     })?;
-    complete_login(state, custodian, &link, &endpoint, account).await?;
-    Ok(wasm_bindgen::JsValue::UNDEFINED)
+    let profile_changed =
+        complete_login(state, source, custodian, &link, &endpoint, account).await?;
+    if profile_changed {
+        reload_reply()
+    } else {
+        Ok(wasm_bindgen::JsValue::UNDEFINED)
+    }
 }
 
 /// Retry the parked login until the gate serves it, then finish it.
@@ -412,8 +500,17 @@ fn finish_login_once_served(
                 .await
             {
                 Ok(Some(account)) => {
-                    match complete_login(&state, &custodian, &link, &endpoint, account).await {
-                        Ok(()) => log!("custody: the parked login finished on activation"),
+                    match complete_login(
+                        &state,
+                        // The original ceremony already returned an
+                        // activation wait, so it has no reply left to
+                        // consume. Include every tab in any later profile
+                        // change notification, including that origin tab.
+                        None, &custodian, &link, &endpoint, account,
+                    )
+                    .await
+                    {
+                        Ok(_) => log!("custody: the parked login finished on activation"),
                         Err(error) => log!("custody: the parked login could not finish: {error}"),
                     }
                     return;
@@ -446,11 +543,12 @@ fn finish_login_once_served(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn complete_login(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     link: &tonk_worker_api::DeviceLink,
     endpoint: &str,
     account: tonk_identity::account::Account,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     use dialog_varsig::Principal as _;
 
     let dialog_credentials::Signer::Ed25519(root) = account
@@ -458,30 +556,32 @@ async fn complete_login(
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
 
-    let device = {
-        let tonk = state.read().await;
-        tonk.profile.signer().signer().clone()
-    };
+    let tonk = super::profiles::for_account(state.clone(), &root.did(), source)
+        .await
+        .map_err(|error| format!("the account profile could not be selected: {error}"))?;
+    log!(
+        "custody: account profile disposition {:?}",
+        tonk.disposition()
+    );
+    let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
+    let device = tonk.profile.signer().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
             .map_err(|error| format!("the device link did not sign: {error:#}"))?;
 
-    {
-        let tonk = state.read().await;
-        let root_record = tonk_worker_api::SaveRootRequest {
-            credential_id: custodian
-                .credential_id()
-                .map(hex::encode)
-                .unwrap_or_default(),
-            delegation_hex: ceremony.delegation_hex.clone(),
-            passkey: None,
-            encryption_key: Some(account.secret().did().to_string()),
-        };
-        crate::router::identity::persist_root(&tonk, root_record)
-            .await
-            .map_err(|error| format!("the account root was not recorded: {error}"))?;
-    }
+    let root_record = tonk_worker_api::SaveRootRequest {
+        credential_id: custodian
+            .credential_id()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        delegation_hex: ceremony.delegation_hex.clone(),
+        passkey: None,
+        encryption_key: Some(account.secret().did().to_string()),
+    };
+    crate::router::identity::persist_root(&tonk, root_record)
+        .await
+        .map_err(|error| format!("the account root was not recorded: {error}"))?;
 
     // No request: the roster is DeviceLink facts on the account's own
     // branch, and the sweep describes this device's row from the root
@@ -489,7 +589,7 @@ async fn complete_login(
     // keeping a second copy of a list that already syncs.
     //
     link_account(
-        state,
+        &tonk,
         &link.provider,
         &root.did().to_string(),
         &custodian
@@ -501,7 +601,10 @@ async fn complete_login(
         false,
     )
     .await?;
-    Ok(())
+    crate::router::account::finish_link(&tonk)
+        .await
+        .map_err(|error| format!("the account link did not finish: {error}"))?;
+    Ok(profile_changed)
 }
 
 /// Seal a fresh account secret under this custodian.
@@ -581,7 +684,7 @@ async fn recorded_account(
 /// customer.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enroll(
-    state: &AppState,
+    tonk: &crate::worker::TonkState,
     custodian: &tonk_identity::custodian::Custodian,
     account: &tonk_identity::account::Account,
     email: Option<String>,
@@ -604,30 +707,26 @@ async fn enroll(
     // with. Recorded first for the same reason enrollment writes the
     // cell before the customer row: what cannot be recovered must not
     // depend on the step after it succeeding.
-    {
-        let tonk = state.read().await;
-        let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
-            created_at: (js_sys::Date::now() / 1000.0) as u64,
-            created_on,
-        });
-        crate::router::customer::record_custody_cell(
-            &tonk,
-            &material.custody.to_string(),
-            &hex::encode(&material.sealed),
-            passkey,
-            &custodian
-                .credential_id()
-                .map(hex::encode)
-                .unwrap_or_default(),
-            email.as_deref(),
-        )
-        .await
-        .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
-    }
+    let passkey = created_on.map(|created_on| tonk_worker_api::PasskeyMetadata {
+        created_at: (js_sys::Date::now() / 1000.0) as u64,
+        created_on,
+    });
+    crate::router::customer::record_custody_cell(
+        tonk,
+        &material.custody.to_string(),
+        &hex::encode(&material.sealed),
+        passkey,
+        &custodian
+            .credential_id()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        email.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("the custody cell was not recorded: {error}"))?;
 
-    let tonk = state.read().await;
     let receipt =
-        crate::router::customer::enroll_customer(&tonk, &origin, email, &material.borrow())
+        crate::router::customer::enroll_customer(tonk, &origin, email, &material.borrow())
             .await
             .map_err(|error| format!("{error}"))?;
 
@@ -684,6 +783,7 @@ async fn custody_material(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create(
     state: &AppState,
+    source: Option<&ClientId>,
     custodian: &tonk_identity::custodian::Custodian,
     creation: tonk_worker_api::AccountCreation,
 ) -> Result<wasm_bindgen::JsValue, String> {
@@ -698,10 +798,15 @@ async fn create(
     // signed with the concrete key.
     let dialog_credentials::Signer::Ed25519(root) = root;
 
-    let device = {
-        let tonk = state.read().await;
-        tonk.profile.signer().signer().clone()
-    };
+    let tonk = super::profiles::for_account(state.clone(), &root.did(), source)
+        .await
+        .map_err(|error| format!("the account profile could not be selected: {error}"))?;
+    log!(
+        "custody: account profile disposition {:?}",
+        tonk.disposition()
+    );
+    let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
+    let device = tonk.profile.signer().signer().clone();
     let device_did = device.did();
 
     let ceremony = tonk_identity::ceremony::create_custody_request(
@@ -725,9 +830,8 @@ async fn create(
     // The root record first: it is what every later custody operation
     // resolves the passkey through, and an account created without one
     // is unreachable from a second device.
-    {
-        let tonk = state.read().await;
-        let root_record = tonk_worker_api::SaveRootRequest {
+    let root_record =
+        tonk_worker_api::SaveRootRequest {
             credential_id: ceremony.root.credential_id.clone(),
             delegation_hex: ceremony.root.delegation_hex.clone(),
             passkey: ceremony.root.passkey.as_ref().map(|passkey| {
@@ -738,10 +842,9 @@ async fn create(
             }),
             encryption_key: ceremony.root.encryption_key.clone(),
         };
-        crate::router::identity::persist_root(&tonk, root_record)
-            .await
-            .map_err(|error| format!("the account root was not recorded: {error}"))?;
-    }
+    crate::router::identity::persist_root(&tonk, root_record)
+        .await
+        .map_err(|error| format!("the account root was not recorded: {error}"))?;
 
     // No account-service request: what it did was claim the address in
     // a table of its own, and enrollment claims the same address in the
@@ -753,7 +856,7 @@ async fn create(
     // everything downstream — enrollment included — reports one as
     // missing.
     link_account(
-        state,
+        &tonk,
         &creation.provider,
         &ceremony.root.root_did,
         &ceremony.root.credential_id,
@@ -763,14 +866,23 @@ async fn create(
     )
     .await?;
 
-    enroll(
-        state,
+    let answer = enroll(
+        &tonk,
         custodian,
         &account,
         Some(creation.email),
         creation.created_on,
     )
-    .await
+    .await?;
+    if profile_changed {
+        js_sys::Reflect::set(
+            &answer,
+            &wasm_bindgen::JsValue::from_str("reload"),
+            &wasm_bindgen::JsValue::TRUE,
+        )
+        .map_err(|_| "the reload reply could not be built".to_string())?;
+    }
+    Ok(answer)
 }
 
 /// Record the account the service just accepted, so this profile has
@@ -778,7 +890,7 @@ async fn create(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[allow(clippy::too_many_arguments)]
 async fn link_account(
-    state: &AppState,
+    tonk: &crate::worker::TonkState,
     provider: &str,
     root_did: &str,
     credential_id: &str,
@@ -794,8 +906,7 @@ async fn link_account(
         remote: remote.to_string(),
         initialize_name,
     };
-    let tonk = state.read().await;
-    crate::router::account::persist_link(&tonk, &request)
+    crate::router::account::persist_link(tonk, &request)
         .await
         .map_err(|error| format!("the account link was not saved: {error}"))
 }

@@ -487,6 +487,67 @@ pub struct EmailStatus {
     pub state: crate::domain::email_status::State,
 }
 
+/// Where a passkey-gated command got to, on the profile overlay.
+///
+/// The hub's settings page asserts `tonk:delete-account`,
+/// `tonk:authorize-device`, or `tonk:add-passkey` and then watches this
+/// one row: the worker writes it as the ceremony advances, so the page
+/// renders progress and failure from facts rather than from a response
+/// body. One row, replaced at each step; `ceremony` says which command
+/// the row is about, so a stale row from an earlier ceremony is
+/// recognisable as such.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CeremonyStatus {
+    /// The entity the page watches, `state:ceremony`.
+    pub this: Entity,
+    /// Which ceremony: `delete-account`, `authorize-device`, `add-passkey`.
+    pub ceremony: crate::domain::ceremony_status::Ceremony,
+    /// One of [`ceremony_state`].
+    pub state: crate::domain::ceremony_status::State,
+    /// The failure reason, or the callback a finished authorization
+    /// leads to. Empty when there is nothing to add.
+    pub detail: crate::domain::ceremony_status::Detail,
+}
+
+impl CeremonyStatus {
+    /// The entity every ceremony reports to.
+    pub const ENTITY: &str = "state:ceremony";
+
+    /// A report about `ceremony`.
+    pub fn new(this: Entity, ceremony: &str, state: &str, detail: impl Into<String>) -> Self {
+        Self {
+            this,
+            ceremony: crate::domain::ceremony_status::Ceremony(ceremony.to_owned()),
+            state: crate::domain::ceremony_status::State(state.to_owned()),
+            detail: crate::domain::ceremony_status::Detail(detail.into()),
+        }
+    }
+}
+
+/// The ceremonies [`CeremonyStatus`] reports on.
+pub mod ceremony {
+    /// `tonk:delete-account`.
+    pub const DELETE_ACCOUNT: &str = "delete-account";
+    /// `tonk:authorize-device`.
+    pub const AUTHORIZE_DEVICE: &str = "authorize-device";
+    /// `tonk:add-passkey`.
+    pub const ADD_PASSKEY: &str = "add-passkey";
+}
+
+/// The states a [`CeremonyStatus`] can report.
+pub mod ceremony_state {
+    /// The worker refused before asking for a passkey; `detail` says why.
+    pub const REFUSED: &str = "refused";
+    /// The page has been asked for the passkey.
+    pub const PENDING_CEREMONY: &str = "pending-ceremony";
+    /// The passkey answered; the worker is doing the work.
+    pub const WORKING: &str = "working";
+    /// Done. `detail` carries what comes next, when anything does.
+    pub const DONE: &str = "done";
+    /// The ceremony or the work failed; `detail` says why.
+    pub const FAILED: &str = "failed";
+}
+
 /// The states an answer can take.
 ///
 /// Shared vocabulary: the worker writes these strings and the

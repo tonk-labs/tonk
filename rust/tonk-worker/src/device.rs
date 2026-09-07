@@ -1,18 +1,10 @@
 //! Which profile this device signs as.
 //!
-//! Revocation is permanent for a key. The access-service screen matches
-//! a revoked device DID against every chain that DID issues a hop in,
-//! unscoped by account, and there is no un-revoke anywhere. So signing
-//! out — which revokes this device — has to leave a *different* key
-//! behind, or this browser could never presign again, local spaces
-//! included.
-//!
-//! Rotating is safe because nothing outside the device is keyed to the
-//! device DID: a linked profile's roster entries name the account root,
-//! and the spaces it holds are escrowed under that root, so a fresh
-//! profile that re-links restores them. What rotation does cost is the
-//! passkey prompt to link again, and anything never escrowed — a space
-//! that was never sync-enabled has no backup to restore from.
+//! A browser profile owns one device signer and its local workspace.
+//! Signing out only disconnects account services; it deliberately leaves
+//! that profile, signer, historical account root, and every local space in
+//! place. Choosing another account changes the active profile instead of
+//! rebinding the existing profile to a different root.
 //!
 //! The active profile's name is recorded against a fixed registry
 //! profile rather than inside the profile it names: a pointer stored in
@@ -27,6 +19,8 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_schema::prelude::DidExt as _;
 
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, DefaultSpace};
@@ -43,17 +37,10 @@ pub const REGISTRY_PROFILE: &str = "tonk";
 /// name as UTF-8.
 const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 
-/// Branch of the registry profile's repository holding the roster of
-/// every profile this browser knows, one [`RosterProfile`] entity per
-/// storage name with its attachment and email as stamps.
-///
-/// A switcher menu has to describe profiles it has not opened, and
-/// opening each one just to render a row would cost key-material load
-/// and credential reads per profile per render. The roster is maintained
-/// by the worker at the moments it already has the facts in hand (boot,
-/// link, unlink, rename, switch). Facts rather than one serialized blob:
-/// concurrent refreshes merge per entity instead of racing a
-/// read-modify-write of the whole roster.
+/// Branch of the registry profile's repository holding the roster of every
+/// profile this browser knows. It stores only the stable profile DID and
+/// storage handle; the switcher reads mutable labels and account attachment
+/// state from the profile that owns them.
 ///
 /// Never upstreamed, so it stays on this device: the registry profile's
 /// `main` is an account branch that syncs, and the roster is not the
@@ -62,10 +49,9 @@ const ROSTER_BRANCH: &str = "roster";
 
 /// One profile this browser knows about, as the switcher renders it.
 ///
-/// Inactive entries are as-of their profile's last activation; only the
-/// active profile's entry is refreshed from live state. A display name
-/// renamed on another device converges the next time that account's
-/// profile is activated here.
+/// The registry supplies a deterministic fallback name. The profile router
+/// replaces it with the live display name and attachment facts before serving
+/// the switcher response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RosterEntry {
     /// Storage name the profile opens under.
@@ -288,13 +274,9 @@ impl Registry {
         let mut roster: Vec<RosterEntry> = profiles
             .into_iter()
             .map(|profile| {
-                // The row is keyed on the profile's DID, and the default
-                // display name is the deterministic petname of that DID —
-                // so an inactive profile keeps its name in the switcher
-                // without being opened. A user-chosen rename or the
-                // account email still only shows while the profile is
-                // active, when the live splice reads them from where
-                // they live.
+                // Keep a deterministic fallback for an unreadable profile.
+                // Ordinary switcher reads replace it with the name stored in
+                // this profile's own repository.
                 let display_name = profile
                     .this()
                     .as_str()
@@ -341,8 +323,44 @@ impl Registry {
             })
     }
 
-    /// Generate a fresh profile and make it the active one.
-    pub(crate) async fn rotate(
+    /// Forget `profile`: drop its roster entry so the switcher stops
+    /// listing it. Its storage is left alone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) async fn remove_roster(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        operator: &DefaultOperator,
+        profile: &Did,
+    ) -> Result<(), TonkWorkerError> {
+        let branch = self.roster_branch(storage, operator).await?;
+        let entries: Vec<DeviceProfile> = branch
+            .query()
+            .select(Query::<DeviceProfile> {
+                this: Term::from(profile.this()),
+                name: Term::var("name"),
+            })
+            .perform(operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to read the profile roster: {error:?}"))
+            })?;
+        for entry in entries {
+            branch
+                .transaction()
+                .retract(entry)
+                .commit()
+                .perform(operator)
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("failed to forget the profile: {error}"))
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Generate a fresh profile without changing the active pointer.
+    pub(crate) async fn create_profile(
         &self,
         storage: &Storage<DefaultSpace>,
     ) -> Result<(String, Profile), TonkWorkerError> {
@@ -360,20 +378,6 @@ impl Registry {
                 TonkWorkerError::Internal(format!("failed to create profile '{name}': {error}"))
             })?;
 
-        // Recorded only once the profile exists, so a failure between
-        // the two leaves an orphaned profile rather than a pointer to
-        // nothing.
-        let registry = self.open_self(storage).await?;
-        registry
-            .credential()
-            .site(ACTIVE_PROFILE_SITE)
-            .save(name.clone().into_bytes())
-            .perform(storage)
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to record the active profile: {error}"))
-            })?;
-
         Ok((name, profile))
     }
 }
@@ -381,10 +385,10 @@ impl Registry {
 /// Open the profile this device currently signs as, with the name it was
 /// opened under.
 ///
-/// Falls back to [`REGISTRY_PROFILE`] when no rotation has happened, and
+/// Falls back to [`REGISTRY_PROFILE`] when no promotion has happened, and
 /// also when the pointer is unreadable — a device that cannot read its
 /// pointer is better off signing as the profile it started with than
-/// refusing to boot. A rotated device in that state re-links rather than
+/// refusing to boot. A promoted device in that state re-links rather than
 /// losing anything, because the pointer's only job is naming a key.
 pub async fn open_active(
     storage: &Storage<DefaultSpace>,
@@ -392,13 +396,15 @@ pub async fn open_active(
     Registry::device().open_active(storage).await
 }
 
-/// Generate a fresh profile and make it the one this device signs as.
+/// Generate a fresh profile without changing which profile this device signs
+/// as. The profile lifecycle module promotes it only after it boots fully.
 ///
 /// The key left behind is not deleted — it still holds whatever local
-/// spaces it opened. It is simply no longer what this device presents,
-/// which is the point when the old key has just been revoked.
-pub async fn rotate(storage: &Storage<DefaultSpace>) -> Result<(String, Profile), TonkWorkerError> {
-    Registry::device().rotate(storage).await
+/// spaces it opened. It is simply no longer the active browser profile.
+pub async fn create_profile(
+    storage: &Storage<DefaultSpace>,
+) -> Result<(String, Profile), TonkWorkerError> {
+    Registry::device().create_profile(storage).await
 }
 
 #[cfg(test)]
@@ -437,36 +443,40 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_leaves_the_old_key_behind_when_it_rotates() {
+    async fn it_creates_a_profile_without_repointing_the_device() {
         let registry = scratch();
         let storage = Storage::<DefaultSpace>::default();
         let (_, before) = registry.open_active(&storage).await.unwrap();
 
-        let (name, after) = registry.rotate(&storage).await.unwrap();
+        let (name, after) = registry.create_profile(&storage).await.unwrap();
 
         assert_ne!(name, registry.profile);
         assert_ne!(
             before.did(),
             after.did(),
-            "a rotated device must not keep signing with the key it just revoked"
+            "a created profile must have its own signer"
         );
+        let (active_name, active) = registry.open_active(&storage).await.unwrap();
+        assert_eq!(active_name, registry.profile);
+        assert_eq!(active.did(), before.did());
     }
 
     #[dialog_common::test]
-    async fn it_reopens_the_rotated_profile_on_the_next_boot() {
+    async fn it_reopens_a_promoted_profile_on_the_next_boot() {
         let registry = scratch();
         let storage = Storage::<DefaultSpace>::default();
-        let (rotated_name, rotated) = registry.rotate(&storage).await.unwrap();
+        let (created_name, created) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &created_name).await.unwrap();
 
         // A fresh pool stands in for a worker restart: nothing carries
         // over but what was persisted.
         let rebooted = Storage::<DefaultSpace>::default();
         let (name, profile) = registry.open_active(&rebooted).await.unwrap();
 
-        assert_eq!(name, rotated_name);
+        assert_eq!(name, created_name);
         assert_eq!(
             profile.did(),
-            rotated.did(),
+            created.did(),
             "the pointer has to survive a restart, or a rotated device reverts \
              to the key it revoked"
         );
@@ -605,8 +615,8 @@ mod tests {
 
         // A rotated device reads the roster through the profile it now
         // signs as, not the registry's key.
-        let (_, rotated) = registry.rotate(&storage).await.unwrap();
-        let other = crate::session::open(&rotated, &storage)
+        let (_, created) = registry.create_profile(&storage).await.unwrap();
+        let other = crate::session::open(&created, &storage)
             .await
             .unwrap()
             .operator;
@@ -617,12 +627,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_rotates_again_from_an_already_rotated_profile() {
+    async fn it_promotes_profiles_in_order() {
         let registry = scratch();
         let storage = Storage::<DefaultSpace>::default();
 
-        let (_, first) = registry.rotate(&storage).await.unwrap();
-        let (_, second) = registry.rotate(&storage).await.unwrap();
+        let (first_name, first) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &first_name).await.unwrap();
+        let (second_name, second) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &second_name).await.unwrap();
         let (_, active) = registry.open_active(&storage).await.unwrap();
 
         assert_ne!(first.did(), second.did());

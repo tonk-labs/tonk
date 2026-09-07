@@ -27,6 +27,8 @@ serde_json = { workspace = true }
 sha2_0_10 = { workspace = true }
 thiserror = { workspace = true }
 tonk-account = { workspace = true }
+tonk-invite = { workspace = true }
+url = { workspace = true }
 x25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 

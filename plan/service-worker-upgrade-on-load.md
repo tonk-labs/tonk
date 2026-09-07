@@ -2,23 +2,23 @@
 
 **Goal:** Make an online staging load detect, activate, and adopt the current Tonk service worker without DevTools cleanup or briefly mounting the stale UI, while preserving an already-installed worker and all local application state when the update check cannot reach the network.
 
-**Approach:** Start one memoized registration-and-update promise eagerly in the existing pre-Wasm bootstrap and explicitly call `ServiceWorkerRegistration.update()` on every user-initiated warm load. Keep the static boot overlay mounted while the UI Wasm downloads, gate `mount_root()` on strict completion of that promise, and reload once only after the update-aware page explicitly asks an activated successor to claim it; the stale document therefore never exposes its application root, and the automatic alignment document skips one redundant update check. Prove the behavior against a deliberately slowed mutable service worker in the real-browser harness, then make the worker-Wasm stamp describe the final Nix artifact rather than the pre-fixup Trunk artifact.
+**Approach:** Start one memoized registration-and-update promise eagerly in the existing pre-Wasm bootstrap and explicitly call `ServiceWorkerRegistration.update()` on every user-initiated warm load. Keep the static boot overlay mounted while the UI Wasm downloads, gate `mount_root()` on strict completion of that promise, and reload once when successor activation replaces the controller and fires `controllerchange`; the stale document therefore never exposes its application root, and the automatic alignment document skips one redundant update check. Prove the behavior against a deliberately slowed mutable service worker in the real-browser harness, then make the worker-Wasm stamp describe the final Nix artifact rather than the pre-fixup Trunk artifact.
 
 **Constraints:**
 
 - The root cause is the warm-load fast path, not HTTP caching: `navigator.serviceWorker.register()` with the same scope, script URL, worker type, and update-via-cache mode returns the existing registration without scheduling an update, while the current `serviceWorkerActivates` returns as soon as any controller exists. `updateViaCache: "none"` affects fetching inside an update job; it does not start one. Explicitly update on every user-initiated warm load; the sole exception is the automatic alignment reload immediately after a successful replacement.
 - Preserve `/service_worker.js`, module registration, scope, and `updateViaCache: "none"`. Do not add a versioned registration URL or create parallel registrations.
-- Preserve the worker's current `install` precache, `skipWaiting()`, explicit `{type:"claim"}` message handling, and outgoing worker `updatefound` teardown. Activation alone must not claim pre-protocol pages; only a page that can align itself asks its observed successor to take control.
+- Preserve the worker's current `install` precache, `skipWaiting()`, explicit `{type:"claim"}` message handling, and outgoing-worker teardown after a successor installs. Activation replaces the active worker for already-controlled clients and fires `controllerchange`; the activate handler does not call `clients.claim()`, and the explicit claim remains for otherwise-uncontrolled first-install pages.
 - A first-ever install still waits for control and continues in the same document. Only replacement of a controller that existed at the beginning of this load causes the alignment reload.
 - A warm replacement reloads at most once per boot sequence, guarded by `sessionStorage` key `tonk:sw-upgrade-reload`. A stable load clears the guard. The reload happens before `mount_root()` creates `#tonk-root`, so neither UI chrome nor `/api/*` activity from the stale document becomes visible.
 - Keep the existing inline `#tonk-boot` overlay visible throughout update detection and controller replacement. An `updatefound` transition changes only its status text to `updating…`; no new modal, toast, or app-level loading view is introduced.
-- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure and loss of the existing controller are explicit boot failures: the strict gate leaves the root unmounted and terminalizes the boot shell without automatic reload or cleanup. An incoming worker that stops progressing without producing an error remains a silent stall handled by the bounded boot watchdog.
-- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of normal upgrade handling. The last-resort boot watchdog remains available for silent stalls; known readiness errors stop it through the terminal hook above.
+- An update-check failure is recoverable only while the page still has its prior controller. First-install registration failure and loss of the existing controller are explicit boot failures: the strict gate leaves the root unmounted and terminalizes the boot shell without automatic reload or cleanup. An incoming worker that stops progressing without producing an error remains a silent stall handled by one plain watchdog reload followed by a terminal safe-state message.
+- Do not unregister service workers, delete CacheStorage, delete IndexedDB, or reset Tonk state as part of upgrade handling or automatic stall recovery. Known readiness errors stop the watchdog through the terminal hook above; a second silent stall terminalizes without cleanup.
 - Keep offline navigation cache-first. The new worker's install already refreshes the `/` shell cache, so the one post-replacement reload aligns the new controller with the fresh shell without changing fetch policy.
-- The first rollout has an unavoidable bootstrap boundary: a document cached before this change does not contain the explicit update call. Its current worker will stale-refresh `/` in the background, and the next ordinary navigation will run the new bootstrap. Document this one-time extra revisit; no new artifact can retroactively execute inside an already-cached old document. Once the new bootstrap is cached, later deployments update on the first warm load.
+- The first rollout uses a one-release bridge: every verified successor calls `skipWaiting()` even when an incumbent exists. Activation replaces the controller of already-controlled pages. An update-aware page performs the guarded alignment reload on `controllerchange`; a cached pre-protocol page without that persistent listener can switch controllers without reloading and may fail to load old lazy asset URLs until navigation.
 - Add no Cargo, JavaScript, or Nix dependency, and do not change a lock file.
 - Do not add periodic polling, an update prompt, schema migrations, cache-version changes, or worker/data compatibility machinery in this change.
-- A cached pre-protocol page cannot safely adopt a protocol-aware worker in place. It remains on its existing controller until navigation; update-aware pages use the explicit claim/cutover path and retain the guarded alignment reload.
+- A cached pre-protocol page cannot safely continue in place after browser activation replaces its controller. Without the persistent replacement listener it may keep its old document and lazy asset URLs until navigation; update-aware pages use `controllerchange` and the guarded alignment reload.
 - Browser results count only when Chrome and ChromeDriver are compatible. Report a driver/version failure as an infrastructure blocker, separately from compile, Nix-build, or product behavior evidence.
 
 ## File map
@@ -31,7 +31,7 @@
 - `rust/tonk-ui/src/helpers.rs`: expose a per-test mutable copy of `service_worker.js` through `TestEnvironment`.
 - `flake.nix`: let `tonk-ui-test-server` serve that mutable script over the otherwise immutable Tonk UI build, and restamp the final `tonk-ui` Nix output after fixup.
 - `rust/tonk-ui/scripts/stamp-service-worker.sh`: stamp and verify the final `worker_bg.wasm` hash in a distribution directory.
-- `rust/tonk-ui/scripts/hash-guest.sh`: delegate service-worker stamping to the shared script after hashing the guest assets.
+- `rust/tonk-ui/scripts/hash-guest.sh`: Trunk post-build hook that hashes guest assets before invoking the canonical stamper.
 - `rust/tonk-ui/README.md`: document the load-time update, single-reload, and offline behavior.
 
 ### Task 1: Replace a recent active worker during an ordinary online load
@@ -51,9 +51,9 @@
 
 - `tonk-ui-test-server` consumes optional positional argument 3, `SERVICE_WORKER_ROOT`. When present, the script copies `${self.packages.${system}.tonk-ui}/service_worker.js` into that writable directory before Caddy starts and serves only `/service_worker.js` from it; every other static path remains rooted at the immutable `tonk-ui` output. With no third argument, existing callers continue serving the complete immutable output.
 - `TestEnvironment` produces `pub service_worker_script: std::path::PathBuf`, pointing to the per-harness copy at `caddy_data/service-worker/service_worker.js`. `TestServers::start` creates the parent directory, passes it as argument 3, and does not share it across ports or tests.
-- `index.html` produces one eagerly-started, module-local `Promise<void>` covering registration, update detection, controller replacement, connectivity notification, and any alignment reload. `serviceWorkerActivates(): Promise<void>` always returns that same promise; no work waits for the first `/api/*` request, and no second registration call remains at the end of `<body>`. Attach an immediate diagnostic rejection observer to the eager promise so a later strict Rust await does not leave an interim `unhandledrejection` report.
+- `index.html` produces one eagerly-started, module-local `Promise<void>` covering registration, update detection, controller replacement, connectivity notification, and any alignment reload. `serviceWorkerActivates(): Promise<void>` always returns that same promise; no work waits for the first `/api/*` request, and no second terminal promise consumer remains at the end of `<body>`. Attach one immediate diagnostic rejection observer to the eager promise so a later strict Rust await does not leave an interim `unhandledrejection` report.
 - `serviceWorkerActivates` preserves the existing explicit first-install claim path. On a warm load it captures the prior controller, attaches `controllerchange`, `updatefound`, and incoming-worker `statechange` observers, and first adopts any `registration.installing` or `registration.waiting` worker that already exists. When no update is already in flight, it awaits `registration.update()`.
-- The warm observer has three explicit outcomes: `unchanged` when the update finds identical bytes; `replaced` when `controllerchange` installs a controller other than the captured controller; and `failed` when the incoming worker becomes `redundant`. When its incoming worker reaches `activated`, the update-aware page sends that worker exactly one `{type:"claim"}` message; older pages send no such request and keep their controller. The observer calls `tonkBootLife` on update and state transitions so a progressing install does not look stalled to the existing watchdog, and writes `updating…` to `[data-boot-status]` after `updatefound`.
+- The warm observer has three explicit outcomes: `unchanged` when the update finds identical bytes; `replaced` when activation fires `controllerchange` with a controller other than the captured controller; and `failed` when the incoming worker becomes `redundant`. No warm-page claim is required: activation replaces controllers for clients already using the registration. The observer calls `tonkBootLife` on update and state transitions so a progressing install does not look stalled to the existing watchdog, and writes `updating…` to `[data-boot-status]` after `updatefound`.
 - On `replaced`, set `sessionStorage["tonk:sw-upgrade-reload"] = "1"`, call `location.reload()`, and leave `serviceWorkerActivates` pending so no old-document mount or `/api/*` boot continues. The next document sees both the marker and its already-replaced controller, removes the marker, skips exactly that load's redundant network update check, sends connectivity, and resolves. This makes the guard a deterministic one-shot alignment handoff rather than a counter: even if another deployment lands during the few milliseconds between documents, it waits for the next user-initiated load instead of causing an automatic reload chain.
 - On `unchanged` or `failed`, retain the prior active controller, clear a stale reload guard, send connectivity, and resolve. `failed` also emits a diagnostic warning naming the incoming worker state; it does not unregister or clear storage. Every outcome removes the temporary registration, controller, and worker-state listeners before returning or reloading.
 - `tonk_host::ready` produces `#[cfg(target_arch = "wasm32")] pub async fn require() -> Result<(), wasm_bindgen::JsValue>`. Missing browser globals retain the current embed/test-harness no-op behavior, but rejection of an actual `serviceWorkerActivates()` promise is returned and does not set `SW_READY`. Existing `pub async fn wait()` calls `require()`, deliberately discards its result for backward compatibility, and preserves every current IO call site.
@@ -62,7 +62,7 @@
 - [ ] Extend `tonk-ui-test-server` with the optional service-worker root and a Caddy `handle /service_worker.js` before the catch-all handler. Extend `TestEnvironment` / `TestServers::start` with the unique mutable script path. Run `cargo check -p tonk-ui --features integration-tests`; expect success and no behavior change yet.
 - [ ] Add `#[cfg(test)] mod service_worker_upgrade;` to `src/lib.rs`, with the new file internally gated to native `integration-tests` / `web-integration-tests`, matching `account_flow.rs`.
 - [ ] Add `it_replaces_a_recent_worker_on_load_without_manual_cleanup`. Let `env.driver()` establish worker A; poll `fetch("/api/health")` until it returns JSON and record `startedAt`. Before the upgrade, create an IndexedDB record and a dedicated CacheStorage entry as state sentinels.
-- [ ] In that test, use `Page.addScriptToEvaluateOnNewDocument` to increment a sessionStorage document counter and attach a mutation observer that records whether `#tonk-root`, `tonk-site`, `tonk-account`, or `tonk-activate` appeared in each numbered document. Replace exactly one `// worker-wasm-hash: <16 lowercase hex>` marker in `env.service_worker_script` with a different valid marker and inject a test-only 1.5-second wait at the start of its existing install `waitUntil` body, asserting both substitutions occurred exactly once before calling `driver.refresh()` once. Do not call `registration.update()`, `unregister()`, `Storage.clearDataForOrigin`, or cache deletion from the test.
+- [ ] In that test, use `Page.addScriptToEvaluateOnNewDocument` to increment a sessionStorage document counter and attach a mutation observer that records whether `#tonk-root`, `tonk-site`, `tonk-account`, or `tonk-activate` appeared in each numbered document. Produce a distinct, correctly restamped generation and inject a test-only 1.5-second wait at the start of its install transaction before calling `driver.refresh()` once. Do not call `unregister()`, `Storage.clearDataForOrigin`, or cache deletion from the test.
 - [ ] Poll rather than sleep until `/api/health.startedAt` differs from worker A. Then assert the registration has an activated controller and no `installing` or `waiting` worker, the document counter is `2` (the requested refresh plus one automatic alignment reload), document 1 never mounted an application root despite the slow install, document 2 did mount one, `tonk:sw-upgrade-reload` is absent, and both IndexedDB and CacheStorage sentinels remain readable.
 - [ ] Run `cargo test -p tonk-ui --features integration-tests it_replaces_a_recent_worker_on_load_without_manual_cleanup -- --test-threads=1`; expect failure because the health `startedAt` remains worker A's value, the registration has no incoming worker, the document counter remains `1`, and the stale document mounts an application root.
 - [ ] Move registration and the complete activation/update operation into the early module as the eager shared promise above. Remove the final registration `<script type="module">` entirely. Keep `sendConnectivity`, `tonkRegisterSync`, visibility forwarding, and the first-install claim nudge using the shared registration.
@@ -83,7 +83,7 @@
 
 - The update-error branch consumes the controller captured before `registration.update()`. It may fall back only when `navigator.serviceWorker.controller` is still that controller; it logs the rejected update, clears a stale upgrade-reload guard, sends connectivity, and lets cached boot continue. If no controller remains, it rethrows.
 - The offline test uses `thirtyfour::extensions::cdp::ChromeDevTools` with `Network.enable` and `Network.emulateNetworkConditions({ offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 })`. It always restores `offline: false` and quits the driver after collecting the test result, including assertion-error paths.
-- The README records four distinct cases: first install waits for claim without reloading; online warm load explicitly checks and replaces behind the static boot overlay; actual warm replacement reloads once before the application root mounts; offline warm load keeps the current worker and local state. It also records the one-time bootstrap boundary for documents cached before this implementation lands.
+- The README records four distinct cases: first install waits for an explicit claim without reloading; online warm load explicitly checks and replaces behind the static boot overlay; actual warm replacement reloads once on `controllerchange` before the application root mounts; offline warm load keeps the current worker and local state. It also records the one-time bootstrap boundary for documents cached before this implementation lands.
 
 - [ ] Add `it_keeps_the_active_worker_when_the_load_time_update_check_is_offline`. Establish worker A and a cached `/` shell, record `/api/health.startedAt`, create the IndexedDB and CacheStorage sentinels, switch Chrome offline through CDP, and refresh.
 - [ ] Assert the cached page mounts a Tonk root, `/api/health` still answers through a controlled page with worker A's `startedAt`, no `installing` or `waiting` worker remains, the upgrade-reload guard is absent, and both state sentinels survive. Restore networking before returning from the test.
@@ -93,44 +93,21 @@
 - [ ] Update the README composition section with the four-case lifecycle, the pre-mount boot overlay, the one-time pre-fix bootstrap boundary, and the fact that `updateViaCache: "none"` is paired with an explicit `registration.update()` on warm load.
 - [ ] Run both upgrade tests together with `cargo test -p tonk-ui --features integration-tests service_worker_upgrade::tests -- --test-threads=1`; expect success.
 
-### Task 3: Stamp the worker script from the final worker Wasm bytes
+### Task 3: Stamp the complete final browser generation
 
-**Files:**
+`scripts/stamp-service-worker.sh <dist-dir>` computes one build identity over
+the normalized service-worker policy, final worker glue/Wasm, and every
+published browser resource. It writes the build meta, `ASSET_PATHS`,
+`asset-manifest.json`, and `version.json` transactionally. The manifest and
+every member use full SHA-256 digests; the worker Wasm identity uses the stamped
+prefix checked again at runtime. The Trunk post-build hook invokes the canonical
+stamper for local output, and the Nix artifact is restamped only after its final
+browser graph is assembled.
 
-- Create: `rust/tonk-ui/scripts/stamp-service-worker.sh`
-- Modify: `rust/tonk-ui/scripts/hash-guest.sh:Service-worker cache-bust`
-- Modify: `flake.nix:packages.tonk-ui`
-
-**Interfaces:**
-
-- `stamp-service-worker.sh <dist-dir>` is POSIX `sh`, uses `sha256sum` with the existing macOS `shasum -a 256` fallback, and requires `<dist-dir>/service_worker.js` plus `<dist-dir>/worker_bg.wasm`. It removes every prior marker, appends exactly one `// worker-wasm-hash: <first 16 lowercase SHA-256 hex>` marker, reads the marker back, and exits nonzero if the files are absent, the hash is malformed, or marker verification fails.
-- `hash-guest.sh` resolves its own script directory and calls `stamp-service-worker.sh "$TRUNK_STAGING_DIR"` after writing the guest manifest. Local Trunk builds therefore retain the current cache-busting behavior without duplicating hash/stamp code.
-- `packages.tonk-ui` calls the same script in `postFixup` with `$out`. This deliberately restamps after crane's reference-removal hooks have transformed `worker_bg.wasm`, making the shipped marker an exact invariant over shipped bytes. This is artifact hardening, not a substitute for the explicit browser update check.
-
-- [ ] Before changing the stamp path, run the following probe; expect the final command to succeed because the current marker differs from the post-fixup Wasm hash:
-
-  ```sh
-  tonk_ui_out=$(nix --accept-flake-config build --no-link --print-out-paths .#tonk-ui)
-  TONK_UI_OUT="$tonk_ui_out" nix develop -c bash -eu -o pipefail -c '
-    expected=$(sha256sum "$TONK_UI_OUT/worker_bg.wasm" | cut -c1-16)
-    actual=$(sed -n "s#^// worker-wasm-hash: ##p" "$TONK_UI_OUT/service_worker.js")
-    test "$actual" != "$expected"
-  '
-  ```
-- [ ] Extract the cache-bust block into `stamp-service-worker.sh`, making missing inputs and malformed hashes fatal. Replace the old inline block in `hash-guest.sh` with one call to the new script.
-- [ ] Add the final `$out` call to `packages.tonk-ui.postFixup`. Do not change the worker filename, Trunk asset declarations, or Cargo/Nix lock files.
-- [ ] Run `nix develop -c nixfmt --check flake.nix`; expect success.
-- [ ] Run the final-artifact probe below; expect the build to succeed, the marker to equal the final Wasm hash, and exactly one marker line:
-
-  ```sh
-  tonk_ui_out=$(nix --accept-flake-config build --no-link --print-out-paths .#tonk-ui)
-  TONK_UI_OUT="$tonk_ui_out" nix develop -c bash -eu -o pipefail -c '
-    expected=$(sha256sum "$TONK_UI_OUT/worker_bg.wasm" | cut -c1-16)
-    actual=$(sed -n "s#^// worker-wasm-hash: ##p" "$TONK_UI_OUT/service_worker.js")
-    test "$actual" = "$expected"
-    test "$(grep -c "^// worker-wasm-hash:" "$TONK_UI_OUT/service_worker.js")" -eq 1
-  '
-  ```
+The stamper hashes normalized temporary files rather than pipelines, so a
+failed normalizer cannot silently publish the empty-input digest. Generated
+TypeScript outputs are not source-fingerprint inputs; a clean checkout can
+therefore verify the checked-in bundle without first generating ignored files.
 
 ### Task 4: Verify the complete staging upgrade path
 
@@ -152,71 +129,44 @@
 - [ ] Run `git diff --check`; expect no whitespace errors.
 - [ ] Inspect `git diff -- rust/tonk-ui/index.html rust/tonk-host/src/ready.rs rust/tonk-ui/src/bin/ui.rs rust/tonk-ui/src/service_worker_upgrade.rs rust/tonk-ui/src/lib.rs rust/tonk-ui/src/helpers.rs rust/tonk-ui/scripts/hash-guest.sh rust/tonk-ui/scripts/stamp-service-worker.sh rust/tonk-ui/README.md flake.nix`; confirm the final diff contains no ordinary-flow unregister, CacheStorage deletion, IndexedDB deletion, cache-policy rewrite, unrelated UI change, or lock-file change.
 
-## Follow-up verification — 2026-08-31
+## Immutable-generation lifecycle follow-up contract
 
-The PR E2E run exposed two independent boundaries. The delayed-worker fixture
-copied its script from the read-only Nix store and preserved that mode, so the
-test's deliberate stamp rewrite failed before browser behavior. The harness now
-makes only its unique copied `service_worker.js` owner-writable. A fresh-browser
-CLI approval also timed out once in CI, but the #800 diff does not touch the
-account or callback protocol and the established-account callback passed in the
-same job. The exact fresh-browser filter subsequently passed without a callback
-product change; the test now preserves the narrow `LinkCli` console diagnostic
-(with token-like values redacted) so a future failure identifies the literal
-async boundary rather than only the safe visible message.
+The load-time replacement contract above now has four bounded follow-ups:
 
-Compatibility with later generation-aware workers is page-directed. A newly
-activated worker does not claim every already-open page. The explicit
-`{type:"claim"}` message remains the only adoption request: first-install pages
-use it, and an update-aware #800 page sends it exactly once to the activated
-successor it observed before its existing one-shot alignment reload. A cached
-older page sends no request and retains its compatible controller until
-navigation.
+- An incoming install may read older final Tonk shell and worker caches, but it
+  accepts a response only after hashing a clone against the incoming manifest or
+  stamped worker-Wasm digest. Reuse never writes to the source cache, and every
+  accepted response still enters the incoming staging and adoption transaction.
+- Activation may delete only exact lifecycle-owned cache names for builds other
+  than the adopted current build. It keeps current final and staging caches,
+  ignores Tonk-like and unrelated names, and treats individual deletion failures
+  as cleanup diagnostics rather than activation failures.
+- A missing retained root returns a self-contained recovery page. That page
+  explicitly checks for an update, reloads once only after controller
+  replacement, and otherwise exposes retry without fetching a live shell or
+  changing local application state.
+- Frame classification is cached only after `clients.get()` confirms a stable
+  top-level or nested frame type. Unconditional Rust routes skip classification;
+  missing or failed lookups remain retryable and delegate to Rust.
 
-Fresh evidence after the final source changes:
+Verification remains layered. Node tests prove byte selection, exact-name
+cleanup, recovery control flow, and routing counts. Native compilation proves
+the harness builds. Serialized browser scenarios separately prove coherent A to
+B adoption, multi-tab controller replacement, evicted-root recovery, offline
+fallback where the browser supports network control, cache inventory, and
+sentinel preservation. Chrome and Safari results must be recorded separately;
+a WebDriver setup failure is infrastructure evidence, not browser-behavior
+evidence.
 
-- TDD RED: `node --test rust/tonk-ui/tests/service-worker-claim.test.mjs`
-  executed three tests; one passed and two failed because activation claimed
-  unconditionally and the update-aware page sent no claim.
-- GREEN: the same Node command passed 3/3 against the shipped worker and inline
-  boot sources.
-- GREEN: the exact delayed-worker E2E filter passed 1/1 after an unchanged retry
-  with loopback permission; the sandboxed attempt failed before behavior at
-  local port binding.
-- GREEN: the exact fresh-browser CLI registration filter passed 1/1 after the
-  same unchanged loopback retry and completed signup, activation, approval,
-  callback delivery, and CLI hydration.
-- GREEN: `cargo fmt --all -- --check`, `nixfmt --check flake.nix`, Node syntax,
-  `git diff --check`, Storybook build `--check` (26 screens, 78 journeys, 115
-  verification items, 6 triage findings), and 173/173 local Storybook links.
-- Not run: the full serialized browser suite and the two-build old-page/new-page
-  ordering matrix; CI remains the broader integration boundary.
+### Local follow-up evidence, 2026-09-02
 
-## Explicit readiness terminal follow-up — 2026-08-31
+| Layer | Scenario | Result |
+| --- | --- | --- |
+| Node | Reuse, strict pruning, recovery control flow, and routing memoization | Pass |
+| Chrome | Coherent A-to-B adoption | Pass |
+| Chrome | Two update-aware tabs adopt B once each | Pass |
+| Chrome | Evicted root adopts B without state cleanup | Pass |
+| Safari | Coherent A-to-B adoption | Unverified: SafariDriver timed out while creating the automation session before navigation |
 
-Cross-stack review found that the strict #800 gate returned unmounted on an
-explicit readiness rejection while the inherited boot watchdog remained live.
-After one earlier watchdog retry, the next quiet interval could therefore
-delete every origin CacheStorage entry and unregister every service-worker
-registration even though the failure was already known and actionable.
-
-- TDD RED: `node --test rust/tonk-ui/tests/boot-terminal.test.mjs` ran one test
-  and failed with two cache deletions, one reload, one unregistration,
-  `tonk:boot-retries=2`, “recovering…”, and no terminal hook.
-- First GREEN: the same command passed 1/1 after explicit readiness failure
-  terminalized the shell, cleared the retry counter, and blocked all late
-  automatic effects.
-- Second TDD RED: the focused command ran two tests; the generic later catch
-  overwrote an earlier withdrawal message while all destructive effects stayed
-  blocked.
-- Second GREEN: the same command passed 2/2 after terminalization became
-  idempotent and first-message-wins.
-- GREEN: `node --test rust/tonk-ui/tests/*.test.mjs` passed 5/5, covering both
-  terminal cases and all three activation/claim source contracts.
-- GREEN: `cargo fmt --all -- --check`, both Node syntax checks,
-  `nixfmt --check flake.nix`, and `git diff --check` passed.
-- GREEN: Storybook regenerated and passed `build.py --check` with 26 screens,
-  78 journeys, 115 verification items, and 6 triage findings; all 173 local
-  links passed.
-- Not run locally: Cargo/browser builds under shared-target disk pressure;
-  fresh CI remains the compiled and whole-browser boundary.
+The Safari result above is an infrastructure failure only. It does not establish
+whether the lifecycle behavior passes or fails in WebKit.

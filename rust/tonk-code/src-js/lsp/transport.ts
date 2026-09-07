@@ -37,8 +37,15 @@ export interface HttpTransportOptions {
   /** Called once when the inbound SSE channel ends. Indicates
    *  that the LSP session this transport was carrying is over
    *  and the consumer should rebuild from scratch. Idempotent —
-   *  fired at most once per transport. */
-  onClose: () => void;
+   *  fired at most once per transport.
+   *
+   *  `updatePending` is true when the worker refused the stream
+   *  because a newer service worker is waiting to take over. The
+   *  consumer must then HOLD its reconnect for `controllerchange`
+   *  rather than redialing on a timer: a redial lands on the
+   *  outgoing worker and its never-settling SSE fetch re-pins it,
+   *  parking the successor in `waiting`. */
+  onClose: (reason: { updatePending: boolean }) => void;
 }
 
 /** Construct an LSP transport over plain HTTP. */
@@ -61,12 +68,16 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
     }
   }
 
+  /** Set when the worker answered the subscribe with
+   *  `update-pending`, so `close` can pass it to the consumer. */
+  let updatePending = false;
+
   function close(): void {
     if (closed) return;
     closed = true;
     handlers.clear();
     try {
-      opts.onClose();
+      opts.onClose({ updatePending });
     } catch (err) {
       console.error("[tonk-code/lsp] onClose threw", err);
     }
@@ -76,7 +87,12 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
   // transport; the LSP client's reads on `subscribe` simply stop
   // receiving messages, and the consumer (notified via `onClose`)
   // builds a fresh transport.
-  void readEvents(opts.url, dispatch).finally(close);
+  void readEvents(opts.url, dispatch)
+    .catch((err: unknown) => {
+      if (err instanceof UpdatePendingError) updatePending = true;
+      else console.warn("[tonk-code/lsp] SSE ended:", err);
+    })
+    .finally(close);
 
   return {
     send(message: string): void {
@@ -117,11 +133,23 @@ async function postMessage(
   if (text.length > 0) dispatch(text);
 }
 
+/** The worker is retiring and declined to open a stream. Carries no
+ *  message of its own: it is a control signal, not an error to report. */
+class UpdatePendingError extends Error {}
+
 /** Open the inbound SSE stream and dispatch each `data:` event. */
 async function readEvents(url: string, dispatch: Handler): Promise<void> {
   const response = await fetch(url, {
     headers: { accept: "text/event-stream" },
   });
+  // `503` + `{"control":"update-pending"}` is the worker declining to
+  // open a long-lived stream because it is retiring — not a failure.
+  // Distinguished so the consumer holds its reconnect for the
+  // controller change instead of redialing the outgoing worker.
+  if (response.status === 503) {
+    const body = await response.text().catch(() => "");
+    if (body.includes("update-pending")) throw new UpdatePendingError();
+  }
   if (!response.ok || !response.body) {
     throw new Error(`GET ${url} -> ${response.status}`);
   }

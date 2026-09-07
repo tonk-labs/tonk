@@ -41,6 +41,7 @@ let
     ./patches/wbg-pool-live-daemon.patch
     ./patches/wbg-pool-close-http-connections.patch
     ./patches/wbg-pool-preserve-report-fetch.patch
+    ./patches/wbg-pool-focus-tabs.patch
   ];
 
   packageArgs = commonArgs // {

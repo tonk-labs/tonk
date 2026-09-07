@@ -143,7 +143,7 @@ Fresh verification after the final refinement:
       translucent surface defaults unchanged.
 - [ ] Run `cargo test -p tonk-fab`; expect green.
 - [ ] Run
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-fab`;
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-fab`;
       expect the existing element and geometry suites green.
 
 ### Task 2: Complete the Hub stone token contract
@@ -226,7 +226,7 @@ Fresh verification after the final refinement:
 - [ ] Restructure the profile CSS/markup and mode switch; preserve all space
       list, remove/archive, default-remote, and rename behavior.
 - [ ] Run `cargo test -p tonk-worker --test standard_library` and
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_mode_switch -- --nocapture`;
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_mode_switch -- --nocapture`;
       expect green.
 
 ### Task 4: Replace settings modal with the attached settings view
@@ -265,7 +265,7 @@ Fresh verification after the final refinement:
 - [ ] Rewrite the wasm DOM test to open from the external settings header,
       assert the stack/view and `aria-current` swap, assert no modal/scrim/close
       nodes, switch tabs, then return by both spaces click and Escape. Run
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace ui_hub_account -- --nocapture`
       and record the failures.
 - [ ] Implement the in-flow markup and root view state using only the existing
       component listener ownership. Preserve the existing data loaders and
@@ -274,7 +274,7 @@ Fresh verification after the final refinement:
       `[data-settings-close]` to `[data-settings-view]` /
       `[data-return-spaces]` and verify both panes still show real data.
 - [ ] Run the focused wasm suite and the integration test
-      `nix develop path:. -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture`;
+      `nix develop . -c cargo test -p tonk-ui --features integration-tests it_adds_a_second_account_and_switches_between_disjoint_space_lists -- --test-threads=1 --nocapture`;
       expect green.
 
 ### Task 5: Preserve truthful provider-free local behavior
@@ -316,9 +316,9 @@ Fresh verification after the final refinement:
 - [ ] Run `cargo test -p tonk-fab` and
       `cargo test -p tonk-worker --test standard_library`.
 - [ ] Run
-      `nix develop path:. -c cargo test --target wasm32-unknown-unknown -p tonk-workspace --lib`
+      `nix develop . -c cargo test --target wasm32-unknown-unknown -p tonk-workspace --lib`
       and the same command for `-p tonk-fab`.
-- [ ] Run `nix develop path:. -c build:web` and the final Hub integration test
+- [ ] Run `nix develop . -c build:web` and the final Hub integration test
       from Task 4 against that build.
 - [ ] Inspect the built Hub in isolated Chrome at 1440px, 464px, 463px, and
       390px,

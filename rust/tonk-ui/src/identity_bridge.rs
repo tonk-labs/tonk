@@ -7,15 +7,6 @@ use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-/// Verification-only assertion input: the account passkey to assert
-/// against, hex-encoded exactly as [`tonk_worker_api::RootStatus`]
-/// stores it.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct VerifyPasskeyInput {
-    pub credential_id: String,
-}
-
 /// Stable failures produced at the JavaScript identity boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum IdentityBridgeError {
@@ -108,7 +99,7 @@ pub(crate) struct PublishEncryptionKeyInput {
 }
 
 /// The account's X25519 recipient, derived through one assertion.
-#[derive(serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishedEncryptionKey {
     pub encryption_key: String,
@@ -118,43 +109,6 @@ pub(crate) async fn publish_encryption_key(
     input: PublishEncryptionKeyInput,
 ) -> Result<PublishedEncryptionKey, IdentityBridgeError> {
     call("publishEncryptionKey", input).await
-}
-
-/// Input for [`authorize_device`].
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AuthorizeDeviceInput {
-    /// The device the account should delegate to.
-    pub device_did: String,
-    /// The account repository's remote, so the descriptor names it.
-    pub remote: String,
-    /// The access service's `/ucan/` endpoint the custody cell
-    /// resolves through.
-    pub endpoint: String,
-}
-
-/// What the ceremony hands back for delivery to a waiting device.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AuthorizedDevice {
-    /// The account root that issued the grant.
-    pub root_did: String,
-    /// Hex-encoded `account → device` delegation chain.
-    pub delegation_hex: String,
-    /// Exact signed account repository descriptor.
-    pub descriptor_hex: String,
-}
-
-pub(crate) async fn authorize_device(
-    input: AuthorizeDeviceInput,
-) -> Result<AuthorizedDevice, IdentityBridgeError> {
-    call("authorizeDevice", input).await
-}
-
-/// Ask the human to verify with the account's own passkey. Nothing is
-/// signed or derived; success means user presence and verification.
-pub(crate) async fn verify_passkey(input: VerifyPasskeyInput) -> Result<(), IdentityBridgeError> {
-    call("verifyPasskey", input).await
 }
 
 #[cfg(test)]
@@ -173,17 +127,27 @@ mod tests {
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
     }
 
-    /// `verifyPasskey` succeeds with no payload: the ceremony resolves
-    /// `undefined` and the bridge decodes it into `()`. An object (or any
-    /// other value) would fail the decode, so this pins the empty shape.
+    fn key_input() -> PublishEncryptionKeyInput {
+        PublishEncryptionKeyInput {
+            endpoint: "https://tonk.example/ucan/".into(),
+            credential_id: None,
+        }
+    }
+
+    /// The ceremony hands back the account's recipient, camel-cased the
+    /// way every ceremony output is.
     #[dialog_common::test]
-    async fn it_accepts_the_empty_verify_passkey_output() {
-        install_method("verifyPasskey", "return Promise.resolve(undefined);");
-        verify_passkey(VerifyPasskeyInput {
-            credential_id: "abcd".into(),
-        })
-        .await
-        .expect("an undefined resolution is the valid verifyPasskey output");
+    async fn it_decodes_the_published_key() {
+        install_method(
+            "publishEncryptionKey",
+            "return Promise.resolve({ encryptionKey: 'did:key:z6LSkey' });",
+        );
+        assert_eq!(
+            publish_encryption_key(key_input()).await.unwrap(),
+            PublishedEncryptionKey {
+                encryption_key: "did:key:z6LSkey".into(),
+            }
+        );
     }
 
     #[dialog_common::test]
@@ -191,81 +155,53 @@ mod tests {
         let window = web_sys::window().unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &JsValue::UNDEFINED).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Unavailable
         );
 
         Reflect::set(&window, &"tonkIdentity".into(), &js_sys::Object::new()).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
-            IdentityBridgeError::MissingMethod("verifyPasskey")
+            publish_encryption_key(key_input()).await.unwrap_err(),
+            IdentityBridgeError::MissingMethod("publishEncryptionKey")
         );
 
         let identity = js_sys::Object::new();
-        Reflect::set(&identity, &"verifyPasskey".into(), &42.into()).unwrap();
+        Reflect::set(&identity, &"publishEncryptionKey".into(), &42.into()).unwrap();
         Reflect::set(&window, &"tonkIdentity".into(), &identity).unwrap();
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
-            IdentityBridgeError::NotCallable("verifyPasskey")
+            publish_encryption_key(key_input()).await.unwrap_err(),
+            IdentityBridgeError::NotCallable("publishEncryptionKey")
         );
 
-        install_method("verifyPasskey", "return {};");
+        install_method("publishEncryptionKey", "return {};");
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::NotPromise
         );
 
         install_method(
-            "verifyPasskey",
+            "publishEncryptionKey",
             "return Promise.reject(new DOMException('phone authenticator returned no PRF', 'NotSupportedError')); ",
         );
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected(
                 "NotSupportedError: phone authenticator returned no PRF".into()
             )
         );
 
         install_method(
-            "verifyPasskey",
+            "publishEncryptionKey",
             "return Promise.reject('provider unavailable'); ",
         );
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::Rejected("provider unavailable".into())
         );
 
-        install_method("verifyPasskey", "return Promise.resolve({});");
+        install_method("publishEncryptionKey", "return Promise.resolve({});");
         assert_eq!(
-            verify_passkey(VerifyPasskeyInput {
-                credential_id: "abcd".into(),
-            })
-            .await
-            .unwrap_err(),
+            publish_encryption_key(key_input()).await.unwrap_err(),
             IdentityBridgeError::MalformedOutput
         );
     }

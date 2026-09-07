@@ -24,13 +24,30 @@ Use these canonical campaign parameters:
 `clearnet_discovery`. `attribution_source` distinguishes an explicit URL
 parameter, UTM, external referrer, and route-based inference.
 
+Add `tonk_source=<platform>` when the publishing platform is known. The
+canonical values are `email`, `search`, `x`, `linkedin`, `instagram`,
+`facebook`, `reddit`, `discord`, `slack`, `telegram`, `whatsapp`, `bluesky`,
+`mastodon`, `github`, `product_hunt`, and `hacker_news`. Tonk also recognizes
+equivalent `utm_source` values and those public hosts in `document.referrer`.
+Unknown external sources are `other`; absent or same-origin sources are
+`direct`. `source_detection` says whether the result came from
+`url_parameter`, `utm`, `referrer`, or `direct`.
+
 When adding a channel to an invite URL, preserve its existing query and
-fragment and add the parameter through the browser `URL` API. Invite query and
-fragment values are credentials and must not be copied into reports.
+fragment and add the parameter through the browser `URL` API. This also works
+on a short `@/...` invite: its redirect forwards only the public campaign and
+source parameters. Invite query and fragment values are credentials and must
+not be copied into reports.
 
-## Saved insights
+Tonk-generated space and invite links already carry
+`tonk_channel=reshare`. They also carry a `tonk_space` token derived from the
+space routing key. The token matches PostHog's `space_id`/`entry_space_id` but
+does not disclose the space DID or name.
 
-The launch dashboard uses these definitions:
+## Dashboard insights
+
+The saved launch dashboard already uses the first six definitions. After a
+build with the referral schema is deployed, add and save the last two:
 
 1. **Onboarding funnel**, ordered within one PostHog session:
    - `visit`;
@@ -50,11 +67,24 @@ The launch dashboard uses these definitions:
    `conversion` and `channel`.
 6. **Shared-space reach**: unique `space_id` on `space_shared`, broken down by
    `channel`.
+7. **Traffic by platform**: `visit` trends broken down by `source_platform`,
+   with `source_detection` as a secondary breakdown or filter. Keep `direct`
+   visible: native apps commonly suppress browser referrers, so it is real
+   missing evidence rather than a platform claim.
+8. **Traffic by referring space**: `visit` trends filtered to
+   `entry_space_id is set`, broken down by `entry_space_id`, then
+   `source_platform`. Compare unique persons and sessions as well as raw events
+   before treating repeated opens as meaningful reach.
 
 Every event has PostHog's native timestamp. The existing hashed profile
 `distinct_id` is refreshed after account creation and supplies anonymous user
 correlation; no UCAN, delegation, account DID, or profile DID is sent.
 `space_id` and dynamic `entry_route` segments are short local hashes.
+
+The browser project key and link parameters are public, so these insights are
+directional analytics rather than a payment ledger. Use them to identify and
+review creator-driven traffic. Automated compensation requires server-side
+signed attribution, deduplication, and fraud controls outside PostHog.
 
 ## How to Tonk
 

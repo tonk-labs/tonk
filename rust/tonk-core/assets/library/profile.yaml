@@ -77,18 +77,49 @@ concept!: &space
       the: xyz.tonk.space/provider
       cardinality: one
       as: entity
+    home-address:
+      description: >
+        The sync endpoint this space is served from — the UCAN address
+        `main`'s upstream syncs through. The queryable twin of the
+        `home.address` the space's grants carry in their signed meta,
+        which rides inside the delegation envelope and cannot be
+        queried. Written wherever the mount configuration is mirrored
+        into the directory: attaching an upstream, creating with a
+        remote, and mounting a joined space. Absent for a local-only
+        space.
+      the: xyz.tonk.space/home-address
+      cardinality: one
+      as: text
+    founded-at:
+      description: >
+        When this account created the space. Its presence distinguishes a
+        local-only space made here from a space joined through somebody
+        else's invite; hosted ownership is still decided by `provider`.
+      the: xyz.tonk.space/founded-at
+      cardinality: one
+      as: unsigned-integer
 
 # The Add Space command. Asserted by the Hub's two create forms (the bar's
 # `new space` rung and the stack's ghost) and by the FAB's `new` row; the
 # worker's `create_space` handler decodes it and does the work (record the
 # replica, create + seed the repository, flip the status, navigate the
 # creator into the new space). `name` reads from the form on submit:
-# `event.currentTarget.elements.name.value` — the hidden
-# `<input name="name" value="Untitled">` inside `<form onsubmit=space/create>`.
-# `prevent-default` stops the page from reloading; without it the browser
-# falls through to a GET submit and reloads with the fields in the query
-# string. The command is transient: it fires the handler once and is swept
+# the hidden `<input name="name" value="Untitled">` inside the create
+# form. The command is transient: it fires the handler once and is swept
 # before the durable commit.
+#
+# How a submit fills it. `prevent-default` stops the page reloading;
+# without it the browser falls through to a GET submit and reloads with
+# the fields in the query string. It lives here rather than in the
+# command's `with:` map, where it used to be: a side effect declared as a
+# command field stores no value, so a rule premise over it matches zero
+# rows however successfully the command transacted.
+event!: &on/space-create
+  type: "submit"
+  prevent-default: true
+  where:
+    name: ".currentTarget.elements.name.value"
+
 command!: &space/create
   description: A request to create a new space.
   with:
@@ -101,35 +132,50 @@ command!: &space/create
         place on arrival. The sentinel must be non-empty — the event
         extractor omits blank fields, and with no `name` fact the
         transient would never trigger the handler.
-      the: dom.event.current-target.elements.name/value
+      the: xyz.tonk.command.create-space/name
       as: text
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
 
-# The Remove Space command. Submitting a Hub row's delete-confirm form
-# asserts this transient; the worker's `RemoveSpaceHandler` retracts the
-# replica record from this branch, evicts the space from the reactor
-# (stopping background sync), and deletes its local storage. Removal is
-# device-local — a synced space can be rejoined via an invite link; a
-# local-only space is gone for good, which the confirm copy states.
-# `subject` reads the form's `data-remove` attribute. Deliberately NOT
-# `data-subject`: `tonk/rename-repository` transients already carry
-# `dataset/subject`, and a remove command matched on that attribute
-# alone would also decode every rename. The distinct attribute doubles
-# as the command's unique shape, so no marker field is needed. The
-# command is transient: it fires the handler once and is swept before
+# The device-local Remove Space command. A joined-space leave or local-only
+# delete submits this transient; the worker's `RemoveSpaceHandler` retracts
+# the replica record from this branch, evicts the space from the reactor
+# (stopping background sync), and deletes its local storage. An owned hosted
+# space does NOT submit it: `<ui-space-remove>` routes that verb through the
+# reviewed account-space deletion flow instead.
+# The command is transient: it fires the handler once and is swept before
 # the durable commit.
+#
+# The COMMAND's field used to be `dataset/remove` too, deliberately NOT
+# `dataset/subject`: `tonk/rename-repository` transients already carried
+# `dataset/subject`, and a remove matched on that attribute alone would
+# have decoded every rename — turning each rename into a deletion. The
+# distinct DOM read path doubled as the command's unique shape.
+# `xyz.tonk.command.remove-space/subject` is that distinctness by
+# construction, so the field is named for what it is. The DOM attribute
+# it is read FROM keeps its name: `<ui-space-remove>` locates this form
+# by it.
+#
+# How the confirm's submit fills it.
+#
+# The source is the form's `data-remove`, not a `{subject}` template
+# field, because that attribute is load-bearing for something else:
+# `<ui-space-remove>` finds this form by `form[data-remove]` to write the
+# confirm copy into it. Stamping a second attribute carrying the same DID
+# just to feed the command would be two names for one fact. Reading the
+# one that already exists is what an `event!:` declaration is for —
+# platform specifics live here so the command stays domain-shaped.
+event!: &on/space-remove
+  type: "submit"
+  prevent-default: true
+  where:
+    subject: ".currentTarget.dataset.remove"
+
 command!: &space/remove
   description: A request to remove a space from this device (its list entry and local data).
   with:
     subject:
-      description: The subject DID of the space to remove, read from `data-remove`.
-      the: dom.event.current-target.dataset/remove
+      description: The subject DID of the space to remove.
+      the: xyz.tonk.command.remove-space/subject
       as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
 
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
@@ -145,20 +191,16 @@ command!: &tonk/load
       the: xyz.tonk.site/path
       as: text
 
-# The `view` concept — the shape `<tonk-display>` queries: the
-# instance's `this` IS the model entity, `show` its templates keyed
-# by facet (`ui`, `directory`, `label`, `title`, …). The `view!:`
-# instances below are instances of it, so its concept must be present
-# on this branch too. Kept in step with core.yaml's declaration.
-concept!: &view
-  this: tonk:view
-  description: A model's presentations, keyed by facet (ui, directory, label, title, ...)
-  with:
-    show:
-      description: HTML templates keyed by facet
-      the: xyz.tonk.view
-      cardinality: one
-      as: {[symbol]: text}
+# `view` is a BUILT-IN concept (tonk-schema's registry, beside
+# `concept`, `command`, `event` and `rule`). It is declared there
+# rather than here because the analyzer has to understand a view
+# structurally: a `show:` template can bind `on:<name>=<command>`,
+# and those are resolved at lowering into the view's `bindings`
+# rather than re-queried per name on every refresh.
+#
+# An in-document declaration SHADOWS a builtin, so declaring it
+# here again would silently restore runtime resolution. What lives
+# in the libraries are its INSTANCES: the `view!:` blocks below.
 
 # The Hub directory view: the picker shown at `/`. One card per space,
 # linking to its `/space/{subject}` page. A space is identified by its
@@ -190,7 +232,7 @@ view!:
           <div class="sempty">no spaces yet</div>
           <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
                link, so the verbs and the confirm cluster travel with the row
-               while staying outside it: reaching for remove never navigates.
+               while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
           <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
@@ -200,19 +242,20 @@ view!:
                  and a <label for> inside one navigates rather than opening the
                  confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                  so the reveal still follows the row and not just the verbs. -->
-            <ui-space-remove>
+            <ui-space-remove data-space-subject={subject} data-space-name={name}
+              data-space-provider={provider} data-space-founded={founded-at}>
               <span class="verbs">
-                <ui-copy-link url="/space/{subject}" label="copy link"></ui-copy-link>
-                <button class="verb-remove" type="button" data-space-remove-open>remove</button>
+                <ui-copy-link space={subject} label="copy link"></ui-copy-link>
+                <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
               </span>
-              <tonk-dialog data-space-remove-dialog heading="confirm space removal">
-                <form id="remove-{subject}" class="remove-form" onsubmit=space/remove data-remove={subject}>
-                  Remove {name} from this device? A synced space can be rejoined with
-                  a share link; a local-only space is gone for good. Removing it
-                  does not delete other members' copies.
+              <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
+                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
+                  Leave {name}? This removes the space and its local data from this
+                  device. You'll need another invite link to join again. Other
+                  members keep access.
                 </form>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}">remove space</button>
+                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
               </tonk-dialog>
             </ui-space-remove>
           </div>
@@ -222,7 +265,7 @@ view!:
                carried: the worker resolves where a space syncs from the
                account's own registration, so a space created before anyone
                registers stays local until it is shared. -->
-          <form class="snew-form" onsubmit=space/create>
+          <form class="snew-form" on:space-create=space/create>
             <input type="hidden" name="name" value="Untitled">
             <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
@@ -269,23 +312,23 @@ concept!: &profile/name
 # in core.yaml because the FAB is sealed to the profile/meta branch: the
 # guest's `<tonk-display>` resolves the command's concept descriptor by a
 # phase-1 lookup against THIS branch (seeded from the lean profile.yaml), so
-# the command must be present here for the editable's `onchange=profile/rename`
-# to fire. The worker's globally-registered `ProfileRenameHandler` does the
+# the command must be present here for the editable's rename binding to
+# fire. The worker's globally-registered `ProfileRenameHandler` does the
 # work (persist `ProfileName`, restamp `MemberName` across every space's
-# roster, republish self-identity) — this descriptor only has to decode the
-# new name and the `tonk:profile` marker that distinguishes it from the repo
-# rename, which shares the same `dom.event.current-target` shape.
+# roster, republish self-identity) — this descriptor only has to decode
+# the new name.
+#
+# It used to carry a `tonk:profile` marker as well, because this and
+# `tonk/rename-repository` both read `currentTarget.value` and a shape
+# matched on that attribute alone made every space rename also rename the
+# profile. Each command's own attribute namespace keeps them disjoint now.
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
     name:
       description: The new name, read from the editable's value on commit.
-      the: dom.event.current-target/value
+      the: xyz.tonk.command.profile-rename/name
       as: text
-    marker:
-      description: Per-command marker (data-rename) distinguishing this from repo rename.
-      the: dom.event.current-target.dataset/rename
-      as: entity
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -294,22 +337,22 @@ command!: &profile/rename
 # older spaces missing a `fab-pause` view no longer break it. The `space` field
 # names WHICH replica to flip; the worker's PauseSyncHandler reads it in place
 # of the dispatch origin. `time` makes each click a distinct transient so the
-# toggle reliably re-fires; `marker` keeps the shape distinct from `tonk:invite`.
+# toggle reliably re-fires.
+#
+# It used to carry a marker field too, whose only job was to keep this
+# shape distinct from `tonk:invite`'s identical {this, time}. Each
+# command now owns its attribute namespace, so the two cannot collide.
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
   with:
     time:
       description: The click's timestamp; makes each dispatch a distinct transient.
-      the: dom.event/time-stamp
+      the: xyz.tonk.command.pause-sync/time
       as: float
     space:
       description: The target space DID — the replica whose auto-sync is flipped.
       the: xyz.tonk.pause-sync/space
-      as: entity
-    marker:
-      description: Per-command marker keeping the shape distinct from tonk:invite.
-      the: dom.event.current-target.dataset/pause-sync
       as: entity
 
 # The FAB fallback seat — the nearest corner restored on the next page load,
@@ -329,7 +372,7 @@ concept!: &fab/dock
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================
 
-# Redeem an invite URL. Fired by `<tonk-page onmount=tonk:join>` on the
+# Redeem an invite URL. Fired by `<tonk-page on:join=tonk:join>` on the
 # /join view: the element reads the page location (the service worker can't
 # see the `#fragment`, where an open invite's seed rides) and delivers it in
 # the mount event's `detail` (a flat, URL-shaped record). The worker's
@@ -338,13 +381,20 @@ concept!: &fab/dock
 # or retract + durable replica on success). Lives here, not in core.yaml:
 # the join happens on the PROFILE meta branch (it records a replica), so
 # the command + view must resolve there.
+# How the page element's mount fills it: the complete href, fragment and
+# all, off the mount event's `detail`.
+event!: &on/join
+  type: "mount"
+  where:
+    url: ".detail.href"
+
 command!: &tonk/join
   this: tonk:join
   description: Redeem an invite URL and join its space.
   with:
     url:
-      description: The complete invite URL, including any fragment, from detail.href.
-      the: dom.event.detail/href
+      description: The complete invite URL, including any fragment.
+      the: xyz.tonk.command.join/url
       as: text
 
 # The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
@@ -406,7 +456,7 @@ view!:
              inside it, so the whole surface is per-status. -->
         <div class="join-status" data-id={this}>
           <div class="join-opening" aria-live="polite">
-            <span>opening this space</span>
+            <span class="join-opening-status">opening this space</span>
             <span class="tonk-pulse" aria-hidden="true"></span>
           </div>
           <tonk-display entity={this} model=tonk:join/failure>
@@ -550,6 +600,13 @@ route!: &route/settings
   path: "/settings"
   concept: tonk:settings
 
+# `/settings/link` is the same page: a terminal opened it to ask for
+# access, and the settings panel reads the request off the location.
+route!: &route/settings/link
+  this: id:tonk:route/settings/link
+  path: "/settings/link"
+  concept: tonk:settings
+
 concept!: &settings-route
   this: tonk:settings
   description: The account settings page.
@@ -578,7 +635,7 @@ view!:
 # missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
 # (on the site entity) mounts the no-entity `<tonk-display
 # model="tonk:join/status">` directory. That directory's chrome carries the
-# `<tonk-page onmount=tonk:join>` trigger, which reads the page location
+# `<tonk-page on:join=tonk:join>` trigger, which reads the page location
 # (the SW can't see the `#fragment` seed) and fires `tonk:join`.
 route!: &route/join
   this: id:tonk:route/join
@@ -629,7 +686,7 @@ view!:
             .edge-statement, .edge-field, .edge-narrator { min-height:36px;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
             .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
-              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+              color:var(--edge-ink); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
               line-height:1.55; text-wrap:balance; }
             .edge-field { height:36px; min-width:0; padding:0 10px 8px 12px;
               display:flex; align-items:flex-end; gap:12px; overflow:hidden; }
@@ -647,17 +704,15 @@ view!:
               font-weight:400; line-height:1.55; text-wrap:pretty; }
             .edge-narrator__invalid { display:none; }
             .edge-run { display:flex; gap:0; }
-            .ebtn { min-height:40px; flex:1 1 0; padding:8px 10px; display:flex;
-              align-items:flex-end; justify-content:flex-end; color:var(--edge-ink);
+            .ebtn { height:40px; min-height:40px; flex:1 1 0; box-sizing:border-box;
+              padding:8px 10px; display:flex; align-items:flex-end; justify-content:flex-end;
+              appearance:none; border:0; border-radius:0; color:var(--edge-ink);
+              background:transparent; font:inherit; line-height:1; white-space:normal;
               text-decoration:none; text-transform:lowercase; cursor:pointer; }
             .ebtn.quiet { background:var(--edge-card);
               box-shadow:0 0 0 1px var(--edge-ring); }
             .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
-            .ebtn.solid button { width:100%; min-height:40px; padding:8px 10px;
-              display:flex; align-items:flex-end; justify-content:flex-end;
-              border:0; color:inherit; background:transparent; font:inherit;
-              text-transform:lowercase; cursor:pointer; }
-            .ebtn:active, .ebtn.solid button:active { scale:.96; }
+            .ebtn:active { scale:.96; }
             tonk-invite-link { display:none; }
             .edge-wall:has(tonk-invite-link[data-state="invalid"]) .edge-field {
               animation:edge-reject .45s ease 2; }
@@ -672,17 +727,28 @@ view!:
                `data-state=ready` is `<tonk-display>`'s own signal for that,
                so the form steps aside without depending on the row's markup. */
             .join-view:has(.join-status-slot[data-state="ready"]) .join-paste { display: none; }
-            .join-opening { width:min(432px, calc(100vw - 32px)); min-height:36px;
-              margin-left:216px; margin-top:43px; padding:10px 14px;
-              display:flex; align-items:center; justify-content:space-between;
-              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .join-view:has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
+              .edge-mast { display:none; }
+            /* Match the destination-neutral boot shell: only the shared pulse
+               is visible, centred over the whole route. Keep the status text
+               in the live region for assistive technology. */
+            .join-opening { position:fixed; inset:0; z-index:3;
+              display:flex; align-items:center; justify-content:center;
+              color:var(--edge-ink); background:var(--edge-page); }
+            .join-opening-status { position:absolute; width:1px; height:1px;
+              margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0);
+              white-space:nowrap; border:0; }
             .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
+            /* A reconnect keeps the last good failure view mounted while its
+               display returns to loading. Prefer the rendered terminal state
+               over that transient lifecycle attribute, or both rows appear. */
+            .join-status:has(.edge-wall--closed) .join-opening { display:none; }
             @media (max-width:680px) {
               .edge-mast { left:16px; top:18px; width:98px; min-height:44px;
                 display:flex; align-items:center; }
-              .edge-wall, .join-opening { margin-left:16px; margin-top:132px; }
+              .edge-wall { margin-left:16px; margin-top:132px; }
               .edge-run { flex-direction:column; }
-              .edge-field, .ebtn, .ebtn.solid button { min-height:44px; }
+              .edge-field, .ebtn { height:44px; min-height:44px; }
               .edge-field { height:44px; padding-bottom:0; align-items:stretch; }
               .edge-input { min-height:44px; font-size:16px; }
               .edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }
@@ -693,14 +759,14 @@ view!:
             }
           </style>
           <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-          <tonk-page onmount=tonk:join></tonk-page>
+          <tonk-page on:join=tonk:join></tonk-page>
           <!-- `onmount`, not `onsubmit`: `<tonk-invite-link>` cancels the
                submit, resolves the pasted text (expanding a short link on
                its minting origin), and re-fires it as a bubbling `mount`
                carrying `detail.href` — the one read path `tonk:join`
                declares. Same command, same handler, whether the invite
                arrived in the address bar or in this box. -->
-          <form class="join-paste edge-wall edge-wall--no-access" onmount=tonk:join>
+          <form class="join-paste edge-wall edge-wall--no-access" on:join=tonk:join>
             <div class="edge-statement">you do not have access to this space</div>
             <label class="edge-field">
               <span class="edge-noun">share link</span>
@@ -739,6 +805,14 @@ view!:
 # sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
 # repository from their own `with` — here the profile endpoint — so they
 # query `/api/profile/branch/main/query` rather than a named space.
+#
+# Both take that `with` from the SITE, exactly as core.yaml's route views do,
+# rather than naming the profile endpoint literally. The site's `repo` is a
+# LOCATION TOKEN (`profile:<name>` here, a bare repository key in a space), so
+# `{branch}@{repo}` is the one spelling that resolves in either context — which
+# is what lets the same view be written once. The literal it replaces also
+# pinned the profile NAME, so it addressed the wrong endpoint outright for any
+# profile not called `tonk`.
 route!: &route/inspector
   this: id:tonk:route/inspector
   path: "/inspector"
@@ -748,11 +822,21 @@ concept!: &inspector/route
   this: tonk:inspector/route
   description: The /inspector page — a query inspector over the profile DB.
   with:
-    # A route model must declare at least one field; the view doesn't read
-    # it (the inspector needs no entity — it inspects the whole branch).
+    # The inspector needs no entity — it inspects the whole branch — but it
+    # does need the branch, so `repo`/`branch` are what the model declares.
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
       cardinality: one
       as: text
 
@@ -762,7 +846,7 @@ view!:
     ui: |
       <div class="display-view-slot">
         <tonk-title text="Tonk"></tonk-title>
-        <tonk-inspector with="main@profile:tonk"></tonk-inspector>
+        <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
 
 route!: &route/diagnose
@@ -779,6 +863,16 @@ concept!: &diagnose/route
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:diagnose/route
@@ -786,7 +880,7 @@ view!:
     ui: |
       <div class="display-view-slot">
         <tonk-title text="Tonk"></tonk-title>
-        <tonk-tree with="main@profile:tonk"></tonk-tree>
+        <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
 
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a

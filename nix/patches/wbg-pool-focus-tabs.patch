@@ -1,0 +1,44 @@
+diff --git a/rust/wbg-pool/src/daemon/browser.rs b/rust/wbg-pool/src/daemon/browser.rs
+--- a/rust/wbg-pool/src/daemon/browser.rs
++++ b/rust/wbg-pool/src/daemon/browser.rs
+@@ -55,11 +55,37 @@ impl BrowserPool {
+                 .await
+             {
+                 Ok(result) => {
+-                    let target_id = result
++                    let target_id = result
+                         .get("targetId")
+                         .and_then(Value::as_str)
+-                        .context("Target.createTarget returned no targetId")?;
+-                    return Ok(target_id.to_string());
++                        .context("Target.createTarget returned no targetId")?
++                        .to_string();
++                    // Every test owns a sibling tab. Chrome normally marks
++                    // all but the latest one backgrounded, suppressing
++                    // rendering opportunities such as ResizeObserver
++                    // delivery. CDP's focus emulation makes each isolated
++                    // test page active without serializing the pool.
++                    let session = browser
++                        .cdp
++                        .call(
++                            "Target.attachToTarget",
++                            json!({ "targetId": target_id, "flatten": true }),
++                            None,
++                        )
++                        .await?;
++                    let session_id = session
++                        .get("sessionId")
++                        .and_then(Value::as_str)
++                        .context("Target.attachToTarget returned no sessionId")?;
++                    browser
++                        .cdp
++                        .call(
++                            "Emulation.setFocusEmulationEnabled",
++                            json!({ "enabled": true }),
++                            Some(session_id),
++                        )
++                        .await?;
++                    return Ok(target_id);
+                 }
+                 Err(error) if attempt == 0 && !browser.cdp.is_alive() => {
+                     let _ = error;

@@ -62,13 +62,23 @@ pub async fn get_json(url: &str) -> Result<String, ErrorDetail> {
 /// string to the top document. Non-2xx responses retain their status and body
 /// in the returned network error.
 pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
+    send_json("POST", url, Some(body)).await
+}
+
+/// DELETE a bare host-relative `url` and return the response body text,
+/// relayed and gated exactly as [`post_json`] is.
+pub async fn delete_json(url: &str) -> Result<String, ErrorDetail> {
+    send_json("DELETE", url, None).await
+}
+
+async fn send_json(method: &str, url: &str, body: Option<&str>) -> Result<String, ErrorDetail> {
     // Gate every `/api/*` request on service-worker activation.
     // Without this, an early call lands on the static-asset
     // server and comes back as 405. Idempotent — after the first
     // wait the gate is open for the page lifetime.
     ready::wait().await;
     let init = RequestInit::new();
-    init.set_method("POST");
+    init.set_method(method);
     let headers = Headers::new()
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
     headers
@@ -79,7 +89,9 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
     append_context_headers(&headers);
     init.set_headers(&headers);
-    init.set_body(&JsValue::from_str(body));
+    if let Some(body) = body {
+        init.set_body(&JsValue::from_str(body));
+    }
 
     // Fetch the relative URL as a STRING, not a `Request` — a `Request`
     // resolves `url` against `document.baseURI` at construction, turning the
