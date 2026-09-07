@@ -1433,6 +1433,12 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
             let Some(command) = command else {
                 return;
             };
+            // There is no paste-link page: invite links open directly in the
+            // browser. Return bare /join visits home before requesting custody.
+            if !carries_invite(&command.url.0) {
+                crate::router::navigate::notify_navigate(env.client(), "/");
+                return;
+            }
             // The invite principal's seed is custodied under the account
             // as part of the join. A linked device whose root record
             // predates the encryption key asks the originating page for a
@@ -1451,7 +1457,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
 /// Whether a `/join` URL carries an invite at all.
 ///
 /// The delegation chain rides in `access`, so its presence is what
-/// separates "redeem this" from "someone opened /join to paste a link".
+/// separates "redeem this" from a bare /join visit that returns home.
 /// Deliberately a query test and not a parse: a malformed or truncated
 /// invite IS an attempt and must still fail loudly with its reason,
 /// rather than being silently treated as an empty visit.
@@ -1529,21 +1535,6 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             return;
         }
     };
-
-    // A `/join` opened with no invite in its URL is not a failed attempt
-    // — it is someone who arrived holding a link they have not pasted
-    // yet. Asserting `pending` here is what made the paste form flash
-    // and vanish behind a spinner that waited on nothing. Claiming
-    // nothing leaves the view in its own inviteless state rather than
-    // flashing a spinner for an invite that will never arrive. A URL
-    // that carries an invite is untouched by this and proceeds exactly
-    // as before.
-    if !carries_invite(&command.url.0) {
-        clear_join_overlay(&session, &status_entity);
-        tonk.reactor.schedule_poll(Arc::clone(&session.state));
-        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        return;
-    }
 
     // Pending: a fresh attempt clears any prior status, then marks
     // pending. Schedule a poll so the view shows "Joining…".
@@ -1683,9 +1674,7 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
 }
 
 /// The inviteless-`/join` guard, pinned on every target: it decides
-/// whether the route claims or offers its paste form, and getting it
-/// wrong flashes the form before a spinner for an invite that will
-/// never arrive.
+/// whether the route redeems an invite or returns home.
 #[cfg(test)]
 mod invite_presence_tests {
     use super::carries_invite;

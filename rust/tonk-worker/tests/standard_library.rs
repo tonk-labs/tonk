@@ -274,7 +274,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
         "you don't have this space",
-        "join a space",
+        "class=\"space-unknown-home\" href=\"/\">go to home",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -551,17 +551,11 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert!(!failure.contains("tonk-join-retry"));
     assert!(!failure.contains("join this space"));
     assert!(!failure.contains("start a new space"));
-    assert!(route.contains("you do not have access to this space"));
-    assert!(route.contains("start a new space"));
-    assert!(route.contains("join this space"));
-    for wall in [("closed", failure), ("no-access", route)] {
-        assert_eq!(
-            wall.1.matches("class=\"ebtn solid\"").count(),
-            1,
-            "the {} wall must carry exactly one solid ink door",
-            wall.0,
-        );
-    }
+    assert!(!route.contains("<form"));
+    assert!(!route.contains("<input"));
+    assert!(!route.contains("tonk-invite-link"));
+    assert!(route.contains("<tonk-page on:join=tonk:join>"));
+    assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
 }
 
 #[test]
@@ -649,10 +643,7 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     }
     for contract in [
         ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
-        ".edge-field, .ebtn { height:44px; min-height:44px; }",
-        ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
-        ".edge-input { min-height:44px; font-size:16px; }",
-        ".edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }",
+        ".ebtn { height:44px; min-height:44px; }",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
