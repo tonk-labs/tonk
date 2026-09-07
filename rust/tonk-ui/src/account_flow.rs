@@ -5871,7 +5871,28 @@ mod tests {
         assert_eq!(shown, audience, "the page must name the waiting device");
 
         click(&driver, "[data-link-approve]").await?;
+        driver.enter_default_frame().await?;
+        driver
+            .execute(
+                r#"window.__cliLinkAllowCredentials = "not called";
+                   const realGet = navigator.credentials.get.bind(navigator.credentials);
+                   navigator.credentials.get = options => {
+                     window.__cliLinkAllowCredentials =
+                       options?.publicKey?.allowCredentials?.length ?? null;
+                     return realGet(options);
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
         use_passkey_consent(&driver).await?;
+        let allowed = driver
+            .execute("return window.__cliLinkAllowCredentials", Vec::new())
+            .await?;
+        assert_eq!(
+            allowed.json(),
+            &serde_json::Value::Null,
+            "CLI linking must let the passkey provider offer any credential for this account"
+        );
 
         // Generous: approving runs a passkey assertion, the unlock, and
         // the device registration before the callback navigation, and a loaded
