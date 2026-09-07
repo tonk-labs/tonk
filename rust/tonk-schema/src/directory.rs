@@ -220,7 +220,7 @@ where
             subject,
         });
     }
-    spaces.sort_by(|left, right| left.subject.to_string().cmp(&right.subject.to_string()));
+    spaces.sort_by_key(|space| space.subject.to_string());
     Ok(spaces)
 }
 

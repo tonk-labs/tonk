@@ -1010,7 +1010,6 @@ pub async fn ensure_with_operator_and_store(
 #[cfg(test)]
 mod tests {
     use dialog_credentials::Ed25519Signer;
-    use tonk_schema::prelude::DidExt as _;
 
     use super::*;
 

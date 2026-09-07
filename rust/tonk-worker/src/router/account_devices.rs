@@ -89,7 +89,7 @@ pub async fn list(
         }
     }
     let mut devices: Vec<AccountDevice> = rows.into_values().collect();
-    devices.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    devices.sort_by_key(|device| device.created_at);
     Ok(Json(devices))
 }
 
