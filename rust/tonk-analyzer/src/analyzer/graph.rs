@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use dialog_artifacts::Entity;
 use dialog_common::ConditionalSync;
-use tonk_notation::{Effectful, Expression, FieldValue, HeadName, Syntax};
+use tonk_notation::{Effectful, Expression, Field, FieldValue, HeadName, Syntax};
 
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
@@ -377,6 +377,16 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
             }
         }
 
+        // A `view!:` body's `show:` templates bind commands with
+        // `on:<name>=<command>`. Both halves are resolved at lowering
+        // (`super::view::compile_bindings`), so both must be in scope
+        // by then: the command as a concept, the declaration as a
+        // name. Gathered here for the same reason a rule's premise
+        // concepts are — the pass that needs them is synchronous.
+        if is_claim && matches!(&head.name, HeadName::Concept(n) if n == "view") {
+            collect_view_binding_needs(fields, &mut needs);
+        }
+
         // `rule!:` bodies reference concepts (head + premises) and,
         // on retract, the installed rule.
         if let Expression::Claim(c) = expression
@@ -401,6 +411,48 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
         declarations,
         pending_anchors,
     })
+}
+
+/// Gather what a `view!:` body's `on:<name>=<command>` bindings must
+/// have in scope by lowering: the command's concept (by name or, for a
+/// URI-spelled binding, by entity) and the declaration's name.
+///
+/// A need that resolves to nothing is not an error here — the binding
+/// pass is where an unresolvable reference gets a diagnostic with a
+/// template to point at.
+fn collect_view_binding_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    for field in fields {
+        if field.name != "show" {
+            continue;
+        }
+        let FieldValue::Nested(entries) = &field.value else {
+            continue;
+        };
+        for entry in entries {
+            let FieldValue::Literal(tonk_notation::Scalar::String(template)) = &entry.value else {
+                continue;
+            };
+            for binding in tonk_template::bindings::scan(template) {
+                let range = entry.value_range;
+                // Both forms are prefetched rather than one guessed:
+                // a template writes the command as a bare name
+                // (`space/create`) or as a URI (`tonk:invite`), and
+                // the one that does not apply resolves to nothing,
+                // which costs a lookup and no correctness.
+                if let Ok(entity) = binding.command.parse::<Entity>() {
+                    needs.push(Need::ConceptByEntity { entity, range });
+                }
+                needs.push(Need::Concept {
+                    name: binding.command,
+                    range,
+                });
+                needs.push(Need::Symbol {
+                    name: binding.event_name,
+                    range,
+                });
+            }
+        }
+    }
 }
 
 /// Gather the attribute references a `concept!`'s `with:` and
@@ -836,6 +888,11 @@ impl Graph {
             };
             scope.declare(&anchor.name, entity, anchor.range)?;
         }
+
+        // Pass 5 — `event!:` declarations. Indexed last so their
+        // bare-symbol sources resolve against a fully populated name
+        // table; read synchronously by the view-binding pass.
+        super::view::index_event_declarations(syntax, scope);
 
         Ok(Resolved { declared })
     }

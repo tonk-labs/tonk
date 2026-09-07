@@ -111,7 +111,15 @@ async fn set_parent_width(
         .style()
         .set_property("width", &format!("{width}px"))
         .expect("set parent width");
-    for _ in 0..50 {
+    // Same budget as `wait_for_width` above, and for the same reason:
+    // the settle is driven by a `ResizeObserver` callback, which a
+    // loaded CI browser can defer well past the naive
+    // 50-poll (~500ms) window this used to allow. The whole suite
+    // shares one browser, so the delay is not bounded by anything this
+    // test controls. Waiting longer costs nothing when the layout
+    // settles promptly — the loop returns on the first matching poll —
+    // and only the failing case pays.
+    for _ in 0..500 {
         let wrapper = shadow_element(fab, ".w");
         if wrapper.class_list().contains("compact") == compact
             && visible(&shadow_element(fab, "[data-cell=share]")) == share_visible

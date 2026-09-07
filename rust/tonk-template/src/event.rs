@@ -40,10 +40,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use tonk_notation::syntax::{FieldValue, Scalar};
 
 /// Where one command field's value comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Source {
     /// `{field}` — the same interpolation a template uses, resolved in
     /// the scope of the element the event fired on: a field of the
@@ -158,7 +160,8 @@ fn scalar_text(scalar: &Scalar) -> String {
 }
 
 /// A parsed `event!:` declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct EventDescriptor {
     /// The platform event name to listen for (`click`, `submit`,
     /// `createsheet`). Distinct from the declaration's own identifier,

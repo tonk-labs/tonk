@@ -191,20 +191,16 @@ command!: &tonk/load
       the: xyz.tonk.site/path
       as: text
 
-# The `view` concept — the shape `<tonk-display>` queries: the
-# instance's `this` IS the model entity, `show` its templates keyed
-# by facet (`ui`, `directory`, `label`, `title`, …). The `view!:`
-# instances below are instances of it, so its concept must be present
-# on this branch too. Kept in step with core.yaml's declaration.
-concept!: &view
-  this: tonk:view
-  description: A model's presentations, keyed by facet (ui, directory, label, title, ...)
-  with:
-    show:
-      description: HTML templates keyed by facet
-      the: xyz.tonk.view
-      cardinality: one
-      as: {[symbol]: text}
+# `view` is a BUILT-IN concept (tonk-schema's registry, beside
+# `concept`, `command`, `event` and `rule`). It is declared there
+# rather than here because the analyzer has to understand a view
+# structurally: a `show:` template can bind `on:<name>=<command>`,
+# and those are resolved at lowering into the view's `bindings`
+# rather than re-queried per name on every refresh.
+#
+# An in-document declaration SHADOWS a builtin, so declaring it
+# here again would silently restore runtime resolution. What lives
+# in the libraries are its INSTANCES: the `view!:` blocks below.
 
 # The Hub directory view: the picker shown at `/`. One card per space,
 # linking to its `/space/{subject}` page. A space is identified by its

@@ -4752,6 +4752,7 @@ dependencies = [
  "tonk-core",
  "tonk-notation",
  "tonk-schema",
+ "tonk-template",
  "wasm-bindgen-test",
 ]
 
@@ -5255,6 +5256,8 @@ dependencies = [
  "dialog-common",
  "indexmap",
  "ipld-core",
+ "serde",
+ "serde_ipld_dagcbor",
  "serde_ipld_dagjson",
  "serde_json",
  "tokio",

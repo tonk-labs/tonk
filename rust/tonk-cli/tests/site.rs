@@ -993,7 +993,7 @@ mod when_authoring_an_html_view {
     /// 1. `attribute! the: text/html` is accepted by parse +
     ///    analyzer (the dialog layer permits `text/html` even
     ///    though the domain is dotless).
-    /// 2. A `view!` head whose body field references that
+    /// 2. A `page!` head whose body field references that
     ///    attribute lands as a literal `(text/html, ?, body)`
     ///    claim — i.e. the URI on the wire really is `text/html`,
     ///    not a synthesised concept-namespace URI.
@@ -1004,7 +1004,7 @@ mod when_authoring_an_html_view {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &my-view
+            r#"page!: &my-view
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1029,7 +1029,7 @@ mod when_authoring_an_html_view {
         // Re-asserting the same body is a no-op: same content →
         // same entity, same claim. The claim count must stay 1.
         test.eval_inline(
-            r#"view!: &my-view
+            r#"page!: &my-view
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1210,13 +1210,13 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &todo-list
+            r#"page!: &todo-list
   body: "<ul><li>buy milk</li></ul>"
 "#,
         )
         .await?;
         test.eval_inline(
-            r#"view!: &welcome
+            r#"page!: &welcome
   body: "<h1>hi</h1>"
 "#,
         )
@@ -1237,7 +1237,7 @@ mod when_listing_views {
         let test = common::TestSite::new().await?;
         test.eval_inline(VIEW_DECL).await?;
         test.eval_inline(
-            r#"view!: &welcome
+            r#"page!: &welcome
   body: "<h1>hi</h1>"
 "#,
         )

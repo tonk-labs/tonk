@@ -18,25 +18,16 @@
 # VIEW
 # ============================================================
 
-# The `view` concept. Shape matches what `<tonk-display>` queries
-# (resolve.rs `view_predicate`): the instance's `this` IS the model
-# entity, and `show` is its presentations keyed by facet (`ui` for
-# the detail view, `directory` for the entity-set view, `label`,
-# `title`, or any facet a `view=` attribute names). Each entry lands
-# as `<model> xyz.tonk.view/<facet> <template>`; cardinality is one
-# per entry, so re-asserting a facet supersedes its template. Pinned
-# to the stable `tonk:view` URI so <tonk-display> can refer to the
-# built-in view concept directly, without a name-resolution
-# round-trip.
-concept!: &view
-  this: tonk:view
-  description: A model's presentations, keyed by facet (ui, directory, label, title, ...)
-  with:
-    show:
-      description: HTML templates keyed by facet
-      the: xyz.tonk.view
-      cardinality: one
-      as: {[symbol]: text}
+# `view` is a BUILT-IN concept (tonk-schema's registry, beside
+# `concept`, `command`, `event` and `rule`). It is declared there
+# rather than here because the analyzer has to understand a view
+# structurally: a `show:` template can bind `on:<name>=<command>`,
+# and those are resolved at lowering into the view's `bindings`
+# rather than re-queried per name on every refresh.
+#
+# An in-document declaration SHADOWS a builtin, so declaring it
+# here again would silently restore runtime resolution. What lives
+# in the libraries are its INSTANCES: the `view!:` blocks below.
 
 # The default directory view: `this: tonk:_` matches any model whose
 # own `show` dictionary has no `directory` entry. `tonk:_` is the
