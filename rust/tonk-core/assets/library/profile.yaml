@@ -956,9 +956,8 @@ view!:
           <tonk-title text="Not here — Tonk"></tonk-title>
           <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
           <div class="space-unknown-wall">
-            <h1 class="space-unknown-statement">you don't have this space</h1>
-            <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link.</p>
-            <p class="space-unknown-narrator">Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
+            <h1 class="space-unknown-statement">invalid link</h1>
+            <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
             <!-- A plain anchor lets the guest relay navigation to the host. -->
             <div class="space-unknown-run">
               <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>

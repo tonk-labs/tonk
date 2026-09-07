@@ -273,7 +273,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "you don't have this space",
+        "invalid link",
         "class=\"space-unknown-home\" href=\"/\">go to home",
     ] {
         assert!(
@@ -281,6 +281,13 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("class=\"space-unknown-narrator\"")
+            .count(),
+        1,
+        "the absent-space explanation must render as one card"
+    );
     assert!(
         !PROFILE_LIBRARY.contains("you don't have this spot")
             && !PROFILE_LIBRARY.contains("join a spot"),
