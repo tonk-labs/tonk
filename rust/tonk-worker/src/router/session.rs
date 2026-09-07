@@ -656,7 +656,7 @@ async fn match_route(
 
     // Stable order by entity URI so equal-specificity ties resolve
     // deterministically (the table preserves insertion order among equal scores).
-    routes.sort_by(|a, b| a.this.to_string().cmp(&b.this.to_string()));
+    routes.sort_by_key(|route| route.this.to_string());
 
     let mut router = tonk_router::Router::new();
     for route in &routes {

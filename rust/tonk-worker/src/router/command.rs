@@ -495,6 +495,7 @@ mod tests {
         use crate::worker::TonkState;
         use dialog_query::{Output as _, Query, Term};
         use tonk_schema::Replica;
+        use tonk_schema::prelude::DidExt as _;
 
         /// A full native `TonkState` over default storage — the same
         /// construction `account_state`'s native tests use, minus the
