@@ -303,7 +303,7 @@ command!: &table/create-cell
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-sheet/time
+      the: xyz.tonk.table.create-cell/time
       as: unsigned-integer
 
 command!: &table/edit-cell
@@ -343,7 +343,7 @@ command!: &table/create-column
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-sheet/time
+      the: xyz.tonk.table.create-column/time
       as: unsigned-integer
 
 command!: &table/resize-column
@@ -375,7 +375,7 @@ command!: &table/create-row
       as: text
     time:
       description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-sheet/time
+      the: xyz.tonk.table.create-row/time
       as: unsigned-integer
 
 command!: &table/resize-row
