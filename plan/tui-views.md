@@ -1,5 +1,24 @@
 # TUI views: `show: { tui: … }` rendered in a terminal
 
+> **Revised after the event-binding stack merged (#904, #905, #906, #907).**
+> This plan was drafted on 2026-09-02, against a write path where
+> `on<event>=<command>` named a command whose `with:` map carried
+> `dom.event.*` read paths. That model is gone. Commands are now
+> domain-shaped, platform reads live in `event!:` declarations, and every
+> binding a view makes is resolved at lowering into a dag-cbor artifact on
+> the view itself.
+>
+> Sections rewritten against the new model: **§1.5** (the write path),
+> **§5.1** (what is focusable, and what activation maps onto), **§5.3**
+> (which asked a namespace question the merge answered), the **M3**
+> milestone, and the command-parity test in §12. Everything else — the
+> layout algebra, the theme, the capability ladder, the vocabulary — was
+> unaffected and is unchanged.
+>
+> Net effect on scope: M3 got **cheaper**, not harder. The host is handed
+> a resolved binding table instead of a scanning-and-resolution problem,
+> and the only genuinely new code is a `Source` reader (§5.3).
+
 ## Context
 
 Tonk's view layer is already three-quarters host-independent. This plan
@@ -112,26 +131,59 @@ the integration point: take the `Vec<Node>`, never call `serialize`.
 
 ### 1.5 Events and commands
 
-Read path is subscription-driven re-render. Write path is four pieces, and
-only step 2 knows about a browser:
+Read path is subscription-driven re-render. The write path was rewritten
+in #904/#905/#906 (merged); what follows is the current model, not the one
+this plan was first drafted against.
 
-1. `on<event>=<command>` on a template element names a **transient
-   concept**.
-2. A delegated listener on the host walks from `event.target` to the
-   closest `[data-on<event>]` ancestor, then projects values out of the
-   live event per the command's `with:` map. `the:` identifiers under
-   `dom.event.*` are *reads*
-   (`dom.event.current-target.dataset/todo` → the bound element's
-   `data-todo`); under `dom.event.do/*` they are *side effects*. A path
-   that fails to resolve aborts the whole assertion.
-3. The result is a `TransactRequest` carrying one transient assertion.
-4. A `rule!:` matches the transient and asserts durable facts. Rules match
-   **structurally** — any transient carrying the command's attribute set
-   matches — so the rule never learns what produced the fact.
+1. `on:<name>=<command>` on a template element names an **`event!:`
+   declaration** and the **transient concept** it posts. The attribute
+   carries the declaration's name, not the platform event type: `on:click`
+   names `on/click`, `on:space-remove` names `on/space-remove`.
+2. The declaration owns everything platform-specific:
 
-That last property is load-bearing: **a rule written for a browser click
-already works for a terminal keypress**, provided the terminal host posts
-a transient of the same shape.
+   ```yaml
+   event!: &on/space-remove
+     type: "submit"
+     prevent-default: true
+     where:
+       subject: ".currentTarget.dataset.remove"
+   ```
+
+   `type:` is the platform event. `where:` maps **command field name →
+   source**, where a source is one of `Source::Field("name")` (`{field}`
+   interpolation in the row's scope; `{this}` is the subject),
+   `Source::Property(["currentTarget","dataset","remove"])` (a dotted read
+   off the live event), `Source::Literal`, `Source::Reference` (a bare
+   symbol, resolved to `Source::Entity` at lowering).
+   `prevent-default` / `stop-propagation` are declaration fields, not
+   command fields — which is what keeps the command rule-consumable.
+3. **The binding is resolved at lowering, not at render.** The analyzer
+   scans `show:` templates, resolves each `on:` to its declaration and
+   command, and stores the result on the view as one dag-cbor artifact at
+   `xyz.tonk.view/bindings` (`tonk_template::bindings::Bindings`, a
+   `BTreeMap<String, EventDescriptor>` keyed by declaration name). A
+   binding that resolves to nothing fails the build
+   (`E_UNKNOWN_EVENT_DECLARATION`, `E_UNKNOWN_BOUND_COMMAND`,
+   `E_EVENT_COMMAND_MISMATCH`).
+4. The host reads that artifact, builds the transact body, and posts one
+   transient assertion.
+5. A `rule!:` matches the transient and asserts durable facts. Rules match
+   **structurally**, so the rule never learns what produced the fact.
+
+Two consequences for this plan, both simplifying:
+
+- **The command carries no platform knowledge.** Every `dom.event.*` read
+  path is gone from the shipped libraries (61 → 0). A command's `with:`
+  map is domain-shaped, so a terminal host has nothing to alias and
+  nothing to fork — see §5.3, which this obsoletes.
+- **The host is handed a resolved table, not a scanning problem.** No
+  attribute walk to rebuild descriptors, no per-name query. `Bindings::
+  decode` and you have `type`, sources and side effects for every binding
+  the view makes.
+
+That last property is still load-bearing: **a rule written for a browser
+click already works for a terminal keypress**, provided the terminal host
+posts a transient of the same shape — and the shape is now *given* to it.
 
 ## 2. Reference points and what each one contributes
 
@@ -252,13 +304,25 @@ supplies none of it.
 
 ### 5.1 Focus and activation
 
-- **Focusable** = any element carrying an `on<event>` attribute, plus any
-  element with an explicit `focus` attribute. Document order is tab order.
+- **Focusable** = any element carrying an `on:<name>` attribute whose
+  declaration is in the view's compiled `bindings` (§1.5), plus any
+  element with an explicit `focus` attribute. Document order is tab
+  order. Note this is now *decidable without a DOM*: the host has the
+  declaration set from the artifact and the attribute names from the
+  parsed tree, so it does not have to guess which attributes are
+  bindings.
 - **Traversal**: `Tab` / `Shift-Tab` always; arrow keys within a container
   declaring `nav=vertical|horizontal`.
-- **Activation**: `Enter` and `Space` on a focused element fire its
-  `onclick`. Mapping activate→`onclick` is deliberate — it keeps browser
-  commands reusable verbatim rather than forcing an `onactivate` twin.
+- **Activation**: `Enter` and `Space` on a focused element fire the
+  binding whose declaration's `type:` the host maps activation onto —
+  `click` by default, and `submit` when the focused element is inside a
+  `<form>` subtree (which is how `on:space-remove`, a `submit`
+  declaration, becomes reachable from a keyboard). Mapping activation
+  onto the *declared platform type* rather than onto a fixed `onclick` is
+  what keeps browser commands reusable verbatim without inventing an
+  `onactivate` twin — and unlike the original formulation it costs
+  nothing, because the type is in the artifact rather than something the
+  host must infer from the attribute name.
 - **Focus styling** follows elm-ui's `focused` decoration: state-prefixed
   attributes on the element itself (`focused-bg=`, `focused-weight=`), no
   selector engine (§6.6). `mouseOver`/`mouseDown` become `hover-*` (mouse
@@ -287,44 +351,57 @@ component instance to hang a caret position or scroll offset on.
 genuinely wants to be queryable — selection, active tab, expanded rows —
 never for carets.
 
-### 5.3 Event namespace: reuse `dom.event.*` or fork?
+### 5.3 Event namespace — answered by the declaration seam
 
-- **(a) Reuse `dom.event.*`** for everything that maps 1:1; add
-  `tui.event/*` only for terminal-only reads.
-- **(b) A parallel `tui.event.*` namespace.**
-- **(c) A neutral `ui.event.*` both hosts implement, `dom.event.*` aliased.**
+**This section originally asked whether the TUI should reuse
+`dom.event.*`, fork a `tui.event.*` namespace, or introduce a neutral
+`ui.event.*`. #904 removed the question.** Platform read paths no longer
+live in the command at all; they live in the `event!:` declaration's
+`where:` map (§1.5). A command's `with:` map is domain-shaped
+(`subject: entity`, `name: text`), identical for every host. There is
+nothing to alias and nothing to fork.
 
-**Recommend (a).** The structural paths map cleanly:
+What a terminal host implements instead is the **source reader** — one
+`match` over `Source`, the terminal's answer to
+`tonk-display/src/events/binding.rs`:
 
-| `the:` identifier | terminal meaning |
-| --- | --- |
-| `dom.event.current-target.dataset/todo` | the `data-todo` on the focused/activated node |
-| `dom.event.target.dataset/*` | the innermost node under the activation |
-| `dom.event.current-target.form.elements.<name>/value` | the named input inside the enclosing `<form>` subtree |
-| `dom.event/key` | the pressed key |
-| `dom.event/type` | `click`, `key`, `change`, `submit` |
-| `dom.event.detail/*` | payload of a widget-raised event |
-| `dom.event.do/prevent-default` | no-op |
-| — | `tui.event/row`, `tui.event/column`, `tui.event/modifiers` |
+| `Source` | browser | terminal |
+| --- | --- | --- |
+| `Field("this")` | `data-this` on the bound element | the focused row's conclusion `this` |
+| `Field("name")` | `data-name` on/under the bound element | the same field off the focused row |
+| `Property(["currentTarget", "dataset", "x"])` | the bound element's `dataset.x` | the focused element's attribute `x` |
+| `Property(["currentTarget","elements","name","value"])` | the named control in the enclosing form | host-side widget state (§5.2a), M5 |
+| `Property(["detail", …])` | a widget-raised `CustomEvent` payload | a host-raised payload |
+| `Literal("text")` / `Entity(uri)` | constant | constant — **already target-agnostic** |
+| `Reference(name)` | unresolved → binding does not apply | same |
 
-Forking (b) forks every command and rule, doubling the application for no
-semantic gain. (c) is the honest naming but is a migration across the
-whole standard library — take it later if the `dom` misnomer becomes a
-real teaching problem.
+`Literal`, `Entity` and the whole dispatch table (`tonk_template::event`)
+are DOM-free and shared as-is. Only `Field` and `Property` need a
+terminal reading, and `Field` is the easy one: the TUI already knows the
+conclusion behind each repeat row, so it reads the value directly rather
+than round-tripping through a rendered `data-` attribute — strictly
+better than what the browser has to do.
 
-**Two consequences to state loudly:**
+**One thing this does *not* solve.** `Property` paths are still spelled
+the way a browser spells them (`.currentTarget.dataset.remove`). A
+terminal can honour the common ones by convention, as above, but a
+declaration written against a browser-only path (`.currentTarget.files`,
+say) has no terminal meaning. That is now a **per-declaration** problem
+rather than a per-command one, which is the improvement; the residual
+question — whether a declaration should be able to state which hosts it
+supports — is deferred to §14 and does not block M3.
 
-- The existing "one command, one shape" hazard sharpens with two hosts. A
-  browser click command and a terminal activation command reading the same
-  attributes are *the same shape* and fire the same rules. Arguably the
-  correct semantics — the rule expresses host-independent intent — but the
-  analyzer's subset-overlap check now spans hosts.
-- `dom.event.do/prevent-default` becoming a no-op keeps its nastiest edge:
-  the **prevent-default trap** (an action field makes a command rule-proof,
-  because the field stores no value and a rule premise over it matches
-  zero rows) still applies in the TUI even though nothing is prevented.
-  **The TUI host should warn** when a command it fires declares a
-  `dom.event.do/*` field.
+**Still true from the original analysis:** the "one command, one shape"
+hazard sharpens with two hosts. A browser click and a terminal activation
+posting the same attributes *are* the same shape and fire the same rules.
+That is arguably correct — the rule expresses host-independent intent —
+but the analyzer's overlap check now spans hosts.
+
+**No longer true:** the prevent-default trap. `dom.event.do/*` action
+fields are gone; `prevent-default` and `stop-propagation` are declaration
+fields that store no value on the command. A TUI host should still treat
+them as no-ops, but there is no longer a rule-proof command to warn
+about.
 
 ### 5.4 Labels, and affordance discovery
 
@@ -752,8 +829,13 @@ and the reason §5.2 needs an answer before §6 gets interesting.
   change. Empty/loading/error states mapped onto the existing `State`
   enum. The `tonk:_` `tui` fallback from §8.
 - **M3 — activation.** Focus ring, tab traversal, `focused-*` decorations,
-  `Enter`/`Space` → `onclick` → transient → transact, generated keybar
-  (§5.4). Browser rules start firing from a terminal.
+  `Enter`/`Space` → the focused binding's declaration → transient →
+  transact, generated keybar (§5.4). Browser rules start firing from a
+  terminal. Cheaper than when this plan was written: the binding table is
+  the view's compiled `bindings` artifact (§1.5), so this milestone is a
+  `Source` reader (§5.3) plus focus state, not a descriptor-resolution
+  problem. **Note the README of `tonk-tui-poc` calls activation "M2";
+  M2 here is live subscriptions and M3 is activation.**
 - **M4 — color and motion.** The capability ladder (§6.5, §6.8), the
   `terminal` theme, the clock (§6.9), spinner and progress.
 - **M5 — input and composition.** `<input>`, `<textarea>`, `<checkbox>`,
@@ -792,8 +874,13 @@ three-way, but only for the shared half — the planner.
   design-system revision fails a test rather than drifting silently.
 - **Command parity**: assert the transient a terminal activation posts is
   byte-identical to the one a browser click posts for the same command
-  descriptor and the same `data-*`. This is the claim §5.3 rests on; test
-  it rather than assume it.
+  descriptor and the same row. This is the claim §5.3 rests on; test it
+  rather than assume it. It is now a *shared-input* test rather than a
+  cross-host reimplementation check: both hosts consume the same
+  `EventDescriptor` out of the same `bindings` artifact and both build the
+  body with `tonk_template::event::transact_body`, so the only thing that
+  can differ is the `Source` reader — which is exactly what the test
+  should pin.
 
 ## 13. What a view definition actually looks like
 
