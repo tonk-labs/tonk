@@ -834,30 +834,6 @@ mod tests {
         Ok(())
     }
 
-    async fn emulate_phone(driver: &WebDriver, width: u32, height: u32) -> Result<()> {
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools
-            .execute_cdp_with_params(
-                "Emulation.setDeviceMetricsOverride",
-                serde_json::json!({
-                    "width": width,
-                    "height": height,
-                    "deviceScaleFactor": 2,
-                    "mobile": true,
-                    "screenWidth": width,
-                    "screenHeight": height
-                }),
-            )
-            .await?;
-        devtools
-            .execute_cdp_with_params(
-                "Emulation.setTouchEmulationEnabled",
-                serde_json::json!({ "enabled": true, "maxTouchPoints": 5 }),
-            )
-            .await?;
-        Ok(())
-    }
-
     /// Create an account and confirm its email, leaving it able to host
     /// spaces. Most callers want this.
     pub(crate) async fn sign_up(
