@@ -585,20 +585,20 @@ view!:
         <div class="agent-prompt__action">
           <wa-copy-button class="agent-prompt__copy" copy-label="Copy prompt" success-label="Prompt copied" value="You're helping build the &quot;{name}&quot; Tonk space.
 
-      Connect to the exact space this prompt came from. Run the following with the development build of the Tonk CLI (this prototype is not in the published npm package):
+      Connect to the exact space this prompt came from:
 
-        tonk connect '{link}'
+        npx --yes @tonk/cli connect '{link}'
 
-      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. The command uses the currently linked CLI account or opens browser approval to link one. Tell me to approve in my Tonk browser if needed. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `tonk --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection.
+      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. The command uses the currently linked CLI account or opens browser approval to link one. Tell me to approve in my Tonk browser if needed. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
 
-      Then run `tonk status` and `tonk help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use the CLI to change data, schemas and views; changes sync directly into this space. Finish with `tonk space home &lt;concept&gt;` to put the result on the space home.">
+      Then run `npx --yes @tonk/cli status` and `npx --yes @tonk/cli help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
             <span slot="copy-icon">Copy prompt</span>
             <span slot="success-icon">Prompt copied</span>
           </wa-copy-button>
         </div>
       </div>
 
-# Prototype receipt, written only after the CLI has pulled this space.
+# Connection receipt, written only after the CLI has pulled this space.
 # A durable acknowledgement, deliberately not an online/heartbeat signal.
 concept!: &agent-connection
   this: tonk:agent-connection

@@ -332,6 +332,14 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
+      "evidence": "Invite preflight, trusted approval routing, exact-invitation retry, receipt publication/isolation, naming fallback, parser, standard-library prompt, and browser authorization integration tests.",
+      "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C13",
+      "title": "Copy an empty-space prompt and run tonk connect to link, join, pull, and acknowledge that space.",
+      "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+    },
+    {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
       "gaps": "Offline, partial service publish, reload, concurrent revoke.",
       "group": "Account authority and destructive actions",
@@ -556,8 +564,8 @@ window.STORYBOOK_DATA = {
       "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
     },
     {
-      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps the blank-space agent prompt's displayed and copied text identical.",
-      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility and real clipboard parity in a browser.",
+      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps machine instructions inside the blank-space prompt's copy action.",
+      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility and real clipboard behavior in a browser.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-02",
       "title": "Define/list a detail, directory, label, or title view.",
@@ -791,6 +799,7 @@ window.STORYBOOK_DATA = {
       "capture": "running product",
       "id": "WEB-03",
       "journey_ids": [
+        "ACCT-C13",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
@@ -1158,13 +1167,15 @@ window.STORYBOOK_DATA = {
         "ACCT-C03",
         "ACCT-C04",
         "ACCT-C05",
-        "ACCT-C06"
+        "ACCT-C06",
+        "ACCT-C13"
       ],
       "name": "Browser login handoff",
       "source_paths": [
         "rust/tonk-cli/src/account.rs",
         "rust/tonk-cli/src/account_session.rs",
-        "rust/tonk-cli/src/callback.rs"
+        "rust/tonk-cli/src/callback.rs",
+        "rust/tonk-cli/src/handoff.rs"
       ],
       "status": "captured",
       "summary": "CLI login names the browser route, waiting state, cancellation boundary, and activation or recovery result.",
@@ -1197,6 +1208,7 @@ window.STORYBOOK_DATA = {
       "capture": "captured CLI output",
       "id": "CLI-07",
       "journey_ids": [
+        "ACCT-C13",
         "COLLAB-01",
         "COLLAB-02",
         "COLLAB-03",
@@ -1205,6 +1217,7 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Invite, join, and revoke",
       "source_paths": [
+        "rust/tonk-cli/src/handoff.rs",
         "rust/tonk-cli/src/invite.rs",
         "rust/tonk-cli/src/space_link.rs",
         "rust/tonk-cli/src/output.rs"
@@ -1679,6 +1692,22 @@ window.STORYBOOK_DATA = {
       "id": "HANDOFF-18",
       "priority": "P2",
       "result": "—"
+    },
+    {
+      "claim": "Empty-space prompt connects an agent CLI to the exact originating space (Agent handoff).",
+      "device": "hybrid + second-client",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-19",
+      "priority": "P1",
+      "result": "Automated lower-layer and browser-authorization coverage; published-package round trip and live browser receipt remain unrun."
+    },
+    {
+      "claim": "Agent connection validates before authority and retains a named recovery path after interruption (Interrupted agent connection).",
+      "device": "hybrid + offline + restart",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-20",
+      "priority": "P1",
+      "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
@@ -2228,7 +2257,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 3,
+    "other": 5,
     "pass": 1,
     "unrun": 111
   },

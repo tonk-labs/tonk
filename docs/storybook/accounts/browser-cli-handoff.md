@@ -257,26 +257,38 @@ from loopback browser history before the bridge creates or submits form fields.
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
 
-## Agent handoff prototype
+## Agent handoff
 
 A fresh empty space says “Build this space with an agent”. It explains that the
 person should copy the prompt, give it to their preferred agent, and describe
 what to build. Machine instructions are hidden in the copy button value.
 
-The development CLI's `tonk connect INVITE --via ORIGIN/settings/link` reuses an
+The release CLI invocation `tonk connect INVITE` reuses an
 active CLI account, or runs the browser approval described above. It then joins
 and pulls the invite's exact space and pushes a receipt. “Agent connection
 confirmed” appears through the space subscription, including in the workspace
 shell after the agent changes the home view. The receipt confirms a completed
 round trip; it does not indicate that the agent is still online.
 
-Prototype boundaries: an existing CLI account is printed and reused, so use an
+Product boundaries: an existing CLI account is printed and reused, so use an
 unlinked CLI and the source browser for the same-account walkthrough. There is
 no OTP exchange, expiring presence, or automatic account switch. The invite is
 still a reusable space capability. An explicitly requested occupied local name fails before linking. Without
 `--name`, connect reads the pulled space’s RepositoryName, makes a CLI-safe local
-alias, and adds a numeric suffix only when needed to avoid a local collision. Join or sync failures retain local data and must not be
-reported as a confirmed connection. Published npm builds do not have `connect`.
+alias, and adds a numeric suffix only when needed to avoid a local collision.
+If the first pull cannot supply the name, a stable DID-derived fallback keeps
+the joined site registered and resumable. Join or sync failures retain local
+data and must not be reported as a confirmed connection. Reusing the original
+invite finds its exact content-derived invitation record locally and resumes it
+instead of creating a second registration. A fresh invite to the same space is
+allowed to carry fresh authority rather than being mistaken for the old claim.
+If the old replica's authority is no longer usable, a different explicit
+`--name` deliberately reclaims the reusable invite into a fresh local replica.
+
+The CLI validates the complete invite before asking for browser approval. The
+invite never chooses the account page before its authority has been verified:
+the built-in production account page is the default. `--via` is an explicit,
+trusted local or staging override and accepts only HTTP(S) URLs.
 
 Automated evidence: `rust/tonk-cli/tests/handoff.rs` exercises receipt visibility
 and isolation between spaces. Browser approval through the new command, clipboard

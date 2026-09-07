@@ -41,7 +41,7 @@ instances. Reads and writes are notation, evaluated against the space
 start a space (see also: tonk help spaces)
    space      List spaces, create one, or bind this directory to one
    join       Join a shared space from an invite URL
-   connect    Connect an agent to a browser space (prototype)
+   connect    Connect an agent to a browser space
 
 examine state
    status     Where you are: space, branch, sync, account
@@ -328,7 +328,7 @@ enum Command {
         name: String,
     },
 
-    /// Connect an agent to the space copied from the browser (prototype).
+    /// Connect an agent to the space copied from the browser.
     Connect {
         /// Space invite copied from Tonk. Omit with --space to finish an interrupted connection.
         url: Option<String>,
@@ -1371,7 +1371,7 @@ async fn main() {
             None if space.is_none() => {
                 print_error("provide an invite URL, or use `tonk --space NAME connect` to resume")
             }
-            None => confirm_selected_agent(space.as_deref()).await,
+            None => confirm_selected_agent(space.as_deref(), false).await,
         },
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
@@ -3545,30 +3545,65 @@ async fn connect_agent(
     {
         return print_failure(error);
     }
-    let via = match via {
-        Some(via) => Some(via),
-        None => match url::Url::parse(&url).and_then(|url| url.join("/settings/link")) {
-            Ok(page) => Some(page.to_string()),
-            Err(error) => return print_error(format!("invalid space invite URL: {error}")),
-        },
+    // Validate the complete bearer capability before asking the person to
+    // authorize a CLI device. For a shortcut this also resolves once, and the
+    // claim below reuses the long URL instead of repeating a network request.
+    let invite = match invite::preflight(&url).await {
+        Ok(invite) => invite,
+        Err(error) => return print_coded(error),
     };
+    let via = match tonk_cli::handoff::approval_page(via.as_deref()) {
+        Ok(page) => Some(page),
+        Err(error) => return print_failure(error),
+    };
+    let url = invite.url;
     let store = match tonk_cli::space::SpaceStore::open() {
         Ok(store) => store,
         Err(error) => return print_failure(error),
     };
-    match store.load() {
-        Ok(registry)
-            if name
-                .as_ref()
-                .is_some_and(|name| registry.spaces.contains_key(name)) =>
-        {
-            return print_error(format!(
-                "space '{}' already exists; choose another --name",
-                name.as_deref().unwrap()
-            ));
-        }
+    let registry = match store.load() {
+        Ok(registry) => registry,
         Err(error) => return print_failure(error),
-        _ => {}
+    };
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    let matched =
+        tonk_cli::handoff::matching_invitation(&registry, &config, &invite.invitation).await;
+    for diagnostic in matched.diagnostics {
+        eprintln!("warning: {diagnostic}");
+    }
+    let existing = matched.name;
+    if let Some(existing) = existing {
+        if name.as_ref().is_some_and(|name| name != &existing) {
+            eprintln!(
+                "warning: this invite was already claimed as '{existing}'; reclaiming it under the explicitly requested name"
+            );
+        } else {
+            let cwd = match working_directory().and_then(|path| path.canonicalize().ok()) {
+                Some(cwd) => cwd,
+                None => return print_error("could not read the current directory"),
+            };
+            if let Err(error) = tonk_cli::space::bind(&store, &existing, &cwd) {
+                return print_failure(error);
+            }
+            println!("Space already joined as '{existing}'; resuming connection.");
+            return confirm_selected_agent(Some(&existing), true).await;
+        }
+    }
+    if let Some(name) = &name
+        && registry.spaces.contains_key(name)
+    {
+        return print_error(format!(
+            "space '{name}' already exists; choose another --name"
+        ));
+    }
+    if let Some(name) = &name {
+        let root = store.canonical_site(name);
+        if root.exists() {
+            return print_coded(invite::InviteError::SiteAlreadyExists(root));
+        }
     }
     match (store.account(), account::sign_in_phase(&store)) {
         (Ok(Some(account)), Ok(account::SignInPhase::Active)) => {
@@ -3587,7 +3622,7 @@ async fn connect_agent(
     claim_invite(url, name, None, true).await
 }
 
-async fn confirm_selected_agent(space: Option<&str>) -> ExitCode {
+async fn confirm_selected_agent(space: Option<&str>, fresh_claim_available: bool) -> ExitCode {
     let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
@@ -3596,6 +3631,11 @@ async fn confirm_selected_agent(space: Option<&str>) -> ExitCode {
     println!("Confirming agent connection for '{name}'...");
     if let Err(error) = tonk_cli::handoff::confirm_connection(&site).await {
         eprintln!("Resume with `tonk --space {name} connect`.");
+        if fresh_claim_available {
+            eprintln!(
+                "If this space's saved authority was revoked, reclaim the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`."
+            );
+        }
         return print_failure(error);
     }
     println!(
@@ -3685,21 +3725,31 @@ async fn claim_invite(
             let name = match &requested_name {
                 Some(name) => name.clone(),
                 None => {
-                    let pulled = match site::TonkSite::open_with(&root, config.clone()).await {
-                        Ok(site) => site,
-                        Err(error) => return print_failure(error),
+                    let synced_name = match site::TonkSite::open_with(&root, config.clone()).await {
+                        Ok(site) => tonk_cli::handoff::synced_name(&site, &registry).await,
+                        Err(error) => Err(error),
                     };
-                    match tonk_cli::handoff::synced_name(&pulled, &registry).await {
+                    match synced_name {
                         Ok(name) => name,
                         Err(error) => {
-                            return print_error(format!(
-                                "{error:#}; joined data remains at {}",
-                                root.display()
-                            ));
+                            let fallback = tonk_cli::handoff::fallback_name(
+                                &outcome.subject.to_string(),
+                                &registry,
+                            );
+                            eprintln!(
+                                "warning: the synced space name is not available yet: {error:#}"
+                            );
+                            eprintln!(
+                                "registered as '{fallback}' so the connection can resume after an interruption"
+                            );
+                            fallback
                         }
                     }
                 }
             };
+            if let Err(error) = tonk_cli::space::validate_name(&name) {
+                return print_failure(error);
+            }
             if registry.spaces.contains_key(&name) {
                 return print_error(format!(
                     "{err}\nthe site was claimed at {root}; register it with \
@@ -3730,7 +3780,7 @@ async fn claim_invite(
                 println!(
                     "Space joined; agent confirmation is still pending. If interrupted, run `tonk --space {name} connect`."
                 );
-                return confirm_selected_agent(Some(&name)).await;
+                return confirm_selected_agent(Some(&name), false).await;
             } else {
                 match site::TonkSite::open_with(&root, config).await {
                     Ok(site) => record_space_best_effort(&name, &site).await,
