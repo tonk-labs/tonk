@@ -1466,14 +1466,19 @@ pub mod tests {
             "claims": [{
                 "op": "assert",
                 "application": {
+                    // Deliberately the DEPRECATED shape — the DOM read paths,
+                    // the marker that used to keep `tonk:invite` apart from
+                    // pause-sync, and `prevent-default` as a field. A branch
+                    // seeded before the migration still posts exactly this, so
+                    // this request is the backwards-compatibility test: it must
+                    // keep reaching the handler through
+                    // `tonk_schema::command::legacy::Invite`.
                     "parameters": { "time": 1, "marker": "tonk:invite" },
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
                             "time": { "as": "Float", "cardinality": "one", "description": "",
                                 "the": "dom.event/time-stamp" },
-                            // Per-command marker — distinguishes `tonk:invite`
-                            // from other same-shape commands (e.g. pause-sync).
                             "marker": { "as": "Entity", "cardinality": "one", "description": "",
                                 "the": "dom.event.current-target.dataset/invite" },
                             "prevent-default": { "cardinality": "one", "description": "",
@@ -1604,6 +1609,8 @@ pub mod tests {
                         "time": 1,
                         "marker": "tonk:enable-sync"
                     },
+                    // Also the DEPRECATED shape, for the same reason as the
+                    // invite request above.
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Attach a remote and mint an invite.",
                         "with": {

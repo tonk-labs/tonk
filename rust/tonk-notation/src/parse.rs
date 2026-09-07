@@ -930,7 +930,7 @@ fn walk_field_value(
 /// distinguish string literals that would otherwise look like
 /// symbols — `text/html` reads as a qualified symbol, so the MIME
 /// literal must be written `"text/html"`.
-fn classify_plain_value(text: &str) -> FieldValue {
+pub fn classify_plain_value(text: &str) -> FieldValue {
     if text == "_" {
         return FieldValue::Blank;
     }

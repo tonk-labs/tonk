@@ -1394,15 +1394,17 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 /// [`Join`]: tonk_schema::command::Join
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct JoinHandler {
-    attributes: Vec<String>,
+    /// Decodes the current shape, and the deprecated one a
+    /// branch seeded before the migration still asserts.
+    command:
+        crate::reactor::Migrated<tonk_schema::command::Join, tonk_schema::command::legacy::Join>,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl JoinHandler {
     pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
         Self {
-            attributes: tonk_schema::command::Join::trigger_attributes(),
+            command: crate::reactor::Migrated::new(),
         }
     }
 }
@@ -1410,16 +1412,11 @@ impl JoinHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
     fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
+        self.command.trigger_attributes()
     }
 
     fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        use crate::reactor::Decode as _;
-        facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|this| tonk_schema::command::Join::decode(this, facts))
-            .is_some()
+        self.command.matches(facts)
     }
 
     fn run(
@@ -1427,14 +1424,9 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
         facts: &crate::reactor::EntityFacts,
         env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
-        use crate::reactor::Decode as _;
-
         // Decode the full location synchronously while the caller holds the
         // lock; hand the owned value to the `'static` future.
-        let command = facts
-            .first()
-            .map(|artifact| artifact.of.clone())
-            .and_then(|entity| tonk_schema::command::Join::decode(entity, facts));
+        let command = self.command.decode(facts);
         let env = env.clone();
 
         Box::pin(async move {

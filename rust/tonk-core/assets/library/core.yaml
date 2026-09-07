@@ -60,6 +60,95 @@ view!:
 
 
 # ============================================================
+# EVENTS
+# ============================================================
+
+# `event` is a BUILT-IN concept (tonk-schema's registry, beside
+# `command` and `rule`), not a library one — an `event!:` declaration is
+# schema an author writes, so it must resolve on any branch rather than
+# only where this library has been seeded. What lives here are its
+# INSTANCES: the DOM event set. A terminal seeds its own.
+#
+# An `event!:` declaration is the seam between a host's input model and
+# a command's domain shape: it names the platform event to listen for,
+# whether to suppress the platform's default handling, and a `where:`
+# map from COMMAND FIELD NAME to source.
+#
+# A template binds one with `on:<name>=<command>`, which resolves the
+# declaration named `on/<name>` — `/` is not legal in an HTML attribute
+# name but `:` is, so the identifier and the attribute differ by exactly
+# that substitution. Only the single `on:` prefix is reserved, so
+# `bind:base`, `xlink:href` and `xml:lang` are untouched.
+#
+# This replaces spelling the extraction inside the command's `with:`
+# map as `dom.event.*` identifiers. That form made a command's identity
+# its plumbing: two verbs reading the same DOM path were the same
+# concept (hence `sheet-name` / `rename-name` in table.yaml, contorted
+# only to stay distinct), and the command could not be reused by a host
+# with no DOM. Here the command stays domain-shaped and every platform
+# difference lives in one artifact whose whole job is platform
+# difference.
+#
+# `on<event>=` keeps working — the two attribute forms are distinct, so
+# templates migrate one at a time.
+# A `where:` source is one of three forms, each syntactically distinct
+# so a typo cannot be mistaken for a different kind:
+#
+#   {field}   template interpolation, in the scope of the element the
+#             event fired on — a field of the enclosing repeat subject.
+#             `{this}` is the subject itself.
+#   .path     a property read off the live event, spelled the way the
+#             platform spells it (`.currentTarget.dataset.todo`). No
+#             case translation, so the old kebab/camel trap is gone.
+#   "text"    a literal, for defaults the interaction never supplies.
+#
+# A bare word is an error rather than a literal: `timeStamp` without its
+# dot would otherwise silently become the string "timeStamp", which is
+# the class of mistake this exists to catch.
+
+# Activation. `{this}` covers the whole `data-*` stash-and-recover
+# pattern: the renderer already stamps `data-this` on every repeat row,
+# so the subject needs no template attribute at all.
+event!: &on/click
+  type: "click"
+  where:
+    subject: "{this}"
+
+# Activation on a row, carrying a per-event nonce so two identical
+# clicks mint distinct entities. `time` is why a command that creates
+# something needs no hand-written nonce field.
+event!: &on/click-once
+  type: "click"
+  where:
+    subject: "{this}"
+    time: ".timeStamp"
+
+# Form submission. `prevent-default` lives here rather than in the
+# command, which is what keeps the command rule-consumable: an action
+# field in a command's `with:` map stores no value, so a rule premise
+# over it matches zero rows however successfully the command transacts.
+event!: &on/submit
+  type: "submit"
+  prevent-default: true
+  where:
+    subject: "{this}"
+
+# A native control's committed value.
+event!: &on/change
+  type: "change"
+  where:
+    subject: "{this}"
+    value: ".currentTarget.value"
+
+# A native control's checked state.
+event!: &on/toggle
+  type: "change"
+  where:
+    subject: "{this}"
+    checked: ".currentTarget.checked"
+
+
+# ============================================================
 # WORKSPACE
 # ============================================================
 
@@ -130,7 +219,7 @@ view!:
         <span class="blank-canvas__label">no template &middot; empty view</span>
         <h1 class="blank-canvas__title">your starting layout is in place</h1>
         <section class="blank-canvas__deeplink">
-          <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
+          <tonk-page on:invite=tonk:invite></tonk-page>
           <tonk-origin>
             <tonk-display
               entity={subject}
@@ -159,21 +248,27 @@ view!:
 # `<tonk-sync-state>` element (which resolves the repo from its
 # `with` ancestor) stamps the real name into the form's
 # hidden `name` input on click — the one identifier notation can't read
-# from the event. `prevent-default` stops the page reloading.
+# from the event.
+#
+# It carries `create-space`'s attributes deliberately: the two ARE one
+# command as far as the worker is concerned (`CreateSpaceHandler` serves
+# both, keyed on the shared `name`). Two notation names, one shape.
+#
+# `prevent-default` used to be a field here. A side effect declared as a
+# command field stores no value, so a rule premise over it matches zero
+# rows however successfully the command transacted; it belongs on the
+# `event!:` declaration of whatever binds this.
 command!: &space/enable-sync
   description: A request to attach a sync remote to the current space.
   with:
     name:
       description: The space's local repository name, stamped into the hidden `name` input
-      the: dom.event.current-target.elements.name/value
+      the: xyz.tonk.command.create-space/name
       as: text
     remote:
       description: The sync URL, read from the form's `remote` input on submit
-      the: dom.event.current-target.elements.remote/value
+      the: xyz.tonk.command.create-space/remote
       as: text
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
 
 # Mint a repository invite. Clicking Share submits this transient; the
 # worker's `InviteHandler` generates a fresh membership keypair, delegates
@@ -182,27 +277,31 @@ command!: &space/enable-sync
 # private seed as a `tonk:credential` into the reactor's session overlay
 # (never replicated). The repository is not a field here — the handler
 # reads it from the command's origin (the branch the commit landed in).
-# `time` carries the submit event's timestamp so each click is a distinct
-# transient and reliably re-fires the handler (rotating the credential).
+#
+# How the share affordance's mount fills it. `<tonk-page>` raises `mount`
+# as a CustomEvent, so its `timeStamp` is what makes each dispatch
+# distinct.
+event!: &on/invite
+  type: "mount"
+  where:
+    time: ".timeStamp"
+
 command!: &tonk/invite
   this: tonk:invite
   description: Mint a repo invite — generates a membership keypair and delegation.
   with:
     time:
-      description: The submit event's timestamp; makes each click distinct.
-      the: dom.event/time-stamp
-      as: float
-    marker:
       description: |
-          Per-command marker read from the share form's `data-invite`. Gives
-          `tonk:invite` an attribute no other command carries, so a
-          `tonk:pause-sync` transient (otherwise an identical {this, time}
-          shape) does not also decode as an invite.
-      the: dom.event.current-target.dataset/invite
-      as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
+          The activation's timestamp; makes each dispatch distinct so a repeat
+          click reliably re-fires the handler and rotates the credential.
+
+          It used to be accompanied by a marker field read from a
+          `data-invite` attribute, whose whole job was to stop a
+          `tonk:pause-sync` transient — an identical {this, time} otherwise —
+          from also decoding as an invite. Each command now owns its
+          attribute namespace, so the two are disjoint and the marker is gone.
+      the: xyz.tonk.command.invite/time
+      as: float
 
 # Load the requesting tab's site for its current path. Asserted transiently by
 # `<tonk-site>` (via the regular transact API) instead of a `/site` fetch: the
@@ -585,23 +684,23 @@ concept!: &member
 # The role badge label comes from CSS `::after` keyed on `data-role`, so the
 # raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
 # kept (visually hidden) only to drive the attribute.
-# Removing a member. A single matched field, so the attribute is the
-# command's shape as well as its payload: `dataset/expel` is read by no
-# other command. Acts on the space it fires in. The worker's handler does
-# the chain work; the service refuses a removal minted under a member's
-# `/use` chain, so holding the space is what makes it take effect, not the
-# role on the roster. Promotion is not a form: the FAB dispatches it after
-# the page mints the admin hop under the passkey.
+# Removing a member. Acts on the space it fires in. The worker's handler
+# does the chain work; the service refuses a removal minted under a
+# member's `/use` chain, so holding the space is what makes it take
+# effect, not the role on the roster. Promotion is not a form: the FAB
+# dispatches it after the page mints the admin hop under the passkey.
+#
+# The field used to be read from a `data-expel` attribute, chosen for
+# being read by no other command — the attribute doubling as the command's
+# shape. `xyz.tonk.command.expel-member/member` is that distinctness by
+# construction, so the name can just say what it means.
 command!: &member/expel
   description: Remove a member from this space.
   with:
     member:
-      description: The DID of the member to remove, read from `data-expel`.
-      the: dom.event.current-target.dataset/expel
+      description: The DID of the member to remove.
+      the: xyz.tonk.command.expel-member/member
       as: entity
-    prevent-default:
-      description: Stop the form submission from reloading the page
-      the: dom.event.do/prevent-default
 
 view!:
   this: tonk:member
@@ -827,16 +926,26 @@ concept!: &tonk/agents
 # `subject` reads the repository identity stamped on the banner so the
 # rule below knows which repository to rename. The command is transient:
 # the rule fires once and the command is swept before the durable commit.
+# How the banner input's commit fills the rename. `subject` stays a
+# `data-*` read rather than `{this}`: the banner is not inside a repeat
+# row, and its subject is the repository rather than the view's own
+# entity, so the two are genuinely different values here.
+event!: &on/repository-rename
+  type: "change"
+  where:
+    subject: ".currentTarget.dataset.subject"
+    name: ".currentTarget.value"
+
 command!: &tonk/rename-repository
   description: Rename the repository.
   with:
     subject:
-      description: The repository's subject DID, stamped on the banner element.
-      the: dom.event.current-target.dataset/subject
+      description: The repository being renamed.
+      the: xyz.tonk.rename-repository/subject
       as: entity
     name:
-      description: The new name, read from the banner input's value on commit.
-      the: dom.event.current-target/value
+      description: The new name.
+      the: xyz.tonk.rename-repository/name
       as: text
 
 # Apply the rename: assert the new `tonk/repository` name against the
@@ -870,7 +979,7 @@ view!:
         class="workspace__title-input"
         value={name}
         data-subject={this}
-        onchange=tonk/rename-repository
+        on:repository-rename=tonk/rename-repository
         aria-label="Space name"
       ></tonk-editable>
 
@@ -898,23 +1007,21 @@ concept!: &tonk/identity
       cardinality: one
       as: text
 
-# Rename the signed-in member (set their display name). The editable
-# chip input dispatches this on commit (blur/Enter); `name` reads the
-# input's value and `marker` reads the `data-rename` attribute so the
-# worker handler matches this transient distinctly from
-# `tonk/rename-repository`. No rule: a typed-Rust handler in
-# tonk-worker reacts (it must reach the profile meta branch).
+# Rename the signed-in member (set their display name). The editable chip
+# input dispatches this on commit (blur/Enter). No rule: a typed-Rust
+# handler in tonk-worker reacts (it must reach the profile meta branch).
+#
+# This and `tonk/rename-repository` both read `currentTarget.value`, and a
+# marker field read from `data-rename` is what used to keep the two
+# shapes disjoint — without it every space rename also renamed the
+# profile. Separate attribute namespaces do that now.
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
     name:
       description: The new name, read from the editable's value on commit.
-      the: dom.event.current-target/value
+      the: xyz.tonk.command.profile-rename/name
       as: text
-    marker:
-      description: Per-command marker (data-rename) distinguishing this from repo rename.
-      the: dom.event.current-target.dataset/rename
-      as: entity
 
 # The repository's name, as two extra facets of `tonk:repository`'s
 # dictionary. `label` — plain, non-editable text: the Hub card mounts

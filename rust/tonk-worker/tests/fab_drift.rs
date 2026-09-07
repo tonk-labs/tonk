@@ -90,7 +90,7 @@ fn it_builds_pause_claims_carrying_every_attribute_the_handler_triggers_on() {
         "the command must declare trigger attributes"
     );
 
-    let claim = logic::pause_claim_json("tonk:pause-sync", "did:key:z6Mk", 1.0).to_string();
+    let claim = logic::pause_claim_json("did:key:z6Mk", 1.0).to_string();
     for attribute in &triggers {
         assert!(
             claim.contains(attribute.as_str()),
@@ -105,4 +105,85 @@ fn it_reads_the_repo_name_attribute_the_schema_writes() {
     // schema's domain type. If the two diverge the chip silently blanks.
     let body = logic::repo_name_query_body("did:key:z6Mk").expect("builds");
     assert!(body.contains("xyz.tonk.repo/name"));
+}
+
+/// Every hand-built claim must declare each field it sets.
+///
+/// This is the invariant the worker enforces server-side: a parameter the
+/// inlined concept does not declare is rejected outright —
+/// `invalid claim: field "…" is not declared by this concept` — so the
+/// whole transact fails with a 400 and the interaction silently does
+/// nothing.
+///
+/// The per-command checks above cannot see it. They assert that the
+/// claim's JSON *text* contains each attribute the handler triggers on,
+/// which the descriptor half alone satisfies; a `parameters` map that has
+/// drifted from that descriptor passes every one of them. Renaming a space
+/// shipped broken exactly that way: the descriptor was migrated to
+/// `{name, space}` while the parameters kept sending `value` and a
+/// `rename-repository` marker from the pre-namespace shape.
+#[dialog_common::test]
+fn every_hand_built_claim_declares_the_fields_it_sets() {
+    use tonk_fab::logic::Dock;
+
+    let space = "did:key:z6Mk";
+    let claims = [
+        ("dock", logic::dock_claim_json(Dock::TopLeft)),
+        ("collapsed", logic::collapsed_claim_json(true)),
+        (
+            "promote",
+            logic::promote_claim_json(space, "did:key:z6Mm", "chain"),
+        ),
+        ("pause", logic::pause_claim_json(space, 1.0)),
+        (
+            "rename-repo",
+            logic::rename_repo_claim_json(space, "Renamed"),
+        ),
+        (
+            "rename-repo (blank)",
+            logic::rename_repo_claim_json(space, ""),
+        ),
+        ("profile-rename", logic::profile_rename_claim_json("Ada")),
+        ("invite", logic::invite_claim_json(space, 1.0)),
+        (
+            "enable-sync",
+            logic::enable_sync_claim_json(space, "https://example.test/ucan/", true, 1.0),
+        ),
+        // The remote and share halves are conditional on both sides, so the
+        // bare form is checked too — dropping one from `with` but not from
+        // `parameters` is the same defect in a branch the full form hides.
+        (
+            "enable-sync (bare)",
+            logic::enable_sync_claim_json(space, "", false, 1.0),
+        ),
+    ];
+
+    for (label, claim) in claims {
+        let application = &claim["claims"][0]["application"];
+        let declared = application["predicate"]["concept"]["with"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{label}: the claim must inline a `with` map"));
+        let parameters = application["parameters"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{label}: the claim must carry parameters"));
+
+        assert!(
+            !parameters.is_empty(),
+            "{label}: a claim that sets nothing would assert nothing",
+        );
+        for field in parameters.keys() {
+            // `this` is the one parameter that is not a concept field: the
+            // worker mints it from `(descriptor, parameters)` when absent,
+            // and pins it when present.
+            if field == "this" {
+                continue;
+            }
+            assert!(
+                declared.contains_key(field),
+                "{label}: parameter `{field}` is not declared by the inlined \
+                 concept ({:?}) — the worker rejects this claim with a 400",
+                declared.keys().collect::<Vec<_>>(),
+            );
+        }
+    }
 }
