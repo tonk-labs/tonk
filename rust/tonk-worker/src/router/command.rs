@@ -85,74 +85,126 @@ impl CommandEnv {
     pub fn client(&self) -> Option<&crate::router::ClientId> {
         self.origin.client.as_ref()
     }
+
+    /// Whether the triggering commit landed on the profile branch — the
+    /// Hub/FAB evaluation surface. `transact_profile` never names a
+    /// repo, so an empty origin repo IS the profile; a non-empty one is
+    /// a content branch, whose facts were matched by shape, not by who
+    /// asked.
+    pub fn from_profile(&self) -> bool {
+        self.origin.repo.is_empty()
+    }
+
+    /// Whether a command fired here may act on the space at
+    /// `target_key`.
+    ///
+    /// The rule that scopes every space-targeting command: a space may
+    /// act on ITSELF (origin == target), and the PROFILE branch may act
+    /// on any space by DID — it is the surface the Hub and FAB dispatch
+    /// from. A content branch naming a DIFFERENT space is refused: a
+    /// same-shaped fact committed on any joined space's branch (its own
+    /// notation, or a same-origin POST to its `/transact`) must not
+    /// reach into other spaces. This is a dispatch-level containment
+    /// boundary, like Level-0 path routing — it has to live here
+    /// because the operator itself holds time-bounded
+    /// `Subject::any()` authority (see `session.rs`) and so cannot
+    /// distinguish targets.
+    pub fn may_target_space(&self, target_key: &str) -> bool {
+        self.from_profile() || self.origin.repo == target_key
+    }
 }
 
 /// Build the registry of supported command *types*. Registration is just
 /// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
-/// Gated to wasm because the handler does service-worker-scoped IO
-/// (seeding from a served asset, opening a remote branch over the
-/// network). Native builds get an empty registry (tests register their
-/// own).
+/// The same registry builds for EVERY target — the browser, the CLI, a
+/// TUI, a test. A command whose effect needs a page (a passkey
+/// ceremony, a redirect) still registers everywhere; its provider
+/// refuses visibly on a host without one rather than silently not
+/// existing there. Where a chain genuinely needs a browser API, the
+/// `cfg` sits on that leaf (`delete_space_storage_for`,
+/// `worker_origin`, the `navigate` client messaging), never on a
+/// registration.
 ///
-/// One custom [`CreateSpaceHandler`] serves both the Hub "New space"
-/// (`space/create`) and topbar "Enable sync" (`space/enable-sync`) forms:
-/// both post the same `name`(+`remote`) shape, the handler keys on the
-/// shared `name` attribute, and it reads the optional remote from the
-/// transient's facts — which a typed `Provider`, receiving only the
-/// decoded command, can't do.
+/// Three commands register through wrapper request types rather than
+/// their schema concept, because their transients carry facts outside
+/// the matched shape (a frozen descriptor can't grow a field, and a
+/// URL/DID deserializes as `Value::Entity`, which a `String` field
+/// can't decode): [`CreateSpaceRequest`] reads the optional `remote`,
+/// [`InviteRequest`] the optional target `space`, and
+/// [`EnableSyncRequest`] its `space`/`remote`/`share` trio. Each
+/// hand-implements [`Decode`](crate::reactor::Decode) to combine the
+/// migrated concept decode with those raw-fact reads.
 ///
-/// [`RenameRepositoryHandler`] serves the FAB's repository-name chip
-/// (`tonk/rename-repository`): a profile-branch command carrying its
-/// target `space`, since a claim dispatched from the profile branch has
-/// no space-side rule to consume it (see
-/// [`tonk_schema::command::RenameRepository`]).
+/// [`EnableSyncRequest`] is deliberately its own command
+/// ([`tonk_schema::command::EnableSync`]), not a second registration on
+/// `space/enable-sync`: that trigger attribute belongs to `CreateSpace`,
+/// whose provider always mints a fresh identity first, so anything
+/// registered against it would attach the remote to a brand-new space
+/// rather than the existing one the FAB names.
 ///
-/// [`RemoveSpaceHandler`] serves the Hub's per-row delete confirm
-/// (`space/remove`): replica retraction, reactor eviction, storage
-/// cleanup.
-///
-/// [`EnableSyncHandler`] is deliberately its own command
-/// ([`tonk_schema::command::EnableSync`]), not a second handler on
-/// `space/enable-sync`: that trigger attribute belongs to `CreateSpace`, and
-/// `CreateSpaceHandler` always mints a fresh identity first, so anything
-/// registered against it would attach the remote to a brand-new space rather
-/// than the existing one the FAB names.
-///
-/// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
-/// [`RemoveSpaceHandler`]: super::repository::RemoveSpaceHandler
-/// [`RenameRepositoryHandler`]: super::repository::RenameRepositoryHandler
-/// [`EnableSyncHandler`]: super::repository::EnableSyncHandler
+/// [`CreateSpaceRequest`]: super::repository::CreateSpaceRequest
+/// [`InviteRequest`]: super::repository::InviteRequest
+/// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
 pub fn command_registry() -> CommandRegistry<CommandEnv> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    CommandRegistry::new()
+        .command::<super::repository::CreateSpaceRequest>()
+        .command::<super::repository::InviteRequest>()
+        .command::<super::repository::EnableSyncRequest>()
+        .command::<tonk_schema::command::Load>()
+        .command::<tonk_schema::command::PromoteMember>()
+        .command::<tonk_schema::command::EnrollCustomer>()
+        .command::<tonk_schema::command::ResendActivation>()
+        .command::<tonk_schema::command::DeleteAccount>()
+        .command::<tonk_schema::command::AuthorizeDevice>()
+        .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
+        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
+        .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
+        .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
+        .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
+        .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
+        .migrated::<tonk_schema::command::CreateNotebook, tonk_schema::command::legacy::CreateNotebook>()
+        .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
+        .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
+        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
+}
+
+/// Run a command body whose future rustc cannot prove `Send`, to
+/// completion, from a context that requires `Send`.
+///
+/// A handful of command chains (space create, invite, enable-sync)
+/// await deeply nested generic effect futures from the dialog crates,
+/// and rustc's auto-trait solver rejects the resulting future with
+/// "implementation of `Send` is not general enough"
+/// (rust-lang/rust#96865) even though every captured value is `Send`.
+/// On wasm nothing asks for `Send`, so those bodies run as plain
+/// awaits; natively the dispatcher's future must be `Send` (it runs
+/// inside an axum handler), so this helper sidesteps the proof instead
+/// of fighting it: the future is BUILT and polled entirely on one
+/// blocking thread with a single-threaded executor, and only the
+/// (trivially `Send`) join handle crosses back. The caller still awaits
+/// the outcome, so command ordering and test determinism are unchanged.
+///
+/// Takes a closure rather than a future because moving a future into
+/// the thread would itself demand the unprovable `Send` bound — the
+/// closure's captures (an owned env clone and the decoded command) are
+/// what cross the thread, and they are plainly `Send`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn run_unsendable<F, Fut>(make: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()>,
+{
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds")
+            .block_on(make())
+    })
+    .await
     {
-        let mut registry = CommandRegistry::new();
-        registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
-        registry.register(Box::new(super::repository::CreateNotebookHandler::new()));
-        registry.register(Box::new(super::repository::RemoveSpaceHandler::new()));
-        registry.register(Box::new(super::repository::InviteHandler::new()));
-        registry.register(Box::new(super::repository::EnableSyncHandler::new()));
-        registry.register(Box::new(super::repository::PauseSyncHandler::new()));
-        registry.register(Box::new(super::repository::ProfileRenameHandler::new()));
-        registry.register(Box::new(super::repository::RenameRepositoryHandler::new()));
-        registry.register(Box::new(super::members::PromoteMemberHandler::new()));
-        registry.register(Box::new(super::members::ExpelMemberHandler::new()));
-        registry.register(Box::new(super::join::JoinHandler::new()));
-        registry.register(Box::new(super::email_status::CheckEmailHandler::new()));
-        registry.register(Box::new(super::email_status::RegisterAccountHandler::new()));
-        registry.register(Box::new(super::customer::EnrollCustomerHandler::new()));
-        registry.register(Box::new(super::customer::ResendActivationHandler::new()));
-        registry.register(Box::new(super::session::LoadHandler::new()));
-        registry.register(Box::new(
-            super::account_deletion::DeleteAccountHandler::new(),
-        ));
-        registry.register(Box::new(super::ceremony::AuthorizeDeviceHandler::new()));
-        registry.register(Box::new(super::ceremony::AddPasskeyHandler::new()));
-        registry
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        CommandRegistry::new()
+        log!("command execution thread failed: {error}");
     }
 }
 
@@ -427,6 +479,168 @@ mod tests {
 
             dispatch(&state, CommandOrigin::default(), changes).await;
             assert!(drain_ping_log().is_empty());
+        }
+    }
+
+    /// Native end-to-end dispatch over REAL commands — the test the
+    /// whole target-agnostic registry exists for. Its failure mode is
+    /// silent absence: a `command_registry()` whose native arm returned
+    /// an empty registry compiled green while no command ran anywhere
+    /// but the browser, so nothing short of dispatching a real command
+    /// against real state proves the conversion means anything.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    mod native {
+        use super::*;
+        use crate::router::AppState;
+        use crate::worker::TonkState;
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::Replica;
+
+        /// A full native `TonkState` over default storage — the same
+        /// construction `account_state`'s native tests use, minus the
+        /// access service (nothing here needs an account). The registry
+        /// installed is the REAL one, not a test double.
+        async fn test_state() -> AppState {
+            use dialog_operator::Profile;
+            use dialog_storage::provider::storage::Storage;
+
+            let storage = Storage::<crate::worker::DefaultSpace>::default();
+            let name = format!("command-dispatch-test-{}", rand::random::<u64>());
+            let profile = Profile::open(&name).perform(&storage).await.unwrap();
+            let session = crate::session::open(&profile, &storage).await.unwrap();
+            let reactor = crate::Reactor::new(profile.clone());
+            let state = TonkState {
+                profile,
+                operator: session.operator,
+                storage,
+                session_expires_at: session.expires_at,
+                profile_name: name.clone(),
+                reactor,
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_registry(),
+                clients: Default::default(),
+                account_keys: Default::default(),
+                registry: crate::device::Registry {
+                    profile: name.clone(),
+                    directory: dialog_effects::storage::Directory::Profile,
+                },
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+            };
+            crate::router::repository::bootstrap_profile(&state)
+                .await
+                .unwrap();
+            std::sync::Arc::new(tokio::sync::RwLock::new(state))
+        }
+
+        /// The subject DIDs of every user-space replica the profile
+        /// lists — the Hub's source of truth, read the same way
+        /// `require_real_space` reads it.
+        async fn space_subjects(state: &AppState) -> Vec<dialog_varsig::Did> {
+            let tonk = state.read().await;
+            let meta = tonk
+                .reactor
+                .profile_repository()
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<Replica> = meta
+                .handle()
+                .query()
+                .select(Query::<Replica> {
+                    this: Term::var("this"),
+                    subject: Term::var("subject"),
+                    profile: Term::var("profile"),
+                    kind: Term::var("kind"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            rows.into_iter()
+                .filter(|replica| replica.kind == Replica::repository_kind())
+                .filter_map(|replica| replica.subject.0.to_string().parse().ok())
+                .collect()
+        }
+
+        /// The exact transient the Hub's "New space" wizard commits.
+        fn create_space_transient(name: &str) -> Changes {
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.create-space/name")
+                .of("cmd:create".parse::<Entity>().unwrap())
+                .is(name.to_string())
+                .assert(&mut changes);
+            changes
+        }
+
+        /// The exact transient the Hub row's delete confirm commits.
+        fn remove_space_transient(subject: &dialog_varsig::Did) -> Changes {
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.remove-space/subject")
+                .of("cmd:remove".parse::<Entity>().unwrap())
+                .is(subject.this())
+                .assert(&mut changes);
+            changes
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_space_create_and_remove_natively_end_to_end() {
+            let state = test_state().await;
+            assert!(
+                space_subjects(&state).await.is_empty(),
+                "a fresh profile lists no spaces"
+            );
+
+            // Create: the same shape the Hub form posts, dispatched from
+            // the profile origin (empty repo — `transact_profile` never
+            // names one). The provider mints an identity, seeds the
+            // standard library from the embedded assets, and records the
+            // replica — all natively.
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Command Test Space"),
+            )
+            .await;
+            let spaces = space_subjects(&state).await;
+            assert_eq!(
+                spaces.len(),
+                1,
+                "dispatching space/create natively must mint and record a space"
+            );
+            let subject = spaces[0].clone();
+
+            // Containment: the same-shaped remove fact committed on a
+            // content branch names the space by DID but must be ignored —
+            // space A cannot delete space B (`CommandEnv::may_target_space`,
+            // and `RemoveSpace`'s stricter profile-only rule).
+            let foreign = CommandOrigin {
+                repo: "did:key:zSomeOtherSpace".to_string(),
+                branch: "main".to_string(),
+                client: None,
+            };
+            dispatch(&state, foreign, remove_space_transient(&subject)).await;
+            assert_eq!(
+                space_subjects(&state).await.len(),
+                1,
+                "a content-branch origin must not remove a space by DID"
+            );
+
+            // From the profile origin the same transient removes it.
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                remove_space_transient(&subject),
+            )
+            .await;
+            assert!(
+                space_subjects(&state).await.is_empty(),
+                "dispatching space/remove from the profile must remove the space"
+            );
         }
     }
 }

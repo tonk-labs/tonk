@@ -135,7 +135,6 @@ pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), Reposito
 /// Profile and account system replicas carry no user-space roster.
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
-#[cfg(target_arch = "wasm32")]
 pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     use dialog_varsig::Did;
     use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};

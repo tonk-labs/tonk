@@ -1379,72 +1379,33 @@ pub(crate) async fn find_replica_for_subject(
 /// The fixed entity the in-flight join status lives at. Both the handler
 /// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
 /// agree on this URI, so there's no per-attempt id to thread.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const JOIN_STATUS_URI: &str = "tonk:join/status";
 
-/// Post-commit handler for the [`Join`] command.
+/// Run the [`Join`] command.
 ///
 /// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
-/// with the full page URL in the event detail. This handler runs the same
+/// with the full page URL in the event detail. This provider runs the same
 /// join operation the HTTP routes do and drives the overlay-only
 /// `tonk:join/status` (pending → failed, or retract + navigate on
 /// success) on the profile meta branch — the branch the `/join` view
 /// subscribes to.
 ///
 /// [`Join`]: tonk_schema::command::Join
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct JoinHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command:
-        crate::reactor::Migrated<tonk_schema::command::Join, tonk_schema::command::legacy::Join>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl JoinHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::Join) {
+        // The invite principal's seed is custodied under the account
+        // as part of the join. A linked device whose root record
+        // predates the encryption key asks the originating page for a
+        // passkey assertion here, before the state lock is taken.
+        if let Err(error) =
+            crate::router::custody::ensure_recipient(self.state(), self.client()).await
+        {
+            log!("join refused: {error}");
+            return;
         }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        // Decode the full location synchronously while the caller holds the
-        // lock; hand the owned value to the `'static` future.
-        let command = self.command.decode(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(command) = command else {
-                return;
-            };
-            // The invite principal's seed is custodied under the account
-            // as part of the join. A linked device whose root record
-            // predates the encryption key asks the originating page for a
-            // passkey assertion here, before the state lock is taken.
-            if let Err(error) =
-                crate::router::custody::ensure_recipient(env.state(), env.client()).await
-            {
-                log!("join refused: {error}");
-                return;
-            }
-            run_join(&env, command).await;
-        })
+        run_join(self, command).await;
     }
 }
 
@@ -1455,7 +1416,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
 /// Deliberately a query test and not a parse: a malformed or truncated
 /// invite IS an attempt and must still fail loudly with its reason,
 /// rather than being silently treated as an empty visit.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
@@ -1473,7 +1433,6 @@ fn carries_invite(url: &str) -> bool {
 /// display lost its entity, fell back to its pending spinner, and
 /// nothing downstream ever rendered. Scope the clear to the join's own
 /// entities, exactly as the site re-stamp does with its own.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
     let status = status.clone();
     session
@@ -1487,7 +1446,6 @@ fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_a
 /// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
 /// whole contract, and getting it backwards is invisible until a page
 /// silently stops rendering.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn retains_overlay_entity(
     overlaid: &dialog_artifacts::Entity,
     status: &dialog_artifacts::Entity,
@@ -1498,7 +1456,6 @@ fn retains_overlay_entity(
 /// Run the join operation from the command's full URL and drive the
 /// overlay-only join status. Always leaves the overlay in a terminal state
 /// (status retracted on success, `failed` on error).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
@@ -1680,6 +1637,15 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
             log!("notify_sync: post_message(sync) failed: {e:?}");
         }
     });
+}
+
+/// No page exists on this host to prompt; the background sync loop (or
+/// the host's own drain) picks the commit up on its ordinary cadence.
+/// Mirrors the native arm of `broadcast` — structural parity so commit
+/// sites don't need their own `cfg`s.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
+    let _ = client;
 }
 
 /// The inviteless-`/join` guard, pinned on every target: it decides

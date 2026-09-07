@@ -438,7 +438,6 @@ async fn evaluate_on_branch<'a>(
 /// the same logic as [`evaluate_on_branch`] but accepts plain
 /// `String` arguments instead of HTTP-level types so the bridge
 /// handler can call it without constructing an axum request.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -460,7 +459,6 @@ pub async fn evaluate_body(
 /// `<tonk-display>` reading the profile (e.g. the Hub) can resolve the
 /// library's concepts and views there. SW-only — its sole caller
 /// (`seed_profile_library`) is gated to the service-worker scope.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_profile_body(
     tonk_state: &crate::worker::TonkState,
     branch: &str,

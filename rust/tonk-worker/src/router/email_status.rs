@@ -76,79 +76,37 @@ pub(crate) fn state_for_status(status: u16) -> &'static str {
     }
 }
 
-/// Runs `account/check-email`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct CheckEmailHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::CheckEmail,
-        tonk_schema::command::legacy::CheckEmail,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl CheckEmailHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+/// Run `account/check-email`: look the address up at the access service
+/// and publish the answer to the profile overlay. A blank address is a
+/// keystroke race, not a lookup — skipped.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::CheckEmail) {
+        let email = command.email.0;
+        if email.trim().is_empty() {
+            return;
         }
-    }
-
-    /// The address to look up, or `None` when these facts are not a
-    /// lookup (or carry a blank address).
-    fn email(&self, facts: &crate::reactor::EntityFacts) -> Option<String> {
-        self.command
-            .decode(facts)
-            .map(|command| command.email.0)
-            .filter(|email| !email.trim().is_empty())
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CheckEmailHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.email(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let email = self.email(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(email) = email else {
-                return;
-            };
-            // Say the lookup is in flight BEFORE making it. The form
-            // renders the row and nothing else, so without this the
-            // wait would have to be painted into the DOM by the form
-            // itself, leaving two sources of truth that disagree while
-            // the lookup runs.
-            publish(&env, &email, state::CHECKING).await;
-            let (state, service) = lookup(&email).await;
-            publish(&env, &email, state).await;
-            // The document says where the account syncs as well as who
-            // it is, so one lookup answers both. Held for the login
-            // that follows: a device with only an address has nowhere
-            // else to learn the service, and the origin is a guess that
-            // is right only when both devices are on one deployment.
-            if let Some(service) = service {
-                remember_service(&service);
-            }
-        })
+        // Say the lookup is in flight BEFORE making it. The form
+        // renders the row and nothing else, so without this the
+        // wait would have to be painted into the DOM by the form
+        // itself, leaving two sources of truth that disagree while
+        // the lookup runs.
+        publish(self, &email, state::CHECKING).await;
+        let (state, service) = lookup(&email).await;
+        publish(self, &email, state).await;
+        // The document says where the account syncs as well as who
+        // it is, so one lookup answers both. Held for the login
+        // that follows: a device with only an address has nowhere
+        // else to learn the service, and the origin is a guess that
+        // is right only when both devices are on one deployment.
+        if let Some(service) = service {
+            remember_service(&service);
+        }
     }
 }
 
 /// Ask the access service about `email`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn lookup(email: &str) -> (&'static str, Option<String>) {
     use super::http::{HttpError, get};
     use tonk_common::log;
@@ -184,7 +142,6 @@ async fn lookup(email: &str) -> (&'static str, Option<String>) {
 ///
 /// A document from a service that predates the `service` block simply
 /// has none, and the caller keeps whatever it already knew.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn service_endpoint(body: &[u8]) -> Option<String> {
     let document: serde_json::Value = serde_json::from_slice(body).ok()?;
     document
@@ -198,7 +155,6 @@ fn service_endpoint(body: &[u8]) -> Option<String> {
 }
 
 /// Write the answer to the profile overlay, replacing any earlier one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static str) {
     let tonk = env.state().read().await;
     record(&tonk, email, state).await;
@@ -209,6 +165,12 @@ async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static s
 /// The form reads one set of words whether they came from the lookup or
 /// from the service's own receipt, so a registration answers in the
 /// lookup's terms rather than in its own.
+// Its callers (`record_customer_status`, the registration receipt path)
+// are still browser-only.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) fn state_for_customer(status: tonk_account::customer::CustomerStatus) -> &'static str {
     use tonk_account::customer::CustomerStatus;
     match status {
@@ -253,88 +215,47 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
     }
 }
 
-/// Runs `account/register`: raises the signup ceremony in the page.
+/// Run `account/register`: raise the signup ceremony in the page.
 ///
 /// The worker cannot create an account. WebAuthn needs a `window` and a
 /// user gesture, and a service worker has neither, so this asks the
-/// originating client to authorize with a passkey and stops there.
+/// originating client to authorize with a passkey and stops there. On a
+/// host with no page the ask fails and the overlay answers
+/// `unavailable` — visible, not silent.
 ///
 /// Nothing is awaited. The ceremony's outcome reaches every reader as
 /// facts — `AccountCustomer` appears at enrollment and gains a provider
-/// at activation — and the form is already subscribed to them. A handler
+/// at activation — and the form is already subscribed to them. A provider
 /// that blocked on the ceremony would be holding a command open across a
 /// dialog the user might never finish.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct RegisterAccountHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::RegisterAccount,
-        tonk_schema::command::legacy::RegisterAccount,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl RegisterAccountHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
-    }
-
-    /// The address to register, or `None` when these facts are not a
-    /// registration (or carry an unparseable address).
-    fn email(&self, facts: &crate::reactor::EntityFacts) -> Option<String> {
-        self.command
-            .decode(facts)
-            .map(|command| command.email.0)
-            .filter(|email| split_address(email).is_some())
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RegisterAccountHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.email(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RegisterAccount>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::RegisterAccount) {
         use tonk_common::log;
 
-        let email = self.email(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(email) = email else {
-                return;
-            };
-            let Some(client) = env.client() else {
-                log!("account/register: no page asked for this, so no ceremony can run");
-                return;
-            };
-            // The address rides on the overlay rather than in the
-            // request: `WebAuthnRequest` carries a discriminator and
-            // nothing else, and the page reads what it needs from the
-            // row it is already watching.
-            publish(&env, &email, state::PENDING_CEREMONY).await;
-            if let Err(error) = super::navigate::request_webauthn(
-                client,
-                tonk_worker_api::WebAuthnKind::CreateAccount,
-            )
-            .await
-            {
-                log!("account/register: the page could not be asked: {error}");
-                publish(&env, &email, state::UNAVAILABLE).await;
-            }
-        })
+        let email = command.email.0;
+        if split_address(&email).is_none() {
+            return;
+        }
+        let Some(client) = self.client() else {
+            log!("account/register: no page asked for this, so no ceremony can run");
+            return;
+        };
+        // The address rides on the overlay rather than in the
+        // request: `WebAuthnRequest` carries a discriminator and
+        // nothing else, and the page reads what it needs from the
+        // row it is already watching.
+        publish(self, &email, state::PENDING_CEREMONY).await;
+        if let Err(error) =
+            super::navigate::request_webauthn(client, tonk_worker_api::WebAuthnKind::CreateAccount)
+                .await
+        {
+            log!("account/register: the page could not be asked: {error}");
+            publish(self, &email, state::UNAVAILABLE).await;
+        }
     }
 }
 
@@ -432,20 +353,22 @@ mod tests {
 // it. Thread-local rather than a fact: it is learned before an account
 // exists to hang it on, and it is consumed within the same session by
 // the sign-in the lookup was run for.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static RESOLVED_SERVICE: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Keep the address a lookup resolved.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn remember_service(endpoint: &str) {
     RESOLVED_SERVICE.with(|cell| *cell.borrow_mut() = Some(endpoint.to_owned()));
 }
 
 /// The address the last lookup resolved, if one did.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+// Its callers (the custody sign-in handoff) are still browser-only.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) fn resolved_service() -> Option<String> {
     RESOLVED_SERVICE.with(|cell| cell.borrow().clone())
 }

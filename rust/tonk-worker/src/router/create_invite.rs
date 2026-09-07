@@ -652,9 +652,9 @@ where
 }
 
 /// Probe `main` for an invite-ready endpoint.
-pub(crate) async fn resolve_remote_url<R>(
-    tonk: &crate::worker::TonkState,
-    repository: &dialog_repository::Repository<R>,
+pub(crate) async fn resolve_remote_url<'a, R>(
+    tonk: &'a crate::worker::TonkState,
+    repository: &'a dialog_repository::Repository<R>,
 ) -> Result<RemoteRequirement, TonkWorkerError>
 where
     R: Principal + Clone,

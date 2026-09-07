@@ -8,7 +8,6 @@
 //! (the DID suffix), which the UI routes by.
 
 use dialog_capability::Subject;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_effects::Use;
 use std::collections::HashMap;
 
@@ -26,7 +25,6 @@ use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
@@ -299,13 +297,11 @@ pub async fn put_repository(
 /// The attribute carrying the optional sync URL on a `space/create` or
 /// `space/enable-sync` transient. Kept in step with those notation
 /// commands' `remote` field `the:`.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const REMOTE_ATTR: &str = "xyz.tonk.command.create-space/remote";
 
 /// The same field before the command took its own namespace: the DOM
 /// read path that filled it. Still asserted by any branch seeded before
 /// the migration, so both are read.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 
 /// Read the optional remote URL from a transient's facts, tolerating
@@ -324,7 +320,6 @@ const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value
 /// separate problems.
 ///
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -344,27 +339,22 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 }
 
 /// The `tonk:enable-sync` transient's target space, read from the raw facts.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
 /// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
 
 /// Marker asking the handler to mint once the remote is attached.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SHARE_ATTR: &str = "xyz.tonk.enable-sync/share";
 
 /// Read a fact's value as a string, tolerating both the `String` and
 /// `Entity` representations — a URL or a DID round-trips through JSON as an
 /// `Entity` (any `:`-bearing string does), so a single-representation read
 /// would silently miss them. Mirrors [`remote_from_facts`].
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn text_fact(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
     text_fact_any_target(facts, attribute)
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -386,14 +376,12 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
 /// against the existing space labels via [`next_untitled_label`], and
 /// the user renames the space later (the FAB's inline editable /
 /// `tonk/rename-repository`).
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const UNTITLED: &str = "Untitled";
 
 /// Pick the first free untitled label: `Untitled`, then `Untitled 2`,
 /// `Untitled 3`, … — the smallest ordinal no existing label already
 /// uses. Only exact `Untitled` / `Untitled <n>` labels count as taken;
 /// anything else (user-typed names, key fallbacks) is ignored.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn next_untitled_label<I>(existing: I) -> String
 where
     I: IntoIterator<Item = String>,
@@ -430,7 +418,6 @@ where
 /// Best-effort: a replica whose repo can't be loaded is skipped (its
 /// [`repository_label`] key fallback wouldn't match the untitled
 /// pattern anyway), so a single broken space never blocks a create.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn existing_space_labels(state: &AppState) -> Vec<String> {
     use tonk_schema::domain::replica::Profile as ProfileEntity;
 
@@ -488,174 +475,188 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
     labels
 }
 
-/// Command handler for the "New space" form (`space/create`) and the
-/// topbar's "Enable sync" form (`space/enable-sync`).
+/// The full decode surface of a `space/create` (or legacy topbar
+/// `space/enable-sync`) transient: the typed [`CreateSpace`] command —
+/// current or legacy shape — plus the optional sync URL read straight
+/// from the raw facts by [`remote_from_facts`].
 ///
 /// `CreateSpace` is matched **name-only** so it keeps decoding against an
-/// older, frozen profile descriptor (see [`CreateSpace`]). The optional
-/// sync URL is read straight from the transient's facts by
-/// [`remote_from_facts`] — not as a concept field, both because a
-/// required field would break the frozen-descriptor match and because a
-/// URL deserializes as `Value::Entity`, which a `String` field can't
-/// decode.
+/// older, frozen profile descriptor (see [`CreateSpace`]). The remote is
+/// NOT a concept field, both because a required field would break the
+/// frozen-descriptor match and because a URL deserializes as
+/// `Value::Entity`, which a `String` field can't decode — this wrapper's
+/// hand-written [`Decode`](crate::reactor::Decode) is what lets the
+/// typed provider still see it.
+///
+/// [`CreateSpace`]: tonk_schema::command::CreateSpace
+pub(crate) struct CreateSpaceRequest {
+    /// The decoded command (a legacy shape arrives converted).
+    command: tonk_schema::command::CreateSpace,
+    /// The optional sync URL, read from the raw facts.
+    remote: Option<String>,
+}
+
+impl crate::reactor::Decode for CreateSpaceRequest {
+    fn trigger_attributes() -> Vec<String> {
+        crate::reactor::Migrated::<
+            tonk_schema::command::CreateSpace,
+            tonk_schema::command::legacy::CreateSpace,
+        >::new()
+        .trigger_attributes()
+        .to_vec()
+    }
+
+    fn decode(
+        _this: dialog_artifacts::Entity,
+        facts: &crate::reactor::EntityFacts,
+    ) -> Option<Self> {
+        let command = crate::reactor::Migrated::<
+            tonk_schema::command::CreateSpace,
+            tonk_schema::command::legacy::CreateSpace,
+        >::new()
+        .decode(facts)?;
+        Some(Self {
+            command,
+            remote: remote_from_facts(facts),
+        })
+    }
+}
+
+impl dialog_capability::Command for CreateSpaceRequest {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Run the "New space" form (`space/create`).
 ///
 /// The repository is **always created** with a freshly minted identity
 /// (`create_space_inner` returns its routing key), then, if a remote was
-/// given, attached best-effort via [`enable_sync_inner`] to that key. So
-/// the same handler serves both forms: the Hub "New space" form and the
-/// topbar "Enable sync" form — both post the same `name`(+`remote`)
-/// shape, and the handler keys on the shared `name` attribute. The
-/// `name` is only a display label; two spaces may share it. The create
-/// wizard doesn't ask for one — its hidden input carries the
-/// [`UNTITLED`] sentinel, which the handler uniquifies against the
-/// existing space labels ([`next_untitled_label`]) so consecutive
-/// creates read "Untitled", "Untitled 2", …. Once the space is created
-/// and seeded, the handler posts a `navigate` message back to the
-/// originating client so the creator lands inside the new space. A
-/// remote/auth failure leaves a working local space, retryable from the
-/// topbar.
+/// given, attached best-effort via [`enable_sync_inner`] to that key.
+/// The `name` is only a display label; two spaces may share it. The
+/// create wizard doesn't ask for one — its hidden input carries the
+/// [`UNTITLED`] sentinel, which is uniquified against the existing space
+/// labels ([`next_untitled_label`]) so consecutive creates read
+/// "Untitled", "Untitled 2", …. Once the space is created and seeded, a
+/// `navigate` message goes back to the originating client so the creator
+/// lands inside the new space. A remote/auth failure leaves a working
+/// local space, retryable from the topbar.
 ///
-/// A custom handler (not a plain `Provider<CreateSpace>`) is required
-/// because the provider only receives the decoded command, never the
-/// facts the remote must be read from.
-///
-/// [`CreateSpace`]: tonk_schema::command::CreateSpace
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct CreateSpaceHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::CreateSpace,
-        tonk_schema::command::legacy::CreateSpace,
-    >,
+/// Only the profile branch may mint: creating a space is a profile-space
+/// capability, and a content branch asserting the same shape (including
+/// the legacy topbar `space/enable-sync` form, which used to mint a
+/// fresh space as a side effect) is refused rather than trusted.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandEnv {
+    async fn execute(&self, request: CreateSpaceRequest) {
+        let env = self.clone();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        execute_create_space(env, request).await;
+        // The cfg here splits only HOW the same body is awaited — see
+        // [`run_unsendable`](crate::router::command::run_unsendable) for
+        // why rustc cannot prove this particular chain's future `Send`.
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        crate::router::command::run_unsendable(move || execute_create_space(env, request)).await;
+    }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl CreateSpaceHandler {
-    /// Cache `CreateSpace`'s trigger attributes (its `name` field) so the
-    /// registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpaceRequest) {
+    let name = request.command.name.0;
+    let remote = request.remote;
+    if !env.from_profile() {
+        log!(
+            "CreateSpace ignored: origin '{}' is not the profile branch — \
+                 a space cannot mint spaces",
+            env.origin().repo
+        );
+        return;
+    }
+
+    // The create wizard no longer asks for a name: its hidden
+    // `name` input carries the `Untitled` sentinel (a blank name
+    // from an older form gets the same treatment). Uniquify it
+    // against the existing space labels so consecutive creates
+    // read "Untitled", "Untitled 2", … — the user renames later.
+    let name = if name.trim().is_empty() || name.trim() == UNTITLED {
+        next_untitled_label(existing_space_labels(env.state()).await)
+    } else {
+        name
+    };
+    log!("command CreateSpace name={} remote={:?}", name, remote);
+
+    // The space's seed is custodied under the account before the
+    // space exists. A linked device whose root record predates the
+    // encryption key asks the originating page for a passkey
+    // assertion here, outside the state lock, and resumes once the
+    // page has saved the key.
+    if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
+        log!("CreateSpace '{}' refused: {}", name, error);
+        return;
+    }
+
+    // 1. Always create local-only first, so the space appears
+    //    whether or not a remote was given (and never vanishes on
+    //    a remote failure). The create mints a fresh identity and
+    //    returns its routing key.
+    let key = match create_space_inner(env.state(), &name).await {
+        Ok(key) => key,
+        Err(error) => {
+            log!("CreateSpace '{}' failed: {}", name, error);
+            return;
         }
-    }
-}
+    };
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
+    crate::router::navigate::notify_analytics(
+        env.client(),
+        tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
+    );
 
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
+    // 2. The space is created and seeded — drop the creator into
+    //    it. Same page-capability channel as the join redirect: a
+    //    `{ type: "navigate", href }` posted to the originating
+    //    client. Fired before the remote attach so the navigation
+    //    doesn't wait on the network; the attach continues in the
+    //    worker regardless.
+    let href = format!("/space/{key}");
+    crate::router::navigate::notify_navigate(env.client(), &href);
 
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        // Decode synchronously (the caller still holds the lock), then
-        // hand owned values + an env clone to the `'static` future.
-        let name = self.command.decode(facts).map(|command| command.name.0);
-        // The optional remote is read from the facts directly (tolerating
-        // the URL's `Value::Entity` representation), not via a concept.
-        let remote = remote_from_facts(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(name) = name else {
-                return;
-            };
-
-            // The create wizard no longer asks for a name: its hidden
-            // `name` input carries the `Untitled` sentinel (a blank name
-            // from an older form gets the same treatment). Uniquify it
-            // against the existing space labels so consecutive creates
-            // read "Untitled", "Untitled 2", … — the user renames later.
-            let name = if name.trim().is_empty() || name.trim() == UNTITLED {
-                next_untitled_label(existing_space_labels(env.state()).await)
+    // 3. If the form carried a remote, attach it best-effort to
+    //    the identity just created. A failure here just leaves it
+    //    local-only — retryable from the topbar's Enable sync.
+    //    (`remote_from_facts` already dropped empty/blank URLs.)
+    // A blank remote used to mean local-only, which the account
+    // directory now advertises account-wide as a space no other
+    // device can ever replicate. With an ACTIVE account, the
+    // account's own sync remote is the natural default — the
+    // same access service the account DB syncs through; the
+    // relay resolves from the remote's origin as usual.
+    //
+    // Without one, no default: the access service serves only an
+    // active customer's subjects, so defaulting a remote here
+    // would wire an upstream that 403s on every presign. The
+    // space stays local until the user asks to share it, which
+    // is where provisioning belongs.
+    // The endpoint comes from the account's own registration
+    // fact, not from the signed descriptor and not from the
+    // page's `https://{origin}/ucan/` guess: registration is
+    // where the account learned which access service it is a
+    // customer of, so that is the one answer every attach path
+    // reads.
+    let remote = match remote {
+        Some(remote) => Some(remote),
+        None => {
+            let tonk = env.state().read().await;
+            if super::customer::is_active(&tonk).await {
+                account_sync_remote(&tonk).await
             } else {
-                name
-            };
-            log!("command CreateSpace name={} remote={:?}", name, remote);
-
-            // The space's seed is custodied under the account before the
-            // space exists. A linked device whose root record predates the
-            // encryption key asks the originating page for a passkey
-            // assertion here, outside the state lock, and resumes once the
-            // page has saved the key.
-            if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
-                log!("CreateSpace '{}' refused: {}", name, error);
-                return;
+                None
             }
-
-            // 1. Always create local-only first, so the space appears
-            //    whether or not a remote was given (and never vanishes on
-            //    a remote failure). The create mints a fresh identity and
-            //    returns its routing key.
-            let key = match create_space_inner(env.state(), &name).await {
-                Ok(key) => key,
-                Err(error) => {
-                    log!("CreateSpace '{}' failed: {}", name, error);
-                    return;
-                }
-            };
-
-            crate::router::navigate::notify_analytics(
-                env.client(),
-                tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
-            );
-
-            // 2. The space is created and seeded — drop the creator into
-            //    it. Same page-capability channel as the join redirect: a
-            //    `{ type: "navigate", href }` posted to the originating
-            //    client. Fired before the remote attach so the navigation
-            //    doesn't wait on the network; the attach continues in the
-            //    worker regardless.
-            let href = format!("/space/{key}");
-            crate::router::navigate::notify_navigate(env.client(), &href);
-
-            // 3. If the form carried a remote, attach it best-effort to
-            //    the identity just created. A failure here just leaves it
-            //    local-only — retryable from the topbar's Enable sync.
-            //    (`remote_from_facts` already dropped empty/blank URLs.)
-            // A blank remote used to mean local-only, which the account
-            // directory now advertises account-wide as a space no other
-            // device can ever replicate. With an ACTIVE account, the
-            // account's own sync remote is the natural default — the
-            // same access service the account DB syncs through; the
-            // relay resolves from the remote's origin as usual.
-            //
-            // Without one, no default: the access service serves only an
-            // active customer's subjects, so defaulting a remote here
-            // would wire an upstream that 403s on every presign. The
-            // space stays local until the user asks to share it, which
-            // is where provisioning belongs.
-            // The endpoint comes from the account's own registration
-            // fact, not from the signed descriptor and not from the
-            // page's `https://{origin}/ucan/` guess: registration is
-            // where the account learned which access service it is a
-            // customer of, so that is the one answer every attach path
-            // reads.
-            let remote = match remote {
-                Some(remote) => Some(remote),
-                None => {
-                    let tonk = env.state().read().await;
-                    if super::customer::is_active(&tonk).await {
-                        account_sync_remote(&tonk).await
-                    } else {
-                        None
-                    }
-                }
-            };
-            if let Some(remote) = remote
-                && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
-            {
-                log!("CreateSpace '{}': remote attach failed: {}", key, error);
-            }
-        })
+        }
+    };
+    if let Some(remote) = remote
+        && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
+    {
+        log!("CreateSpace '{}': remote attach failed: {}", key, error);
     }
 }
 
@@ -670,7 +671,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
 /// commits, no handler runs) — see that type's doc and
 /// `docs/evolving-command-concepts.md`, which records the same mistake with
 /// `CreateSpace.remote`.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 
 /// Read the target space DID from a `tonk:invite` transient's facts,
@@ -681,7 +681,6 @@ const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 /// `Value::String`, tolerating both representations like `remote_from_facts`
 /// does). `None` for an older claim carrying no such fact — the handler
 /// falls back to the dispatch origin in that case.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -697,10 +696,56 @@ fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String
         .filter(|space| !space.is_empty())
 }
 
-/// Post-commit handler for the [`Invite`] command.
+/// The full decode surface of a `tonk:invite` transient: the typed
+/// [`Invite`] command — current or legacy shape — plus the optional
+/// target space read from the raw facts by [`invite_space_from_facts`]
+/// (NOT a matched `Invite` field — every existing space's frozen
+/// `tonk:invite` descriptor lacks it).
+///
+/// [`Invite`]: tonk_schema::command::Invite
+pub(crate) struct InviteRequest {
+    /// The decoded command (a legacy shape arrives converted).
+    command: tonk_schema::command::Invite,
+    /// The fact-named target space, when the FAB's routeless share
+    /// claim named one.
+    space: Option<String>,
+}
+
+impl crate::reactor::Decode for InviteRequest {
+    fn trigger_attributes() -> Vec<String> {
+        crate::reactor::Migrated::<
+            tonk_schema::command::Invite,
+            tonk_schema::command::legacy::Invite,
+        >::new()
+        .trigger_attributes()
+        .to_vec()
+    }
+
+    fn decode(
+        _this: dialog_artifacts::Entity,
+        facts: &crate::reactor::EntityFacts,
+    ) -> Option<Self> {
+        let command = crate::reactor::Migrated::<
+            tonk_schema::command::Invite,
+            tonk_schema::command::legacy::Invite,
+        >::new()
+        .decode(facts)?;
+        Some(Self {
+            command,
+            space: invite_space_from_facts(facts),
+        })
+    }
+}
+
+impl dialog_capability::Command for InviteRequest {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Run the [`Invite`] command.
 ///
 /// When the FAB's share control (`<tonk-share>`) dispatches a transient
-/// [`Invite`], this handler generates a fresh membership keypair, delegates
+/// [`Invite`], this provider generates a fresh membership keypair, delegates
 /// the *target* repository's access to its DID, base58-encodes the
 /// resulting delegation chain, and asserts a durable [`Authorization`] fact
 /// keyed by that DID on the repository's content branch (`main`). It then
@@ -708,222 +753,235 @@ fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String
 /// overlay (never replicated). The share view joins the two via
 /// `tonk:invitation` and assembles the final URL.
 ///
-/// The repository is read from the command's `space` field, not
-/// [`CommandEnv::origin`](crate::router::CommandEnv::origin): `Invite` is
-/// dispatched routeless from the FAB's own profile-branch context (see
-/// `tonk-fab::logic::invite_claim_json`), where the origin repo is always
-/// empty — mirroring [`PauseSyncHandler`] and [`RenameRepositoryHandler`].
-///
-/// A custom handler (not a plain `Provider<Invite>`) is required because
-/// it reads durable repository state the decoded command alone does not
-/// carry and writes to the reactor's session overlay.
+/// The target is the fact-named space when the FAB's routeless,
+/// profile-dispatched share claim named one, else the dispatch origin
+/// (the shape every existing space's frozen `tonk:invite` descriptor
+/// still dispatches). A content branch naming a DIFFERENT space is
+/// refused — see [`CommandEnv::may_target_space`](crate::router::CommandEnv::may_target_space).
 ///
 /// [`Invite`]: tonk_schema::command::Invite
 /// [`Authorization`]: tonk_schema::command::Authorization
 /// [`Credential`]: tonk_schema::command::Credential
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct InviteHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::Invite,
-        tonk_schema::command::legacy::Invite,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl InviteHandler {
-    /// Cache `Invite`'s trigger attributes (its `time` field) so the
-    /// registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<InviteRequest> for crate::router::CommandEnv {
+    async fn execute(&self, request: InviteRequest) {
+        let env = self.clone();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        execute_invite(env, request).await;
+        // The cfg here splits only HOW the same body is awaited — see
+        // [`run_unsendable`](crate::router::command::run_unsendable) for
+        // why rustc cannot prove this particular chain's future `Send`.
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        crate::router::command::run_unsendable(move || execute_invite(env, request)).await;
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
+async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) {
+    use tonk_schema::prelude::DidExt as _;
+
+    let repo_name = request
+        .space
+        .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
+        .map(|did| did.repo_key().to_owned())
+        .unwrap_or_else(|| env.origin().repo.clone());
+    // The triggering click's timestamp, echoed onto a refusal so a
+    // later resubscribe can tell this refusal from a replay of an
+    // older one — see `publish_share_blocked`.
+    let time = request.command.time.0;
+
+    if repo_name.is_empty() {
+        log!("Invite: no target space (no fact, empty origin), skipping");
+        return;
+    }
+    if !env.may_target_space(&repo_name) {
+        log!(
+            "Invite ignored: origin '{}' may not mint an invite for '{}'",
+            env.origin().repo,
+            repo_name
+        );
+        return;
+    }
+    log!("command Invite repo={}", repo_name);
+
+    // A pass that attached a remote leaves the space ready but
+    // unminted, so run once more. Bounded to a single retry: the
+    // second pass either mints or refuses for a reason attaching
+    // cannot fix.
+    let outcome = run_invite(&env, &repo_name, time).await;
+    if let Ok(RunInvite::Attached) = outcome
+        && let Err(error) = run_invite(&env, &repo_name, time).await
+    {
+        log!(
+            "Invite for repo '{}' failed after attaching: {}",
+            repo_name,
+            error
+        );
+    }
+    if let Err(error) = outcome {
+        log!("Invite for repo '{}' failed: {}", repo_name, error);
+    }
+}
+
+/// The full decode surface of a `tonk:enable-sync` transient: the typed
+/// [`EnableSync`] command — current or legacy shape — plus its target
+/// `space`, optional `remote` endpoint, and `share` marker, all read
+/// from the raw facts (a DID or URL round-trips through JSON as a
+/// `Value::Entity`, which a `String` concept field can't decode — see
+/// [`text_fact`]).
+///
+/// [`EnableSync`]: tonk_schema::command::EnableSync
+pub(crate) struct EnableSyncRequest {
+    /// The decoded command (a legacy shape arrives converted).
+    command: tonk_schema::command::EnableSync,
+    /// The target space DID, read from the raw facts.
+    space: Option<String>,
+    /// The endpoint to attach; absent means "wherever this account
+    /// syncs".
+    remote: Option<String>,
+    /// Whether to mint an invite once attached.
+    share: bool,
+}
+
+impl crate::reactor::Decode for EnableSyncRequest {
+    fn trigger_attributes() -> Vec<String> {
+        crate::reactor::Migrated::<
+            tonk_schema::command::EnableSync,
+            tonk_schema::command::legacy::EnableSync,
+        >::new()
+        .trigger_attributes()
+        .to_vec()
     }
 
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
+    fn decode(
+        _this: dialog_artifacts::Entity,
         facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        use tonk_schema::prelude::DidExt as _;
-
-        // Read the target space off the facts opportunistically (NOT a
-        // matched `Invite` field — see `invite_space_from_facts`) so the
-        // FAB's routeless, profile-dispatched share claim can name its
-        // target. Fall back to the dispatch origin when the fact is
-        // absent — the shape every existing space's frozen `tonk:invite`
-        // descriptor still dispatches, mirroring `PauseSyncHandler`/
-        // `RenameRepositoryHandler` for the named-target case and
-        // `ProfileRenameHandler` for the origin fallback.
-        let repo_name = invite_space_from_facts(facts)
-            .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
-            .map(|did| did.repo_key().to_owned())
-            .unwrap_or_else(|| env.origin().repo.clone());
-
-        // The triggering click's timestamp, echoed onto a refusal so a
-        // later resubscribe can tell this refusal from a replay of an
-        // older one — see `publish_share_blocked`.
-        let time = self
-            .command
-            .decode(facts)
-            .map(|command| command.time.0)
-            .unwrap_or_default();
-        let env = env.clone();
-
-        Box::pin(async move {
-            if repo_name.is_empty() {
-                log!("Invite: no target space (no fact, empty origin), skipping");
-                return;
-            }
-            log!("command Invite repo={}", repo_name);
-
-            // A pass that attached a remote leaves the space ready but
-            // unminted, so run once more. Bounded to a single retry: the
-            // second pass either mints or refuses for a reason attaching
-            // cannot fix.
-            let outcome = run_invite(&env, &repo_name, time).await;
-            if let Ok(RunInvite::Attached) = outcome
-                && let Err(error) = run_invite(&env, &repo_name, time).await
-            {
-                log!(
-                    "Invite for repo '{}' failed after attaching: {}",
-                    repo_name,
-                    error
-                );
-            }
-            if let Err(error) = outcome {
-                log!("Invite for repo '{}' failed: {}", repo_name, error);
-            }
+    ) -> Option<Self> {
+        let command = crate::reactor::Migrated::<
+            tonk_schema::command::EnableSync,
+            tonk_schema::command::legacy::EnableSync,
+        >::new()
+        .decode(facts)?;
+        Some(Self {
+            command,
+            space: text_fact(facts, ENABLE_SYNC_SPACE_ATTR),
+            remote: text_fact(facts, ENABLE_SYNC_REMOTE_ATTR),
+            share: text_fact(facts, ENABLE_SYNC_SHARE_ATTR).is_some(),
         })
     }
 }
 
-/// Attach a sync remote to an existing space, then mint an invite when the
-/// transient asks for one.
+impl dialog_capability::Command for EnableSyncRequest {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Run the `tonk:enable-sync` command: attach a sync remote to an
+/// existing space, then mint an invite when the transient asks for one.
 ///
 /// The share control dispatches this when a user accepts the offer to turn
-/// sync on after a refused share. Minting from inside the handler is what
+/// sync on after a refused share. Minting from inside the provider is what
 /// makes that a single click: the control needs no completion signal for the
 /// attach, because success reaches it as a new invite link on the
 /// subscription it already holds — the same path an ordinary mint takes.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct EnableSyncHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::EnableSync,
-        tonk_schema::command::legacy::EnableSync,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl EnableSyncHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
+///
+/// The target is the fact-named space; a content branch naming a
+/// DIFFERENT space is refused, and the target must be a real user space
+/// — see [`CommandEnv::may_target_space`](crate::router::CommandEnv::may_target_space)
+/// and [`require_real_space`].
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEnv {
+    async fn execute(&self, request: EnableSyncRequest) {
+        let env = self.clone();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        execute_enable_sync(env, request).await;
+        // The cfg here splits only HOW the same body is awaited — see
+        // [`run_unsendable`](crate::router::command::run_unsendable) for
+        // why rustc cannot prove this particular chain's future `Send`.
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        crate::router::command::run_unsendable(move || execute_enable_sync(env, request)).await;
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
+async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSyncRequest) {
+    use dialog_artifacts::Entity;
+    use tonk_schema::prelude::DidExt as _;
 
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        use tonk_schema::prelude::DidExt as _;
-
-        let time = self
-            .command
-            .decode(facts)
-            .map(|command| command.time.0)
-            .unwrap_or_default();
-        let space = text_fact(facts, ENABLE_SYNC_SPACE_ATTR);
-        let remote = text_fact(facts, ENABLE_SYNC_REMOTE_ATTR);
-        let share = text_fact(facts, ENABLE_SYNC_SHARE_ATTR).is_some();
-        let env = env.clone();
-
-        Box::pin(async move {
-            use dialog_artifacts::Entity;
-
-            let Some(space) = space else {
-                log!("EnableSync: missing space, skipping");
-                return;
-            };
-            // An absent remote means "wherever this account syncs" — the
-            // page no longer derives an endpoint from its own origin,
-            // which it could not even do reliably: a sealed guest's
-            // document is `about:srcdoc`, so it had to be told its own
-            // origin by the portal bridge first, and a share before that
-            // arrived did nothing at all.
-            let remote = match remote {
+    let time = request.command.time.0;
+    let share = request.share;
+    let Some(space) = request.space else {
+        log!("EnableSync: missing space, skipping");
+        return;
+    };
+    // An absent remote means "wherever this account syncs" — the
+    // page no longer derives an endpoint from its own origin,
+    // which it could not even do reliably: a sealed guest's
+    // document is `about:srcdoc`, so it had to be told its own
+    // origin by the portal bridge first, and a share before that
+    // arrived did nothing at all.
+    let remote = match request.remote {
+        Some(remote) => remote,
+        None => {
+            let tonk = env.state().read().await;
+            match account_sync_remote(&tonk).await {
                 Some(remote) => remote,
                 None => {
-                    let tonk = env.state().read().await;
-                    match account_sync_remote(&tonk).await {
-                        Some(remote) => remote,
-                        None => {
-                            log!("EnableSync: no remote given and the account names no provider");
-                            return;
-                        }
-                    }
+                    log!("EnableSync: no remote given and the account names no provider");
+                    return;
+                }
+            }
+        }
+    };
+    let Ok(did) = space.parse::<dialog_varsig::Did>() else {
+        log!("EnableSync: '{}' is not a DID", space);
+        return;
+    };
+    let key = did.repo_key().to_owned();
+    if !env.may_target_space(&key) {
+        log!(
+            "EnableSync ignored: origin '{}' may not attach a remote to '{}'",
+            env.origin().repo,
+            key
+        );
+        return;
+    }
+    {
+        // Only a real user space takes a remote from this command —
+        // never the profile's own hidden replica or a system repo.
+        let tonk = env.state().read().await;
+        if let Err(error) = require_real_space(&tonk, &did).await {
+            log!("EnableSync '{}' refused: {}", key, error);
+            return;
+        }
+    }
+    log!("command EnableSync repo={} share={}", key, share);
+
+    if let Err(error) = enable_sync_inner(env.state(), &key, &remote).await {
+        log!("EnableSync '{}' failed: {}", key, error);
+        if share {
+            let subject = match space.parse::<Entity>() {
+                Ok(entity) => entity,
+                Err(e) => {
+                    log!("EnableSync: '{}' is not an entity: {}", space, e);
+                    return;
                 }
             };
-            let Ok(did) = space.parse::<dialog_varsig::Did>() else {
-                log!("EnableSync: '{}' is not a DID", space);
-                return;
-            };
-            let key = did.repo_key().to_owned();
-            log!("command EnableSync repo={} share={}", key, share);
+            publish_share_blocked(
+                env.state(),
+                &key,
+                subject,
+                "attach-failed",
+                &format!("Could not turn on sync: {error}"),
+                time,
+            )
+            .await;
+        }
+        return;
+    }
 
-            if let Err(error) = enable_sync_inner(env.state(), &key, &remote).await {
-                log!("EnableSync '{}' failed: {}", key, error);
-                if share {
-                    let subject = match space.parse::<Entity>() {
-                        Ok(entity) => entity,
-                        Err(e) => {
-                            log!("EnableSync: '{}' is not an entity: {}", space, e);
-                            return;
-                        }
-                    };
-                    publish_share_blocked(
-                        env.state(),
-                        &key,
-                        subject,
-                        "attach-failed",
-                        &format!("Could not turn on sync: {error}"),
-                        time,
-                    )
-                    .await;
-                }
-                return;
-            }
-
-            if share && let Err(error) = run_invite(&env, &key, time).await {
-                log!("EnableSync '{}': mint after attach failed: {}", key, error);
-            }
-        })
+    if share && let Err(error) = run_invite(&env, &key, time).await {
+        log!("EnableSync '{}': mint after attach failed: {}", key, error);
     }
 }
 
@@ -939,7 +997,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnableSyncHan
 /// Split out from [`InviteHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there — the command future itself returns `()`.
 /// What one pass of [`run_invite`] settled.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 enum RunInvite {
     /// Minted, refused, or otherwise finished — nothing more to do.
     Settled,
@@ -949,7 +1006,6 @@ enum RunInvite {
     Attached,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
@@ -1288,7 +1344,6 @@ async fn run_invite(
 /// `needs-account` are answered by attaching a remote or making an
 /// account, so the request stays open rather than reporting a failure
 /// the user is in the middle of fixing.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn invite_status_for(code: &str) -> &'static str {
     use tonk_schema::command::InviteState;
     use tonk_worker_api::share;
@@ -1300,13 +1355,12 @@ fn invite_status_for(code: &str) -> &'static str {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_share_blocked(
-    state: &AppState,
-    repo_name: &str,
+async fn publish_share_blocked<'a>(
+    state: &'a AppState,
+    repo_name: &'a str,
     subject: dialog_artifacts::Entity,
-    code: &str,
-    detail: &str,
+    code: &'a str,
+    detail: &'a str,
     time: f64,
 ) {
     use tonk_schema::command::ShareBlocked;
@@ -1361,7 +1415,6 @@ async fn publish_share_blocked(
 /// origin the recipient will actually load. It is read here rather than
 /// taken from the page because a sealed guest's `window.location.origin` is
 /// the opaque `"null"`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn invite_url(proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
     let long = long_invite_url(worker_origin().as_deref(), proof, remote, seed, space_key);
 
@@ -1379,15 +1432,26 @@ async fn invite_url(proof: &str, remote: &str, seed: &str, space_key: &str) -> S
 /// Split out so [`long_invite_url`] stays pure and testable: the browser
 /// test harness runs in a *window*, never a `ServiceWorkerGlobalScope`, so
 /// a test driving `invite_url` could only ever reach the no-origin branch.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) fn worker_origin() -> Option<String> {
-    use wasm_bindgen::JsCast;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use wasm_bindgen::JsCast;
 
-    js_sys::global()
-        .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-        .ok()
-        .map(|global| global.location().origin())
-        .filter(|origin| !origin.is_empty())
+        js_sys::global()
+            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
+            .ok()
+            .map(|global| global.location().origin())
+            .filter(|origin| !origin.is_empty())
+    }
+    // A native host serves no origin of its own; the access-service
+    // address must come from recorded facts (an account provider) or
+    // host configuration, so "derive it from where I am serving" has no
+    // native answer. Callers already treat `None` as "the service is
+    // unknown" and refuse or degrade visibly.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        None
+    }
 }
 
 /// Assemble the long (un-shortened) invite URL.
@@ -1401,7 +1465,6 @@ pub(super) fn worker_origin() -> Option<String> {
 /// modern delegation whose signed metadata names the shareable remote (see
 /// `RemoteRefusal`). The seed is the fragment and never the query: it must not
 /// reach a server, and the shortcut service is handed only the path + query.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn long_invite_url(
     origin: Option<&str>,
     proof: &str,
@@ -1430,12 +1493,12 @@ fn long_invite_url(
     }
 }
 
-/// Post-commit handler for the [`PauseSync`] command.
+/// Run the [`PauseSync`] command.
 ///
-/// Toggles auto-sync for the *origin* space: reads the durable
+/// Toggles auto-sync for the space the command NAMES: reads the durable
 /// [`ReplicaSyncEnabled`] preference at the `state:here` singleton, flips it
 /// (`active` ⇄ `paused`, defaulting an absent fact to "pause"), and commits the
-/// new value on the origin's content branch. On pause it stamps `sync:paused`
+/// new value on that space's content branch. On pause it stamps `sync:paused`
 /// into the live-status overlay so the chip and banner update at once; on
 /// resume it leaves the overlay for the next status sweep (which resumes now
 /// that the gate is open).
@@ -1447,85 +1510,49 @@ fn long_invite_url(
 /// same singleton the live status uses, so both fold into one chip
 /// subscription.
 ///
-/// A custom handler (not a plain `Provider<PauseSync>`) because it reads and
-/// writes durable branch state the decoded command doesn't carry and targets
-/// the repo from the origin rather than a command field — like
-/// [`InviteHandler`].
+/// Naming the target is what lets the FAB dispatch this from the profile
+/// branch; a content branch naming a DIFFERENT space is refused — see
+/// [`CommandEnv::may_target_space`](crate::router::CommandEnv::may_target_space).
 ///
 /// [`PauseSync`]: tonk_schema::command::PauseSync
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct PauseSyncHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::PauseSync,
-        tonk_schema::command::legacy::PauseSync,
-    >,
-}
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::PauseSync) {
+        use tonk_schema::prelude::DidExt as _;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl PauseSyncHandler {
-    /// Cache `PauseSync`'s trigger attributes (its `time` field) so the
-    /// registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+        // The repo key is the space DID's suffix; a space's content
+        // branch is always `main`.
+        let Some(repo) = command
+            .space
+            .0
+            .to_string()
+            .parse::<dialog_varsig::Did>()
+            .ok()
+            .map(|did| did.repo_key().to_owned())
+        else {
+            log!("PauseSync: no/unparseable target space, skipping");
+            return;
+        };
+        if !self.may_target_space(&repo) {
+            log!(
+                "PauseSync ignored: origin '{}' may not toggle sync for '{}'",
+                self.origin().repo,
+                repo
+            );
+            return;
+        }
+        let branch = CONTENT_BRANCH.to_string();
+        log!("command PauseSync repo={} branch={}", repo, branch);
+
+        if let Err(error) = run_pause_sync(self, &repo, &branch).await {
+            log!("PauseSync for repo '{}' failed: {}", repo, error);
         }
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        use tonk_schema::prelude::DidExt as _;
-
-        // Decode synchronously to read the target space off the command — the
-        // handler flips THAT space's replica, not the dispatch origin's, so the
-        // command can be dispatched from the profile branch. The repo key is
-        // the space DID's suffix; a space's content branch is always `main`.
-        let target = self
-            .command
-            .decode(facts)
-            .and_then(|command| {
-                command
-                    .space
-                    .0
-                    .to_string()
-                    .parse::<dialog_varsig::Did>()
-                    .ok()
-            })
-            .map(|did| did.repo_key().to_owned());
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(repo) = target else {
-                log!("PauseSync: no/unparseable target space, skipping");
-                return;
-            };
-            let branch = CONTENT_BRANCH.to_string();
-            log!("command PauseSync repo={} branch={}", repo, branch);
-
-            if let Err(error) = run_pause_sync(&env, &repo, &branch).await {
-                log!("PauseSync for repo '{}' failed: {}", repo, error);
-            }
-        })
-    }
-}
-
-/// Post-commit handler for the [`ProfileRename`] command.
+/// Run the [`ProfileRename`] command.
 ///
 /// Fired when the topbar identity chip's `<tonk-editable>` commits a
 /// transient [`ProfileRename`]. It persists the new display name as a
@@ -1533,78 +1560,33 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
 /// re-stamps the self member's [`MemberName`] on every space the profile
 /// belongs to so all of its rosters reflect the new name at once.
 ///
-/// The new name is the only payload (read from `currentTarget.value`);
-/// the spaces to re-stamp come from the profile's replica index on the
-/// meta branch, and the [`CommandEnv::origin`](crate::router::CommandEnv::origin)
-/// space is also used to refresh the self-identity overlay. An
-/// empty/whitespace name is a no-op — a member can't
-/// blank their own name out.
-///
-/// A custom handler (not a plain `Provider<ProfileRename>`) because it
-/// writes durable branch state the decoded command doesn't carry and
-/// targets the repo from the origin rather than a command field — like
-/// [`InviteHandler`]/[`PauseSyncHandler`].
+/// The new name is the only payload; the spaces to re-stamp come from
+/// the profile's replica index on the meta branch. The target is always
+/// THE PROFILE — never a space named by a field or the origin — so no
+/// origin constraint applies. An empty/whitespace name is a no-op — a
+/// member can't blank their own name out.
 ///
 /// [`ProfileRename`]: tonk_schema::command::ProfileRename
 /// [`ProfileName`]: tonk_schema::ProfileName
 /// [`MemberName`]: tonk_schema::MemberName
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct ProfileRenameHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::ProfileRename,
-        tonk_schema::command::legacy::ProfileRename,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl ProfileRenameHandler {
-    /// Cache `ProfileRename`'s trigger attributes (its `name` field) so
-    /// the registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::ProfileRename) {
+        let name = command.name.0;
+        let name = name.trim();
+        // Don't let a member blank their own name out.
+        if name.is_empty() {
+            return;
         }
-    }
-}
+        let key = self.origin().repo.clone();
+        log!("command ProfileRename repo={} name={}", key, name);
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRenameHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        // Decode synchronously (the caller still holds the lock), then
-        // hand the owned new name + an env clone to the `'static` future.
-        let name = self.command.decode(facts).map(|command| command.name.0);
-        let key = env.origin().repo.clone();
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(name) = name else {
-                return;
-            };
-            let name = name.trim();
-            // Don't let a member blank their own name out.
-            if name.is_empty() {
-                return;
-            }
-            log!("command ProfileRename repo={} name={}", key, name);
-
-            if let Err(error) = run_profile_rename(&env, name).await {
-                log!("ProfileRename for repo '{}' failed: {}", key, error);
-            }
-        })
+        if let Err(error) = run_profile_rename(self, name).await {
+            log!("ProfileRename for repo '{}' failed: {}", key, error);
+        }
     }
 }
 
@@ -1614,7 +1596,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRename
 /// Split out from [`ProfileRenameHandler::run`] so the `?` early-return
 /// funnels into the single `log!` there — the command future itself
 /// returns `()`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
@@ -1639,7 +1620,6 @@ async fn run_profile_rename(
 /// Compiled for the wasm handler that uses it and for native tests (see
 /// [`rename_outcome`]) — never for a plain native build, where it would sit
 /// unused and trip the `-D warnings` dead-code lint.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RenameOutcome {
     /// The rename committed.
@@ -1655,7 +1635,6 @@ pub(crate) enum RenameOutcome {
 /// Any error is `Failed`: `RepositoryError` carries no `NotFound` variant, so
 /// an absent replica arrives as `Internal` from the acquire, and the chip's
 /// response is the same either way — revert, do not show a phantom success.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutcome {
     match result {
         Ok(()) => RenameOutcome::Renamed,
@@ -1663,81 +1642,63 @@ pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutco
     }
 }
 
-/// Post-commit handler for the [`RenameRepository`] command.
+/// Run the [`RenameRepository`] command.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) binds the
 /// command's `subject` to `?this` and asserts the new name directly — but
 /// that rule lives on the space's OWN branch, so it can never see a claim
-/// dispatched from the profile branch. This handler is the worker-side
+/// dispatched from the profile branch. This provider is the worker-side
 /// replacement: it reads the target `space` off the command (like
-/// [`PauseSyncHandler`]) rather than the dispatch origin, so the FAB's name
-/// chip can dispatch from the profile branch with nothing seeded per-space.
+/// [`PauseSync`](tonk_schema::command::PauseSync)) rather than the dispatch
+/// origin, so the FAB's name chip can dispatch from the profile branch with
+/// nothing seeded per-space. A content branch naming a DIFFERENT space is
+/// refused, and the target must be a real user space — see
+/// [`CommandEnv::may_target_space`](crate::router::CommandEnv::may_target_space)
+/// and [`require_real_space`].
 ///
 /// [`RenameRepository`]: tonk_schema::command::RenameRepository
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct RenameRepositoryHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::RenameRepository,
-        tonk_schema::command::legacy::RenameRepository,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl RenameRepositoryHandler {
-    /// Cache `RenameRepository`'s trigger attributes so the registry indexes
-    /// this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameRepositoryHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::RenameRepository) {
         use tonk_schema::prelude::DidExt as _;
 
-        // Decode synchronously to read the target space off the command — the
-        // handler renames THAT repository, not the dispatch origin's, so the
-        // command can be dispatched from the profile branch.
-        let decoded = self.command.decode(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(command) = decoded else { return };
-            let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
-                log!("RenameRepository: unparseable target space, skipping");
+        let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
+            log!("RenameRepository: unparseable target space, skipping");
+            return;
+        };
+        // `repo_key()` is the FULL DID, not a suffix.
+        let repo = did.repo_key().to_owned();
+        if !self.may_target_space(&repo) {
+            log!(
+                "RenameRepository ignored: origin '{}' may not rename '{}'",
+                self.origin().repo,
+                repo
+            );
+            return;
+        }
+        {
+            // Only a real user space is renameable from this command —
+            // never the profile's own hidden replica or a system repo.
+            let tonk = self.state().read().await;
+            if let Err(error) = require_real_space(&tonk, &did).await {
+                log!("RenameRepository '{}' refused: {}", repo, error);
                 return;
-            };
-            // `repo_key()` is the FULL DID, not a suffix.
-            let repo = did.repo_key().to_owned();
-            log!("command RenameRepository repo={}", repo);
-
-            let result = run_rename_repository(&env, &repo, &command.name.0).await;
-            let failure_detail = result.as_ref().err().map(ToString::to_string);
-            if rename_outcome(result) == RenameOutcome::Failed {
-                log!(
-                    "RenameRepository for repo '{}' failed: {}",
-                    repo,
-                    failure_detail.unwrap_or_default()
-                );
             }
-        })
+        }
+        log!("command RenameRepository repo={}", repo);
+
+        let result = run_rename_repository(self, &repo, &command.name.0).await;
+        let failure_detail = result.as_ref().err().map(ToString::to_string);
+        if rename_outcome(result) == RenameOutcome::Failed {
+            log!(
+                "RenameRepository for repo '{}' failed: {}",
+                repo,
+                failure_detail.unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -1746,7 +1707,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RenameReposit
 /// `tonk/rename-repository` rule used to write. Split out from
 /// [`RenameRepositoryHandler::run`] so the caller funnels every failure
 /// through [`rename_outcome`] rather than a bare `?`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_rename_repository(
     env: &crate::router::CommandEnv,
     repo: &str,
@@ -1807,88 +1767,47 @@ async fn run_rename_repository(
     Ok(())
 }
 
-/// Post-commit handler for the [`CreateNotebook`] command.
+/// Run the [`CreateNotebook`] command.
 ///
 /// The index's heading switcher fires this when the author names a
-/// notebook that does not exist. The handler writes it and then drops the
-/// author into it, both halves here because neither can happen in the
-/// page: the notebook's entity is derived when the fact is written, so the
-/// element that fired the command never learns it, and a service worker
-/// has no `window` to navigate with — the redirect goes back as a
-/// `navigate` message to the originating client, like the create-space and
-/// join redirects.
+/// notebook that does not exist. The provider writes it into the ORIGIN
+/// space — the notebook belongs to the space whose page the author was
+/// on, and a command that NAMED its target could be committed against
+/// any branch. An EMPTY origin repo is the profile, not a missing
+/// origin.
 ///
-/// This handler is a WORKAROUND, and creating a notebook does not otherwise
+/// This provider is a WORKAROUND, and creating a notebook does not otherwise
 /// want a bespoke command: the library's own rules already turn a written
 /// intent into blocks and positions. It exists because a rule that derived
 /// the notebook could not then assert a navigation anything would act on —
 /// commit-time induction folds its rounds into one commit, so a
 /// rule-concluded transient is dropped before any handler can match it
 /// (dialog-db#483). Once a rule can conclude into an ephemeral-but-
-/// observable layer, this handler, `create_notebook_inner`, and the
+/// observable layer, this provider, `create_notebook_inner`, and the
 /// write-then-read-back-by-title dance below all go away.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct CreateNotebookHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::CreateNotebook,
-        tonk_schema::command::legacy::CreateNotebook,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl CreateNotebookHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+///
+/// [`CreateNotebook`]: tonk_schema::command::CreateNotebook
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::CreateNotebook>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::CreateNotebook) {
+        let entity = command.entity.0.to_string();
+        let title = command.title.0;
+        let body = command.body.0;
+        let repo = self.origin().repo.clone();
+        if title.trim().is_empty() {
+            log!("CreateNotebook: blank title, skipping");
+            return;
         }
-    }
-}
+        log!("command CreateNotebook title={title} entity={entity} repo={repo}");
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNotebookHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let decoded = self.command.decode(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(command) = decoded else { return };
-            let entity = command.entity.0.to_string();
-            let title = command.title.0;
-            let body = command.body.0;
-            // The repository the command fired in. Read from the origin
-            // rather than carried on the command: the notebook belongs to
-            // the space whose page the author was on, and a command that
-            // NAMED its target could be committed against any branch.
-            // An EMPTY repo is the profile, not a missing origin: a
-            // profile-branch commit carries no repository name because the
-            // profile is outside the named-repo namespace.
-            let repo = env.origin().repo.clone();
-            if title.trim().is_empty() {
-                log!("CreateNotebook: blank title, skipping");
-                return;
-            }
-            log!("command CreateNotebook title={title} entity={entity} repo={repo}");
-
-            // No redirect: the page minted the entity, so it already knows
-            // where it is going and navigates itself once the write lands.
-            if let Err(error) = create_notebook_inner(&env, &repo, &entity, &title, &body).await {
-                log!("CreateNotebook '{title}' failed: {error}");
-            }
-        })
+        // No redirect: the page minted the entity, so it already knows
+        // where it is going and navigates itself once the write lands.
+        if let Err(error) = create_notebook_inner(self, &repo, &entity, &title, &body).await {
+            log!("CreateNotebook '{title}' failed: {error}");
+        }
     }
 }
 
@@ -1902,7 +1821,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateNoteboo
 /// from the index worked in a space and did nothing on a profile.
 ///
 /// Both surfaces use branch `main`, so only the repository half differs.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn evaluate_in_space(
     tonk: &TonkState,
     repo: &str,
@@ -1922,7 +1840,6 @@ async fn evaluate_in_space(
 /// in the YAML library, not in `tonk-schema`, so the shape stays in one
 /// place. `notebook/named` is the title-only concept — a notebook with no
 /// blocks yet cannot satisfy `notebook`, which requires one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_notebook_inner(
     env: &crate::router::CommandEnv,
     repo: &str,
@@ -1998,7 +1915,6 @@ async fn create_notebook_inner(
 ///
 /// Blocks are separated by a blank line, which is what prosemirror-markdown
 /// emits between top-level blocks.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn draft_blocks(body: &str) -> Vec<String> {
     body.split("\n\n")
         .map(str::trim)
@@ -2009,7 +1925,6 @@ fn draft_blocks(body: &str) -> Vec<String> {
 
 /// A source as a YAML block scalar, so markdown with newlines, colons and
 /// backticks survives without escaping.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn yaml_block_scalar(source: &str) -> String {
     let mut out = String::from("|-\n");
     for line in source.lines() {
@@ -2020,19 +1935,13 @@ fn yaml_block_scalar(source: &str) -> String {
     out.trim_end().to_owned()
 }
 
-/// Post-commit handler for the [`RemoveSpace`] command.
+/// Run the [`RemoveSpace`] command: the user confirmed a Hub row's
+/// delete overlay. Removal is device-local and ordered so the visible
+/// state commits first and cleanup is best-effort behind it — see
+/// [`remove_space_inner`].
 ///
-/// Fired when the user confirms a Hub row's delete overlay. Removal is
-/// device-local and ordered so the visible state commits first and
-/// cleanup is best-effort behind it — see [`remove_space_inner`].
-///
-/// A custom handler (not a plain `Provider<RemoveSpace>`) for the same
-/// reason as [`CreateSpaceHandler`]: the work needs the profile handle,
-/// the reactor cache, and storage, reached through state rather than
-/// carried by the decoded command.
-///
-/// `run` refuses any transient whose origin repo is non-empty. This is
-/// the first *destructive* command reachable through shape-matched
+/// Execution refuses any transient whose origin repo is non-empty. This
+/// is the first *destructive* command reachable through shape-matched
 /// cross-branch dispatch: `dom.event.current-target.dataset/remove` is
 /// just an attribute name, so the same-shaped fact committed on ANY
 /// content branch — a joined space's own notation, or a same-origin
@@ -2045,74 +1954,33 @@ fn yaml_block_scalar(source: &str) -> String {
 /// exactly "only the Hub can fire this."
 ///
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct RemoveSpaceHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::RemoveSpace,
-        tonk_schema::command::legacy::RemoveSpace,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl RemoveSpaceHandler {
-    /// Cache `RemoveSpace`'s trigger attributes (its `subject` field) so
-    /// the registry indexes this handler under them.
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
+        let subject = command.subject.0;
+        // See the doc above: only the profile branch (empty origin
+        // repo) may fire this. A non-empty origin means the fact came
+        // from a content branch — matched by shape, not by who asked —
+        // so it is ignored rather than trusted to remove anything.
+        if !self.origin().repo.is_empty() {
+            log!(
+                "RemoveSpace ignored: origin '{}' is not the profile branch",
+                self.origin().repo
+            );
+            return;
         }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        // Decode synchronously (the caller still holds the lock), then
-        // hand the owned subject + an env clone to the `'static` future.
-        let subject = self.command.decode(facts).map(|command| command.subject.0);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(subject) = subject else {
-                return;
-            };
-            // See the type doc: only the profile branch (empty origin
-            // repo) may fire this. A non-empty origin means the fact came
-            // from a content branch — matched by shape, not by who asked —
-            // so it is ignored rather than trusted to remove anything.
-            if !env.origin().repo.is_empty() {
-                log!(
-                    "RemoveSpace ignored: origin '{}' is not the profile branch",
-                    env.origin().repo
-                );
+        log!("command RemoveSpace subject={}", subject);
+        let subject: Did = match subject.to_string().parse() {
+            Ok(did) => did,
+            Err(error) => {
+                log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
                 return;
             }
-            log!("command RemoveSpace subject={}", subject);
-            let subject: Did = match subject.to_string().parse() {
-                Ok(did) => did,
-                Err(error) => {
-                    log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
-                    return;
-                }
-            };
-            if let Err(error) = remove_space_inner(env.state(), &subject).await {
-                log!("RemoveSpace '{}' failed: {}", subject, error);
-            }
-        })
+        };
+        if let Err(error) = remove_space_inner(self.state(), &subject).await {
+            log!("RemoveSpace '{}' failed: {}", subject, error);
+        }
     }
 }
 
@@ -2138,7 +2006,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for RemoveSpaceHa
 /// The self-replica (subject == profile) is refused: its row is hidden
 /// chrome in the Hub, and deleting the profile's own storage would take
 /// every space with it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn remove_space_inner(
     state: &AppState,
     subject: &Did,
@@ -2191,8 +2058,7 @@ pub(crate) async fn remove_space_inner(
             subject.repo_key()
         );
     } else {
-        let _ =
-            wasm_bindgen_futures::JsFuture::from(delete_space_storage(subject.repo_key())).await;
+        delete_space_storage_for(subject.repo_key()).await;
     }
 
     // The delete ran unlocked, so a concurrent `drain_sync` could have
@@ -2208,7 +2074,6 @@ pub(crate) async fn remove_space_inner(
     Ok(())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
@@ -2257,7 +2122,6 @@ async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkW
 /// same reason `record_replica_in_profile` does: the Hub reads through
 /// that handle, so a commit on a separate handle would be invisible to
 /// it. Broadcasts `/api/profile` like the record path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn remove_replica_from_profile(
     tonk: &TonkState,
     subject: &Did,
@@ -2424,12 +2288,34 @@ extern "C" {
     fn delete_space_storage(name: &str) -> js_sys::Promise;
 }
 
+/// Delete a space's local storage by routing key, on whatever this host
+/// uses for it. Best-effort on every host: a failure orphans invisible
+/// bytes, never loses visible state (the replica retraction has already
+/// committed by the time this runs).
+///
+/// On the web this is the IndexedDB/OPFS delete above. Natively
+/// dialog-storage exposes no way to unmount-and-delete a space from a
+/// `Storage<NativeSpace>` pool yet, so the bytes stay behind — the same
+/// leaked-bytes outcome the web path deliberately accepts when another
+/// profile shares the storage. Logged so the leak is visible; grows a
+/// real implementation when dialog-storage grows the capability.
+async fn delete_space_storage_for(key: &str) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(key)).await;
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        log!("space '{key}' removed; its local storage is left behind (no native delete yet)");
+    }
+}
+
 /// Delete the storage a legacy hidden account repository left behind.
 /// Its content synced with the same remote profile main now follows, so
 /// everything it held is recoverable by pulling.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn delete_legacy_storage(key: &str) {
-    let _ = wasm_bindgen_futures::JsFuture::from(delete_space_storage(key)).await;
+    delete_space_storage_for(key).await;
 }
 
 /// Toggle the durable `enabled` preference on the replica and publish the
@@ -2443,7 +2329,6 @@ pub(crate) async fn delete_legacy_storage(key: &str) {
 ///
 /// Split out from [`PauseSyncHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_pause_sync(
     env: &crate::router::CommandEnv,
     repo: &str,
@@ -2520,7 +2405,6 @@ async fn run_pause_sync(
 ///
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan_s3::UcanAddress;
 
@@ -2551,7 +2435,6 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 ///
 /// Shared by both creation paths so they cannot disagree about where a
 /// space syncs.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
     super::account_state::account_remote(tonk).await.ok()
 }
@@ -2565,7 +2448,6 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
@@ -2599,7 +2481,6 @@ async fn create_space_inner(state: &AppState, name: &str) -> Result<String, Repo
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
 ///
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_inner(
     state: &AppState,
     key: &str,
@@ -2615,7 +2496,6 @@ async fn enable_sync_inner(
 /// post-reconcile local-space sweep. The caller must already know that an
 /// account is ready before using it as an automatic transition; the form path
 /// remains explicitly callable and reports the provider's refusal.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_for_repository(
     tonk: &TonkState,
     key: &str,
@@ -2815,7 +2695,6 @@ fn spawn_seed(
 /// record, so its absence means the space was removed while this seed
 /// was in flight (either on the awaited create path or the detached
 /// [`spawn_seed`] path).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool, RepositoryError> {
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
@@ -2849,7 +2728,6 @@ async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool,
 /// re-acquired it since) and log; the caller returns early without
 /// seeding or stamping. `stage` names the point being skipped, for the
 /// log line.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn bail_if_space_removed(
     tonk: &TonkState,
     subject: &Did,
@@ -2871,7 +2749,6 @@ async fn bail_if_space_removed(
 /// Seed the standard library into every branch, then flip the
 /// replica's status to `initialized`. Runs in the background after
 /// `put_repository` has already responded.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_and_initialize(
     state: &AppState,
     display_name: &str,
@@ -2939,7 +2816,6 @@ async fn seed_and_initialize(
 /// onto each space's content branch. Only referenced from the
 /// SW-scoped background seed path, so it is wasm-only: the native tests
 /// that also read it went with the template libraries.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 
 /// URL of the lean profile library — only the `space` concept and the
@@ -2947,7 +2823,6 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// backs nothing but the Hub, so it doesn't pay to write the full
 /// workspace/board/sheet library it never reads. Only referenced from
 /// the SW-scoped profile seed path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
 /// Fetch the standard-library notation document from the served
@@ -2994,12 +2869,30 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
 }
 
+/// The native sibling of the fetch above: the same documents the
+/// service worker fetches from its served assets are compiled in from
+/// `tonk-core/assets/library/` — the identical files the dist copies,
+/// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    match url {
+        STANDARD_LIBRARY_URL => {
+            Ok(include_str!("../../../tonk-core/assets/library/core.yaml").to_owned())
+        }
+        PROFILE_LIBRARY_URL => {
+            Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
+        }
+        other => Err(TonkWorkerError::Internal(format!(
+            "no embedded library for '{other}'"
+        ))),
+    }
+}
+
 /// Seed a notation document into `branch` by running it through the
 /// evaluate pipeline — the same `parse → analyze → commit` path as
 /// the `/evaluate` route, which commits concept claims and `rule!:`
 /// installs alike. A bad library is a deployment fault, surfaced as
 /// an internal error.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_standard_library(
     tonk: &TonkState,
     repo: &str,
@@ -3021,7 +2914,6 @@ async fn seed_standard_library(
 /// the scaffold seed body (see [`seed_and_initialize`]) so the name lands
 /// in the same commit as the library that defines the `tonk/repository`
 /// concept it instantiates — no separate commit, no "Untitled" flash.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn repository_name_body(subject: &Did, display_name: &str) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
@@ -3258,7 +3150,6 @@ pub async fn create_repository(
 /// repair — it re-issues from the space's own key — so when the stored
 /// audience is not the current root it runs HERE, before anything is
 /// presented, rather than whenever the next boot chore gets to it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn provision_space_consumer(
     tonk: &TonkState,
     subject: &Did,
@@ -3289,7 +3180,6 @@ pub(crate) async fn provision_space_consumer(
 /// party whose provisioning refusal is authoritative for it. A foreign
 /// remote (self-hosted, a test server) is attached and shared without
 /// asking our service's opinion.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn remote_is_own_service(remote: &str) -> bool {
     let Ok(own) = super::customer::service_origin() else {
         return false;
@@ -3300,7 +3190,6 @@ fn remote_is_own_service(remote: &str) -> bool {
 }
 
 /// Load the exact provider-neutral `space → root` prefix persisted at creation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -3888,7 +3777,6 @@ async fn record_replica_visibility(
 /// same hash `Replica::new` uses — so no read is needed to find it.
 ///
 /// Called from the background seed path, which only runs in the worker.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
@@ -4100,7 +3988,11 @@ const CONTENT_BRANCH: &str = "main";
 /// visible everywhere the content branch syncs. Falls back to the
 /// routing `key` when the content branch can't be opened or carries no
 /// name yet (a freshly created repo before its name is seeded).
-async fn repository_label<R>(tonk: &TonkState, repository: &Repository<R>, key: &str) -> String
+async fn repository_label<'a, R>(
+    tonk: &'a TonkState,
+    repository: &'a Repository<R>,
+    key: &'a str,
+) -> String
 where
     R: Principal + Clone,
 {

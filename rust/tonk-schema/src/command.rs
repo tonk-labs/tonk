@@ -191,10 +191,10 @@ impl From<legacy::CreateSpace> for CreateSpace {
     }
 }
 
-/// `CreateSpace` is a [`dialog_capability::Command`]. Note the worker
-/// registers a custom `CreateSpaceHandler` (not a plain `Provider`) so it
-/// can read the optional remote from the facts; the `Command` impl is
-/// kept for the decode/`Decode` machinery.
+/// `CreateSpace` is a [`dialog_capability::Command`]. The worker
+/// registers it through a wrapper request type (`CreateSpaceRequest`)
+/// whose hand-written decode also reads the optional remote from the
+/// raw facts — the provider then receives both.
 impl Command for CreateSpace {
     type Input = Self;
     type Output = ();
@@ -260,7 +260,7 @@ impl Command for CreateNotebook {
 /// re-renders — no teardown, no reload. Each `<tonk-site>` mints its own entity,
 /// so two sites on one page (even on the same branch) never clobber.
 ///
-/// The handler (`LoadHandler` in `tonk-worker`) does exactly what `register_site`
+/// The worker's `Provider<Load>` does exactly what `register_site`
 /// did: match `path` against the origin branch's `route!` table and stamp the
 /// resolved [`crate::site::Site`] (plus captured route params) onto `this` in
 /// that branch's overlay.
@@ -494,10 +494,9 @@ impl From<legacy::RemoveSpace> for RemoveSpace {
     }
 }
 
-/// `RemoveSpace` is a [`dialog_capability::Command`]; the worker
-/// registers a custom `RemoveSpaceHandler` (the work needs the profile
-/// handle, the reactor cache, and storage — state the decoded command
-/// doesn't carry).
+/// `RemoveSpace` is a [`dialog_capability::Command`], run by the
+/// worker's `Provider<RemoveSpace>` — which also enforces that only the
+/// profile branch may fire it.
 impl Command for RemoveSpace {
     type Input = Self;
     type Output = ();

@@ -53,7 +53,6 @@ mod account;
 mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;
 
 pub(crate) mod account_state;
@@ -66,7 +65,6 @@ pub(crate) mod adopt;
 pub(crate) mod custody;
 /// Accreditation: rotate the onboarding account's custody to the passkey
 /// account, then retire it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) mod rotation;
 
 mod join;
@@ -80,7 +78,6 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod members;
 
 pub mod inspect;

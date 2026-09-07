@@ -226,7 +226,6 @@ pub async fn revoke(
 /// is where an admin's chain lives, retained by whoever promoted them. The
 /// creation prefix persisted at space creation is the fallback, for a
 /// founder whose space db holds no chains yet.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn account_authority(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
@@ -268,7 +267,6 @@ pub(super) async fn account_authority(
 /// This device's authority to revoke under the space: the account's chain
 /// with the root-to-device grant pushed on top, the pair every other
 /// invocation on a space subject presents.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn revoking_authority(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
@@ -292,9 +290,7 @@ async fn revoking_authority(
 /// The revocation's subject is the space, but this device signs it, so the
 /// invocation carries the chain that proves the device may act for that
 /// subject; `/ucan/` runs the full chain check before dispatch and refuses
-/// a subject the presented proofs do not authorize. Native builds carry
-/// this for the router's shape, not to run it: the authority is persisted
-/// by the browser.
+/// a subject the presented proofs do not authorize.
 pub(super) async fn publish_revocation<R>(
     tonk: &TonkState,
     repo: &str,
@@ -306,7 +302,6 @@ pub(super) async fn publish_revocation<R>(
 where
     R: dialog_varsig::Principal + Clone,
 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let artifact = {
         let subject = repository.did();
         let authority = revoking_authority(tonk, branch, &subject).await?;
@@ -315,17 +310,6 @@ where
             path,
             target,
             &authority,
-        )
-        .await
-        .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let artifact = {
-        let _ = branch;
-        tonk_identity::revocation::mint_root_revocation(
-            tonk.profile.signer().signer().clone(),
-            path,
-            target,
         )
         .await
         .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?
