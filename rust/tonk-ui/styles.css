@@ -3121,6 +3121,10 @@ tonk-notebook-index {
     position: absolute; margin: 0;
     left: var(--anchor-left, 0); top: var(--anchor-top, 0);
     width: var(--anchor-width, 432px);
+    /* The Hub account menu remains mounted in the sealed guest while this
+       top-page ceremony replaces it. Paint the column's gaps as well as its
+       blocks so menu labels cannot show through between ceremony rows. */
+    background: var(--page);
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
