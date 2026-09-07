@@ -801,6 +801,62 @@ view!:
         );
     }
 
+    /// The document that prompted this check, verbatim.
+    ///
+    /// The fixtures above are minimal by construction, which is
+    /// exactly what lets a check pass them and still miss the real
+    /// thing. This is the shape actually written by hand: an anchored
+    /// view, a command whose name carries a `+`, a binding and an
+    /// interpolation in one template — and `{counter}` where the
+    /// model declares `count`. Without the check it lowers clean and
+    /// the renderer emits `<!--tonk-iter:counter-->`, cloning the
+    /// element zero times: the value is simply absent from the page.
+    #[dialog_common::test]
+    fn the_counter_document_that_prompted_this_check_fails_the_lowering() {
+        let source = r#"
+concept!: &counter/model
+  description: A counter.
+  with:
+    count:
+      description: How many.
+      the: xyz.tonk.counter/count
+      as: signed-integer
+      cardinality: one
+
+command!: &counter/+1
+  description: Add one.
+  with:
+    subject:
+      description: Which counter.
+      the: xyz.tonk.counter.increment/subject
+      as: entity
+
+event!: &on/click
+  type: "click"
+  where:
+    subject: "{this}"
+
+view!: &counter/view
+  this: counter/model
+  show:
+    ui: |
+      <form>
+        <button on:click=counter/+1>+</button>
+        <h1>{counter}</h1>
+      </form>
+"#;
+        let error = lower(source).expect_err("`{counter}` is not a field of `counter/model`");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_TEMPLATE_FIELD", "{error}");
+        assert!(
+            error.to_string().contains("`count`"),
+            "the report names the field that was meant: {error}",
+        );
+
+        // The same document with the typo fixed must still lower, so
+        // the test cannot pass by rejecting the shape wholesale.
+        lower(&source.replace("{counter}", "{count}")).expect("`{count}` is declared");
+    }
+
     /// A portal document is mounted verbatim, so its braces are not
     /// interpolations and its `on:` attributes are not bindings. The
     /// display decides this from the same `type` entry.
