@@ -40,11 +40,145 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
     let html = tonk_cli::render::render(&test.site, &route).await?;
     assert!(html.contains("Copy the prompt and give it to an agent of your choice."));
     assert!(html.contains("copy-label=\"Copy prompt\""));
-    assert!(html.contains("tonk connect 'https://example.test/join?access=proof#secret'"));
+    assert!(
+        html.contains(
+            "npx --yes @tonk/cli connect 'https://example.test/join?access=proof#secret'"
+        )
+    );
     assert!(
         !html.contains("<pre"),
         "machine instructions should not be visible"
     );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn account_approval_ignores_all_invite_routing_metadata() -> anyhow::Result<()> {
+    use tonk_schema::prelude::DidExt as _;
+
+    let test = common::TestSite::new().await?;
+    let invite = tonk_cli::invite::mint(
+        &test.site,
+        Some("https://untrusted.example/join"),
+        Some("https://provider.example/ucan/"),
+    )
+    .await?;
+    let checked = tonk_cli::invite::preflight(&invite.url).await?;
+
+    assert_eq!(
+        checked.invitation.subject.0,
+        test.site.repository.did().this()
+    );
+    assert_eq!(
+        tonk_cli::handoff::approval_page(None)?,
+        tonk_cli::account::DEFAULT_LINK_PAGE
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn an_explicit_approval_page_is_a_validated_user_override() -> anyhow::Result<()> {
+    let test = common::TestSite::new().await?;
+    let invite =
+        tonk_cli::invite::mint(&test.site, Some("https://untrusted.example/join"), None).await?;
+    tonk_cli::invite::preflight(&invite.url).await?;
+
+    assert_eq!(
+        tonk_cli::handoff::approval_page(Some("http://127.0.0.1:8080/settings/link"))?,
+        "http://127.0.0.1:8080/settings/link"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> anyhow::Result<()> {
+    let inviter = common::TestSite::new().await?;
+    let first = tonk_cli::invite::mint(&inviter.site, None, None).await?;
+    let fresh = tonk_cli::invite::mint(&inviter.site, None, None).await?;
+    let claimed = tempfile::tempdir()?;
+    let parent = claimed.path().canonicalize()?;
+    let root = parent.join("joined-site");
+    let config = common::isolated_config(&parent)?;
+    tonk_cli::invite::claim(&root, &first.url, config.clone()).await?;
+
+    let mut registry = tonk_cli::space::Registry::default();
+    registry.spaces.insert(
+        "a-broken".into(),
+        tonk_cli::space::SpaceEntry::at(parent.join("missing-site")),
+    );
+    registry.spaces.insert(
+        "z-existing".into(),
+        tonk_cli::space::SpaceEntry::at(root.clone()),
+    );
+
+    let first = tonk_cli::invite::preflight(&first.url).await?;
+    let spoof_root = parent.join("spoof-site");
+    let spoof = tonk_cli::site::TonkSite::init_at_with(&spoof_root, config.clone()).await?;
+    spoof
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(first.invitation.clone())
+        .commit()
+        .perform(&spoof.operator)
+        .await?;
+    registry.spaces.insert(
+        "b-spoof".into(),
+        tonk_cli::space::SpaceEntry::at(spoof_root),
+    );
+    // The retained local claim must suffice even without its replicated row.
+    let older = tonk_cli::site::TonkSite::open_with(&root, config.clone()).await?;
+    older
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .retract(first.invitation.clone())
+        .commit()
+        .perform(&older.operator)
+        .await?;
+    let matched =
+        tonk_cli::handoff::matching_invitation(&registry, &config, &first.invitation).await;
+    assert_eq!(matched.name, Some("z-existing".into()));
+    assert_eq!(matched.diagnostics.len(), 1, "{:#?}", matched.diagnostics);
+    assert!(matched.diagnostics[0].contains("a-broken"));
+
+    let fresh = tonk_cli::invite::preflight(&fresh.url).await?;
+    // Model a pull of another member's claim into the older replica.
+    older
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(fresh.invitation.clone())
+        .commit()
+        .perform(&older.operator)
+        .await?;
+    let unmatched =
+        tonk_cli::handoff::matching_invitation(&registry, &config, &fresh.invitation).await;
+    assert_eq!(unmatched.name, None);
+    assert_eq!(
+        unmatched.diagnostics.len(),
+        1,
+        "{:#?}",
+        unmatched.diagnostics
+    );
+    // Pre-marker replicas cannot establish a local claim from roster data.
+    std::fs::remove_file(root.join("claimed-invitation"))?;
+    older
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(first.invitation.clone())
+        .commit()
+        .perform(&older.operator)
+        .await?;
+    let legacy =
+        tonk_cli::handoff::matching_invitation(&registry, &config, &first.invitation).await;
+    assert_eq!(legacy.name, None);
+    assert_eq!(legacy.diagnostics.len(), 1);
     Ok(())
 }
 
