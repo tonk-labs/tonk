@@ -271,6 +271,17 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "the absent-space statement must override the global heading skin with local mode ink"
     );
     for contract in [
+        "padding:48px 16px 80px",
+        ".space-unknown-mast { position:relative; display:block; width:132px;",
+        "margin:0 auto 56px",
+        ".space-unknown-wall { width:min(576px, 100%); margin:0 auto;",
+    ] {
+        assert!(
+            absent.contains(contract),
+            "the absent-space state must use the shared upper-page geometry `{contract}`"
+        );
+    }
+    for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
         "invalid link",
@@ -333,7 +344,11 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 
 #[test]
 fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
-    for contract in [".hubcol", "width:432px", ".hc-view"] {
+    for contract in [
+        ".hubcol",
+        "width:min(576px, calc(100vw - 32px))",
+        ".hc-view",
+    ] {
         assert!(
             HUB_STYLES.contains(contract),
             "the centered Hub launcher must contain `{contract}`",
@@ -354,7 +369,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
             "the centered Hub bar must reject `{rejected}`",
         );
     }
-    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:288px")] {
+    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:432px")] {
         assert!(
             css_rule(HUB_STYLES, selector).contains(width),
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
@@ -635,6 +650,17 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
         fallback < dynamic,
         "the dynamic viewport declaration must follow and override the fallback"
     );
+    for contract in [
+        "padding:48px 16px 80px",
+        ".edge-mast { position:relative; display:block; width:132px;",
+        "margin:0 auto 56px",
+        ".edge-wall { width:min(576px, 100%); margin:0 auto;",
+    ] {
+        assert!(
+            route.contains(contract),
+            "the join state must use the shared upper-page geometry `{contract}`"
+        );
+    }
 }
 
 #[test]
@@ -649,7 +675,7 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
         );
     }
     for contract in [
-        ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
+        ".edge-mast { width:98px; min-height:44px; margin-bottom:40px;",
         ".ebtn { height:44px; min-height:44px; }",
     ] {
         assert!(

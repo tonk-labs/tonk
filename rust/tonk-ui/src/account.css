@@ -6,7 +6,7 @@
     display: grid;
     min-height: 100dvh;
     padding: 48px 16px 80px;
-    place-items: center;
+    place-items: start center;
     box-sizing: border-box;
     background: var(--page);
     color: var(--ink);
@@ -60,7 +60,7 @@
 .account__logo {
     width: 132px;
     aspect-ratio: 1024 / 343;
-    margin: 0 auto clamp(36px, 6vh, 56px);
+    margin: 0 auto 56px;
     background: currentcolor;
     -webkit-mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
     mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
@@ -71,7 +71,7 @@
 }
 
 .account__ceremony {
-    width: min(432px, 100%);
+    width: 100%;
     margin-inline: auto;
 }
 
@@ -200,7 +200,7 @@
 .account__narrator,
 .account__error,
 .account__working {
-    width: min(432px, 100%);
+    width: 100%;
     margin: 7px auto 0;
     padding: 10px 16px 11px;
     background: var(--frost-solid);
@@ -865,7 +865,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 
     .account__logo {
         width: 98px;
-        margin-bottom: 32px;
+        margin-bottom: 40px;
     }
 
 }

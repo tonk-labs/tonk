@@ -664,7 +664,8 @@ view!:
               --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
               --edge-soft:#5b4953; --edge-card:#f7f6f5;
               --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
-              min-height:100vh; min-height:100dvh; padding:1px; color:var(--edge-ink);
+              min-height:100vh; min-height:100dvh; padding:48px 16px 80px;
+              box-sizing:border-box; color:var(--edge-ink);
               background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
                 'Bahnschrift','Arial Narrow',system-ui,sans-serif;
               font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
@@ -674,12 +675,12 @@ view!:
               --edge-soft:#c8c3bf; --edge-card:#1b1718;
               --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
             }
-            .edge-mast { position:fixed; left:48px; top:48px; width:132px;
-              color:var(--edge-ink); z-index:2; }
+            .edge-mast { position:relative; display:block; width:132px;
+              margin:0 auto 56px; color:var(--edge-ink); z-index:2; }
             .edge-mast img { display:block; width:100%; height:auto; }
             :root.wa-dark .edge-mast img { filter:invert(1); }
-            .edge-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
-              margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+            .edge-wall { width:min(576px, 100%); margin:0 auto;
+              display:flex; flex-direction:column; gap:7px; }
             .edge-statement, .edge-narrator { min-height:36px;
               background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
             .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
@@ -713,9 +714,9 @@ view!:
                over that transient lifecycle attribute, or both rows appear. */
             .join-status:has(.edge-wall--closed) .join-opening { display:none; }
             @media (max-width:680px) {
-              .edge-mast { left:16px; top:18px; width:98px; min-height:44px;
+              .join-view { padding-top:20px; }
+              .edge-mast { width:98px; min-height:44px; margin-bottom:40px;
                 display:flex; align-items:center; }
-              .edge-wall { margin-left:16px; margin-top:132px; }
               .edge-run { flex-direction:column; }
               .ebtn { height:44px; min-height:44px; }
             }
@@ -874,7 +875,8 @@ view!:
           --edge-soft:#5b4953; --edge-card:#f7f6f5;
           --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
           position:fixed; inset:0; min-height:100vh; min-height:100dvh;
-          overflow:auto; padding:1px; background:var(--edge-page);
+          overflow:auto; padding:48px 16px 80px; box-sizing:border-box;
+          background:var(--edge-page);
           color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
             'Bahnschrift','Arial Narrow',system-ui,sans-serif;
           font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
@@ -888,12 +890,12 @@ view!:
         .space-unknown :focus-visible { outline:none;
           box-shadow:inset 0 0 0 2px var(--edge-on),
             inset 0 0 0 4px var(--edge-ink); }
-        .space-unknown-mast { position:fixed; left:48px; top:48px; width:132px;
-          color:var(--edge-ink); z-index:2; }
+        .space-unknown-mast { position:relative; display:block; width:132px;
+          margin:0 auto 56px; color:var(--edge-ink); z-index:2; }
         .space-unknown-mast img { display:block; width:100%; height:auto; }
         :root.wa-dark .space-unknown-mast img { filter:invert(1); }
-        .space-unknown-wall { width:min(432px, calc(100vw - 32px)); margin-left:216px;
-          margin-top:43px; display:flex; flex-direction:column; gap:7px; }
+        .space-unknown-wall { width:min(576px, 100%); margin:0 auto;
+          display:flex; flex-direction:column; gap:7px; }
         .space-unknown-statement, .space-unknown-narrator { min-height:36px;
           margin:0; background:var(--edge-card);
           box-shadow:0 0 0 1px var(--edge-ring); }
@@ -914,9 +916,9 @@ view!:
           background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
         .space-unknown-home:active { scale:.96; }
         @media (max-width:680px) {
-          .space-unknown-mast { left:16px; top:18px; width:98px; min-height:44px;
+          .space-unknown { padding-top:20px; }
+          .space-unknown-mast { width:98px; min-height:44px; margin-bottom:40px;
             display:flex; align-items:center; }
-          .space-unknown-wall { margin-left:16px; margin-top:132px; }
           .space-unknown-home { min-height:44px; }
         }
         @media (prefers-reduced-motion:reduce) {

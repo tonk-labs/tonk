@@ -1564,6 +1564,7 @@ mod tests {
                       mainCenter: Math.round(main.left + main.width / 2),
                       viewportCenter: Math.round(innerWidth / 2),
                       ceremonyWidth: Math.round(ceremony.width),
+                      ceremonyTop: Math.round(ceremony.top),
                       logoWidth: Math.round(logo.width),
                       actionHeight: Math.round(action.height),
                       heading: document.querySelector('.account__ceremony-head')?.textContent.trim(),
@@ -1578,7 +1579,8 @@ mod tests {
         assert_eq!(desktop["page"], "rgb(232, 230, 228)");
         assert_eq!(desktop["mainWidth"], 576);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
-        assert_eq!(desktop["ceremonyWidth"], 432);
+        assert_eq!(desktop["ceremonyWidth"], 576);
+        assert_eq!(desktop["ceremonyTop"], 148);
         assert_eq!(desktop["logoWidth"], 132);
         assert_eq!(desktop["actionHeight"], 36);
         assert_eq!(desktop["heading"], "activate your account");
@@ -1599,7 +1601,7 @@ mod tests {
             )
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
-        assert_eq!(done.json()["rowWidth"], 432);
+        assert_eq!(done.json()["rowWidth"], 576);
         assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
@@ -1633,9 +1635,9 @@ mod tests {
         // Some browsers refuse to shrink a window below a floor of their
         // own (Chrome 152 headless clamps to 500px), and the compact
         // layout is only what it claims to be at the width we asked for.
-        // Above that floor `.account__ceremony`'s own 432px cap is what
-        // limits it, not the viewport, so the assertion below would be
-        // measuring the wrong rule rather than a broken layout.
+        // Above that floor the 576px account shell, rather than the requested
+        // compact viewport, controls the measurement, so the assertion below
+        // would be measuring the wrong rule rather than a broken layout.
         if viewport > 390 {
             driver.quit().await?;
             return Ok(());
