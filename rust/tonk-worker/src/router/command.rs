@@ -169,45 +169,6 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
 
-/// Run a command body whose future rustc cannot prove `Send`, to
-/// completion, from a context that requires `Send`.
-///
-/// A handful of command chains (space create, invite, enable-sync)
-/// await deeply nested generic effect futures from the dialog crates,
-/// and rustc's auto-trait solver rejects the resulting future with
-/// "implementation of `Send` is not general enough"
-/// (rust-lang/rust#96865) even though every captured value is `Send`.
-/// On wasm nothing asks for `Send`, so those bodies run as plain
-/// awaits; natively the dispatcher's future must be `Send` (it runs
-/// inside an axum handler), so this helper sidesteps the proof instead
-/// of fighting it: the future is BUILT and polled entirely on one
-/// blocking thread with a single-threaded executor, and only the
-/// (trivially `Send`) join handle crosses back. The caller still awaits
-/// the outcome, so command ordering and test determinism are unchanged.
-///
-/// Takes a closure rather than a future because moving a future into
-/// the thread would itself demand the unprovable `Send` bound — the
-/// closure's captures (an owned env clone and the decoded command) are
-/// what cross the thread, and they are plainly `Send`.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub(crate) async fn run_unsendable<F, Fut>(make: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()>,
-{
-    if let Err(error) = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a current-thread runtime builds")
-            .block_on(make())
-    })
-    .await
-    {
-        log!("command execution thread failed: {error}");
-    }
-}
-
 /// Run every command the just-committed `transients` triggered.
 ///
 /// Called by a mutation path (e.g. `/transact`) after its commit, with

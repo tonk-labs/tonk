@@ -92,17 +92,22 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     // rotate`), the same one the CLI runs at sign-in; only the re-issue
     // half — chains, prefixes, retention, provisioning — is this
     // adapter's.
+    // Bound as references OUTSIDE the closure: each `async move` block
+    // the `FnMut` produces captures a copy of the reference, so the
+    // closure can run once per seed without consuming the values.
+    let root_did = &root.root_did;
+    let onboarding_did = &onboarding;
     let outcome = match tonk_schema::custody::rotate(
         branch.handle(),
         secret.secret(),
         new_key,
         &tonk.operator,
-        async |kind, signer, row, replacement| {
+        |kind, signer, row, replacement| async move {
             match kind {
-                SeedKind::Space => reissue_space(tonk, &root.root_did, signer)
+                SeedKind::Space => reissue_space(tonk, root_did, signer)
                     .await
                     .map_err(|error| error.to_string())?,
-                SeedKind::Invite => reissue_membership(tonk, &root.root_did, &onboarding, signer)
+                SeedKind::Invite => reissue_membership(tonk, root_did, onboarding_did, signer)
                     .await
                     .map_err(|error| error.to_string())?,
             }
@@ -113,7 +118,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .retract(row.clone())
+                .retract(row)
                 .assert(replacement.message)
                 .assert(replacement.principal)
                 .commit()

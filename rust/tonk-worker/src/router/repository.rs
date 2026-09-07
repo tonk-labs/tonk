@@ -549,14 +549,7 @@ impl dialog_capability::Command for CreateSpaceRequest {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: CreateSpaceRequest) {
-        let env = self.clone();
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        execute_create_space(env, request).await;
-        // The cfg here splits only HOW the same body is awaited — see
-        // [`run_unsendable`](crate::router::command::run_unsendable) for
-        // why rustc cannot prove this particular chain's future `Send`.
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        crate::router::command::run_unsendable(move || execute_create_space(env, request)).await;
+        execute_create_space(self.clone(), request).await
     }
 }
 
@@ -766,14 +759,7 @@ impl dialog_capability::Command for InviteRequest {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<InviteRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: InviteRequest) {
-        let env = self.clone();
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        execute_invite(env, request).await;
-        // The cfg here splits only HOW the same body is awaited — see
-        // [`run_unsendable`](crate::router::command::run_unsendable) for
-        // why rustc cannot prove this particular chain's future `Send`.
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        crate::router::command::run_unsendable(move || execute_invite(env, request)).await;
+        execute_invite(self.clone(), request).await
     }
 }
 
@@ -893,14 +879,7 @@ impl dialog_capability::Command for EnableSyncRequest {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: EnableSyncRequest) {
-        let env = self.clone();
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        execute_enable_sync(env, request).await;
-        // The cfg here splits only HOW the same body is awaited — see
-        // [`run_unsendable`](crate::router::command::run_unsendable) for
-        // why rustc cannot prove this particular chain's future `Send`.
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        crate::router::command::run_unsendable(move || execute_enable_sync(env, request)).await;
+        execute_enable_sync(self.clone(), request).await
     }
 }
 
