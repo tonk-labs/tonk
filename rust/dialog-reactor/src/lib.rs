@@ -61,9 +61,7 @@ pub use push::Push;
 pub use query::QueryEffect;
 pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
-pub use subscription::{
-    QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference, UPDATE_LOG_LIMIT, UpdateRecord,
-};
+pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
 /// On-the-wire `Conclusion` and `Query` — re-exported from
 /// [`tonk_schema`] so consumers (browser clients, the consumer
 /// elements) can deserialize without depending on this crate.
@@ -513,8 +511,21 @@ mod lifecycle_tests {
 /// monotonic instant. A clock before the epoch is not worth propagating as an
 /// error through a subscription registration, so it reports as 0.
 pub(crate) fn now_ms() -> u64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        // The platform clock, which is what the rest of the codebase uses
+        // for wall-clock time in the browser. `web_time::SystemTime` reads
+        // as the portable choice but returns 0 here — and 0 is not an
+        // obviously-wrong value, it is 1970, so it surfaces as a console row
+        // claiming to have been opened "57 years ago" rather than as an
+        // error.
+        web_sys::js_sys::Date::now() as u64
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
 }

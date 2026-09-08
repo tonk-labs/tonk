@@ -191,7 +191,7 @@ impl BranchState {
             opened_at_ms: crate::now_ms(),
             updates: 0,
             last_update_ms: None,
-            update_log: std::collections::VecDeque::new(),
+            bytes_pushed: 0,
             subscribers: Vec::new(),
         });
         subscription.subscribers.push(SubscriberSession {

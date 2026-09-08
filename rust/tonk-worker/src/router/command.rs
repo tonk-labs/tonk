@@ -230,6 +230,18 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
     // subscription broadcasts; coalesced by branch identity.
     let tonk = state.read().await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    // Those polls are what push updates to subscribers, so this is also the
+    // moment the console's own numbers went stale. Refresh them here — after
+    // the drain, with no lock held — so an open console reflects updates as
+    // they are delivered instead of only when the page is reloaded.
+    //
+    // A no-op unless a console is actually open, and self-limiting when one
+    // is: republishing an unchanged reactor writes identical values, so the
+    // poll it schedules finds no change and pushes no frame. See
+    // `console::refresh_if_open`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    super::console::refresh_if_open(&tonk).await;
 }
 
 #[cfg(test)]

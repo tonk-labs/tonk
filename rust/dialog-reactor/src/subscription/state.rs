@@ -192,33 +192,16 @@ pub struct Subscription {
     /// epoch. `None` until the first one, which is the honest rendering of
     /// "this has never changed since it was opened".
     pub last_update_ms: Option<u64>,
-    /// The most recent updates, newest first — the log the console shows
-    /// when a subscription row is expanded.
+    /// Total bytes pushed to subscribers since this subscription opened.
     ///
-    /// Bounded to [`UPDATE_LOG_LIMIT`]: this is a live debugging view of a
-    /// process that may run for hours, so an unbounded log would be a slow
-    /// memory leak in every session whether or not anyone opens the console.
-    /// The oldest entry is dropped once the cap is reached.
-    pub update_log: std::collections::VecDeque<UpdateRecord>,
-}
-
-/// How many updates one subscription retains for the console's log.
-///
-/// Enough to see a pattern (a burst, a repeat, a stuck query), small enough
-/// that thousands of subscriptions cost little. Older entries are dropped;
-/// `updates` still counts every one, so the total stays honest even though
-/// the log is a window.
-pub const UPDATE_LOG_LIMIT: usize = 20;
-
-/// One delivered update: when it went out, and how much changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateRecord {
-    /// When this update was pushed, epoch milliseconds.
-    pub at_ms: u64,
-    /// Serialized size of the delta frame, in bytes. A cheap stand-in for
-    /// "how big was this update" that needs no re-parsing of the payload —
-    /// the same figure a network panel shows per response.
-    pub bytes: usize,
+    /// A running total, not a log. The reactor deliberately retains no
+    /// update HISTORY: a worker may run for hours with hundreds of
+    /// subscriptions, and keeping payloads — or even records of them —
+    /// would cost every session memory for a page almost nobody opens. The
+    /// console gets history by STREAMING (it sees updates as they are
+    /// delivered while it is open), and these counters give it the totals
+    /// that predate it, which are two `u64`s rather than a buffer.
+    pub bytes_pushed: u64,
 }
 
 impl Subscription {
@@ -246,16 +229,9 @@ impl Subscription {
         // `None` here is a poll that found no change, and the snapshot path
         // is a new subscriber being caught up rather than the query moving.
         if let Some(delta) = delta_bytes {
-            let at_ms = crate::now_ms();
             self.updates = self.updates.saturating_add(1);
-            self.last_update_ms = Some(at_ms);
-            if self.update_log.len() >= UPDATE_LOG_LIMIT {
-                self.update_log.pop_back();
-            }
-            self.update_log.push_front(UpdateRecord {
-                at_ms,
-                bytes: delta.len(),
-            });
+            self.last_update_ms = Some(crate::now_ms());
+            self.bytes_pushed = self.bytes_pushed.saturating_add(delta.len() as u64);
         }
         fan_out(&mut self.subscribers, snapshot_conclusions, delta_bytes);
     }

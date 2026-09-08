@@ -47,9 +47,8 @@ pub struct SubscriptionSnapshot {
     /// When the last update was pushed, epoch milliseconds. `None` if the
     /// query has not changed since it was opened.
     pub last_update_ms: Option<u64>,
-    /// The most recent updates, newest first. Bounded — see
-    /// [`UPDATE_LOG_LIMIT`](crate::UPDATE_LOG_LIMIT).
-    pub update_log: Vec<crate::UpdateRecord>,
+    /// Total bytes pushed to subscribers since the subscription opened.
+    pub bytes_pushed: u64,
 }
 
 /// The repository name reported for the profile, which has no name in the
@@ -133,7 +132,7 @@ fn collect_repository(
                 opened_at_ms: subscription.opened_at_ms,
                 updates: subscription.updates,
                 last_update_ms: subscription.last_update_ms,
-                update_log: subscription.update_log.iter().cloned().collect(),
+                bytes_pushed: subscription.bytes_pushed,
             });
         }
     }

@@ -138,10 +138,6 @@ fn it_declares_sometimes_absent_console_fields_as_optional() {
     // required declaration would drop the row entirely.
     for (field, why) in [
         (
-            "update:",
-            "a subscription that has never updated has no update links",
-        ),
-        (
             "last-update:",
             "a subscription that has never updated has no last-update time",
         ),

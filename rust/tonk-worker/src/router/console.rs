@@ -8,6 +8,19 @@
 //! [`ConsoleSubscription`] facts, which the console's `<tonk-display>`
 //! subscribes to like any other model.
 //!
+//! ## What is NOT kept
+//!
+//! The reactor retains no update history — no payloads, and no records of
+//! them. A worker may run for hours with hundreds of subscriptions, and a
+//! per-subscription buffer would cost every session memory for a page almost
+//! nobody opens. What it keeps instead is three counters per subscription
+//! (updates, bytes, last-update time), which are `u64`s.
+//!
+//! History comes from STREAMING: while the console is open it sees updates
+//! as they are delivered and accumulates them in the page, the way a devtools
+//! network panel records only while it is watching. Close the page and
+//! nothing is retained anywhere.
+//!
 //! Overlay, never a commit — for three reasons, each on its own sufficient.
 //! The facts describe one worker process, so committing them would replicate
 //! one device's memory to every other. They change constantly, so committing
@@ -34,6 +47,38 @@ use dialog_reactor::SubscriptionSnapshot;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_BRANCH: &str = "main";
 
+/// Whether a console page is open, as a process-wide flag.
+///
+/// The gate on the update feed sits in the delivery path of EVERY
+/// subscription in the system, so it has to be nearly free. Asking the
+/// branch (acquire, walk the overlay) per delivered update is not: it turned
+/// a busy space into an unusable one. An atomic read is.
+///
+/// Set when the console page publishes its rows, cleared when a publish
+/// finds no console rows left. Worst case it is stale for one refresh
+/// interval, which costs one wasted overlay write — never correctness.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+static CONSOLE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a console page is currently open — the fast gate the delivery
+/// path consults before doing any work for the feed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn is_open() -> bool {
+    CONSOLE_OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The branch update events are published onto — the same branch the console
+/// renders from.
+///
+/// A separate branch would isolate the page from these writes, and was tried:
+/// a subscription opened from the sealed guest to a second branch never
+/// received a frame, while the identical subscription on this branch does.
+/// Rather than ship a feed that silently never updates, the writes stay here
+/// and the runaway they used to cause is held off by [`CONSOLE_OPEN`] — no
+/// work at all unless a console is actually open.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const UPDATE_BRANCH: &str = PROFILE_BRANCH;
+
 /// Entity prefix every console row carries. Both the "replace the previous
 /// refresh" sweep and the "is the console open" check key on it, so it is
 /// named once rather than spelled at each.
@@ -54,15 +99,22 @@ pub(crate) async fn publish_subscriptions(tonk: &crate::worker::TonkState) {
     use dialog_common::log;
     use tonk_schema::domain::console_group;
     use tonk_schema::domain::console_subscription::{
-        Branch, ConceptName, Group, Hash, LastUpdate, OpenedAt, Pending, Query, Space, Subscribers,
-        Updates,
+        Branch, BytesPushed, ConceptName, Group, Hash, LastUpdate, OpenedAt, Pending, Query, Space,
+        Subscribers, Updates,
     };
-    use tonk_schema::domain::console_update;
-    use tonk_schema::{
-        ConsoleGroup, ConsoleSubscription, ConsoleSubscriptionUpdate, ConsoleUpdate,
-    };
+    use tonk_schema::{ConsoleGroup, ConsoleSubscription, ConsoleSubscriptionUpdate};
 
-    let snapshot = tonk.reactor.subscription_snapshot();
+    // The console watches the very facts it publishes, so its own
+    // subscriptions would otherwise fill the page it is meant to be
+    // reporting on — and each publish would wake them, feeding back. Dropped
+    // here rather than at the source: they are real subscriptions, and the
+    // reactor should not know which of its callers is a debugging tool.
+    let snapshot: Vec<_> = tonk
+        .reactor
+        .subscription_snapshot()
+        .into_iter()
+        .filter(|row| !watches_console_facts(row))
+        .collect();
 
     let session = match tonk
         .reactor
@@ -113,37 +165,8 @@ pub(crate) async fn publish_subscriptions(tonk: &crate::worker::TonkState) {
             group: Group(group.clone()),
             updates: Updates(row.updates),
             concept_name: ConceptName(concept_name(row)),
+            bytes_pushed: BytesPushed(row.bytes_pushed),
         });
-
-        // The update log, one row per entry. Keyed by position, so as the
-        // window shifts each slot is overwritten in place rather than
-        // accumulating a row per update ever delivered.
-        for (position, record) in row.update_log.iter().enumerate() {
-            let Some(update) = ConsoleUpdate::entity_for(&row.hash, position) else {
-                continue;
-            };
-            // The subscription → update back-link, as a raw claim: it hangs
-            // one attribute on the SUBSCRIPTION rather than describing the
-            // update. `unique: false` — cardinality MANY, so each entry adds
-            // its own fact instead of superseding the last.
-            if let Ok(attribute) = "xyz.tonk.console.subscription/update".parse() {
-                session
-                    .state
-                    .assert_overlay(crate::router::claim::RawClaim {
-                        the: attribute,
-                        of: entity.clone(),
-                        is: dialog_artifacts::Value::Entity(update.clone()),
-                        unique: false,
-                    });
-            }
-            session.state.assert_overlay(ConsoleUpdate {
-                this: update,
-                subscription: console_update::Subscription(entity.clone()),
-                at: console_update::At(iso_8601(record.at_ms)),
-                bytes: console_update::Bytes(record.bytes as u64),
-                position: console_update::Position(position as u64),
-            });
-        }
 
         // The last-update stamp is its own optional fact: a subscription
         // that has never changed simply has none, and the row still renders.
@@ -199,6 +222,9 @@ pub(crate) async fn publish_subscriptions(tonk: &crate::worker::TonkState) {
         });
     }
 
+    // A publish means a console page just asked for rows, so the fast-path
+    // gate opens here rather than waiting for the next refresh to notice.
+    CONSOLE_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
     log!(
         "console: published {published} subscription row(s) in {} group(s)",
         groups.len()
@@ -227,6 +253,25 @@ pub(crate) async fn publish_subscriptions(tonk: &crate::worker::TonkState) {
 /// publishes" settles after one round rather than spinning.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn refresh_if_open(tonk: &crate::worker::TonkState) {
+    let open = console_is_open(tonk).await;
+    // Keep the fast-path flag in step with what the branch says. This is the
+    // one place that looks, so it is the one place that can update it.
+    CONSOLE_OPEN.store(open, std::sync::atomic::Ordering::Relaxed);
+    if open {
+        publish_subscriptions(tonk).await;
+    }
+}
+
+/// Whether a console page is currently open, decided by the branch rather
+/// than by tracking visits: if console rows are on the overlay, a console
+/// put them there, and they go when the worker or the client does.
+///
+/// Reads the overlay's entities through `retain_overlay_entities`, keeping
+/// every one. The overlay exposes no read-only iterator (it lives in the
+/// pinned dialog crate), but its retain closure is `FnMut` and visits each
+/// entity — so returning `true` throughout makes this a pure observation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn console_is_open(tonk: &crate::worker::TonkState) -> bool {
     let Ok(session) = tonk
         .reactor
         .profile_repository()
@@ -234,24 +279,141 @@ pub(crate) async fn refresh_if_open(tonk: &crate::worker::TonkState) {
         .acquire(&tonk.operator)
         .await
     else {
-        return;
+        return false;
     };
-
-    // Read the overlay's entities through `retain_overlay_entities`, keeping
-    // every one. The overlay exposes no read-only iterator (it lives in the
-    // pinned dialog crate), but its retain closure is `FnMut` and visits each
-    // entity — so returning `true` throughout makes this a pure observation.
-    let mut console_is_open = false;
+    let mut open = false;
     session.state.retain_overlay_entities(|entity| {
         if entity.as_str().starts_with(CONSOLE_ENTITY_PREFIX) {
-            console_is_open = true;
+            open = true;
         }
         true
     });
+    open
+}
 
-    if console_is_open {
-        publish_subscriptions(tonk).await;
+/// How much of an update payload the feed carries. Enough to see the shape
+/// of a change; the reported byte count is the untruncated size.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const UPDATE_PAYLOAD_LIMIT: usize = 2048;
+
+/// Publish one delivered update for any open console to observe.
+///
+/// This is the whole update feed, and it retains no history anywhere: one
+/// slot on the overlay, superseded by the next update, holding a single
+/// truncated payload at a time.
+///
+/// The console's log is accumulated in the PAGE. A view could not build it —
+/// a view renders the facts that exist now, and only the latest update ever
+/// does — but a subscription delivers each supersede as a delta, and an
+/// element watching that stream appends every row it sees. So the log is as
+/// long as the element chooses to keep it, while the worker holds one row.
+///
+/// Why not a BroadcastChannel, which would be simpler: the console renders
+/// inside a sealed guest whose origin is `"null"`, so a channel opened there
+/// is on a different origin from the service worker's and can never receive
+/// its posts. The subscription path already crosses that boundary — it is
+/// what every view in the guest is built on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn publish_update_event(
+    tonk: &crate::worker::TonkState,
+    subscription_hash: &str,
+    concept: &str,
+    payload: &str,
+) {
+    use std::sync::Arc;
+
+    use tonk_schema::ConsoleUpdate;
+    use tonk_schema::domain::console_update;
+
+    // Publish only while a console is open. An atomic read, because this
+    // runs for every update delivered to any subscription anywhere: the
+    // branch-walking version of this check made a busy space unusable.
+    if !CONSOLE_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
     }
+
+    let Ok(session) = tonk
+        .reactor
+        .profile_repository()
+        .branch(UPDATE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    else {
+        return;
+    };
+    let Some(entity) = ConsoleUpdate::latest() else {
+        return;
+    };
+
+    // Truncated: a delta can be arbitrarily large, and this is a debugging
+    // view rather than a transport. `bytes` still reports the real size.
+    let body = if payload.len() > UPDATE_PAYLOAD_LIMIT {
+        let mut cut = UPDATE_PAYLOAD_LIMIT;
+        // Never split a UTF-8 sequence — slicing on a non-boundary panics,
+        // and a delta is arbitrary data.
+        while cut > 0 && !payload.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &payload[..cut])
+    } else {
+        payload.to_owned()
+    };
+
+    let update = ConsoleUpdate {
+        this: entity,
+        subscription: console_update::Subscription(subscription_hash.to_owned()),
+        concept: console_update::Concept(concept.to_owned()),
+        at: console_update::At(iso_8601(now_ms())),
+        bytes: console_update::Bytes(payload.len() as u64),
+        payload: console_update::Payload(body),
+    };
+
+    // Assert and poll. The poll is what turns the overlay write into a
+    // delivered frame, so it has to happen while the fact is there.
+    //
+    // No retraction afterwards: the fields are cardinality-one on a single
+    // fixed entity, so the NEXT update supersedes this one in place. That is
+    // one poll per update rather than two, and it leaves exactly one update's
+    // worth of data on the overlay at any moment — the same ceiling an
+    // immediate retract would give, without the extra round trip.
+    //
+    // The page still sees every update: a supersede arrives as a delta
+    // carrying the new row, which is precisely what the feed element
+    // appends.
+    session.state.assert_overlay(update);
+    tonk.reactor.schedule_poll(Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Wall-clock milliseconds, via the platform clock — the same source the
+/// reactor stamps subscriptions with.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
+/// Whether a subscription is one of the console's own — a query over the
+/// `xyz.tonk.console.*` facts this module publishes.
+///
+/// Recognised by the attribute namespace the query selects rather than by
+/// the client that opened it: the console page is not distinguishable from
+/// any other page at the reactor, but what it ASKS FOR is unmistakable.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn watches_console_facts(row: &SubscriptionSnapshot) -> bool {
+    let Ok(json) = serde_json::to_value(&row.query) else {
+        return false;
+    };
+    json.get("predicate")
+        .and_then(|predicate| predicate.get("with"))
+        .and_then(|with| with.as_object())
+        .is_some_and(|fields| {
+            fields.values().any(|field| {
+                field
+                    .get("the")
+                    .and_then(|the| the.as_str())
+                    .is_some_and(|the| the.starts_with("xyz.tonk.console."))
+            })
+        })
 }
 
 /// The readable concept name a subscription watches — the collapsed row's
@@ -263,7 +425,15 @@ pub(crate) async fn refresh_if_open(tonk: &crate::worker::TonkState) {
 /// what identifies the concept on the wire.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn concept_name(row: &SubscriptionSnapshot) -> String {
-    match serde_json::to_value(&row.query) {
+    concept_name_of(&row.query)
+}
+
+/// The readable concept name for a wire query. Shared by the subscription
+/// rows and the update feed's labels, so a feed line names its concept the
+/// same way the row it belongs to does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn concept_name_of(query: &tonk_schema::query::Query) -> String {
+    match serde_json::to_value(query) {
         Ok(json) => query_head(&json),
         Err(_) => "concept".to_owned(),
     }

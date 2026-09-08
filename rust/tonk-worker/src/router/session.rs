@@ -372,7 +372,7 @@ async fn stamp_site_on(
     // overwhelmingly common case, costing one string comparison) and for one
     // whose routes are already on the branch, so the ordinary navigation is
     // unaffected.
-    ensure_library_installed(tonk, &state, repo, branch_name, profile, rest).await;
+    ensure_library_installed(tonk, repo, branch_name, profile, rest).await;
 
     let Some(matched) = match_route(tonk, &state, rest).await else {
         tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
@@ -729,19 +729,20 @@ fn library_claiming(rest: &str) -> Option<&'static str> {
 /// Ensure the on-demand library claiming `rest` is present on the branch,
 /// fetching and evaluating it if it is not.
 ///
-/// Three ways this does nothing, in increasing cost:
+/// No-ops immediately for a path nothing claims — one string comparison, the
+/// case every ordinary navigation takes. Otherwise it fetches and evaluates,
+/// EVERY time that page is opened.
 ///
-/// 1. No manifest entry claims `rest` — one string comparison, the case
-///    every ordinary navigation takes.
-/// 2. An entry claims it and the branch already carries a route for it —
-///    one route-table query, the case every visit after the first takes.
-/// 3. Otherwise: fetch, analyze, commit. Once per branch.
-///
-/// Step 2 is what keeps this off the hot path. Evaluating an already-present
-/// document is *semantically* harmless (asserting identical claims
-/// de-duplicates, which is what lets `seed_profile_library` run on every
-/// boot), but it would still parse and analyze a library and take the
-/// branch's transactor lock on every single navigation to the page.
+/// Re-evaluating deliberately, rather than skipping when the branch already
+/// carries the library's routes. Asserting identical claims de-duplicates
+/// (the property that lets `seed_profile_library` run on every boot), so the
+/// repeat costs a parse and a commit but changes nothing — while skipping
+/// meant an EDITED library never reached a branch that had the old one. That
+/// is not a rare upgrade case: a changed concept declaration leaves rows
+/// published against the new shape failing to resolve against the old, which
+/// surfaces as "Concept mismatch: required attribute missing" on a page that
+/// worked yesterday. Correctness on a page opened by hand is worth more than
+/// the parse it saves.
 ///
 /// Best-effort, like every other seed path: a failed fetch (an offline
 /// worker, a harness serving no library) leaves the route uninstalled and
@@ -750,7 +751,6 @@ fn library_claiming(rest: &str) -> Option<&'static str> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn ensure_library_installed(
     tonk: &crate::worker::TonkState,
-    state: &dialog_reactor::BranchSession,
     repo: &str,
     branch: &str,
     profile: bool,
@@ -759,15 +759,6 @@ async fn ensure_library_installed(
     let Some(url) = library_claiming(rest) else {
         return;
     };
-
-    // Already installed? A route whose pattern claims this path means the
-    // library's `route!:` entries are on the branch. Checked against the
-    // route table rather than a "have I installed this" flag in memory
-    // because the branch is the durable truth: a restarted worker, or a
-    // second tab, must not re-evaluate what is already committed.
-    if route_is_installed(tonk, state, rest).await {
-        return;
-    }
 
     tonk_common::log!("[stamp] installing {url} for {rest:?}");
 
@@ -790,32 +781,6 @@ async fn ensure_library_installed(
 
     if let Err(error) = evaluated {
         tonk_common::log!("ensure_library_installed: evaluating {url} failed: {error}");
-    }
-}
-
-/// Whether the branch already carries a route matching `rest`, ignoring any
-/// catch-all.
-///
-/// A catch-all (`/{*rest}`, the profile's 404 page) matches every path, so a
-/// plain "did anything match" check would report every library as installed
-/// and nothing would ever be fetched. What matters is whether a route claims
-/// this path *specifically*, which is exactly a match whose captured params
-/// do not come from a wildcard span standing in for the whole path.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn route_is_installed(
-    tonk: &crate::worker::TonkState,
-    state: &dialog_reactor::BranchSession,
-    rest: &str,
-) -> bool {
-    match match_route(tonk, state, rest).await {
-        // The catch-all captures the entire path (minus its leading `/`) into
-        // a single span. A real route for `/console` captures nothing, or
-        // captures genuine parameters — never the whole path back.
-        Some(matched) => !matched
-            .params
-            .iter()
-            .any(|(_, value)| value == rest.trim_start_matches('/')),
-        None => false,
     }
 }
 

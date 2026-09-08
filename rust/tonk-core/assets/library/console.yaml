@@ -79,6 +79,15 @@ concept!: &console/subscription
       the: xyz.tonk.console.subscription/concept-name
       cardinality: one
       as: text
+    bytes-pushed:
+      description: >
+        Total bytes pushed to subscribers since this subscription opened. A
+        running total rather than a log: the reactor keeps no update history,
+        so this is the cheap summary that survives a reload while the
+        streamed detail does not.
+      the: xyz.tonk.console.subscription/bytes-pushed
+      cardinality: one
+      as: unsigned-integer
     updates:
       description: >
         How many updates this subscription has pushed since it opened —
@@ -97,24 +106,6 @@ concept!: &console/subscription
       cardinality: one
       as: entity
   maybe:
-    update:
-      description: >
-        The updates delivered to this subscription — one fact per entry, so
-        the expanded row iterates them into its log.
-
-        OPTIONAL, and that is load-bearing: a subscription that has never
-        pushed an update has no `update` facts at all, and a required field
-        with no value makes the WHOLE row unresolvable — the concept fails
-        to match and the subscription vanishes from the console instead of
-        showing with an empty log. Every freshly opened subscription is in
-        exactly that state.
-
-        Cardinality MANY, and explicitly so: an omitted cardinality defaults
-        to `one`, which marks the field scalar and would render a single
-        entry instead of the feed.
-      the: xyz.tonk.console.subscription/update
-      cardinality: many
-      as: entity
     hash:
       description: >
         The subscription's query hash — its identity within the branch,
@@ -172,35 +163,46 @@ concept!: &console/group
       cardinality: many
       as: entity
 
-# One delivered update in a subscription's log — when it went out and how
-# large it was. The expanded row renders these as a feed, newest first, the
-# way a network panel lists requests.
+# One update, as it is delivered.
+#
+# These facts are asserted and retracted in the SAME turn: the assert makes
+# the subscription deliver them, the retract leaves the branch clean. They
+# exist to be seen in transit, never stored — which is why no view renders
+# them. A view draws the facts that exist now, and by the time it draws,
+# there are none; the log is accumulated by the element below, which appends
+# each row as it passes.
 concept!: &console/update
-  description: One update delivered to a subscription.
+  description: One update delivered to a subscription, in transit.
   with:
     subscription:
-      description: The subscription this update was pushed to.
+      description: >
+        Hash of the subscription the update went to — how a feed line is
+        matched to the row it belongs to.
       the: xyz.tonk.console.update/subscription
       cardinality: one
-      as: entity
+      as: text
+    concept:
+      description: The concept that subscription watches, for the label.
+      the: xyz.tonk.console.update/concept
+      cardinality: one
+      as: text
     at:
       description: When it was pushed, ISO-8601.
       the: xyz.tonk.console.update/at
       cardinality: one
       as: text
     bytes:
-      description: Serialized size of the delta frame, in bytes.
+      description: Size of the delta frame in bytes, untruncated.
       the: xyz.tonk.console.update/bytes
       cardinality: one
       as: unsigned-integer
-    position:
+    payload:
       description: >
-        Position in the log, newest first (0 is the most recent). Carried as
-        a field because the rendered order must be the log's order and a
-        query returns rows in no guaranteed order.
-      the: xyz.tonk.console.update/position
+        The delta itself, truncated — the data actually flushed to
+        subscribers, which is the thing the console exists to show.
+      the: xyz.tonk.console.update/payload
       cardinality: one
-      as: unsigned-integer
+      as: text
 
 # ---------------------------------------------------------------------------
 # The route
@@ -293,6 +295,37 @@ view!:
           .console__section {
             margin-bottom: var(--wa-space-l);
           }
+          .feed__row {
+            display: grid;
+            grid-template-columns: auto auto auto 1fr;
+            gap: var(--wa-space-xs);
+            align-items: baseline;
+            padding: 2px 0;
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+            font-variant-numeric: tabular-nums;
+          }
+          .feed__concept {
+            font-family: var(--wa-font-family-code);
+            color: var(--wa-color-text-normal);
+          }
+          .feed__payload {
+            margin: 0;
+            font-family: var(--wa-font-family-code);
+            font-size: var(--wa-font-size-2xs);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 4lh;
+            overflow-y: auto;
+          }
+          /* Nothing yet. The feed is a live tap, not a history: it shows
+             what is delivered while the page is open, so an empty log is the
+             normal state on a quiet system rather than a fault. */
+          .feed:empty::after {
+            content: "waiting for updates…";
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+          }
           .console__label {
             margin: 0 0 var(--wa-space-xs);
             font-size: var(--wa-font-size-xs);
@@ -308,8 +341,26 @@ view!:
             Live state from this device's worker. Nothing here is stored or
             shared — it describes this browser only.
           </p>
+          <!-- The live update feed: everything flushed to any subscription
+               while this page is open.
+               `with=` is REQUIRED, not decoration — a subscription with no
+               routing context (no own `with`, no `with` ancestor) is refused
+               outright by the host, which answers `error` instead of ever
+               calling back. -->
+          <section class="console__section">
+            <p class="console__label">Updates</p>
+            <console-update-log
+              subscription="*"
+              with="main@profile:tonk"
+              limit="40"
+            ></console-update-log>
+          </section>
           <section class="console__section">
             <p class="console__label">Subscriptions</p>
+            <!-- Loads every `component` on the branch (here, the update
+                 feed's element) into this realm. Hidden: it defines
+                 elements, it renders nothing. -->
+            <tonk-display model="component" hidden></tonk-display>
             <tonk-display model="console/group"></tonk-display>
           </section>
         </div>
@@ -452,9 +503,33 @@ view!:
             font-family: var(--wa-font-family-code);
             opacity: 0.6;
           }
-          .sub__updates-list tonk-display,
-          .sub__updates-list tonk-display > tonk-view {
-            display: block;
+          .feed__row {
+            display: grid;
+            grid-template-columns: auto auto 1fr;
+            gap: var(--wa-space-xs);
+            align-items: baseline;
+            padding: 2px 0;
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+            font-variant-numeric: tabular-nums;
+          }
+          .feed__payload {
+            margin: 0;
+            font-family: var(--wa-font-family-code);
+            font-size: var(--wa-font-size-2xs);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 8lh;
+            overflow-y: auto;
+          }
+          /* Nothing has arrived yet. The feed only shows updates delivered
+             WHILE the page is open — it is a live tap, not a history — so an
+             empty log is the normal state for a quiet subscription rather
+             than a fault. */
+          .feed:empty::after {
+            content: "waiting for updates…";
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
           }
         </style>
         <span slot="summary" class="sub__summary">
@@ -462,6 +537,7 @@ view!:
           <span class="sub__stats">
             <span title="subscribers">&#9679; {subscribers}</span>
             <span title="updates pushed">&#8635; {updates}</span>
+            <span title="total bytes pushed">{bytes-pushed} B</span>
             <!-- A subscription whose query has never changed carries no
                  `last-update` fact, so this simply does not render for it —
                  which reads as "nothing yet", the thing worth knowing. -->
@@ -481,40 +557,262 @@ view!:
             Updates
             <span class="sub__hash">{hash}</span>
           </p>
-          <div class="sub__updates-list">
-            <tonk-display entity={update} model="console/update"></tonk-display>
-          </div>
+
         </div>
       </wa-details>
 
-# The update feed inside an expanded subscription: one line per delivered
-# update, newest first.
-# `ui`, not `directory`: the feed mounts as
-# `<tonk-display entity={update} model=console/update>`, and a display given
-# an ENTITY renders that instance's `ui` facet. `directory` is what a display
-# with no entity resolves when it enumerates a model — the group list and the
-# subscription list use it; a single instance never does.
+# The update feed: a web component, defined here as branch data.
+#
+# It has to be a component rather than a view. A view renders the facts that
+# exist NOW, so a streamed update — published and immediately gone — would
+# make a row appear and vanish rather than build a log. Accumulating across
+# events is exactly what a template cannot do and an element can.
+#
+# It is nonetheless authored HERE, in the library, not as a Rust crate:
+# `<tonk-component>` executes this module once per realm, so the console
+# defines its own element without a new crate or a shell change.
+#
+# The feed rides a BroadcastChannel, so nothing is stored anywhere — not in
+# the worker, not on the branch. Close the page and the log is gone, which is
+# the honest lifetime for "what is flowing right now".
+# The `component` concept, mirroring `core.yaml`'s declaration. Re-declared
+# for the same reason as `route` above: lowering runs `analyze_local`, with no
+# running system, so every name a document uses has to resolve within that
+# document — and `component` is not one of the built-in concepts.
+#
+# Unpinned, unlike `route`: the console mounts these through
+# `<tonk-display model=component>`, which resolves the model by NAME on the
+# branch, so the content-derived entity is the right identity and no `this:`
+# is needed to make the two sides agree.
+concept!: &component
+  description: A JS module defining web components for the branch's views
+  with:
+    module:
+      description: |
+        JS module source. Runs once per realm; guard definitions with
+        `customElements.get(name) ||` since a name can't be redefined
+        (replacing a component takes effect on the next page load).
+      the: xyz.tonk.component/module
+      cardinality: one
+      as: text
+
+# The bridge from the `component` concept to the `<tonk-component>` loader,
+# mirroring `core.yaml`. Needed here for the same reason the concept is: this
+# document is evaluated onto the PROFILE branch, which carries `profile.yaml`
+# rather than the full standard library, so neither the concept nor its view
+# is already present. Without the view the loader display resolves the model,
+# finds no view, and renders the default-view notice instead of mounting the
+# component — the module never executes and the feed element is never
+# defined.
 view!:
-  this: console/update
+  this: component
   show:
     ui: |
-      <div class="update-row">
-        <style>
-          .update {
-            display: flex;
-            align-items: baseline;
-            gap: var(--wa-space-s);
-            padding: 2px 0;
-            color: var(--wa-color-text-quiet);
-            font-size: var(--wa-font-size-xs);
-            font-variant-numeric: tabular-nums;
-          }
-          .update__bytes {
-            margin-left: auto;
-          }
-        </style>
-        <div class="update">
-          <wa-relative-time date={at} sync></wa-relative-time>
-          <span class="update__bytes">{bytes} B</span>
-        </div>
+      <tonk-component module={module} />
+
+# The DIRECTORY facet is the one that matters here: the loader mounts as
+# `<tonk-display model=component>` with no entity, and a model-only display
+# resolves `directory`, not `ui`. Declaring only `ui` left it in
+# `default-view` — the model resolved, no view matched, and the module never
+# executed.
+view!:
+  this: component
+  show:
+    directory: |
+      <div class="component-loader" hidden>
+        <tonk-component subject={this} module={module}></tonk-component>
       </div>
+
+component!: &console/feed-component
+  module: |
+    // The update feed. Accumulates rows the branch does not keep.
+    //
+    // The worker holds ONE update at a time: each is published onto a single
+    // entity with cardinality-one fields, so the next supersedes it. A view
+    // over that would only ever show the latest line. But a subscription
+    // delivers each supersede as a delta, so an element watching the stream
+    // sees every update as it passes and can keep as many as it likes. The
+    // log lives here, in this element's DOM, and nowhere else.
+    customElements.get("console-update-log") ||
+      customElements.define(
+        "console-update-log",
+        class extends HTMLElement {
+          connectedCallback() {
+            // Scopes this instance to one subscription: every row mounts a
+            // log, and the feed carries every subscription's updates.
+            this.subscription = this.getAttribute("subscription") || "";
+            this.limit = Number(this.getAttribute("limit") || 25);
+            if (!this.list) {
+              this.list = document.createElement("div");
+              this.list.className = "feed";
+            }
+            // Keep the accumulated log across re-attachment: the row's view
+            // re-renders and this element is moved rather than replaced, and
+            // rebuilding the list would drop every line already collected.
+            if (!this.contains(this.list)) this.replaceChildren(this.list);
+
+            // Subscribe on a microtask, not inline.
+            //
+            // A custom element's `connectedCallback` can run while the
+            // element is being placed by a render pass — and can even be
+            // delivered after it has been detached again (the reaction-queue
+            // hazard). Subscribing from there raced the render: the host
+            // wired the subscription to an element the pass then replaced,
+            // and the surviving element in the DOM was never subscribed at
+            // all. Deferring lets the pass settle, and the guard drops the
+            // callback if this element lost.
+            Promise.resolve().then(() => {
+              if (!this.isConnected || this.handle) return;
+              this.subscribe();
+            });
+          }
+
+          disconnectedCallback() {
+            // Cancels upstream; without it a row that scrolled out of the
+            // DOM keeps a live subscription open for the page's lifetime.
+            if (this.handle && this.handle.cancel) this.handle.cancel();
+            this.handle = null;
+          }
+
+          subscribe() {
+            // The host claims this event and wires the subscription, calling
+            // back through the `reset` / `update` methods below. Same
+            // machinery every `<tonk-display>` uses — which is the point: it
+            // already crosses the sealed guest's opaque-origin boundary,
+            // where a BroadcastChannel cannot.
+            const detail = {
+              query: {
+                terms: {
+                  this: { "?": { name: "this" } },
+                  subscription: { "?": { name: "subscription" } },
+                  concept: { "?": { name: "concept" } },
+                  at: { "?": { name: "at" } },
+                  bytes: { "?": { name: "bytes" } },
+                  payload: { "?": { name: "payload" } },
+                },
+                predicate: {
+                  with: {
+                    subscription: {
+                      the: "xyz.tonk.console.update/subscription",
+                      as: "Text",
+                      cardinality: "one",
+                    },
+                    concept: {
+                      the: "xyz.tonk.console.update/concept",
+                      as: "Text",
+                      cardinality: "one",
+                    },
+                    at: {
+                      the: "xyz.tonk.console.update/at",
+                      as: "Text",
+                      cardinality: "one",
+                    },
+                    bytes: {
+                      the: "xyz.tonk.console.update/bytes",
+                      as: "UnsignedInteger",
+                      cardinality: "one",
+                    },
+                    payload: {
+                      the: "xyz.tonk.console.update/payload",
+                      as: "Text",
+                      cardinality: "one",
+                    },
+                  },
+                },
+              },
+              tag: "console-updates",
+            };
+            this.dispatchEvent(
+              new CustomEvent("tonk-subscribe", {
+                detail,
+                bubbles: true,
+                composed: true,
+                // REQUIRED. The host claims the event by calling
+                // `preventDefault()`, which is a no-op on a non-cancelable
+                // event — so without this the subscription is silently never
+                // registered and the element waits forever for a frame that
+                // is never sent.
+                cancelable: true,
+              }),
+            );
+            this.handle = detail.subscription || null;
+          }
+
+          // The host calls this when a subscription cannot be opened —
+          // notably when there is no routing context. Rendered rather than
+          // swallowed: a silent feed is indistinguishable from a quiet one.
+          error(detail) {
+            const line = document.createElement("div");
+            line.className = "feed__row feed__row--error";
+            line.textContent = `feed unavailable: ${
+              (detail && detail.message) || "unknown error"
+            }`;
+            this.list.replaceChildren(line);
+          }
+
+          // The host calls these. `reset` is the initial snapshot (normally
+          // empty — nothing is stored), `update` is each delta.
+          reset(conclusions) {
+            (conclusions || []).forEach((row) => this.record(row));
+          }
+
+          update(delta) {
+            // Only `asserted`: a supersede reports the OLD row as retracted
+            // and the new one as asserted, so appending on both would double
+            // every line.
+            ((delta && delta.asserted) || []).forEach((row) => this.record(row));
+          }
+
+          record(row) {
+            // A conclusion is `{this, fields: {...}}` — the values live
+            // under `fields`, not on the row itself.
+            const f = (row && row.fields) || {};
+            const at = f.at;
+            if (!at) return;
+            // No per-row filter. The worker holds ONE update slot, carrying
+            // whichever subscription most recently delivered — so a feed
+            // scoped to a single row would match almost nothing. This is the
+            // whole system's traffic, each line labelled with the concept it
+            // belongs to, which is what a network panel shows anyway.
+            if (this.subscription && this.subscription !== "*"
+                && f.subscription !== this.subscription) return;
+            // The same fact is re-asserted per update on one entity, so a
+            // repeated frame would duplicate the line. The timestamp is what
+            // distinguishes one update from the next.
+            if (at === this.lastAt) return;
+            this.lastAt = at;
+
+            const line = document.createElement("div");
+            line.className = "feed__row";
+
+            const time = document.createElement("span");
+            time.className = "feed__time";
+            time.textContent = new Date(at).toLocaleTimeString();
+
+            const who = document.createElement("span");
+            who.className = "feed__concept";
+            who.textContent = f.concept || "";
+
+            const size = document.createElement("span");
+            size.className = "feed__size";
+            size.textContent = `${f.bytes ?? 0} B`;
+
+            const body = document.createElement("pre");
+            body.className = "feed__payload";
+            // textContent, never innerHTML: this is database content being
+            // rendered into the tool that inspects it, and it is not the
+            // console's place to let stored data inject markup.
+            body.textContent = f.payload || "";
+
+            line.append(time, who, size, body);
+            this.list.prepend(line);
+
+            // Bounded: a tab left open on a busy branch would otherwise grow
+            // this list without limit. The cap is what keeps "no retention"
+            // true of the page as well as the worker.
+            while (this.list.children.length > this.limit) {
+              this.list.lastElementChild.remove();
+            }
+          }
+        },
+      );

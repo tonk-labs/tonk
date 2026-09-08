@@ -1816,6 +1816,15 @@ pub mod console_subscription {
     #[cardinality(one)]
     pub struct ConceptName(pub String);
 
+    /// Total bytes pushed to subscribers since the subscription opened. A
+    /// running total rather than a per-update log: the reactor keeps no
+    /// update history, so this is the cheap summary that survives a page
+    /// reload while the streamed detail does not.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct BytesPushed(pub u64);
+
     /// How many updates this subscription has pushed since it opened.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.console.subscription")]
@@ -1840,6 +1849,49 @@ pub mod console_subscription {
     #[domain("xyz.tonk.console.subscription")]
     #[cardinality(one)]
     pub struct OpenedAt(pub String);
+}
+
+/// Attributes for the `tonk:console/update` concept — one update as it is
+/// delivered, and only for as long as it takes to deliver it.
+///
+/// These facts are asserted and retracted in the same turn: the assert makes
+/// the subscription deliver them, the retract leaves the branch clean. They
+/// exist to be *seen in transit* by an element that keeps its own log, never
+/// to be stored. See `router::console::publish_update_event`.
+pub mod console_update {
+    use super::Attribute;
+
+    /// Hash of the subscription the update went to, so the feed line can be
+    /// matched to the row it belongs to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Subscription(pub String);
+
+    /// The concept that subscription watches, for labelling the line.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Concept(pub String);
+
+    /// When it was pushed, ISO-8601.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct At(pub String);
+
+    /// Size of the delta frame in bytes, untruncated.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Bytes(pub u64);
+
+    /// The delta itself, truncated — the data actually flushed to
+    /// subscribers, which is the thing the console exists to show.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Payload(pub String);
 }
 
 /// Attributes for the `tonk:console/group` concept — one `(repository,
@@ -1876,40 +1928,4 @@ pub mod console_group {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.console.group")]
     pub struct Subscription(pub Entity);
-}
-
-/// Attributes for the `tonk:console/update` concept — one delivered update
-/// in a subscription's log.
-///
-/// The console's expanded row shows these as a feed: when the update went
-/// out and how large it was, newest first. Overlay-only and bounded, like
-/// every other console fact.
-pub mod console_update {
-    use super::{Attribute, Entity};
-
-    /// The subscription this update belongs to.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.console.update")]
-    #[cardinality(one)]
-    pub struct Subscription(pub Entity);
-
-    /// When it was pushed, ISO-8601.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.console.update")]
-    #[cardinality(one)]
-    pub struct At(pub String);
-
-    /// Serialized size of the delta frame, in bytes.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.console.update")]
-    #[cardinality(one)]
-    pub struct Bytes(pub u64);
-
-    /// Position in the log, newest first (0 is the most recent). Carried as
-    /// a field because the rendered order must be the log's order, and a
-    /// query returns rows in no guaranteed order.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.console.update")]
-    #[cardinality(one)]
-    pub struct Position(pub u64);
 }

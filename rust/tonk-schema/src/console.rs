@@ -14,12 +14,11 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::console_group;
 use crate::domain::console_subscription::{
-    Branch, ConceptName, Group, Hash, LastUpdate, OpenedAt, Pending, Query, Space, Subscribers,
-    Updates,
+    Branch, BytesPushed, ConceptName, Group, Hash, LastUpdate, OpenedAt, Pending, Query, Space,
+    Subscribers, Updates,
 };
-use crate::domain::console_update;
+use crate::domain::{console_group, console_update};
 
 /// One live query subscription in this device's reactor.
 ///
@@ -52,6 +51,8 @@ pub struct ConsoleSubscription {
     /// The concept being watched, as a readable name — the collapsed row's
     /// label.
     pub concept_name: ConceptName,
+    /// Total bytes pushed to subscribers since it opened.
+    pub bytes_pushed: BytesPushed,
 }
 
 /// The last-update stamp, as its own fact.
@@ -117,35 +118,35 @@ impl ConsoleGroup {
     }
 }
 
-/// One delivered update in a subscription's log.
+/// One update, as it is delivered.
 ///
-/// Published per entry so the console's expanded row can render them as a
-/// feed, newest first — the shape a network panel uses for its request list.
+/// Published onto a single fixed entity and retracted in the same turn: the
+/// assert is what makes the subscription deliver it, and the retract leaves
+/// the branch as it was. Nothing stores these — the console's log is
+/// accumulated in the page by an element watching them pass.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConsoleUpdate {
-    /// The update's own entity, from [`Self::entity_for`].
+    /// The fixed entity every update is published onto. See [`Self::latest`].
     pub this: Entity,
-    /// The subscription it belongs to.
+    /// Hash of the subscription the update went to.
     pub subscription: console_update::Subscription,
+    /// The concept that subscription watches.
+    pub concept: console_update::Concept,
     /// When it was pushed, ISO-8601.
     pub at: console_update::At,
-    /// Serialized size of the delta frame, in bytes.
+    /// Size of the delta frame in bytes, untruncated.
     pub bytes: console_update::Bytes,
-    /// Position in the log, newest first.
-    pub position: console_update::Position,
+    /// The delta itself, truncated.
+    pub payload: console_update::Payload,
 }
 
 impl ConsoleUpdate {
-    /// The entity naming one logged update.
+    /// The single entity every update is published onto.
     ///
-    /// Keyed by the subscription and the entry's POSITION rather than its
-    /// timestamp: the log is a fixed-size window that shifts as updates
-    /// arrive, so position-keyed rows are overwritten in place as entries
-    /// move down it. Keying by timestamp would instead mint a new entity per
-    /// update and leave every expired one on the overlay forever.
-    pub fn entity_for(subscription: &str, position: usize) -> Option<Entity> {
-        format!("console:update/{subscription}/{position}")
-            .parse()
-            .ok()
+    /// One slot rather than an entity per update: each is retracted before
+    /// the next is asserted, so there is never more than one live at a time
+    /// and a per-update identity would buy nothing but garbage to collect.
+    pub fn latest() -> Option<Entity> {
+        "console:update/latest".parse().ok()
     }
 }

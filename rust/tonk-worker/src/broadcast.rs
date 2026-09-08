@@ -73,6 +73,7 @@ mod wasm {
                 return;
             }
         };
+
         let bc = match BroadcastChannel::new(channel) {
             Ok(bc) => bc,
             Err(err) => {

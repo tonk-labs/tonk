@@ -63,7 +63,7 @@ pub async fn query(
         tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
     }
     let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    query_on_branch(&tonk, branch, headers, request, client, state.clone()).await
 }
 
 /// `POST /api/profile/branch/{branch}/query`
@@ -84,7 +84,7 @@ pub async fn query_profile(
     let client = request_client(&request);
     let tonk = state.read().await;
     let branch = tonk.reactor.profile_repository().branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    query_on_branch(&tonk, branch, headers, request, client, state.clone()).await
 }
 
 /// The requesting SW client's id, when the fetch handler stamped one.
@@ -108,6 +108,9 @@ async fn query_on_branch<'a>(
     headers: HeaderMap,
     request: Request,
     client: Option<String>,
+    // The shared handle, for the `/console` feed tap: the tap outlives this
+    // call (it runs for the life of the stream) so it cannot borrow `tonk`.
+    app: AppState,
 ) -> Result<Response, TonkWorkerError> {
     let bytes = request
         .into_body()
@@ -122,6 +125,11 @@ async fn query_on_branch<'a>(
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.contains("text/event-stream"));
+
+    // Kept for the `/console` feed's label: `into_concept_query` consumes
+    // the wire form, and the concept a subscription watches is derived from
+    // it.
+    let wire_query = wire.clone();
 
     // A formula query (string predicate) is resolved by the worker
     // rather than dialog's planner — the `tree/*` introspection
@@ -216,7 +224,29 @@ async fn query_on_branch<'a>(
             Err(error) => return Err(reactor_to_error(error)),
         };
 
-        Ok(sse_response(subscriber.receiver))
+        // Tap the stream for the `/console` feed before framing it. This is
+        // the delivery path the sealed guest actually uses (the bridge port
+        // serves other consumers), so it is where a console can observe what
+        // is being flushed to subscribers.
+        //
+        // A tap rather than a copy of the data: each frame is published as a
+        // single superseding overlay fact and forgotten. Nothing is retained
+        // here, in the reactor, or on the branch.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let receiver = tap_for_console(
+            subscriber.receiver,
+            ConsoleFeed {
+                state: app.clone(),
+                hash: subscriber.hash.to_hex(),
+                concept: crate::router::console::concept_name_of(&wire_query),
+            },
+        );
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let receiver = {
+            let _ = (&app, &wire_query);
+            subscriber.receiver
+        };
+        Ok(sse_response(receiver))
     } else {
         // An absent repo/branch answers with the EMPTY SET, not a 404 —
         // "nothing matched" is a result, and it is the same result a
@@ -257,6 +287,72 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Download(_)
         | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
     }
+}
+
+/// What the console feed needs to label a tapped frame.
+///
+/// Carried alongside the stream rather than looked up per frame: the hash and
+/// concept are fixed for the life of a subscription, and a per-frame lookup
+/// would take the reactor's locks on the hot path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct ConsoleFeed {
+    state: AppState,
+    hash: String,
+    concept: String,
+}
+
+/// Forward every frame, publishing a copy to the `/console` feed on the way.
+///
+/// The console's own subscriptions are skipped: they watch the very facts
+/// this publishes, so tapping them would make the console report its own
+/// rendering as traffic — and publish an update in response to publishing an
+/// update.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn tap_for_console(
+    receiver: tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    feed: ConsoleFeed,
+) -> tokio::sync::mpsc::UnboundedReceiver<Bytes> {
+    if feed.concept.starts_with("tonk:console") {
+        return receiver;
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut source = receiver;
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(bytes) = source.recv().await {
+            // Forward FIRST: the subscriber's frame must not wait on the
+            // console's bookkeeping, and a send failure means the consumer
+            // is gone and there is nothing left to tap for.
+            // Forward FIRST, and clone the payload only if it will be
+            // used: `from_utf8_lossy().into_owned()` copies the whole frame,
+            // which is wasted on every update when nobody is watching.
+            let observing = crate::router::console::is_open();
+            let payload = observing.then(|| String::from_utf8_lossy(&bytes).into_owned());
+            if tx.send(bytes).is_err() {
+                break;
+            }
+            let Some(payload) = payload else {
+                continue;
+            };
+            // Publish on its OWN task rather than inline.
+            //
+            // `publish_update_event` runs a poll, and that poll delivers
+            // into subscriber streams — including, potentially, this one.
+            // Awaiting it here means this loop is inside the delivery path
+            // for the branch it is publishing to, and the frame it is
+            // waiting to hand on cannot be drained until it returns. Spawn,
+            // and this loop stays free to keep forwarding.
+            let state = feed.state.clone();
+            let hash = feed.hash.clone();
+            let concept = feed.concept.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let tonk = state.read().await;
+                crate::router::console::publish_update_event(&tonk, &hash, &concept, &payload)
+                    .await;
+            });
+        }
+    });
+    rx
 }
 
 /// Frame an subscriber's receiver as an SSE response.

@@ -438,6 +438,9 @@ async fn handle_subscribe(
             return;
         }
     };
+    // Kept for the console feed's label: `into_concept_query` consumes the
+    // wire form, and the concept a subscription watches is derived from it.
+    let query_for_feed = wire.clone();
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
         Err(_) => {
@@ -507,6 +510,14 @@ async fn handle_subscribe(
     let pump_state = state.clone();
     let pump_client = client.clone();
     let pump_id = id.clone();
+    // Identify this subscription in the console's feed. The hash is what the
+    // console's own rows are keyed by, so a feed line can be matched to the
+    // row it belongs to; the concept name is what the line is labelled with.
+    let pump_hash = subscriber.hash.to_hex();
+    let pump_concept = super::console::concept_name_of(&query_for_feed);
+    // A console watching its own feed would report its own rendering as
+    // traffic, forever. Decided once, here, rather than per frame.
+    let pump_is_console = pump_concept.starts_with("tonk:console");
 
     let abort_flag = Arc::new(AtomicBool::new(false));
     let pump_flag = abort_flag.clone();
@@ -526,6 +537,23 @@ async fn handle_subscribe(
                     continue;
                 }
             };
+            // Mirror the frame to any open console: publish it as a fact,
+            // let the subscription deliver it, retract it. Nothing is
+            // retained — see `console::publish_update_event`.
+            //
+            // Skipped for the console's own subscriptions, which would
+            // otherwise report their own rendering as traffic and, worse,
+            // publish an update in response to publishing an update.
+            if !pump_is_console {
+                let tonk = pump_state.read().await;
+                super::console::publish_update_event(
+                    &tonk,
+                    &pump_hash,
+                    &pump_concept,
+                    &String::from_utf8_lossy(&bytes),
+                )
+                .await;
+            }
             send_envelope(
                 &pump_state,
                 &pump_client,
