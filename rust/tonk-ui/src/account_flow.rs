@@ -5262,7 +5262,7 @@ mod tests {
             .as_array()
             .context("profile roster is not an array")?
             .len();
-        let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
+        let (first_profile, _) = active_profile_and_label(profiles_before_add)?;
 
         // The real Hub frame renders the first account's space.
         goto(&driver, env.tonk_web.as_str()).await?;
@@ -5302,9 +5302,6 @@ mod tests {
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
             "a fresh account must not see the other account's spaces"
         );
-        let profiles = get_json(&driver, "/api/profiles").await?;
-        let (_, second_label) =
-            active_profile_and_label(successful_body("list second profile", &profiles))?;
         let summary = get_json(&driver, "/api/account/summary").await?;
         let passkey_created_on =
             successful_body("read second account summary", &summary)["passkey"]["createdOn"]
@@ -5313,10 +5310,13 @@ mod tests {
                 .to_string();
 
         // The second account's sealed Hub has its own empty roster.
+        // Signup chose this name. The profile roster can still contain its
+        // generated name until account-state convergence projects the choice.
+        // Do not save that transient label as the Hub's expected account name.
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         if let Err(error) =
-            wait_for_text_containing(&driver, "[data-account-trigger]", &second_label).await
+            wait_for_text_containing(&driver, "[data-account-trigger]", "Tab Owner").await
         {
             let diagnostic = driver
                 .execute(
@@ -5421,7 +5421,7 @@ mod tests {
             .clone();
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_text_containing(&driver, "[data-account-menu]", &first_label).await?;
+        wait_for_text_containing(&driver, "[data-account-menu]", "Tab Owner").await?;
         let selector = format!("button[data-profile=\"{first_profile}\"]");
         click(&driver, &selector).await?;
         driver.enter_default_frame().await?;
