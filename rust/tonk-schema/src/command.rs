@@ -443,6 +443,27 @@ impl Command for ReplicateSpace {
     type Output = ();
 }
 
+/// Drop a space's invite row once its link has reached the clipboard.
+///
+/// [`InviteState`] is a per-session view of one share click, and its url
+/// carries the membership seed in its fragment. Once the clipboard has
+/// the link the row has done its job, so it is evicted rather than left
+/// subscribable for the rest of the session.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ForgetInvite {
+    /// The command entity (a fresh id per copy).
+    pub this: Entity,
+    /// The copy's timestamp, so each one is a distinct transient.
+    pub time: crate::domain::command::current::forget_invite::Time,
+    /// The space whose invite row to drop.
+    pub space: crate::domain::command::current::forget_invite::Space,
+}
+
+impl Command for ForgetInvite {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {

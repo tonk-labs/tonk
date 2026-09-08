@@ -1236,21 +1236,30 @@ async fn run_invite(
             seed: Seed(seed),
             link: Link(link.clone()),
         })
-        // The same answer in the shape the share control subscribes to:
-        // one row per space whose `status` says where the invite has got
-        // to, carrying the url once there is one. `Credential` keeps the
-        // seed beside it for readers that need both; this is what a view
-        // renders. See `plan/share-intent.md`.
-        .assert(tonk_schema::command::InviteState::granted(
-            subject_entity,
-            link,
-        ))
         .write()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
         })?;
+
+    // The same answer in the shape the share control subscribes to, on
+    // PROFILE main rather than the space: one row per space whose
+    // `status` says where the invite has got to, carrying the url once
+    // there is one. `Credential` above keeps the seed beside it on the
+    // space for readers that need both; this is what a view renders.
+    //
+    // On profile main because the Hub renders one share control per row,
+    // and a control subscribed to the space made merely LISTING spaces
+    // query into each one — which mounts it (`query.rs` adopts on first
+    // use), so opening the Hub replicated the whole account. The state is
+    // this device's view of a click it made; nothing about it needs the
+    // space's branch. See `plan/share-intent.md`.
+    publish_invite_state(
+        &tonk,
+        tonk_schema::command::InviteState::granted(subject_entity, link),
+    )
+    .await;
 
     // Ensure the self-identity overlay (`state:self`) is present so the
     // topbar identity chip renders. The overlay builder above no longer
@@ -1363,21 +1372,51 @@ async fn publish_share_blocked(
             detail: share::Detail(detail.to_owned()),
             time: share::Time(time),
         })
-        // The same refusal in the shape the share control subscribes to.
-        // Only a terminal reason becomes a terminal status: a refusal
-        // the user can repair (no account yet, no remote yet) leaves the
-        // request open, because the click has not finished failing — it
-        // is waiting on something. See `plan/share-intent.md`.
-        .assert(tonk_schema::command::InviteState::denied(
-            subject,
-            invite_status_for(code),
-        ))
         .write()
         .perform(&tonk.operator)
         .await
     {
         log!("failed to publish share refusal for '{repo_name}': {error}");
     }
+
+    // The same refusal in the shape the share control subscribes to, on
+    // profile main for the reason the grant is. Only a terminal reason
+    // becomes a terminal status: a refusal the user can repair (no
+    // account yet, no remote yet) leaves the request open, because the
+    // click has not finished failing — it is waiting on something.
+    publish_invite_state(
+        &tonk,
+        tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
+    )
+    .await;
+}
+
+/// Publish the share control's view of an invite onto PROFILE main's
+/// overlay, keyed on the space's subject.
+///
+/// Overlay because the url carries the membership seed in its fragment
+/// and must not reach storage, and because the row is a per-session view
+/// of one click rather than a durable record — the durable record of a
+/// minted invite is `Invitation`, on the space.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::InviteState) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("invite state: open profile main: {error}");
+            return;
+        }
+    };
+    main.state.assert_overlay(state);
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Assemble the invite URL a recipient opens, shortened when the

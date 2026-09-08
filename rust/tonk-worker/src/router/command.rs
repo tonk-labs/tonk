@@ -137,6 +137,40 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace> for Comma
     }
 }
 
+/// Drop a space's invite row once its link has reached the clipboard.
+///
+/// The row lives in profile main's overlay, and the url in it carries a
+/// membership seed. Cleared by dropping the entity's overlay facts
+/// rather than retracting: an overlay retract records a tombstone
+/// beside the assertion instead of removing it, so the row — and the
+/// seed — would still read back.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[async_trait::async_trait(?Send)]
+impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ForgetInvite) {
+        let space = command.space.0.clone();
+        let tonk = self.state().read().await;
+        let main = match tonk
+            .reactor
+            .profile_repository()
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(main) => main,
+            Err(error) => {
+                log!("ForgetInvite: open profile main: {error}");
+                return;
+            }
+        };
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &space);
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&main.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
+}
+
 /// Build the registry of supported command *types*. Registration is just
 /// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
@@ -204,6 +238,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         registry
             .command::<tonk_schema::command::CheckUpdate>()
             .command::<tonk_schema::command::ReplicateSpace>()
+            .command::<tonk_schema::command::ForgetInvite>()
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

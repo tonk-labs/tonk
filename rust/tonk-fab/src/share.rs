@@ -92,8 +92,8 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement, window};
 
 use crate::logic::{
-    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json, invite_claim_json,
-    invite_state_query_body,
+    COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json,
+    forget_invite_claim_json, invite_claim_json, invite_state_query_body,
 };
 use crate::subscribing;
 
@@ -329,7 +329,24 @@ struct InviteStateBehaviour {
     current_link: Rc<RefCell<Option<String>>>,
 }
 
+/// The routing context the invite state is published in.
+///
+/// PROFILE main, not the space. The Hub renders one share control per
+/// row, so subscribing against the space made merely LISTING spaces
+/// query into each one — and a repo-scoped query mounts the space
+/// (`query.rs` adopts on first use), so opening the Hub replicated the
+/// whole account. The row is this device's view of a click it made;
+/// nothing about it needs the space's own branch.
+const PROFILE_WITH: &str = "main@profile:tonk";
+
 impl subscribing::Subscribing for InviteStateBehaviour {
+    fn resolve_with(&self, _this: &HtmlElement) -> Option<String> {
+        // Always the profile branch, whatever space the control names —
+        // the `space` attribute still selects WHICH row to read, it just
+        // no longer selects which branch to read it from.
+        Some(PROFILE_WITH.to_owned())
+    }
+
     fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
         let space = this.get_attribute("space").unwrap_or_default();
         invite_state_query_body(&space)
@@ -882,6 +899,11 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
     let settled = match result {
         Ok(link) => {
             pending.clipboard.resolve(&link);
+            // The link is on the clipboard: the row has done its job.
+            // Evict it rather than leaving a url carrying a membership
+            // seed in its fragment sitting in a subscribable overlay for
+            // the rest of the session.
+            dispatch_forget_invite(host);
             ShareState::Copied
         }
         Err(reason) => {
@@ -891,6 +913,19 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
     };
     set_state(host, settled);
     arm_revert(host, state);
+}
+
+/// Ask the worker to drop this space's invite row once its url has been
+/// handed to the clipboard.
+///
+/// Only on success: a refusal's row is what the control renders to
+/// explain the failure, and it is superseded by the next attempt.
+fn dispatch_forget_invite(host: &HtmlElement) {
+    let space = host.get_attribute("space").unwrap_or_default();
+    if space.is_empty() {
+        return;
+    }
+    dispatch_claim(&forget_invite_claim_json(&space, js_sys::Date::now()));
 }
 
 /// Revert a confirmation to `Idle` after [`COPIED_LINGER_MS`], so the control

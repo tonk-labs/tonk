@@ -1755,6 +1755,36 @@ mod profile_rename {
 /// it from `(descriptor, parameters)`; `time` makes each click a distinct
 /// transient so repeated Share clicks reliably re-fire the handler and
 /// rotate the credential.
+/// The claim that drops a space's invite row once its url has reached
+/// the clipboard.
+///
+/// The url carries the membership seed in its fragment, so the row is
+/// deliberately short-lived: it exists to carry one link from the mint to
+/// the clipboard, and has no reason to remain subscribable afterwards.
+pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Drop a space's invite row once its link has been copied.",
+                        "with": {
+                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "Float" },
+                            "space": { "the": "xyz.tonk.command.forget-invite/space", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space
+                }
+            }
+        }]
+    })
+}
+
 pub fn invite_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{

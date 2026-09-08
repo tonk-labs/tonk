@@ -1339,7 +1339,12 @@ async fn await_invite_link(space: &str) -> Option<String> {
     None
 }
 
-/// Read the invite url off the space's `tonk:invite` row.
+/// Read the invite url off the `tonk:invite` row on PROFILE main.
+///
+/// Keyed by the space but read from the profile branch: the row is this
+/// device's view of a share it performed, and keeping it off the space
+/// is what stops a Hub full of share controls from querying — and so
+/// mounting — every space in the account.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn read_invite_link(space: &str) -> Option<String> {
     let body = serde_json::json!({
@@ -1358,11 +1363,7 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!(
-        "{}/api/repository/{}/branch/main/query",
-        crate::api::origin(),
-        space
-    );
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)

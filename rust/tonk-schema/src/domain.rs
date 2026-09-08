@@ -1235,6 +1235,23 @@ pub mod command {
             pub struct Account(pub Entity);
         }
 
+        /// `tonk/forget-invite` — drop a space's invite row once its
+        /// link has been copied.
+        pub mod forget_invite {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The copy's timestamp, so each one is a distinct transient.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.forget-invite")]
+            pub struct Time(pub f64);
+
+            /// The space whose invite row to drop.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.forget-invite")]
+            pub struct Space(pub Entity);
+        }
+
         /// `space/replicate` — pull a space the account has but this
         /// device does not.
         pub mod replicate_space {

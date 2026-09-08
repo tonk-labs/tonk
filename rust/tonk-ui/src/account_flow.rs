@@ -3913,13 +3913,13 @@ mod tests {
 
     /// Wait for the interrupted share to finish and hand over a link.
     ///
-    /// Read from the SPACE's branch, keyed by the space, because that is
-    /// where the mint writes: `enable-sync` attaches the remote and
-    /// asserts `xyz.tonk.invite/url` on the space it shared. Profile main
-    /// never carries it, so asking there answers `[]` for a share that
-    /// worked — which is exactly the report this used to give. The
-    /// dialog reads the same row to fill the clipboard, so this is the
-    /// row the person ends up with, not a proxy for it.
+    /// Read from PROFILE main, keyed by the space. The row moved off the
+    /// space's branch: the Hub renders one share control per row, and a
+    /// control subscribed to the space made merely listing spaces query
+    /// into each one — which mounts it, so opening the Hub replicated the
+    /// whole account. The dialog reads the same row to fill the
+    /// clipboard, so this is the row the person ends up with, not a proxy
+    /// for it.
     async fn await_share_link(driver: &WebDriver, space: &str) -> Result<String> {
         let ask = serde_json::json!({
             "predicate": { "with": {
@@ -3937,7 +3937,7 @@ mod tests {
                 "url": { "?": { "name": "url" } }
             }
         });
-        let endpoint = format!("/api/repository/{space}/branch/main/query");
+        let endpoint = "/api/profile/branch/main/query".to_owned();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             let rows = post_json(driver, &endpoint, ask.clone()).await?;
