@@ -675,10 +675,10 @@ pub async fn shorten(url: &str) -> Result<String, InviteError> {
         .build()
         .map_err(|e| InviteError::Io(format!("shortcut probe client: {e}")))?;
     let response = client
-        .get(&probe)
+        .head(&probe)
         .send()
         .await
-        .map_err(|e| InviteError::Io(format!("shortcut probe GET: {e}")))?;
+        .map_err(|e| InviteError::Io(format!("shortcut probe HEAD: {e}")))?;
     if !response.status().is_redirection() {
         return Err(InviteError::Io(format!(
             "the shortcut host answered the probe without redirecting (HTTP {})",

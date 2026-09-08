@@ -1229,6 +1229,7 @@ async fn run_invite(
         proof: Proof(proof),
         remote: AuthorizationRemote(remote),
     };
+    let subject_entity_for_short = subject_entity.clone();
 
     // Write the private seed and the assembled URL into the session overlay
     // and schedule a poll of this branch so the change propagates even
@@ -1245,7 +1246,7 @@ async fn run_invite(
         .overlay()
         .assert(Credential {
             this: subject_entity.clone(),
-            seed: Seed(seed),
+            seed: Seed(seed.clone()),
             link: Link(link.clone()),
         })
         // The same answer in the shape the share control subscribes to:
@@ -1254,8 +1255,8 @@ async fn run_invite(
         // seed beside it for readers that need both; this is what a view
         // renders. See `plan/share-intent.md`.
         .assert(tonk_schema::command::InviteState::granted(
-            subject_entity,
-            link,
+            subject_entity.clone(),
+            link.clone(),
         ))
         .write()
         .perform(&tonk.operator)
@@ -1315,6 +1316,48 @@ async fn run_invite(
         },
     );
     log!("Minted invitation for repo '{}'", repo_name);
+
+    // The mint is complete and the LONG link is what the share control
+    // copies — fan it out NOW, before any shortening network. Minting an
+    // invocation must never wait on a convenience round-trip.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    drop(tonk);
+
+    // Best-effort shortening, off the critical path and outside the
+    // state lock: PUT the target and probe the stored shortcut (HEAD —
+    // the landing URL is the whole answer). A host that provides no
+    // shortening, or answers non-conformingly, leaves the long link
+    // standing; a conforming answer supersedes the overlay credential
+    // in place, and the dispatcher's drain broadcasts the update.
+    match super::create_invite::shorten(&link).await {
+        Ok(short) if short != link => {
+            let tonk = env.state().read().await;
+            if let Err(error) = tonk
+                .reactor
+                .repository(repo_name)
+                .branch(CONTENT_BRANCH)
+                .overlay()
+                .assert(Credential {
+                    this: subject_entity_for_short.clone(),
+                    seed: Seed(seed),
+                    link: Link(short.clone()),
+                })
+                .assert(tonk_schema::command::InviteState::granted(
+                    subject_entity_for_short,
+                    short,
+                ))
+                .write()
+                .perform(&tonk.operator)
+                .await
+            {
+                log!("short link overlay update failed; the long link stands: {error}");
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            log!("invite shortcut failed; using the full URL: {error}");
+        }
+    }
     Ok(RunInvite::Settled)
 }
 
@@ -1422,22 +1465,17 @@ async fn invite_url(
     // bar's login/attach prompts are), so an endpoint that yields no
     // origin here is a bug worth failing on, not a case to paper over
     // with a link rooted somewhere the space is not served.
+    //
+    // No network here, deliberately: this is on the mint's critical
+    // path, and the long URL is complete. Shortening is a later,
+    // best-effort pass (`run_invite` runs it after the link has been
+    // delivered, outside the state lock).
     let base = tonk_invite::base_url_for_remote(access_url.as_str()).map_err(|error| {
         TonkWorkerError::Internal(format!(
             "the space's access endpoint yields no invite base: {error:#}"
         ))
     })?;
-    let long = long_invite_url(&base, proof, remote, seed, space_key);
-    // Shortening is a convenience against the same host: a host that
-    // does not provide it (or answers wrongly — the content-address and
-    // redirect-probe checks) degrades to the fully functional long URL.
-    Ok(match super::create_invite::shorten(&long).await {
-        Ok(short) => short,
-        Err(e) => {
-            log!("invite shortcut failed; using the full URL: {e}");
-            long
-        }
-    })
+    Ok(long_invite_url(&base, proof, remote, seed, space_key))
 }
 
 /// The service worker's own origin, or `None` outside a worker scope.

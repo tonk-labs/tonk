@@ -1452,10 +1452,17 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     use wasm_bindgen_futures::JsFuture;
     use web_sys::Response;
 
+    // HEAD, not GET: the landing URL is the whole answer, so there is
+    // no reason to download the app shell behind it (the same choice
+    // `<tonk-invite-link>` documents).
+    let init = web_sys::RequestInit::new();
+    init.set_method("HEAD");
+    let request = web_sys::Request::new_with_str_and_init(short_url, &init)
+        .map_err(|error| format!("short link request: {error:?}"))?;
     let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
         .dyn_into()
         .map_err(|_| "not in a service-worker scope".to_owned())?;
-    let response: Response = JsFuture::from(global.fetch_with_str(short_url))
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
         .await
         .and_then(|value| value.dyn_into())
         .map_err(|error| format!("short link fetch: {error:?}"))?;
@@ -1478,7 +1485,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
         .build()
         .map_err(|error| format!("short link client: {error}"))?;
     let response = client
-        .get(short_url)
+        .head(short_url)
         .send()
         .await
         .map_err(|error| format!("short link fetch: {error}"))?;
