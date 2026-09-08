@@ -1,9 +1,12 @@
 dialog.tonk-open {
-  --open-ink: var(--ink, #38182a);
-  --open-on-ink: var(--on-ink, #f7f6f5);
-  --open-card: var(--card, #fcfbfb);
-  --open-soft: var(--soft, #5b4953);
-  --open-ring: var(--ring, rgb(56 24 42 / 85%));
+  /* Embedded chrome shares the FABB palette, independent of the guest theme. */
+  --open-ink: var(--fabb-ink, #38182a);
+  --open-on-ink: var(--fabb-on-ink, #f7f6f5);
+  --open-card: var(--fabb-panel, rgb(247 246 245 / 92%));
+  --open-soft: var(--fabb-ink-soft, #5b4953);
+  --open-ring: var(--fabb-ring, rgb(56 24 42 / 85%));
+  color-scheme: light;
+  box-sizing: border-box;
   border: 0;
   border-radius: 0;
   padding: 1px;
@@ -19,10 +22,11 @@ dialog.tonk-open {
 dialog.tonk-open[open] {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 7px;
 }
 dialog.tonk-open::backdrop {
-  background: var(--dim, rgb(56 24 42 / 32%));
+  background: var(--fabb-dim, rgb(56 24 42 / 32%));
 }
 .tonk-open *, .tonk-open *::before, .tonk-open *::after {
   box-sizing: border-box;
@@ -36,13 +40,18 @@ dialog.tonk-open::backdrop {
   letter-spacing: 0.02em;
   text-transform: lowercase;
 }
+.tonk-open h2, .tonk-open__body, .tonk-open__actions {
+  width: 100%;
+  min-width: 0;
+}
 .tonk-open h2 {
   display: flex;
   align-items: flex-end;
   flex: none;
+  justify-content: flex-end;
   min-height: 36px;
   margin: 0;
-  padding: 10px 16px 9px;
+  padding: 10px 10px 9px 16px;
   text-wrap: balance;
   background: var(--open-card);
   color: var(--open-ink);
@@ -61,8 +70,6 @@ dialog.tonk-open::backdrop {
   margin: 0;
   overflow-wrap: anywhere;
   text-transform: none;
-  max-height: 4.5rem;
-  overflow-y: auto;
 }
 .tonk-open__label { font-weight: 600; }
 .tonk-open__url { margin-top: 4px; color: var(--open-soft); }
@@ -78,7 +85,7 @@ dialog.tonk-open::backdrop {
   justify-content: flex-end;
   width: 144px;
   max-width: 50%;
-  min-height: 44px;
+  min-height: 36px;
   margin: 0;
   padding: 0 10px 9px 16px;
   border: 0;
@@ -91,7 +98,7 @@ dialog.tonk-open::backdrop {
   transition: background-color 150ms ease-out, scale 150ms ease-out;
 }
 .tonk-open button:hover {
-  background: var(--card-hover, color-mix(in srgb, var(--open-ink) 6%, var(--open-card)));
+  background: linear-gradient(var(--fabb-hover, rgb(56 24 42 / 6%)), var(--fabb-hover, rgb(56 24 42 / 6%))), var(--open-card);
 }
 .tonk-open button:active { scale: 0.96; }
 .tonk-open button.tonk-open__confirm {
@@ -99,21 +106,11 @@ dialog.tonk-open::backdrop {
   color: var(--open-on-ink);
 }
 .tonk-open button.tonk-open__confirm:hover {
-  background: linear-gradient(var(--wash-p, rgb(247 246 245 / 16%)), var(--wash-p, rgb(247 246 245 / 16%))), var(--open-ink);
+  background: linear-gradient(color-mix(in srgb, var(--open-on-ink) 16%, transparent), color-mix(in srgb, var(--open-on-ink) 16%, transparent)), var(--open-ink);
 }
 .tonk-open button:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 1px var(--open-ring), inset 0 0 0 2px var(--open-on-ink), inset 0 0 0 4px var(--open-ink);
-}
-@media (prefers-color-scheme: dark) {
-  dialog.tonk-open {
-    --open-ink: var(--ink, #e2dfdd);
-    --open-on-ink: var(--on-ink, #221c1d);
-    --open-card: var(--card, #261f20);
-    --open-soft: var(--soft, #c8c3bf);
-    --open-ring: var(--ring, rgb(226 223 221 / 55%));
-  }
-  dialog.tonk-open::backdrop { background: var(--dim, rgb(0 0 0 / 45%)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .tonk-open button { transition: none; }
