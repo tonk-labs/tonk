@@ -393,8 +393,10 @@ fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialo
         .ok()?;
     let _ = dialog.set_attribute("class", DIALOG_CLASS);
 
+    let _ = dialog.set_attribute("aria-labelledby", "tonk-open-heading");
     let heading = document.create_element("h2").ok()?;
-    heading.set_text_content(Some("Open in a new tab?"));
+    let _ = heading.set_attribute("id", "tonk-open-heading");
+    heading.set_text_content(Some("open in a new tab?"));
 
     let label_line = document.create_element("p").ok()?;
     let _ = label_line.set_attribute("class", "tonk-open__label");
@@ -409,17 +411,20 @@ fn build_dialog(document: &Document, label: &str, url: &str) -> Option<HtmlDialo
 
     let cancel = document.create_element("button").ok()?;
     let _ = cancel.set_attribute("class", "tonk-open__cancel");
-    cancel.set_text_content(Some("Cancel"));
+    cancel.set_text_content(Some("cancel"));
 
     let confirm = document.create_element("button").ok()?;
     let _ = confirm.set_attribute("class", "tonk-open__confirm");
-    confirm.set_text_content(Some("Open"));
+    confirm.set_text_content(Some("open"));
 
     let _ = actions.append_child(&cancel);
     let _ = actions.append_child(&confirm);
     let _ = dialog.append_child(&heading);
-    let _ = dialog.append_child(&label_line);
-    let _ = dialog.append_child(&url_line);
+    let body = document.create_element("div").ok()?;
+    let _ = body.set_attribute("class", "tonk-open__body");
+    let _ = body.append_child(&label_line);
+    let _ = body.append_child(&url_line);
+    let _ = dialog.append_child(&body);
     let _ = dialog.append_child(&actions);
     Some(dialog)
 }
@@ -457,10 +462,8 @@ fn open_in_new_tab(document: &Document, url: &str) {
 /// idle-injected rather than eager (see `tonk-ui/index.html`), because its
 /// statically-imported chunks would otherwise starve the boot data plane. A
 /// `wa-*` component could still be undefined when an early click lands. Every
-/// value is `var(--wa-token, literal)` so it matches the theme when loaded and
-/// still looks right before it is — the same technique the boot shell uses,
-/// and it keeps index.html's "nothing on the top page uses a wa-* component"
-/// true.
+/// color reads the host's chrome tokens, with stone-and-ink fallbacks for early
+/// clicks before the UI stylesheet loads. No custom element upgrade is needed.
 fn ensure_styles(document: &Document) {
     const STYLE_ID: &str = "tonk-open-style";
     if document.get_element_by_id(STYLE_ID).is_some() {
@@ -470,116 +473,7 @@ fn ensure_styles(document: &Document) {
         return;
     };
     let _ = style.set_attribute("id", STYLE_ID);
-    style.set_text_content(Some(
-        r#"
-dialog.tonk-open {
-  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
-  border-radius: var(--wa-border-radius-l, 8px);
-  background: var(--wa-color-surface-raised, #fff);
-  color: var(--wa-color-text-normal, #18181b);
-  font-family: var(--wa-font-family-body, system-ui, sans-serif);
-  padding: 1.25rem;
-  max-width: min(28rem, calc(100vw - 2rem));
-}
-dialog.tonk-open::backdrop { background: rgb(0 0 0 / 0.4); }
-.tonk-open h2 {
-  margin: 0 0 0.75rem;
-  font-size: var(--wa-font-size-l, 1.125rem);
-}
-/* THE LABEL IS ATTACKER-CHOSEN TOO, and it is the line the user reads as the
-   destination's identity — so it is the one that most has to stay on screen.
-   A host can carry 253 characters with every label under 63 and still resolve:
-   `https://tonk.example.verify.verify…secure.evil.com` measured 1235px of
-   content in a 448px line inside a 490px dialog, its right edge 371px past a
-   1280px viewport. The user reads `https://tonk.example.verify.verify…` and
-   never reaches `.evil.com`. Wrap and scroll it, exactly as the URL below. */
-.tonk-open__label {
-  margin: 0 0 0.25rem;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-  max-height: 4.5rem;
-  overflow-y: auto;
-}
-/* The URL is attacker-chosen in the same way, and must likewise wrap rather
-   than widen the dialog or push the buttons off-screen. */
-.tonk-open__url {
-  margin: 0 0 1.25rem;
-  color: var(--wa-color-text-quiet, #71717a);
-  font-size: var(--wa-font-size-s, 0.875rem);
-  overflow-wrap: anywhere;
-  max-height: 4.5rem;
-  overflow-y: auto;
-}
-.tonk-open__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-.tonk-open button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* A 40px floor on the hit area. The visible chrome is smaller than the
-     comfortable target on a touch screen, so drive the height from here
-     rather than from vertical padding. */
-  min-height: 2.5rem;
-  padding: 0 1rem;
-  border-radius: var(--wa-border-radius-m, 6px);
-  border: 1px solid var(--wa-color-neutral-border-normal, #d4d4d8);
-  background: var(--wa-color-neutral-fill-quiet, #f4f4f5);
-  color: inherit;
-  font: inherit;
-  line-height: 1;
-  cursor: pointer;
-  /* Never `transition: all` — name the properties, so a layout property added
-     later cannot start animating by accident. Transitions rather than
-     keyframes because a pointer entering and leaving has to be interruptible
-     mid-flight; a keyframe would have to finish first. */
-  transition-property: background-color, border-color, filter, scale;
-  transition-duration: 120ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-.tonk-open button:hover {
-  background: var(--wa-color-neutral-fill-normal, #e4e4e7);
-}
-/* Tactile feedback on press. 0.96 is the floor that still reads as a press;
-   below ~0.95 the button looks like it is shrinking away from the cursor. */
-.tonk-open button:active {
-  scale: 0.96;
-}
-/* `:focus-visible`, not `:focus` — a mouse press should not leave a ring
-   behind, but a keyboard user must always be able to see what Enter will hit.
-   This dialog is modal and takes focus, so that matters more here than usual. */
-.tonk-open button:focus-visible {
-  outline: 2px solid var(--wa-color-brand-fill-loud, #3b4a0a);
-  outline-offset: 2px;
-}
-/* The element selector matters. `.tonk-open button` is (0,1,1) and a bare
-   `.tonk-open__confirm` is (0,1,0), so the base rule won and the primary
-   action rendered IDENTICAL to Cancel — the one button the dialog exists to
-   make the user think about looked like the one to ignore. */
-.tonk-open button.tonk-open__confirm {
-  background: var(--wa-color-brand-fill-loud, #3b4a0a);
-  border-color: var(--wa-color-brand-fill-loud, #3b4a0a);
-  color: var(--wa-color-brand-on-loud, #f4f7e4);
-}
-/* Web Awesome ships no `*-hover` token, and `brand-fill-normal` is LIGHTER
-   than `-loud`, so stepping tokens would make hover read as less prominent
-   rather than more. Darkening resolves correctly against whatever the theme
-   computes, in light mode or dark. */
-.tonk-open button.tonk-open__confirm:hover {
-  filter: brightness(0.92);
-}
-@media (prefers-reduced-motion: reduce) {
-  .tonk-open button {
-    transition-duration: 0s;
-  }
-  .tonk-open button:active {
-    scale: 1;
-  }
-}
-"#,
-    ));
+    style.set_text_content(Some(include_str!("open.css")));
     if let Some(head) = document.head() {
         let _ = head.append_child(&style);
     }
@@ -1152,7 +1046,7 @@ mod tests {
 
         let text = dialog.text_content().unwrap_or_default();
         assert!(
-            text.contains("Open in a new tab?"),
+            text.contains("open in a new tab?"),
             "the dialog should name the action, got: {text}"
         );
         assert!(
