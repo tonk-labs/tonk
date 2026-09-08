@@ -127,16 +127,112 @@ the submitting request is unchanged in practice: the transact commit
 schedules the poll, the closing drain runs the pump, outcomes land as
 facts the UI already subscribes to.
 
-## Declarative effects stay transient-triggered
+## The executor notion for declarative rules
 
-Do **not** extend durable triggers to `effect!:` rules yet. The V1
-transient-trigger requirement guards a real convergence property: a
-replicated declarative rule re-firing on every peer that pulls a durable
-command would execute everywhere, and rules have no vocabulary for
-addressing or consumption. Imperative subscribers escape via
-`executor` + outcome-gating; declarative effects can follow only once
-they grow the same notions. Until then effects trigger on transient or
-overlay facts only.
+The V1 transient-trigger requirement guards a real property: a
+replicated `effect!:` rule triggered by durable facts would evaluate on
+every peer that pulls them. Lifting it needs an **executor** notion —
+and Dedalus (the framing `plan/effects.md` is already built on) names
+it: the **location specifier**. Every Dedalus fact lives at a site; a
+rule whose head is at a different site than its body is a
+*communication rule*, and some specific site is responsible for
+performing it. Tonk has the geography: branches are the locations, DIDs
+are the sites. A rule reading `invite-request` on a space branch and
+asserting an `invite` is a communication rule; its executor names the
+site that runs it.
+
+```yaml
+effect!:
+  executor: host          # a role, resolved against roster/authority facts
+  assert!: invite
+  when:
+    - assert: invite-request
+      where: ...
+```
+
+Three design choices:
+
+- **Role, not DID.** `executor: host` (or `founder`, `submitter`)
+  resolved against roster facts at fire time. Raw DIDs go stale under
+  key rotation — the founder-row migration exists because of exactly
+  this — while the role indirection survives it.
+- **Enforcement by proof, not discipline.** Soft layer: non-executor
+  peers skip the rule during induction (placement — avoids duplicate
+  work). Hard layer: the head write requires authority the executor can
+  prove (the UCAN chain on the commit), and peers validate provenance
+  on pull, so a rogue peer firing anyway produces commits that fail
+  validation. The executor is thus an extension of the
+  capability-scoped invocation direction (`plan/command-containment.md`):
+  fundamentally, the executor *is* whoever can prove the authority the
+  head needs; the annotation tells everyone else not to try.
+- **Which rules need one** — the taxonomy that bounds the feature:
+  1. *Deterministic, monotone derivations* (head a pure function of the
+     body, assert-only): **no executor**. Every peer may fire; identical
+     conclusions merge idempotently; redundant firing is a no-op. The V1
+     restriction was over-broad for this class — these are safe to
+     replicate and evaluate everywhere.
+  2. *Nondeterministic or effectful heads* (mint an entity id, sign,
+     timestamp, external IO): **executor required**. The divergence risk
+     was never the re-firing — it is two peers deriving *different*
+     facts from the same inputs.
+  3. *Non-monotone rules* (`retract!:` heads, `unless` over replicated
+     state): an executor helps (designate the peer with the
+     authoritative view — usually the host), but negation under partial
+     replication is hard regardless: absence is indistinguishable from
+     not-yet-pulled. Most caution here, independent of placement.
+
+Consumption has a declarative spelling: the executor's rule negates its
+own trigger — an outcome fact plus `unless: outcome` in the body, or a
+`retract!:` of the request — the declarative twin of the imperative
+side's outcome-gated dedup, expressible in the existing rule vocabulary.
+
+Until executor lands, effects trigger on transient or overlay facts
+only.
+
+## Rename dissolves into a fact
+
+With propagation in place, the *space* needs no rename command at all:
+`RepositoryName` is an ordinary fact on the space's content branch; a
+member with write access asserts it and the label propagates to every
+member's profile directory. The copy is class-1 above — deterministic
+and directed — so no command is required anywhere in principle.
+
+The profile-level `Rename` survives only as sugar: a same-turn dual
+write for UI latency, and a place to validate/normalize the name.
+Direct assertion bypasses handler validation — either accept
+schema-level constraints as sufficient, or use a guard-rule pattern (a
+requested-name fact from which a rule derives the canonical
+`RepositoryName`), which is itself a propagator.
+
+Containment consequence: the space vocabulary from PR #911 shrinks —
+`RenameRepository` drops out of it entirely.
+
+## Propagators
+
+The converged design is a propagation network in the Radul–Sussman
+sense, and the mapping is structural, not decorative:
+
+| Propagator model | Tonk |
+|---|---|
+| cell | a (branch, query) view |
+| propagator | a subscriber: reads input-cell deltas, adds facts to output cells |
+| propagator's input registration | the query's demand cover |
+| alerted-propagator queue | `pending_polls` / scheduled polls |
+| run scheduler to quiescence | drain self-subscribers to quiescence |
+| adding present information is a no-op | diffed writes; the proactive dual write's echo has no effect |
+
+One rigor gap keeps it from being propagators all the way down: cells
+require merge to be a lattice join (commutative, associative,
+idempotent) for confluence. Cardinality-many sets qualify;
+**cardinality-one registers do not** — they are overwrite, and their
+convergence comes from ordering plus authority, not merge. Hence the
+network invariant every new edge must satisfy: a propagator is either
+**monotone** (writes lattice-merging facts) or **directed** (one
+authoritative source; mirrors always follow, never write back). The
+name flow is directed by construction ("space's record wins, renewal
+never overwrites"); the executor taxonomy above is the same split seen
+from the rules side — class 1 may run everywhere *because* it is
+monotone, classes 2–3 need placement *because* they are not.
 
 ## What deletes
 
