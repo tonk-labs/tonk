@@ -10,14 +10,20 @@
 //! the chain, and assemble the JSON response. Subscription
 //! polling fires after a successful commit so SSE subscribers
 //! see the new state.
+//!
+//! Post-commit behavior mirrors `/transact`: the document's
+//! transient facts (commands) are dispatched to their registered
+//! providers after the commit, and a commit that moved the tree
+//! marks the repo dirty so the next sync drain pushes it.
 
 use ::axum::{
-    Json,
+    Extension, Json,
     body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
 };
 use axum_wasm_macros::wasm_compat;
+use dialog_artifacts::Changes;
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -128,60 +134,89 @@ pub async fn evaluate(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
     axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
+    client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     log!("evaluate repo={}, branch={}", path.repo, path.branch);
-    // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
-    // a single write-lock holder stalls every new reader — a boot-time evaluate
-    // (or the editor's auto-evaluate) blocked every concurrent `query` for its
-    // whole duration. `evaluate_on_branch` reaches the branch through the reactor
-    // (its own per-branch locks) and never mutates `TonkState`, so shared access
-    // suffices — same as `query`/`transact`/`sync`. The committing path serializes
-    // on the branch transactor itself (see `evaluate_on_branch`).
-    let tonk_state = state.read().await;
-    let tonk_branch = tonk_state
-        .reactor
-        .repository(&path.repo)
-        .branch(&path.branch);
-    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
-
-    // A commit moves the branch head. Announce it on the branch's
-    // channel so subscribed UIs refresh their revision/sync-state
-    // badges without a full refetch (which would tear down the
-    // editor). Pure queries and dry runs leave `revision_after ==
-    // revision_before`, so they announce nothing.
-    if let Ok(Json(response)) = &result
-        && let Some(revision) = &response.revision_after
-        && response.revision_before.as_ref() != Some(revision)
-    {
-        // The commit scheduled a subscription poll; drain it so
-        // subscribers see the change as an incremental delta. Without
-        // this, a committing `/evaluate` leaves the delta uncomputed —
-        // the branch broadcast below still fires, so UIs reconnect and
-        // re-render a STALE snapshot instead of applying the new value
-        // (mirrors the drain `/transact` does after its commit).
-        tonk_state
+    let (response, transients) = {
+        // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
+        // a single write-lock holder stalls every new reader — a boot-time evaluate
+        // (or the editor's auto-evaluate) blocked every concurrent `query` for its
+        // whole duration. `evaluate_on_branch` reaches the branch through the reactor
+        // (its own per-branch locks) and never mutates `TonkState`, so shared access
+        // suffices — same as `query`/`transact`/`sync`. The committing path serializes
+        // on the branch transactor itself (see `evaluate_on_branch`).
+        let tonk_state = state.read().await;
+        let tonk_branch = tonk_state
             .reactor
-            .run_scheduled_polls(&tonk_state.operator)
-            .await;
+            .repository(&path.repo)
+            .branch(&path.branch);
+        let (response, transients) =
+            evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
 
-        broadcast(
-            &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
-            &Notification {
-                branch: path.branch.clone(),
-                revision: revision.clone(),
-            },
-        );
-        broadcast(
-            crate::broadcast::LOCAL_COMMIT_CHANNEL,
-            &Notification {
-                branch: path.branch.clone(),
-                revision: revision.clone(),
-            },
-        );
+        // A commit moves the branch head. Announce it on the branch's
+        // channel so subscribed UIs refresh their revision/sync-state
+        // badges without a full refetch (which would tear down the
+        // editor). Pure queries and dry runs leave `revision_after ==
+        // revision_before`, so they announce nothing.
+        if let Some(revision) = &response.0.revision_after
+            && response.0.revision_before.as_ref() != Some(revision)
+        {
+            // The commit scheduled a subscription poll; drain it so
+            // subscribers see the change as an incremental delta. Without
+            // this, a committing `/evaluate` leaves the delta uncomputed —
+            // the branch broadcast below still fires, so UIs reconnect and
+            // re-render a STALE snapshot instead of applying the new value
+            // (mirrors the drain `/transact` does after its commit).
+            tonk_state
+                .reactor
+                .run_scheduled_polls(&tonk_state.operator)
+                .await;
+
+            broadcast(
+                &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
+                &Notification {
+                    branch: path.branch.clone(),
+                    revision: revision.clone(),
+                },
+            );
+            broadcast(
+                crate::broadcast::LOCAL_COMMIT_CHANNEL,
+                &Notification {
+                    branch: path.branch.clone(),
+                    revision: revision.clone(),
+                },
+            );
+        }
+        (response, transients)
+    };
+
+    // Mark the repo dirty so the next sync drain pushes the new commits —
+    // only when the commit actually moved the tree, mirroring `/transact`.
+    if response.0.revision_before.as_ref().map(|r| &r.tree)
+        != response.0.revision_after.as_ref().map(|r| &r.tree)
+    {
+        let tonk_state = state.read().await;
+        tonk_state
+            .sync_queue
+            .mark_dirty(&path.repo, super::transact::now_millis());
     }
-    result
+
+    // Dispatch the document's transient commands, mirroring `/transact`:
+    // detached so a slow handler never delays the response, with the
+    // origin carrying the branch this commit landed in and the client
+    // that asked.
+    if let Some(transients) = transients {
+        let origin = super::CommandOrigin {
+            repo: path.repo,
+            branch: path.branch,
+            client: client.map(|Extension(id)| id),
+        };
+        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+    }
+    Ok(response)
 }
 
 /// `POST /api/profile/branch/{branch}/evaluate`
@@ -196,40 +231,70 @@ pub async fn evaluate_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileEvaluatePath>,
     axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
+    client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     log!("evaluate profile branch={}", path.branch);
-    // Read lock — see [`evaluate`] for why a write lock here serialized every
-    // concurrent request behind a commit.
-    let tonk_state = state.read().await;
-    let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
-
-    // Same durable-commit gate as [`evaluate`]: pure queries and dry
-    // runs leave the head unchanged and announce nothing. The profile
-    // routes have no per-endpoint announcement to mirror, so only the
-    // cross-cutting local-commit channel is posted.
-    if let Ok(Json(response)) = &result
-        && let Some(revision) = &response.revision_after
-        && response.revision_before.as_ref() != Some(revision)
+    // Same write boundary as `transact_profile`: a sealed guest is bound
+    // to its view's {repo, branch} and must not write the profile. A
+    // dry run (`transact=false`) commits nothing, so only the committing
+    // form is refused.
+    if query.transact
+        && let Some(Extension(client_id)) = &client
     {
-        // Drain the poll the commit scheduled so subscribers get the
-        // incremental delta (see the note in [`evaluate`]).
-        tonk_state
-            .reactor
-            .run_scheduled_polls(&tonk_state.operator)
-            .await;
-
-        broadcast(
-            crate::broadcast::LOCAL_COMMIT_CHANNEL,
-            &Notification {
-                branch: path.branch.clone(),
-                revision: revision.clone(),
-            },
-        );
+        let bindings = state.read().await.view_bindings.clone();
+        if bindings.read().await.contains_key(client_id) {
+            return Err(TonkWorkerError::Forbidden(
+                "sealed guests may not write the profile branch".into(),
+            ));
+        }
     }
-    result
+    let (response, transients) = {
+        // Read lock — see [`evaluate`] for why a write lock here serialized every
+        // concurrent request behind a commit.
+        let tonk_state = state.read().await;
+        let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
+        let (response, transients) =
+            evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
+
+        // Same durable-commit gate as [`evaluate`]: pure queries and dry
+        // runs leave the head unchanged and announce nothing. The profile
+        // routes have no per-endpoint announcement to mirror, so only the
+        // cross-cutting local-commit channel is posted.
+        if let Some(revision) = &response.0.revision_after
+            && response.0.revision_before.as_ref() != Some(revision)
+        {
+            // Drain the poll the commit scheduled so subscribers get the
+            // incremental delta (see the note in [`evaluate`]).
+            tonk_state
+                .reactor
+                .run_scheduled_polls(&tonk_state.operator)
+                .await;
+
+            broadcast(
+                crate::broadcast::LOCAL_COMMIT_CHANNEL,
+                &Notification {
+                    branch: path.branch.clone(),
+                    revision: revision.clone(),
+                },
+            );
+        }
+        (response, transients)
+    };
+
+    // Dispatch transient commands with the empty-repo origin profile
+    // commits carry — mirroring `transact_profile`.
+    if let Some(transients) = transients {
+        let origin = super::CommandOrigin {
+            repo: String::new(),
+            branch: path.branch,
+            client: client.map(|Extension(id)| id),
+        };
+        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+    }
+    Ok(response)
 }
 
 /// Builds the facts recording a seed install, given the version its
@@ -308,12 +373,17 @@ async fn stage_and_publish(
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is
 /// the only difference between the two routes.
+///
+/// Alongside the response, returns the transient facts (commands) the
+/// committed document dispatched — `None` for dry runs, pure queries,
+/// and documents that carried no transients. The caller hands them to
+/// the post-commit command dispatcher, exactly as `/transact` does.
 async fn evaluate_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
     body: Bytes,
     query: EvaluateQuery,
-) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
     evaluate_on_branch_with(tonk_state, tonk_branch, body, query, Vec::new(), None).await
 }
 
@@ -346,7 +416,7 @@ async fn evaluate_on_branch_with<'a>(
     query: EvaluateQuery,
     retract: Vec<crate::router::claim::RawClaim>,
     record: Option<SeedRecord<'_>>,
-) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
@@ -426,16 +496,21 @@ async fn evaluate_on_branch_with<'a>(
         // pre-mutation matches double as "after". Zero out `claims` so the
         // response reflects what *did* commit (nothing) — the editor's
         // auto-evaluate relies on this to know the branch is untouched.
+        // Nothing committed means nothing dispatches either: a dry run's
+        // transients die with the dropped transaction.
         let _ = matches_after;
         let mut commits = evaluated.commits;
         commits.claims = 0;
-        return Ok(Json(EvaluateResponse {
-            revision_before: revision_before.clone(),
-            revision_after: revision_before,
-            matches_before: evaluated.matches.clone(),
-            matches_after: evaluated.matches,
-            commits,
-        }));
+        return Ok((
+            Json(EvaluateResponse {
+                revision_before: revision_before.clone(),
+                revision_after: revision_before,
+                matches_before: evaluated.matches.clone(),
+                matches_after: evaluated.matches,
+                commits,
+            }),
+            None,
+        ));
     }
     drop(evaluated);
 
@@ -464,6 +539,7 @@ async fn evaluate_on_branch_with<'a>(
         matches_after,
         matches_before,
         commits,
+        transients,
         eval_ms,
         matches_ms,
         commit_ms,
@@ -474,9 +550,11 @@ async fn evaluate_on_branch_with<'a>(
                 evaluate_once().await?;
             // Extract what the response needs before the commit consumes the
             // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
-            // by value).
+            // by value). The transients mirror is what post-commit command
+            // dispatch runs on — the commit sweeps them from the transaction.
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
+            let transients = evaluated.transients;
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
@@ -486,6 +564,7 @@ async fn evaluate_on_branch_with<'a>(
                         matches_after,
                         matches_before,
                         commits,
+                        transients,
                         eval_ms,
                         matches_ms,
                         t_commit.elapsed().as_millis(),
@@ -534,13 +613,16 @@ async fn evaluate_on_branch_with<'a>(
         let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
     }
 
-    Ok(Json(EvaluateResponse {
-        revision_before,
-        revision_after: Some(revision_after),
-        matches_before,
-        matches_after,
-        commits,
-    }))
+    Ok((
+        Json(EvaluateResponse {
+            revision_before,
+            revision_after: Some(revision_after),
+            matches_before,
+            matches_after,
+            commits,
+        }),
+        (!transients.is_empty()).then_some(transients),
+    ))
 }
 
 /// Bridge-callable wrapper around the evaluate pipeline. Runs
@@ -560,7 +642,29 @@ pub async fn evaluate_body(
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
-        .map(|Json(r)| r)
+        .map(|(Json(r), _)| r)
+}
+
+/// [`evaluate_body`], additionally returning the transient facts
+/// (commands) the committed document dispatched. The bridge's evaluate
+/// handler uses this so a sealed guest's document triggers command
+/// dispatch the same way the HTTP `/evaluate` route does; callers that
+/// evaluate authored documents with no commands (seeding, joins) keep
+/// using [`evaluate_body`].
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_body_with_transients(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    body: String,
+    transact: bool,
+) -> Result<(EvaluateResponse, Option<Changes>), TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
+    let query = EvaluateQuery { transact };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+        .await
+        .map(|(Json(r), transients)| (r, transients))
 }
 
 /// [`evaluate_body`], with a second commit that names the first's
@@ -591,7 +695,7 @@ pub async fn evaluate_body_recording(
         Some(record),
     )
     .await
-    .map(|Json(r)| r)
+    .map(|(Json(r), _)| r)
 }
 
 /// [`evaluate_body`], with `retract` folded into the same commit and a
@@ -615,7 +719,7 @@ pub async fn evaluate_with_retractions(
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch_with(tonk_state, tonk_branch, bytes, query, retract, Some(record))
         .await
-        .map(|Json(r)| r)
+        .map(|(Json(r), _)| r)
 }
 
 /// [`evaluate_profile_body`], with a second commit naming the first's
@@ -640,7 +744,7 @@ pub async fn evaluate_profile_body_recording(
         Some(record),
     )
     .await
-    .map(|Json(r)| r)
+    .map(|(Json(r), _)| r)
 }
 
 /// Like [`evaluate_body`], but against the **profile** repository's
@@ -661,7 +765,7 @@ pub async fn evaluate_profile_body(
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
-        .map(|Json(r)| r)
+        .map(|(Json(r), _)| r)
 }
 
 /// Project [`Parsed`] onto a successful syntax or a 400 error
@@ -906,6 +1010,54 @@ concept!: &person
             "rule should have produced one durable person row; got {:?}",
             query.matches_after[0].results,
         );
+    }
+
+    /// The evaluate pipeline must surface a committed document's
+    /// transient facts for post-commit command dispatch — the seam
+    /// the route and the bridge hand to `router::command::dispatch`,
+    /// mirroring `/transact`. A durable document and a dry run
+    /// surface none.
+    #[dialog_common::test]
+    async fn it_returns_transients_for_command_dispatch() {
+        let (state, repo) = state_with_repo("test-evaluate-transients").await;
+        let repo = repo.as_str();
+
+        evaluate(&state, repo, CONCEPTS, true).await;
+
+        let guard = state.read().await;
+        let instance = r#"person-entered!:
+  this: did:key:zPersonEnteredDispatch
+  name: "Dispatch Joe"
+  age: 9
+"#;
+        let (_, transients) =
+            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), true)
+                .await
+                .expect("transient instance evaluates");
+        assert!(
+            transients.is_some(),
+            "a committed transient-concept assertion must surface for dispatch",
+        );
+
+        let durable = r#"person!:
+  this: did:key:zPersonDurableDispatch
+  name: "Durable Joe"
+  age: 9
+"#;
+        let (_, transients) =
+            super::evaluate_body_with_transients(&guard, repo, "main", durable.to_owned(), true)
+                .await
+                .expect("durable instance evaluates");
+        assert!(
+            transients.is_none(),
+            "a durable-only document dispatches nothing",
+        );
+
+        let (_, transients) =
+            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), false)
+                .await
+                .expect("dry run evaluates");
+        assert!(transients.is_none(), "a dry run dispatches nothing");
     }
 
     /// A pure-query document must not advance the branch even with

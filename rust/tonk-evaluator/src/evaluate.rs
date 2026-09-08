@@ -29,7 +29,7 @@
 //!     .evaluate(branch.transaction())
 //!     .perform(env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
-//! // evaluated.transients — bucket to hand to `induce`
+//! // evaluated.transients — dispatched transient facts (commands), for post-commit dispatch
 //! // evaluated.matches — pre-mutation per-expression match blocks
 //! // evaluated.commits — claim count + entity bindings for the response envelope
 //! // evaluated.analysis — re-run queries against the overlay to get post-mutation matches
@@ -54,7 +54,7 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Entity, Value};
+use dialog_artifacts::{Changes, Entity, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -384,6 +384,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // reads and commit-time induction, never committed).
         let transient_entities = document.transient_entities();
         let mut claim_count = 0usize;
+        // Every dispatched transient, mirrored into a bucket the caller
+        // can hand to a post-commit command dispatcher. The commit sweeps
+        // transients from the transaction, so this mirror is the only
+        // post-evaluate view of which commands the document carried.
+        let mut transients = Changes::new();
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
@@ -423,7 +428,10 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 claim_count += 2 + tonk_schema::rule::reads_entities(rule).len();
                             }
                             if dispatch {
-                                txn = txn.dispatch(plan);
+                                let mut command = Changes::new();
+                                command.assert(plan);
+                                txn = txn.dispatch(command.clone());
+                                transients.assert(command);
                             } else {
                                 txn = txn.assert(plan);
                             }
@@ -479,6 +487,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
             matches,
             commits,
             analysis,
+            transients,
         })
     }
 }
@@ -506,6 +515,12 @@ pub struct Evaluated<'a> {
     /// against the transaction overlay to compute post-mutation
     /// matches.
     pub analysis: Analysis<Syntax>,
+    /// The transient facts (commands) the document dispatched into
+    /// the transaction. The commit sweeps them from the transaction,
+    /// so a caller that dispatches commands post-commit reads them
+    /// here — same contract as the reactor builder's transient
+    /// bucket on the `/transact` path.
+    pub transients: Changes,
 }
 
 impl<'a> Evaluated<'a> {
@@ -1425,6 +1440,97 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
+        Ok(())
+    }
+
+    /// A transient-concept assertion must mirror into
+    /// [`Evaluated::transients`] — the bucket post-commit command
+    /// dispatch runs on — while a durable assertion must not. The
+    /// commit sweeps transients from the transaction, so this mirror
+    /// is the only post-evaluate view of the commands a document
+    /// carried.
+    #[dialog_common::test]
+    async fn it_mirrors_dispatched_transients_for_command_dispatch() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit 1: a transient `ping` concept and a durable `note`
+        // concept.
+        let setup = r#"concept!: &ping
+  transient:
+  with:
+    message:
+      the: xyz.tonk.ping/message
+      as: text
+      cardinality: one
+      description: "message"
+
+attribute!: &note-body
+  description: "body"
+  the: xyz.tonk.note/body
+  as: text
+  cardinality: one
+
+concept!: &note
+  description: "A note"
+  with:
+    body: note-body
+"#;
+        let parsed = parse(setup);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate failed: {e}"))?
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit failed: {e}"))?;
+
+        // A transient instance mirrors its facts.
+        let parsed = parse("ping!:\n  message: \"hello\"\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("ping evaluate failed: {e}"))?;
+        assert!(
+            !evaluated.transients.is_empty(),
+            "transient assert must mirror into Evaluated::transients",
+        );
+        let attributes: Vec<String> = evaluated
+            .transients
+            .iter()
+            .map(|(_, attribute, _)| attribute.to_string())
+            .collect();
+        assert!(
+            attributes.iter().any(|a| a == "xyz.tonk.ping/message"),
+            "mirror carries the transient's facts, got {attributes:?}",
+        );
+
+        // A durable instance mirrors nothing.
+        let parsed = parse("note!:\n  body: \"kept\"\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("note evaluate failed: {e}"))?;
+        assert!(
+            evaluated.transients.is_empty(),
+            "durable asserts must not mirror into Evaluated::transients",
+        );
+
         Ok(())
     }
 

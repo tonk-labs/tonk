@@ -192,7 +192,7 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
 
 /// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
 /// in the SW event context; native (tests) has no clock dependency, so 0.
-fn now_millis() -> f64 {
+pub(super) fn now_millis() -> f64 {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         js_sys::Date::now()
@@ -203,10 +203,11 @@ fn now_millis() -> f64 {
     }
 }
 
-/// Run [`super::dispatch`] as background work so it never blocks the transact
-/// response. The service worker attaches the dispatch promise to the originating
-/// fetch event; native builds run it inline so tests remain deterministic.
-async fn spawn_dispatch(
+/// Run [`super::dispatch`] as background work so it never blocks the
+/// triggering response (shared by the transact and evaluate routes). The
+/// service worker attaches the dispatch promise to the originating fetch
+/// event; native builds run it inline so tests remain deterministic.
+pub(super) async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,
