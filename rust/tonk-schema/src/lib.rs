@@ -65,8 +65,8 @@ pub use sync::*;
 
 pub mod account;
 pub use account::{
-    AccountActive, AccountDisplayName, AccountRegistered, AccountSealedInbox, AccountSuspended,
-    CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
+    AccountActive, AccountDisplayName, AccountLinking, AccountRegistered, AccountSealedInbox,
+    AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
 };
 
 pub mod custody;

@@ -614,6 +614,14 @@ async fn complete_login(
         .unwrap_or_default();
     let delegation_hex = ceremony.delegation_hex.clone();
     let endpoint = endpoint.to_owned();
+    let account_entity = {
+        use tonk_schema::prelude::DidExt as _;
+        root.did().this()
+    };
+    // Say what is happening BEFORE the reply goes out, so the Hub the
+    // page renders next already knows the account is on its way rather
+    // than showing an empty stack under a "link an account" door.
+    stamp_account_linking(&tonk, account_entity.clone(), true).await;
     // Release the caller's read guard before the background task takes
     // its own. Reads share, but a writer queued between the two would
     // block behind this one while the task waits behind the writer.
@@ -635,13 +643,53 @@ async fn complete_login(
         .await
         {
             log!("login: the account link did not attach: {error}");
+            stamp_account_linking(&deferred, account_entity, false).await;
             return;
         }
         if let Err(error) = crate::router::account::finish_link(&deferred).await {
             log!("login: the account link did not finish: {error}");
         }
+        stamp_account_linking(&deferred, account_entity, false).await;
     });
     Ok(profile_changed)
+}
+
+/// Assert or clear the "linking this account" marker on profile main.
+///
+/// Overlay: the window it describes is temporary, and a worker that dies
+/// mid-link should leave nothing behind. Cleared by dropping the
+/// entity's overlay facts rather than retracting — an overlay retract
+/// records a tombstone beside the assertion instead of removing it, so
+/// the marker would still read back.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn stamp_account_linking(
+    tonk: &crate::worker::TonkState,
+    account: dialog_artifacts::Entity,
+    linking: bool,
+) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("account linking stamp: open profile main: {error}");
+            return;
+        }
+    };
+    if linking {
+        main.state
+            .assert_overlay(tonk_schema::AccountLinking::new(account));
+    } else {
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &account);
+    }
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Seal a fresh account secret under this custodian.

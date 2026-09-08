@@ -26,8 +26,38 @@ pub(crate) fn trigger_label(active_provider: Option<&str>) -> &'static str {
     }
 }
 
+/// What the trigger reads while this device is linking the account.
+///
+/// A separate word from both other states: the person is past the door
+/// (so not "link an account") and the account is not here yet (so not its
+/// name). Login finishes when custody is recovered, which makes this
+/// window real rather than theoretical.
+pub(crate) const LINKING_LABEL: &str = "linking account";
+
 #[cfg(test)]
 mod tests {
+    /// The three states the cell can be in are three different words.
+    ///
+    /// The bug this pins: a profile mid-link has no provider yet, so the
+    /// roster's answer is "link an account" — offering a door the person
+    /// already walked through, over a stack with nothing in it. Linking
+    /// has to be its own word, distinct from both the offer and the
+    /// account's name.
+    #[test]
+    fn it_names_linking_apart_from_the_offer_and_the_account() {
+        assert_eq!(super::LINKING_LABEL, "linking account");
+        assert_ne!(
+            super::LINKING_LABEL,
+            super::trigger_label(Some("false")),
+            "a link in flight must not read as an offer to start one"
+        );
+        assert_ne!(
+            super::LINKING_LABEL,
+            super::trigger_label(None),
+            "nor as a settled account"
+        );
+    }
+
     #[test]
     fn it_asks_a_provider_free_profile_to_link() {
         assert!(super::trigger_asks_to_link(Some("false")));

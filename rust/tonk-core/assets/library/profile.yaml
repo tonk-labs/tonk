@@ -258,6 +258,18 @@ view!:
           <ui-hub-account></ui-hub-account>
 
         <div class="stack chrome" data-spaces-view aria-label="spaces">
+          <!-- While the account is linking, the stack says so instead of
+               claiming there is nothing here. Login finishes as soon as
+               custody is recovered, so this window is real: signed in,
+               spaces not here yet. The display renders only while the
+               `account/linking` fact exists — its slots are empty, so
+               once the link settles the line simply goes and `.sempty`
+               (or the rows that arrived) takes over. -->
+          <tonk-display model=tonk:account/linking>
+            <span slot="no-entity"></span>
+            <span slot="no-model"></span>
+            <span slot="loading"></span>
+          </tonk-display>
           <div class="sempty">no spaces yet</div>
           <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
                link, so the verbs and the confirm cluster travel with the row
@@ -1371,6 +1383,39 @@ concept!: &account/registered
 
 # Activation. Its PRESENCE is what makes an account served; nothing has
 # to overwrite the registration to say so.
+# The account is being LINKED on this device right now — overlay-only.
+# Login finishes as soon as custody is recovered, so between then and the
+# account branch arriving there is a real window where the person is
+# signed in but their spaces are not here yet. Without this the Hub had
+# nothing to say in that window: it offered "link an account" (a door
+# already walked through) over an empty stack (a claim nobody had
+# established).
+#
+# Presence is the whole signal, and overlay because the window is
+# temporary: a worker that dies mid-link leaves nothing to clear.
+concept!: &account/linking
+  this: tonk:account/linking
+  description: This device is linking the account right now.
+  # ENTITY: the account's own DID.
+  with:
+    linking:
+      description: Always true while the link runs; dropped when it settles.
+      the: xyz.tonk.account/linking
+      cardinality: one
+      as: boolean
+
+# What the stack shows while the account is linking: the fact, with the
+# house pulse. Not a spinner and not a percentage — the wireframes' rule
+# is that waiting states what it is doing.
+view!:
+  this: tonk:account/linking
+  show:
+    ui: |
+      <div class="sempty slinking">
+        <span>spaces are on the way</span>
+        <span class="tonk-pulse" aria-hidden="true"></span>
+      </div>
+
 concept!: &account/active
   this: tonk:account/active
   description: The account confirmed its address and is served.

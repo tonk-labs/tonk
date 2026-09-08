@@ -24,6 +24,10 @@ const NAME_TAG: &str = "ui-hub-account:name";
 
 /// The registration subscription tag — the "an account is linked" signal.
 const REGISTERED_TAG: &str = "ui-hub-account:registered";
+/// The subscription that says this device is linking the account right
+/// now — the window between login finishing (custody recovered) and the
+/// account branch arriving.
+const LINKING_TAG: &str = "ui-hub-account:linking";
 
 /// Sent into the sealed guest when its top-page account ceremony is gone.
 const REGISTRATION_CLOSED: &str = "tonk:registration-closed";
@@ -71,7 +75,14 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
         .find(|profile| profile.active || profile.profile_name == response.active);
     if let Some(active) = active {
         if let Ok(Some(label)) = this.query_selector("[data-account-label]") {
-            label.set_text_content(Some(if active.provider.is_some() {
+            // A link in flight outranks the roster's answer. The roster
+            // reads a profile that has no provider YET and would offer
+            // "link an account" — a door already walked through, and the
+            // exact wrong thing to say while the link is running.
+            let linking = this.has_attribute("data-account-linking");
+            label.set_text_content(Some(if linking {
+                crate::hub_account::LINKING_LABEL
+            } else if active.provider.is_some() {
                 profile_label(active)
             } else {
                 crate::hub_account::trigger_label(Some("false"))
@@ -196,10 +207,16 @@ impl CustomElement for UiHubAccount {
         let host = this.clone();
         let name_reset: FrameClosure =
             Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
-                if frame_tag(&opts).as_deref() == Some(NAME_TAG)
-                    && let Some(name) = read_name_from_frame(&payload)
-                {
-                    apply_account_name(&host, &name);
+                match frame_tag(&opts).as_deref() {
+                    Some(NAME_TAG) => {
+                        if let Some(name) = read_name_from_frame(&payload) {
+                            apply_account_name(&host, &name);
+                        }
+                    }
+                    // Presence is the answer: a row means the link is in
+                    // flight, an empty frame means it settled.
+                    Some(LINKING_TAG) => apply_account_linking(&host, frame_has_row(&payload)),
+                    _ => {}
                 }
             }));
         let _ = Reflect::set(this, &"__tonkReset".into(), name_reset.as_ref());
@@ -209,10 +226,14 @@ impl CustomElement for UiHubAccount {
         let generation = self.generation.clone();
         let name_update: FrameClosure =
             Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
-                if frame_tag(&opts).as_deref() == Some(NAME_TAG)
-                    && let Some(name) = read_name_from_delta(&payload)
-                {
-                    apply_account_name(&host, &name);
+                match frame_tag(&opts).as_deref() {
+                    Some(NAME_TAG) => {
+                        if let Some(name) = read_name_from_delta(&payload) {
+                            apply_account_name(&host, &name);
+                        }
+                    }
+                    Some(LINKING_TAG) => apply_account_linking(&host, frame_has_row(&payload)),
+                    _ => {}
                 }
                 // Something about the account changed (it linked, or it was
                 // renamed): re-read the roster so the trigger and the rows
@@ -668,6 +689,7 @@ fn subscribe_account_signals(this: &HtmlElement, subscriptions: Rc<RefCell<Vec<S
         for (tag, body) in [
             (NAME_TAG, account_name_query_body()),
             (REGISTERED_TAG, account_registered_query_body()),
+            (LINKING_TAG, account_linking_query_body()),
         ] {
             match body {
                 Ok(body) => {
@@ -693,6 +715,23 @@ fn frame_tag(opts: &JsValue) -> Option<String> {
     Reflect::get(opts, &"tag".into())
         .ok()
         .and_then(|tag| tag.as_string())
+}
+
+/// The subscribe body for the "linking right now" marker, in directory
+/// mode (`this` unbound — this element does not know the account
+/// subject, and the profile branch carries at most one such row).
+///
+/// Presence is the whole answer: the row exists only while the link is in
+/// flight, so a frame carrying it means "linking" and an empty frame
+/// means the link settled.
+fn account_linking_query_body() -> Result<JsValue, String> {
+    let body = r#"{
+      "predicate": { "with": { "linking": {
+        "the": "xyz.tonk.account/linking", "as": "Boolean", "cardinality": "one"
+      } } },
+      "terms": { "this": { "?": { "name": "this" } }, "linking": { "?": { "name": "linking" } } }
+    }"#;
+    JSON::parse(body).map_err(|e| format!("query JSON parse: {e:?}"))
 }
 
 /// The subscribe body for the account registration stamp, in directory mode.
@@ -756,6 +795,34 @@ fn read_name_field(row: &JsValue) -> Option<String> {
         .and_then(|fields| Reflect::get(&fields, &"name".into()).ok())
         .and_then(|v| v.as_string())
         .filter(|name| !name.trim().is_empty())
+}
+
+/// Whether a subscription frame carries any row at all.
+///
+/// Enough for a presence fact, where the row's fields say nothing the
+/// caller needs — only that it exists.
+fn frame_has_row(payload: &JsValue) -> bool {
+    js_sys::Array::from(payload).length() > 0
+}
+
+/// The account is linking (or has stopped).
+///
+/// While it is, the cell states the operation rather than offering "link
+/// an account" — a door the person already walked through, over a stack
+/// that has nothing in it yet. The label is restored by the roster read
+/// or the name subscription once the link settles, so clearing here only
+/// has to drop the marker attribute.
+fn apply_account_linking(this: &HtmlElement, linking: bool) {
+    if linking {
+        let _ = this.set_attribute("data-account-linking", "");
+        set_text(
+            this,
+            "[data-account-label]",
+            crate::hub_account::LINKING_LABEL,
+        );
+    } else {
+        let _ = this.remove_attribute("data-account-linking");
+    }
 }
 
 /// A live account name arrived: the profile is linked. Paint the name and

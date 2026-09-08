@@ -1394,6 +1394,15 @@ pub mod account {
     #[cardinality(one)]
     pub struct DisplayName(pub String);
 
+    /// Whether this device is linking the account right now. Overlay-only:
+    /// the fact's PRESENCE is the state, so it is dropped when the link
+    /// settles rather than set false, and a worker that dies mid-link
+    /// leaves nothing to clear.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct Linking(pub bool);
+
     /// The account's registration state with the access service, as one
     /// of `Registered`, `Active`, or `Suspended`.
     ///
