@@ -1216,7 +1216,7 @@ async fn run_invite(
         space_name.as_deref(),
         &remote_execution.access_url,
     )
-    .await;
+    .await?;
 
     let authorization = Authorization {
         this: subject_entity.clone(),
@@ -1396,14 +1396,9 @@ async fn publish_share_blocked<'a>(
 /// it one definition and lets it be shortened.
 ///
 /// Shortening is best-effort: a failed `PUT /@` (offline, no service
-/// deployed, a non-2xx) logs and yields the long URL, which is fully
-/// functional. Minting must not fail because a convenience failed.
-///
-/// The origin comes from the service worker's own scope, which is the only
-/// origin that can serve the shortcut's relative redirect back — and the
-/// origin the recipient will actually load. It is read here rather than
-/// taken from the page because a sealed guest's `window.location.origin` is
-/// the opaque `"null"`.
+/// deployed, a non-2xx, a non-conforming answer) logs and yields the long
+/// URL, which is fully functional. Minting must not fail because a
+/// convenience failed.
 async fn invite_url(
     proof: &str,
     remote: &str,
@@ -1411,36 +1406,33 @@ async fn invite_url(
     space_key: &str,
     space_name: Option<&str>,
     access_url: &Url,
-) -> String {
+) -> Result<String, TonkWorkerError> {
     // The link lives on the host serving the SPACE — the origin derived
     // from its access endpoint (the same derivation the CLI uses) — not
     // on whatever surface happened to mint it. That host is where the
     // space's members already sync, and it is the origin whose
     // same-origin shortcut store can answer the short link's relative
-    // redirect. Only when the endpoint yields no origin does the
-    // hardcoded default base remain — and that base is never PUT to,
-    // keeping offline mints and tests network-free.
-    let base = match tonk_invite::base_url_for_remote(access_url.as_str()) {
-        Ok(base) => Some(base),
-        Err(error) => {
-            log!("invite: no base from the space's remote: {error:#}");
-            None
-        }
-    };
-    let long = long_invite_url(base.as_deref(), proof, remote, seed, space_key, space_name);
-    if base.is_none() {
-        return long;
-    }
+    // redirect. There is no fallback base: `run_invite` has already
+    // refused a space without a usable remote (that is what the share
+    // bar's login/attach prompts are), so an endpoint that yields no
+    // origin here is a bug worth failing on, not a case to paper over
+    // with a link rooted somewhere the space is not served.
+    let base = tonk_invite::base_url_for_remote(access_url.as_str()).map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "the space's access endpoint yields no invite base: {error:#}"
+        ))
+    })?;
+    let long = long_invite_url(&base, proof, remote, seed, space_key, space_name);
     // Shortening is a convenience against the same host: a host that
-    // does not provide it (or answers wrongly — `short_url` verifies
-    // the content address) degrades to the fully functional long URL.
-    match super::create_invite::shorten(&long).await {
+    // does not provide it (or answers wrongly — the content-address and
+    // redirect-probe checks) degrades to the fully functional long URL.
+    Ok(match super::create_invite::shorten(&long).await {
         Ok(short) => short,
         Err(e) => {
             log!("invite shortcut failed; using the full URL: {e}");
             long
         }
-    }
+    })
 }
 
 /// The service worker's own origin, or `None` outside a worker scope.
@@ -1473,11 +1465,10 @@ pub(super) fn worker_origin() -> Option<String> {
 
 /// Assemble the long (un-shortened) invite URL.
 ///
-/// `base` is the resolved `…/join` base — the worker's own origin or the
-/// origin serving the space (see [`invite_url`]); with neither, it falls
-/// back to the same hardcoded base the HTTP mint path defaults to. Both
-/// forms then receive an organic channel and hashed space token before
-/// being returned.
+/// `base` is the resolved `…/join` base on the host serving the space —
+/// required, because a space with no serving host was refused before the
+/// mint ever got here (see [`invite_url`]). The URL then receives an
+/// organic channel and hashed space token before being returned.
 ///
 /// `remote` is already a ready-to-append `&remote=…` suffix and is empty for a
 /// modern delegation whose signed metadata names the shareable remote (see
@@ -1490,7 +1481,7 @@ pub(super) fn worker_origin() -> Option<String> {
 /// absent name appends nothing — the recipient's "Untitled" fallback beats
 /// seeding an empty label.
 fn long_invite_url(
-    base: Option<&str>,
+    base: &str,
     proof: &str,
     remote: &str,
     seed: &str,
@@ -1506,16 +1497,7 @@ fn long_invite_url(
             format!("&{encoded}")
         })
         .unwrap_or_default();
-    let base = match base {
-        Some(base) => format!("{base}?access={proof}{remote}{name}#{seed}"),
-        None => {
-            log!("invite: no origin and no remote to derive one from; using the default base");
-            format!(
-                "{}?access={proof}{remote}{name}#{seed}",
-                tonk_invite::DEFAULT_BASE_URL
-            )
-        }
-    };
+    let base = format!("{base}?access={proof}{remote}{name}#{seed}");
     match tonk_analytics::launch::space_referral_url(&base, space_key) {
         Ok(url) => url,
         Err(error) => {
@@ -7998,7 +7980,7 @@ block/insert!:
     #[dialog_common::test]
     async fn it_builds_the_invite_url_on_the_resolved_base() {
         let url = super::long_invite_url(
-            Some("https://tonk.example/join"),
+            "https://tonk.example/join",
             "PROOF",
             "&remote=https%3A%2F%2Fhub%2Fucan%2F",
             "SEED",
@@ -8049,14 +8031,15 @@ block/insert!:
         );
     }
 
-    /// A local-only repo has no sync endpoint, so the invite carries no
-    /// `&remote=`. The suffix is empty rather than absent-and-malformed:
-    /// `Invite::parse_url` rejects an empty `remote=`, so "no remote" has
-    /// to append *nothing*.
+    /// A modern delegation carries its endpoint in signed meta, so the
+    /// `remote` suffix is empty — and empty must append *nothing*:
+    /// `Invite::parse_url` rejects an empty `remote=`. (A repo with no
+    /// endpoint at all never reaches the URL builder — the share
+    /// pipeline refuses it first.)
     #[dialog_common::test]
-    async fn it_omits_the_remote_for_a_local_only_repo() {
+    async fn it_omits_the_remote_when_the_chain_carries_the_endpoint() {
         let url = super::long_invite_url(
-            Some("https://tonk.example/join"),
+            "https://tonk.example/join",
             "PROOF",
             "",
             "SEED",
@@ -8069,22 +8052,5 @@ block/insert!:
         assert!(url.contains("tonk_space="));
         assert!(!url.contains("remote="));
         assert!(!url.contains("name="), "no name appends nothing: {url}");
-    }
-
-    /// Outside a worker scope there is no origin to build on (and no
-    /// service to shorten against), so the URL falls back to the default
-    /// base — still well-formed and redeemable, never a broken link.
-    #[dialog_common::test]
-    async fn it_falls_back_to_the_default_base_without_an_origin() {
-        let url = super::long_invite_url(None, "PROOF", "", "SEED", "did:key:zSpace", None);
-        assert!(
-            url.starts_with(tonk_invite::DEFAULT_BASE_URL),
-            "expected the default base, got {url}",
-        );
-        assert!(
-            url.ends_with("#SEED"),
-            "the seed must still be the fragment"
-        );
-        assert!(url.contains("access=PROOF"));
     }
 }
