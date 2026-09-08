@@ -456,7 +456,7 @@ mod tests {
         } else {
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
         }
-        txn.commit().perform(operator).await?;
+        txn.commit().publish().perform(operator).await?;
         Ok(entity)
     }
 
@@ -513,6 +513,7 @@ mod tests {
                 entity: name::Referent(entity.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -600,6 +601,7 @@ mod tests {
                 entity: name::Referent(target.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 

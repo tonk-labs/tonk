@@ -251,6 +251,7 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
             name: tonk_schema::domain::repo::Name("garden".to_string()),
         })
         .commit()
+        .publish()
         .perform(&source.operator)
         .await?;
     tonk_cli::site::record_founder_membership(&source).await?;
@@ -338,6 +339,7 @@ async fn name_repository(site: &TonkSite, name: &str) -> Result<()> {
             name: tonk_schema::domain::repo::Name(name.to_string()),
         })
         .commit()
+        .publish()
         .perform(&site.operator)
         .await?;
     Ok(())

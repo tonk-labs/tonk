@@ -1286,6 +1286,7 @@ mod tests {
             txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("concept assertion commits");
@@ -1315,6 +1316,7 @@ mod tests {
                 .transaction()
                 .assert(rule)
                 .commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("deductive rule commits");

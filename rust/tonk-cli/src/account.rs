@@ -1099,6 +1099,7 @@ async fn retract_device_rows(
     if retracting {
         transaction
             .commit()
+            .publish()
             .perform(operator)
             .await
             .context("failed to retract the revoked device's rows")?;

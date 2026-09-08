@@ -382,6 +382,7 @@ mod tests {
             .transaction()
             .assert(&rule)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 

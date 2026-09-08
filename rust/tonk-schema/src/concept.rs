@@ -1834,6 +1834,7 @@ mod tests {
             )
             .assert(concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -1933,7 +1934,11 @@ mod tests {
         }
         let concept = AnonymousConcept::new(descriptor.clone());
         let concept_entity = concept.this.clone();
-        txn.assert(concept).commit().perform(&operator).await?;
+        txn.assert(concept)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
 
         let resolved = Concept::by_entity(concept_entity)
             .resolve(&Source::from(&branch), &operator)
@@ -2050,6 +2055,7 @@ mod tests {
             .assert(transient_concept)
             .assert(durable_concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2184,6 +2190,7 @@ mod tests {
             .assert(command)
             .assert(durable_concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2238,6 +2245,7 @@ mod tests {
             .transaction()
             .assert(the!("db.name/referent").of(id_alice).is(target.clone()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2323,6 +2331,7 @@ mod tests {
                 target: pointer::Target(page_v1.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2336,6 +2345,7 @@ mod tests {
                 target: pointer::Target(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2406,6 +2416,7 @@ mod tests {
                 target: pointer::Target(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2469,6 +2480,7 @@ mod tests {
                 entity: name::Referent(page_v1.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2480,6 +2492,7 @@ mod tests {
                 entity: name::Referent(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 

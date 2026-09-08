@@ -746,6 +746,7 @@ async fn perform_join(
             .transaction()
             .assert(changes)
             .commit()
+            .publish()
             .perform(&tonk.operator)
             .await
             .map_err(|error| {

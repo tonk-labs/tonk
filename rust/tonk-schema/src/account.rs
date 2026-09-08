@@ -194,7 +194,12 @@ mod tests {
         let (operator, profile) = helpers::test_operator_with_profile().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let base = repository.branch("base").open().perform(&operator).await?;
-        let base_revision = base.transaction().commit().perform(&operator).await?;
+        let base_revision = base
+            .transaction()
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
         let a = repository
             .branch("replica-a")
             .open()
@@ -214,11 +219,13 @@ mod tests {
         a.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Amber".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         b.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Violet".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -257,6 +264,7 @@ mod tests {
         b.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Cedar".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         a.pull().perform(&operator).await?;
@@ -296,6 +304,7 @@ mod tests {
                 100,
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -334,6 +343,7 @@ mod tests {
             .transaction()
             .assert(AccountActive::new(account.clone(), 200))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -373,6 +383,7 @@ mod tests {
             .transaction()
             .assert(AccountSuspended::new(account.clone(), "unpaid".into(), 300))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -419,6 +430,7 @@ mod tests {
             .transaction()
             .assert(AccountActive::new(account.clone(), 200))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         branch
@@ -430,6 +442,7 @@ mod tests {
                 100,
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 

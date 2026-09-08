@@ -69,6 +69,7 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
         .transaction()
         .assert(Name::of(alice).is("Alice".to_string()))
         .commit()
+        .publish()
         .perform(&operator)
         .await?;
 
@@ -163,6 +164,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         .transaction()
         .assert(Name::of(alice_entity).is("Alice".to_string()))
         .commit()
+        .publish()
         .perform(&alice_op)
         .await?;
     alice_branch.push().perform(&alice_op).await?;
@@ -211,6 +213,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         .transaction()
         .assert(Name::of(bob_entity).is("Bob".to_string()))
         .commit()
+        .publish()
         .perform(&bob_op)
         .await?;
     bob_branch.push().perform(&bob_op).await?;
@@ -288,6 +291,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
         .transaction()
         .assert(Name::of(blob_entity.clone()).is("vacation.png".to_string()))
         .commit()
+        .publish()
         .perform(&operator)
         .await?;
 

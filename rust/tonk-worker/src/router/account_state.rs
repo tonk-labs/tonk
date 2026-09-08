@@ -2333,6 +2333,7 @@ mod tests {
                 .transaction()
                 .retract(row)
                 .commit()
+                .publish()
                 .perform(&state.operator)
                 .await
                 .unwrap();

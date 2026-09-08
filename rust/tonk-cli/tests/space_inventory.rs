@@ -47,7 +47,11 @@ async fn add_space(
                 transaction.assert(MemberName::new(membership.this().clone(), name.to_owned()));
         }
     }
-    transaction.commit().perform(&site.operator).await?;
+    transaction
+        .commit()
+        .publish()
+        .perform(&site.operator)
+        .await?;
     Ok(site)
 }
 
@@ -183,6 +187,7 @@ async fn it_reports_a_malformed_row_without_losing_the_rest_of_the_roster() -> R
             role: tonk_schema::domain::membership::Role("tonk:archivist".parse()?),
         })
         .commit()
+        .publish()
         .perform(&site.operator)
         .await?;
     drop(session);
@@ -291,6 +296,7 @@ async fn it_claims_the_device_row_when_no_account_is_signed_in() -> Result<()> {
         .assert(membership.clone())
         .assert(MemberRole::founder(membership.this().clone()))
         .commit()
+        .publish()
         .perform(&site.operator)
         .await?;
 

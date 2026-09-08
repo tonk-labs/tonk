@@ -780,6 +780,7 @@ pub(crate) async fn retract_space_provider(
             .transaction()
             .retract(row)
             .commit()
+            .publish()
             .perform(&state.operator)
             .await
         {

@@ -86,6 +86,7 @@ pub async fn custody_space_seed(
             message.this(),
         ))
         .commit()
+        .publish()
         .perform(operator)
         .await
         .context("failed to record the custodied seed")?;
@@ -364,6 +365,7 @@ pub async fn rotate_from_onboarding(
                     .assert(replacement.message)
                     .assert(replacement.principal)
                     .commit()
+                    .publish()
                     .perform(&operator)
                     .await
                     .map(|_| ())

@@ -147,7 +147,7 @@ where
                 .assert(TrackingBranch::new(&local, &upstream));
         }
     }
-    transaction.commit().perform(env).await?;
+    transaction.commit().publish().perform(env).await?;
     Ok(())
 }
 

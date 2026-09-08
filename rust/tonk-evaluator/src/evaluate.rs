@@ -63,7 +63,7 @@ use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::attribute::Relation;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{RemoteSite, Transaction};
+use dialog_repository::{Branch, RemoteSite, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -291,11 +291,11 @@ pub trait SyntaxEvaluateExt {
     /// baked into its overlay. The chain does *not* commit —
     /// the caller decides whether to commit, drop, or compose
     /// further on `Evaluated::txn`.
-    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
+    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a> {
+    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
         Evaluate { syntax: self, txn }
     }
 }
@@ -304,7 +304,7 @@ impl SyntaxEvaluateExt for Syntax {
 /// transaction until `.perform(env)` consumes them.
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
-    txn: Transaction<'a>,
+    txn: Transaction<&'a Branch>,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
@@ -495,7 +495,7 @@ pub struct Evaluated<'a> {
     /// Transaction with the document's mutations + induction
     /// applied to its overlay. Caller drives commit / drop /
     /// further composition.
-    pub txn: Transaction<'a>,
+    pub txn: Transaction<&'a Branch>,
     /// Pre-mutation per-source-expression match blocks. For
     /// post-mutation matches, call [`Self::matches_after`].
     pub matches: Vec<QueryMatchBlock>,
@@ -534,11 +534,11 @@ impl<'a> Evaluated<'a> {
     /// Convenience: hand the underlying transaction to dialog's
     /// commit chain. Same as `self.txn.commit()` — exposed on
     /// `Evaluated` so the common `.evaluate(...).perform(...)?
-    /// .commit().perform(...)` chain composes without an
+    /// .commit().publish().perform(...)` chain composes without an
     /// intermediate destructure. The chain itself never commits;
     /// callers who want to commit call this (or drive
     /// `evaluated.txn.commit()` directly).
-    pub fn commit(self) -> dialog_repository::TransactionCommit<'a> {
+    pub fn commit(self) -> dialog_repository::TransactionCommit<&'a Branch> {
         self.txn.commit()
     }
 }
@@ -605,7 +605,7 @@ struct QueryResults {
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
     synthesized: &[SynthesizedQuery],
-    txn: &Transaction<'_>,
+    txn: &Transaction<&Branch>,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
@@ -708,7 +708,7 @@ impl dialog_artifacts::Statement for RawClaim {
 /// so this function only handles `ApplicationPlan::Concept`.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
     plan: tonk_schema::transact::ConceptPlan,
-    txn: &Transaction<'_>,
+    txn: &Transaction<&Branch>,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
     let Some(this_term) = plan.statement.terms.get("this") else {
@@ -809,7 +809,7 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 /// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<'_>,
+    txn: &Transaction<&Branch>,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     if let Application::Concept {
@@ -836,7 +836,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// extracts every bound variable from each [`ConceptConclusion`].
 async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<'_>,
+    txn: &Transaction<&Branch>,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     // Capture the variable names present in the application's
@@ -1308,9 +1308,9 @@ mod tests {
     /// facts a concept's fields need so the analyzer can rehydrate
     /// the descriptor from the branch.
     fn install_attribute_facts<'a>(
-        mut txn: Transaction<'a>,
+        mut txn: Transaction<&'a Branch>,
         descriptor: &ConceptDescriptor,
-    ) -> Transaction<'a> {
+    ) -> Transaction<&'a Branch> {
         for (_, attr) in descriptor.with().iter() {
             let attr_entity: dialog_artifacts::Entity =
                 attr.to_uri().parse().expect("attribute URI");
@@ -1344,11 +1344,11 @@ mod tests {
     /// the existing `name!` desugar through a `db.meta/name`
     /// claim against `id:<name>`.
     fn install_named_concept<'a>(
-        txn: Transaction<'a>,
+        txn: Transaction<&'a Branch>,
         name: &str,
         descriptor: &ConceptDescriptor,
         transient: bool,
-    ) -> Transaction<'a> {
+    ) -> Transaction<&'a Branch> {
         let entity = descriptor.this();
         // Publish the name — `id:<name>` carries the
         // `db.meta/name` claim pointing at the concept
@@ -1420,6 +1420,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
@@ -1472,6 +1473,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
@@ -1540,6 +1542,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
@@ -1644,6 +1647,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
@@ -1740,6 +1744,7 @@ attribute!: &foo/title
             .await
             .map_err(|e| anyhow::anyhow!("mixed mutation failed: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("mixed commit failed: {e}"))?;
@@ -1825,6 +1830,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
@@ -1947,6 +1953,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
@@ -2007,6 +2014,7 @@ attribute!: &foo/title
             .await
             .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
@@ -2084,6 +2092,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
@@ -2182,6 +2191,7 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
@@ -2241,6 +2251,7 @@ attribute!: &foo/title
             .transaction()
             .assert(the!("db.name/referent").of(id_demo).is(target.clone()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2268,6 +2279,7 @@ name!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
@@ -2308,7 +2320,7 @@ name!:
         install = install_attribute_facts(install, &pong);
         install = install_named_concept(install, "ping", &ping, /*transient=*/ true);
         install = install_named_concept(install, "pong", &pong, /*transient=*/ false);
-        install.commit().perform(&operator).await?;
+        install.commit().publish().perform(&operator).await?;
 
         // Now run the notation document through the full chain.
         // The rule!: lifts into an Effect, lands on the branch,
@@ -2335,6 +2347,7 @@ name!:
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?;
         evaluated
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
@@ -2373,6 +2386,7 @@ name!:
             .transaction()
             .dispatch(transients)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2474,6 +2488,7 @@ rule!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -2531,6 +2546,7 @@ rule!:
             .transaction()
             .dispatch(transients)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2631,6 +2647,7 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
@@ -2684,6 +2701,7 @@ counter!: &counter-demo
             .transaction()
             .dispatch(transients)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2772,6 +2790,7 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
@@ -2800,6 +2819,7 @@ counter!: &counter-demo
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate (increment {round}): {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit (increment {round}): {e}"))?;
@@ -2908,6 +2928,7 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
@@ -2922,6 +2943,7 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (increment): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (increment): {e}"))?;
@@ -3001,6 +3023,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
@@ -3079,6 +3102,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
@@ -3148,6 +3172,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
@@ -3167,6 +3192,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -3211,6 +3237,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (retract): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (retract): {e}"))?;
@@ -3265,7 +3292,7 @@ concept!: &pong
                 .of(subject.clone())
                 .is("hi".to_string()),
         );
-        setup.commit().perform(&operator).await?;
+        setup.commit().publish().perform(&operator).await?;
 
         // A query for `pong` instances, all fields free.
         let query_pong = || async {
@@ -3306,6 +3333,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
@@ -3346,6 +3374,7 @@ concept!: &pong
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (retract rule): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (retract rule): {e}"))?;
@@ -3387,6 +3416,7 @@ concept!: &pong
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate ({label}): {e}"))?
                 .commit()
+                .publish()
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit ({label}): {e}"))?;
@@ -3465,6 +3495,7 @@ concept!: &person
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
@@ -3531,6 +3562,7 @@ rule!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -3550,6 +3582,7 @@ rule!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
@@ -3648,6 +3681,7 @@ ping!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
@@ -3816,6 +3850,7 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -3860,6 +3895,7 @@ workspace!:
             .transaction()
             .dispatch(transients)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4002,6 +4038,7 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -4026,6 +4063,7 @@ workspace!:
             .transaction()
             .dispatch(transients)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4195,6 +4233,7 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -4217,6 +4256,7 @@ workspace!:
             .transaction()
             .dispatch(create)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4259,6 +4299,7 @@ workspace!:
             .transaction()
             .dispatch(close)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4410,6 +4451,7 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
@@ -4430,6 +4472,7 @@ workspace!:
             .transaction()
             .dispatch(create)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4530,7 +4573,7 @@ workspace!:
         let mut install = branch.transaction();
         install = install_attribute_facts(install, &person);
         install = install_named_concept(install, "person", &person, /*transient=*/ false);
-        install.commit().perform(&operator).await?;
+        install.commit().publish().perform(&operator).await?;
 
         let parsed = parse("person:\n  this: ?alice\n  name: \"Alice\"\n");
         assert!(
@@ -4604,6 +4647,7 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
@@ -4725,6 +4769,7 @@ person!:
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
@@ -4833,6 +4878,7 @@ person!:
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
@@ -4900,6 +4946,7 @@ person!:
             .assert(the!("person/name").of(bob.clone()).is("Bob".to_string()))
             .assert(the!("person/bio").of(bob).is("Hi".to_string()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -4981,6 +5028,7 @@ person!:
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
