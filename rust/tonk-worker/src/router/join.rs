@@ -1296,6 +1296,7 @@ pub(crate) async fn mount_replica_with_configuration(
     subject: &Did,
     configuration: RepositoryConfiguration,
 ) -> Result<Repository<Credential>, TonkWorkerError> {
+    let _admission_mutation = tonk.admission.mutation(subject.as_str());
     let key = subject.repo_key().to_owned();
     if super::account_state::is_account_key(tonk, &key).await {
         return Err(TonkWorkerError::Forbidden(
@@ -2889,7 +2890,9 @@ pub(crate) mod tests {
     #[dialog_common::test]
     async fn it_keeps_a_durable_members_authority_when_the_invite_is_reopened() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = handcrafted_invite_url(90, 91).await;
+        // Space storage is keyed by subject, not profile. Keep this fixture
+        // distinct from members::tests (90, 91), which also commits a member.
+        let (url, key) = handcrafted_invite_url(218, 219).await;
         let subject: dialog_varsig::Did = key.parse().unwrap();
 
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);

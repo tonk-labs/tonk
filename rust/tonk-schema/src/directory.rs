@@ -287,6 +287,45 @@ where
         + ConditionalSync
         + 'static,
 {
+    read_mount_record(account, subject, env, false).await
+}
+
+/// Read all mount facts authoritatively. Auxiliary query failures are errors,
+/// never evidence that optional configuration is absent.
+pub async fn mount_record_strict<Env>(
+    account: &Branch,
+    subject: &Did,
+    env: &Env,
+) -> Result<Option<MountRecord>, EvaluationError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Identify>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
+    read_mount_record(account, subject, env, true).await
+}
+
+async fn read_mount_record<Env>(
+    account: &Branch,
+    subject: &Did,
+    env: &Env,
+    strict: bool,
+) -> Result<Option<MountRecord>, EvaluationError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Identify>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static,
+{
     let anchor = subject.this();
     let remote_rows: Vec<Remote> = account
         .query()
@@ -308,23 +347,36 @@ where
     let mut remote_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for row in &remote_rows {
-        let Ok(address) = RemoteAddress::decode(&row.address) else {
-            continue;
+        let address = match RemoteAddress::decode(&row.address) {
+            Ok(address) => address,
+            Err(error) if strict => {
+                return Err(EvaluationError::Serialization {
+                    message: format!("invalid directory remote address: {error}"),
+                });
+            }
+            Err(_) => continue,
         };
         let target: Did = match row.subject.0.to_string().parse() {
             Ok(did) => did,
+            Err(error) if strict => {
+                return Err(EvaluationError::Serialization {
+                    message: format!("invalid directory remote subject: {error}"),
+                });
+            }
             Err(_) => subject.clone(),
         };
-        let executions: Vec<RemoteExecution> = account
-            .query()
-            .select(Query::<RemoteExecution> {
-                this: Term::from(row.this.clone()),
-                revocation_url: Term::var("revocation_url"),
-            })
-            .perform(env)
-            .try_vec()
-            .await
-            .unwrap_or_default();
+        let executions: Vec<RemoteExecution> = auxiliary(
+            account
+                .query()
+                .select(Query::<RemoteExecution> {
+                    this: Term::from(row.this.clone()),
+                    revocation_url: Term::var("revocation_url"),
+                })
+                .perform(env)
+                .try_vec()
+                .await,
+            strict,
+        )?;
         remotes.push(MountRemote {
             name: row.name.0.clone(),
             address,
@@ -337,17 +389,19 @@ where
         remote_names.insert(row.this.to_string(), row.name.0.clone());
     }
 
-    let locals: Vec<BranchConcept> = account
-        .query()
-        .select(Query::<BranchConcept> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            origin: Term::from(BranchOrigin::from(anchor.clone())),
-        })
-        .perform(env)
-        .try_vec()
-        .await
-        .unwrap_or_default();
+    let locals: Vec<BranchConcept> = auxiliary(
+        account
+            .query()
+            .select(Query::<BranchConcept> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(BranchOrigin::from(anchor.clone())),
+            })
+            .perform(env)
+            .try_vec()
+            .await,
+        strict,
+    )?;
     // Upstream branch entities are anchored on their remote concept.
     let mut remote_branches: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -355,17 +409,19 @@ where
         let Ok(origin) = remote_entity.parse::<dialog_artifacts::Entity>() else {
             continue;
         };
-        let rows: Vec<BranchConcept> = account
-            .query()
-            .select(Query::<BranchConcept> {
-                this: Term::var("this"),
-                name: Term::var("name"),
-                origin: Term::from(BranchOrigin::from(origin)),
-            })
-            .perform(env)
-            .try_vec()
-            .await
-            .unwrap_or_default();
+        let rows: Vec<BranchConcept> = auxiliary(
+            account
+                .query()
+                .select(Query::<BranchConcept> {
+                    this: Term::var("this"),
+                    name: Term::var("name"),
+                    origin: Term::from(BranchOrigin::from(origin)),
+                })
+                .perform(env)
+                .try_vec()
+                .await,
+            strict,
+        )?;
         for row in rows {
             remote_branches.insert(
                 row.this.to_string(),
@@ -375,17 +431,19 @@ where
     }
     let mut branches = Vec::with_capacity(locals.len());
     for local in locals {
-        let tracking: Vec<TrackingBranch> = account
-            .query()
-            .select(Query::<TrackingBranch> {
-                this: Term::from(local.this.clone()),
-                upstream: Term::var("upstream"),
-                origin: Term::var("origin"),
-            })
-            .perform(env)
-            .try_vec()
-            .await
-            .unwrap_or_default();
+        let tracking: Vec<TrackingBranch> = auxiliary(
+            account
+                .query()
+                .select(Query::<TrackingBranch> {
+                    this: Term::from(local.this.clone()),
+                    upstream: Term::var("upstream"),
+                    origin: Term::var("origin"),
+                })
+                .perform(env)
+                .try_vec()
+                .await,
+            strict,
+        )?;
         branches.push(MountBranch {
             name: local.name.0.clone(),
             upstream: tracking
@@ -395,4 +453,86 @@ where
         });
     }
     Ok(Some(MountRecord { remotes, branches }))
+}
+
+// Best-effort readers retain their historical treatment of auxiliary reads.
+fn auxiliary<T: Default>(
+    result: Result<T, EvaluationError>,
+    strict: bool,
+) -> Result<T, EvaluationError> {
+    if strict {
+        result
+    } else {
+        Ok(result.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_auxiliary_reads_distinguish_absence_from_failure() {
+        assert!(
+            auxiliary::<Vec<RemoteExecution>>(Ok(Vec::new()), true)
+                .unwrap()
+                .is_empty()
+        );
+        for strict in [false, true] {
+            let result = auxiliary::<Vec<RemoteExecution>>(
+                Err(EvaluationError::Store("unavailable".into())),
+                strict,
+            );
+            assert_eq!(result.is_err(), strict);
+        }
+    }
+
+    #[dialog_common::test]
+    async fn strict_mount_record_accepts_local_absence_and_optional_facts() {
+        use dialog_operator::helpers;
+        use dialog_varsig::did;
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let branch = repository
+            .branch("main")
+            .open()
+            .perform(&operator)
+            .await
+            .unwrap();
+        let subject = did!("key:z6MkDirectoryTest");
+        assert!(
+            mount_record_strict(&branch, &subject, &operator)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let address: SiteAddress = serde_json::from_value(serde_json::json!({
+            "Ucan": {"endpoint": "https://example.test/ucan/"}
+        }))
+        .unwrap();
+        let remote = Remote::at(
+            &subject.this(),
+            subject.clone(),
+            RemoteAddress::encode(&address),
+            "origin",
+        );
+        branch
+            .transaction()
+            .assert(remote)
+            .commit()
+            .perform(&operator)
+            .await
+            .unwrap();
+        let record = mount_record_strict(&branch, &subject, &operator)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.remotes.len(), 1);
+        assert!(record.remotes[0].revocation.is_none());
+        assert!(record.branches.is_empty());
+        assert_eq!(
+            Some(record),
+            mount_record(&branch, &subject, &operator).await.unwrap()
+        );
+    }
 }

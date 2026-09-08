@@ -2010,6 +2010,7 @@ pub(crate) async fn remove_space_inner(
         {
             return Err(RepositoryError::Internal(error.to_string()));
         }
+        let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
         // subscription reflects the removal (mirrors set_replica_status).
@@ -2062,6 +2063,7 @@ pub(crate) async fn remove_space_inner(
     // handle.
     {
         let tonk = state.write().await;
+        let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         tonk.reactor.evict(subject.repo_key());
     }
     Ok(())
@@ -2735,6 +2737,7 @@ async fn bail_if_space_removed(
         key,
         stage
     );
+    let _admission_mutation = tonk.admission.mutation(key);
     tonk.reactor.evict(key);
     Ok(true)
 }
@@ -3248,6 +3251,7 @@ where
     // `display_name` is only used for log context here.
     let did = repository.did();
     let key = did.repo_key();
+    let _admission_mutation = tonk.admission.mutation(key);
 
     // 3. Open the meta branch and start the single transaction
     // that will carry every concept describing the repository.
@@ -4118,6 +4122,13 @@ where
     // lives with the repository (not in the profile's replica index), so
     // it stays current on every device that syncs the content branch.
     // Falls back to the routing `key` when no name has been seeded yet.
+    #[cfg(test)]
+    assert!(
+        !tonk
+            .reject_admission_content_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "unexpected content projection during admission",
+    );
     let label = repository_label(tonk, repository, key).await;
 
     // Pull every branch on the meta branch, local and remote.
@@ -4493,6 +4504,7 @@ where
     // What actually took effect: existing remotes are preserved rather
     // than rewritten, so the caller must mirror THIS into the account
     // directory, not the request.
+    let _admission_mutation = tonk.admission.mutation(repository.did().as_str());
     let mut effective = configuration.clone();
     if configuration.remote.is_empty() && configuration.branch.is_empty() {
         return Ok(effective);

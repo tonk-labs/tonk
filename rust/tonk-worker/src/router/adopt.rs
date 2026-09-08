@@ -26,6 +26,8 @@
 //! [`Branch`]: tonk_schema::Branch
 //! [`TrackingBranch`]: tonk_schema::TrackingBranch
 
+pub(crate) mod cache;
+
 use dialog_repository::RepositoryExt as _;
 use tonk_common::log;
 
@@ -57,15 +59,63 @@ pub(crate) async fn ensure_space_mounted(
     {
         return Ok(false);
     }
-    if super::join::find_replica_for_subject(tonk, &subject).await? {
-        if let Err(error) =
-            reconcile_mounted_space_from_directory(tonk, subject.as_str(), &subject).await
-        {
-            log!("space adoption: directory reconcile for mounted '{subject}': {error}");
+    let key = subject.as_str();
+    let entry = tonk.admission.entry(key);
+    if entry.valid(tonk, key) {
+        return Ok(true);
+    }
+    let _slow = entry.slow.lock().await;
+    if entry.valid(tonk, key) {
+        return Ok(true);
+    }
+    entry.forget();
+    #[cfg(test)]
+    tonk.admission
+        .observations
+        .slow
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Preserve membership-before-open ordering: looking up an unmounted
+    // repository can itself reopen storage after removal.
+    let started = entry.start(tonk);
+    let local = super::join::find_replica_for_subject(tonk, &subject).await?;
+    #[cfg(test)]
+    entry.pause_membership_if_requested().await;
+    let before = if local {
+        let _ = tonk
+            .reactor
+            .repository(key)
+            .branch(super::repository::META_BRANCH)
+            .acquire(&tonk.operator)
+            .await;
+        entry
+            .stamp(tonk, key)
+            .filter(|stamp| stamp.started_at(started.as_ref()))
+    } else {
+        None
+    };
+    #[cfg(test)]
+    entry.pause_if_requested().await;
+    if local {
+        match reconcile_mounted_configuration(tonk, key, &subject).await {
+            Ok(configuration) => {
+                let upstreams = configuration
+                    .into_iter()
+                    .flat_map(|configuration| configuration.branch)
+                    .filter_map(|(name, branch)| {
+                        branch
+                            .upstream
+                            .map(|upstream| (name, upstream.remote, upstream.branch))
+                    })
+                    .collect();
+                entry.install(tonk, key, before, upstreams);
+            }
+            Err(error) => {
+                log!("space adoption: directory reconcile for mounted '{subject}': {error}")
+            }
         }
         return Ok(true);
     }
-    let Some(configuration) = directory_configuration(tonk, &subject).await else {
+    let Some(configuration) = directory_configuration_strict(tonk, &subject).await? else {
         return Ok(false);
     };
     log!("space adoption: mounting '{subject}' from the account directory");
@@ -97,13 +147,24 @@ fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
 
 /// Apply the account directory's latest mount facts to one replica that is
 /// already present locally. Returns whether a mount record existed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn reconcile_mounted_space_from_directory(
     tonk: &TonkState,
     key: &str,
     subject: &dialog_varsig::Did,
 ) -> Result<bool, crate::TonkWorkerError> {
-    let Some(configuration) = directory_configuration(tonk, subject).await else {
-        return Ok(false);
+    Ok(reconcile_mounted_configuration(tonk, key, subject)
+        .await?
+        .is_some())
+}
+
+async fn reconcile_mounted_configuration(
+    tonk: &TonkState,
+    key: &str,
+    subject: &dialog_varsig::Did,
+) -> Result<Option<RepositoryConfiguration>, crate::TonkWorkerError> {
+    let Some(configuration) = directory_configuration_strict(tonk, subject).await? else {
+        return Ok(None);
     };
     let repository = tonk
         .profile
@@ -116,8 +177,8 @@ async fn reconcile_mounted_space_from_directory(
                 "load mounted space '{subject}' for directory reconcile: {error}"
             ))
         })?;
-    if mounted_configuration_is_current(tonk, key, &repository, &configuration).await {
-        return Ok(true);
+    if mounted_configuration_is_current(tonk, key, &repository, &configuration).await? {
+        return Ok(Some(configuration));
     }
     super::repository::ensure_remote_config(tonk, &repository, key, &configuration)
         .await
@@ -126,43 +187,161 @@ async fn reconcile_mounted_space_from_directory(
                 "reconcile mounted space '{subject}' from directory: {error}"
             ))
         })?;
-    Ok(true)
+    Ok(Some(configuration))
 }
 
 /// Check both durable replica meta and the reactor's cached branch handles.
 /// The latter matters because sync reads the cache: a durable tracking fact
 /// with a stale cached `None` is exactly the `BranchHasNoUpstream` state this
 /// reconciliation repairs.
+/// Only the durable facts used by admission. Presentation and content do not
+/// participate in deciding whether mount configuration needs repair.
+struct MountedConfiguration {
+    remotes: std::collections::HashSet<String>,
+    tracking: std::collections::HashMap<String, UpstreamConfiguration>,
+}
+
+impl MountedConfiguration {
+    async fn read<C: dialog_varsig::Principal + Clone>(
+        tonk: &TonkState,
+        repository: &dialog_repository::Repository<C>,
+    ) -> Result<Self, crate::TonkWorkerError> {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::{Branch, Remote, Replica, TrackingBranch};
+
+        #[cfg(test)]
+        tonk.admission
+            .observations
+            .configuration
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let read_error = |error: String| {
+            crate::TonkWorkerError::Internal(format!("read mounted configuration: {error}"))
+        };
+        let meta = repository
+            .branch(super::repository::META_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| read_error(e.to_string()))?;
+        let cached = tonk
+            .reactor
+            .repos()
+            .read()
+            .get(repository.did().as_str())
+            .cloned();
+        if let Some(cached) = cached {
+            let cached_meta = cached
+                .branches()
+                .read()
+                .get(super::repository::META_BRANCH)
+                .cloned();
+            if let Some(cached_meta) = cached_meta
+                && cached_meta.branch.revision() != meta.revision()
+            {
+                cached_meta
+                    .branch
+                    .refresh(&tonk.operator)
+                    .await
+                    .map_err(|e| read_error(e.to_string()))?;
+            }
+        }
+        let replica = Replica::new(tonk.profile.did(), repository.did());
+        let branches = meta
+            .query()
+            .select(Query::<Branch> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::var("origin"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|e| read_error(e.to_string()))?;
+        let remotes = meta
+            .query()
+            .select(Query::<Remote> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(replica.this().clone()),
+                subject: Term::var("subject"),
+                address: Term::var("address"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|e| read_error(e.to_string()))?;
+        let links = meta
+            .query()
+            .select(Query::<TrackingBranch> {
+                this: Term::var("this"),
+                upstream: Term::var("upstream"),
+                origin: Term::from(replica.this().clone()),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|e| read_error(e.to_string()))?;
+        let branches_by_entity: std::collections::HashMap<_, _> = branches
+            .iter()
+            .map(|branch| (&branch.this, branch))
+            .collect();
+        let remotes_by_entity: std::collections::HashMap<_, _> = remotes
+            .iter()
+            .map(|remote| (&remote.this, remote))
+            .collect();
+        let links_by_entity: std::collections::HashMap<_, _> = links
+            .iter()
+            .map(|link| (&link.this, &link.upstream.0))
+            .collect();
+        let tracking = branches
+            .iter()
+            .filter_map(|branch| {
+                if branch.origin.0 != *replica.this()
+                    || remotes_by_entity.contains_key(&branch.this)
+                {
+                    return None;
+                }
+                let target = branches_by_entity.get(links_by_entity.get(&branch.this)?)?;
+                let remote = remotes_by_entity.get(&target.origin.0)?;
+                Some((
+                    branch.name.0.clone(),
+                    UpstreamConfiguration::new(remote.name.0.clone(), target.name.0.clone()),
+                ))
+            })
+            .collect();
+        Ok(Self {
+            remotes: remotes.into_iter().map(|remote| remote.name.0).collect(),
+            tracking,
+        })
+    }
+}
+
 async fn mounted_configuration_is_current<C>(
     tonk: &TonkState,
     key: &str,
     repository: &dialog_repository::Repository<C>,
     desired: &RepositoryConfiguration,
-) -> bool
+) -> Result<bool, crate::TonkWorkerError>
 where
     C: dialog_varsig::Principal + Clone,
 {
-    let current = super::repository::build_repository_info(tonk, key, repository).await;
+    let current = MountedConfiguration::read(tonk, repository).await?;
     if desired
         .remote
         .keys()
-        .any(|name| !current.remote.contains_key(name))
+        .any(|name| !current.remotes.contains(name))
     {
-        return false;
+        return Ok(false);
     }
     for (branch_name, branch) in &desired.branch {
         let Some(upstream) = &branch.upstream else {
             continue;
         };
-        let durable_matches = current
-            .branch
-            .get(branch_name)
-            .and_then(|branch| branch.upstream.as_ref())
-            .is_some_and(|current| {
-                current.remote == upstream.remote && current.branch == upstream.branch
-            });
+        let durable_matches = current.tracking.get(branch_name).is_some_and(|current| {
+            current.remote == upstream.remote && current.branch == upstream.branch
+        });
         if !durable_matches {
-            return false;
+            return Ok(false);
         }
         let Ok(session) = tonk
             .reactor
@@ -171,7 +350,7 @@ where
             .acquire(&tonk.operator)
             .await
         else {
-            return false;
+            return Ok(false);
         };
         if !matches!(
             session.handle().upstream(),
@@ -181,10 +360,10 @@ where
                 ..
             }) if *remote == upstream.remote && *branch == upstream.branch
         ) {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 /// Reconcile every local space after the account branch has pulled its latest
@@ -293,6 +472,577 @@ mod tests {
 
     use super::*;
 
+    #[dialog_common::test]
+    async fn it_admits_without_content_projections() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "admission-meta-only").await;
+        let tonk = state.read().await;
+        let subject = key.parse().unwrap();
+        let configuration = RepositoryConfiguration::default().remote(
+            "origin",
+            RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+            )),
+        );
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        super::super::repository::ensure_remote_config(&tonk, &repository, &key, &configuration)
+            .await
+            .unwrap();
+        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        tonk.reject_admission_content_reads
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+    }
+
+    #[dialog_common::test]
+    async fn it_checks_tracking_and_repairs_a_stale_cached_upstream() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "admission-tracking").await;
+        let tonk = state.read().await;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        // Open a separate pre-attachment handle to reproduce stale cached None.
+        let stale = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        assert!(
+            !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
+                .await
+                .unwrap(),
+            "missing remote needs repair"
+        );
+        super::super::repository::ensure_remote_config(&tonk, &repository, &key, &configuration)
+            .await
+            .unwrap();
+        assert!(
+            mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
+                .await
+                .unwrap()
+        );
+        let mismatched = configuration.clone().branch(
+            "main",
+            BranchConfiguration::default().upstream("origin", "other"),
+        );
+        assert!(
+            !mounted_configuration_is_current(&tonk, &key, &repository, &mismatched)
+                .await
+                .unwrap(),
+            "durable tracking must match"
+        );
+        let cached = tonk
+            .reactor
+            .repository(&key)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        cached.branches().write().insert(
+            "main".into(),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
+        );
+        assert!(
+            !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
+                .await
+                .unwrap(),
+            "durable tracking alone cannot validate stale cached None"
+        );
+        super::super::repository::record_space_mount(
+            &tonk,
+            &key.parse().unwrap(),
+            &configuration,
+            None,
+        )
+        .await;
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        assert!(
+            mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
+                .await
+                .unwrap(),
+            "admission must repair the cached upstream"
+        );
+    }
+
+    async fn configured_fixture() -> (super::super::AppState, String, RepositoryConfiguration) {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "admission-cache").await;
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            super::super::repository::record_space_mount(
+                &tonk,
+                &key.parse().unwrap(),
+                &configuration,
+                None,
+            )
+            .await;
+            warm(&tonk, &key).await;
+        }
+        (state, key, configuration)
+    }
+
+    async fn warm(tonk: &TonkState, key: &str) {
+        for _ in 0..3 {
+            assert!(ensure_space_mounted(tonk, key).await.unwrap());
+        }
+        assert!(
+            tonk.admission.entry(key).valid(tonk, key),
+            "stable verification installs receipt"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reuses_admission_for_both_spellings_and_content_changes() {
+        let (state, key, _) = configured_fixture().await;
+        let tonk = state.read().await;
+        let before = tonk.admission.observations.counts();
+        tonk.reject_admission_content_reads
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            ensure_space_mounted(&tonk, key.strip_prefix("did:key:").unwrap())
+                .await
+                .unwrap()
+        );
+        let main = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        main.state
+            .assert_overlay(tonk_schema::SpaceLocal::new(&key.parse().unwrap(), true));
+        main.handle()
+            .transaction()
+            .assert(tonk_schema::SpaceName::new(
+                &key.parse().unwrap(),
+                "changed content",
+            ))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        assert_eq!(
+            tonk.admission.observations.counts(),
+            before,
+            "warm admission performs no directory/configuration reads"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_invalidates_on_directory_meta_and_upstream_changes() {
+        let (state, key, configuration) = configured_fixture().await;
+        let tonk = state.read().await;
+        let entry = tonk.admission.entry(&key);
+        let changed = configuration.branch(
+            "main",
+            BranchConfiguration::default().upstream("origin", "other"),
+        );
+        super::super::repository::record_space_mount(&tonk, &key.parse().unwrap(), &changed, None)
+            .await;
+        assert!(!entry.valid(&tonk, &key));
+        warm(&tonk, &key).await;
+        let main = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            matches!(main.handle().upstream(), Some(dialog_repository::Upstream::Remote { branch, .. }) if branch == "other")
+        );
+        tonk.reactor
+            .repository(&key)
+            .branch(super::super::repository::META_BRANCH)
+            .transaction()
+            .assert(tonk_schema::SpaceName::new(
+                &key.parse().unwrap(),
+                "meta changed",
+            ))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(!entry.valid(&tonk, &key));
+        warm(&tonk, &key).await;
+        // Replace just the cached content handle with a different upstream;
+        // receipt validity includes upstream values, not content revisions.
+        let repo = tonk
+            .reactor
+            .repository(&key)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let unrelated = repo
+            .repository()
+            .branch("untracked")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        repo.branches().write().insert(
+            "main".into(),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
+        );
+        assert!(!entry.valid(&tonk, &key));
+    }
+
+    #[dialog_common::test]
+    async fn it_retries_directory_failure_and_caches_local_absence() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "admission-local-only").await;
+        let tonk = state.read().await;
+        use std::sync::atomic::Ordering::Relaxed;
+        tonk.admission
+            .observations
+            .fail_directory
+            .store(true, Relaxed);
+        assert!(
+            ensure_space_mounted(&tonk, &key).await.unwrap(),
+            "known local replica stays readable"
+        );
+        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+        let failed = tonk.admission.observations.counts();
+        tonk.admission
+            .observations
+            .fail_directory
+            .store(false, Relaxed);
+        warm(&tonk, &key).await;
+        assert!(tonk.admission.observations.counts().1 > failed.1);
+        let before = tonk.admission.observations.counts();
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        assert_eq!(tonk.admission.observations.counts(), before);
+    }
+
+    #[dialog_common::test]
+    async fn it_invalidates_across_eviction_removal_and_profile_replacement() {
+        let (state, key, _) = configured_fixture().await;
+        {
+            let tonk = state.read().await;
+            let before = tonk.admission.observations.counts();
+            tonk.reactor.evict(&key);
+            assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+            warm(&tonk, &key).await;
+            assert!(tonk.admission.observations.counts().0 > before.0);
+        }
+        super::super::repository::remove_space_inner(&state, &key.parse().unwrap())
+            .await
+            .unwrap();
+        let tonk = state.read().await;
+        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+        // Re-run the existing adoption path, including its storage/authority
+        // outcome, rather than returning the removed replica's old receipt.
+        let before = tonk.admission.observations.counts();
+        let _lookup = ensure_space_mounted(&tonk, &key).await;
+        assert!(tonk.admission.observations.counts().0 > before.0);
+        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+        let other = crate::router::tests::test_state().await;
+        assert!(!tonk.admission.entry(&key).valid(&other, &key));
+        assert!(!other.admission.entry(&key).valid(&other, &key));
+    }
+
+    #[dialog_common::test]
+    async fn it_invalidates_before_and_after_cancelled_configuration_writes() {
+        let (state, key, _) = configured_fixture().await;
+        let tonk = state.read().await;
+        let entry = tonk.admission.entry(&key);
+        let before = entry.stamp(&tonk, &key);
+        let guard = tonk.admission.mutation(&key);
+        assert!(!entry.valid(&tonk, &key));
+        assert!(entry.stamp(&tonk, &key).is_none());
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        assert!(
+            !entry.valid(&tonk, &key),
+            "in-flight writer blocks receipts"
+        );
+        drop(guard);
+        entry.install(&tonk, &key, before, Vec::new());
+        assert!(
+            !entry.valid(&tonk, &key),
+            "pre-mutation stamp cannot be published"
+        );
+        warm(&tonk, &key).await;
+    }
+
+    fn pause_next(
+        tonk: &TonkState,
+        key: &str,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let entry = tonk.admission.entry(key);
+        entry.forget();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *entry.gate.lock() = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+
+    #[dialog_common::test]
+    async fn it_shares_one_slow_check_among_sixteen_callers() {
+        let (state, key, _) = configured_fixture().await;
+        let tonk = state.read().await;
+        let (entered, release) = pause_next(&tonk, &key);
+        let before = tonk.admission.observations.counts();
+        let leader = ensure_space_mounted(&tonk, &key);
+        let waiters = async {
+            entered.await.unwrap();
+            let mut waiters: Vec<_> = (0..15)
+                .map(|_| Box::pin(ensure_space_mounted(&tonk, &key)))
+                .collect();
+            for waiter in &mut waiters {
+                assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+            }
+            assert_eq!(tonk.admission.observations.counts().0, before.0 + 1);
+            release.send(()).unwrap();
+            for result in futures_util::future::join_all(waiters).await {
+                assert!(result.unwrap());
+            }
+        };
+        let (result, ()) = futures_util::join!(leader, waiters);
+        assert!(result.unwrap());
+        let after = tonk.admission.observations.counts();
+        assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1));
+    }
+
+    #[dialog_common::test]
+    async fn it_releases_slow_admission_when_the_leader_is_cancelled() {
+        let (state, key, _) = configured_fixture().await;
+        let tonk = state.read().await;
+        let (entered, release) = pause_next(&tonk, &key);
+        match futures_util::future::select(Box::pin(ensure_space_mounted(&tonk, &key)), entered)
+            .await
+        {
+            futures_util::future::Either::Right((entered, leader)) => {
+                entered.unwrap();
+                drop(leader);
+            }
+            _ => panic!("leader must suspend at the gate"),
+        }
+        drop(release);
+        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        assert!(tonk.admission.entry(&key).valid(&tonk, &key));
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_publish_a_receipt_after_mid_check_changes() {
+        let (state, key, configuration) = configured_fixture().await;
+        let tonk = state.read().await;
+        for evict in [false, true] {
+            warm(&tonk, &key).await;
+            let (entered, release) = pause_next(&tonk, &key);
+            let leader = ensure_space_mounted(&tonk, &key);
+            let mutate = async {
+                entered.await.unwrap();
+                if evict {
+                    tonk.reactor.evict(&key);
+                } else {
+                    super::super::repository::record_space_mount(
+                        &tonk,
+                        &key.parse().unwrap(),
+                        &configuration,
+                        Some("new directory revision"),
+                    )
+                    .await;
+                }
+                release.send(()).unwrap();
+            };
+            let (result, ()) = futures_util::join!(leader, mutate);
+            assert!(result.unwrap());
+            assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+            warm(&tonk, &key).await;
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_retries_a_failed_leader_and_other_subjects_progress_independently() {
+        let (state, key, _) = configured_fixture().await;
+        let (app, _lsp) = super::super::api_router_from_state(state.clone());
+        let other = crate::router::tests::put_repo(&app, "independent-admission").await;
+        let tonk = state.read().await;
+        warm(&tonk, &key).await;
+        let (entered, release) = pause_next(&tonk, &key);
+        let leader = ensure_space_mounted(&tonk, &key);
+        let follower = async {
+            entered.await.unwrap();
+            assert!(
+                ensure_space_mounted(&tonk, &other).await.unwrap(),
+                "unrelated subject does not wait for this leader"
+            );
+            tonk.admission
+                .observations
+                .fail_directory
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            release.send(()).unwrap();
+        };
+        let (result, ()) = futures_util::join!(leader, follower);
+        assert!(
+            result.unwrap(),
+            "failed reconciliation preserves local availability"
+        );
+        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
+        tonk.admission
+            .observations
+            .fail_directory
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        warm(&tonk, &key).await;
+    }
+
+    #[dialog_common::test]
+    async fn it_mounts_once_on_sixteen_concurrent_first_uses() {
+        use dialog_varsig::Principal as _;
+        let tonk = crate::router::tests::test_state().await;
+        let subject = dialog_credentials::ed25519::Ed25519Signer::generate()
+            .await
+            .unwrap()
+            .did();
+        let key = subject.as_str();
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                ))
+                .subject(subject.clone()),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        let (entered, release) = pause_next(&tonk, key);
+        let leader = async {
+            assert!(ensure_space_mounted(&tonk, key).await.unwrap());
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            repository
+                .branch(super::super::repository::META_BRANCH)
+                .open()
+                .perform(&tonk.operator)
+                .await
+                .unwrap()
+                .revision()
+        };
+        let waiters = async {
+            entered.await.unwrap();
+            let mut waiters: Vec<_> = (0..15)
+                .map(|_| Box::pin(ensure_space_mounted(&tonk, key)))
+                .collect();
+            for waiter in &mut waiters {
+                assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+            }
+            release.send(()).unwrap();
+            for result in futures_util::future::join_all(waiters).await {
+                assert!(result.unwrap());
+            }
+        };
+        let (first_revision, ()) = futures_util::join!(leader, waiters);
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let final_revision = repository
+            .branch(super::super::repository::META_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap()
+            .revision();
+        assert_eq!(
+            first_revision, final_revision,
+            "waiters must not recommit mount metadata"
+        );
+        assert_eq!(
+            tonk.admission.observations.counts().0,
+            2,
+            "one mount followed by one read-only verification"
+        );
+        assert!(
+            super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_profile_changes_during_replica_lookup() {
+        let (state, key, configuration) = configured_fixture().await;
+        let tonk = state.read().await;
+        let entry = tonk.admission.entry(&key);
+        entry.forget();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *entry.membership_gate.lock() = Some((entered_tx, release_rx));
+        let admission = ensure_space_mounted(&tonk, &key);
+        let mutation = async {
+            entered_rx.await.unwrap();
+            super::super::repository::record_space_mount(
+                &tonk,
+                &key.parse().unwrap(),
+                &configuration,
+                Some("changed during replica lookup"),
+            )
+            .await;
+            release_tx.send(()).unwrap();
+        };
+        let (result, ()) = futures_util::join!(admission, mutation);
+        assert!(result.unwrap());
+        assert!(
+            !entry.valid(&tonk, &key),
+            "profile lookup and reconciliation must share one freshness window"
+        );
+        warm(&tonk, &key).await;
+    }
+
     /// The cross-device flow's device-B half, pinned: another device
     /// recorded a space's directory facts (mount records included);
     /// this device — which has never seen the space — must mount it on
@@ -323,6 +1073,10 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
+        assert!(
+            !ensure_space_mounted(&tonk, subject.as_str()).await.unwrap(),
+            "an absent record must not become a negative cache entry",
+        );
         super::super::repository::record_space_mount(
             &tonk,
             &subject,
@@ -475,20 +1229,41 @@ pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
 /// Rebuild a space's configuration from the account directory — the
 /// shared `tonk_schema::directory` reader, converted into the worker's
 /// [`RepositoryConfiguration`].
-pub(crate) async fn directory_configuration(
+async fn directory_configuration_strict(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
-) -> Option<RepositoryConfiguration> {
+) -> Result<Option<RepositoryConfiguration>, crate::TonkWorkerError> {
+    #[cfg(test)]
+    {
+        tonk.admission
+            .observations
+            .directory
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if tonk
+            .admission
+            .observations
+            .fail_directory
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(crate::TonkWorkerError::Internal(
+                "injected directory failure".into(),
+            ));
+        }
+    }
     let main = tonk
         .reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
         .acquire(&tonk.operator)
         .await
-        .ok()?;
-    let record = tonk_schema::directory::mount_record(main.handle(), subject, &tonk.operator)
-        .await
-        .ok()??;
+        .map_err(|e| crate::TonkWorkerError::Internal(format!("open directory: {e}")))?;
+    let Some(record) =
+        tonk_schema::directory::mount_record_strict(main.handle(), subject, &tonk.operator)
+            .await
+            .map_err(|e| crate::TonkWorkerError::Internal(format!("read directory: {e}")))?
+    else {
+        return Ok(None);
+    };
     let mut configuration = RepositoryConfiguration::default();
     for remote in record.remotes {
         let mut remote_configuration =
@@ -511,5 +1286,5 @@ pub(crate) async fn directory_configuration(
             },
         );
     }
-    Some(configuration)
+    Ok(Some(configuration))
 }

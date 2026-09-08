@@ -384,6 +384,9 @@ pub struct TonkState {
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::Reactor,
+    pub(crate) admission: crate::router::adopt::cache::AdmissionCache,
+    #[cfg(test)]
+    pub(crate) reject_admission_content_reads: std::sync::atomic::AtomicBool,
     /// Terminal lifecycle latch for this worker generation. Once a verified
     /// successor installs, no later query reconnect may recreate an SSE stream
     /// on the outgoing worker, even after `registration.waiting` clears.
@@ -1769,6 +1772,9 @@ pub(crate) async fn boot_state(
         session_expires_at: session.expires_at,
         profile_name,
         reactor,
+        admission: Default::default(),
+        #[cfg(test)]
+        reject_admission_content_reads: Default::default(),
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
