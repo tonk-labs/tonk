@@ -129,17 +129,24 @@ facts the UI already subscribes to.
 
 ## The executor notion for declarative rules
 
-A note on notation: `effect!:` does **not exist**. `plan/effects.md`
-is a design — `InductiveRule` landed upstream and the effect-storage
-schema exists, but the evaluator is scaffold-only (the hooks pass the
-transaction through unchanged). Everywhere this document shows rule
-YAML it is sketching the *planned* notation; the shipping reactive
-machinery is subscriptions plus registered Rust handlers.
+Notation check: the declarative layer **exists and is in production
+use** — there is no `effect!:` keyword, because `rule!:` inductive
+rules *are* what `plan/effects.md` described
+(`dialog-query/src/rule/inductive.rs` opens "an inductive rule, a.k.a.
+*effect*"). `table.yaml` already ships the whole pattern: transient
+command concepts (`table/create-sheet`, `table/edit-cell`,
+`table/clear-cell`) consumed by `rule!:` rules with `assert!:` and
+`retract!:` heads, fired by dialog's commit-time induction (the
+`dialog.rule/on` touched-attribute index, `induce.rs`). What does
+**not** exist yet: firing over *pulled* deltas (`Branch::induce` is
+never called from tonk, so remote facts trigger nothing), procedural
+placement (the state-layers branch), cross-branch heads, and the
+addressing machinery below.
 
-The planned design's transient-trigger requirement guards a real
-property: a replicated declarative rule triggered by durable facts
-would evaluate on every peer that pulls them. Lifting it needs an
-**executor** notion —
+The transient-trigger convention guards a real property: a replicated
+declarative rule triggered by durable facts would evaluate on every
+peer that pulls them (once pulled facts fire rules at all). Lifting it
+needs an **executor** notion —
 and Dedalus (the framing `plan/effects.md` is already built on) names
 it: the **location specifier**. Every Dedalus fact lives at a site; a
 rule whose head is at a different site than its body is a
@@ -154,7 +161,6 @@ rule; it is an audience field on the message, filtered by an ordinary
 premise:
 
 ```yaml
-# planned notation — no declarative-rule surface exists yet
 rule!:
   assert!: invite
   when:
@@ -288,7 +294,14 @@ comparable version — the source record's stamp carried along), and
 each side reconciles latest-wins over both records. Then both sides
 agree on the winner and the propagation quiesces — the two registers
 become one logical LWW register spread over two branches, editable
-from either side. That is the "kind of what I wanted" shape.
+from either side.
+
+The concrete dialog-side ask this surfaces: **expose record stamps
+per attribute to query/rule bindings**. The stamps exist in the
+record structure; they are just not queryable per attribute today. A
+binding for "the stamp of this fact" is what lets the propagation
+rule carry provenance and the receiving side compare — and this name
+edge is the motivating case for adding it.
 
 For phase 1, ship the directed form anyway — space → profile standing,
 profile-side rename writes the space record — because it needs no
@@ -373,7 +386,10 @@ monotone, classes 2–3 need placement *because* they are not.
 An event-triggered command (`Increment` on a + click) keeps both of
 its current guarantees in the unified model — neither is threatened by
 dropping transience, because durability is a **per-command tier**, not
-a consequence of unification:
+a consequence of unification. This is not hypothetical: `table.yaml`'s
+cell-edit vocabulary already works exactly this way (transient
+`table/edit-cell` fires a `rule!:` once at commit; the edit never
+persists, the cell content does):
 
 - **No click history.** Storage tier is a per-command choice, and
   dialog's state-layers branch
@@ -432,11 +448,14 @@ last, once its semantics are proven.
    the reserved `sensory` layer (replicated, never stored) is the
    eventual natural home for cross-peer messages — a semantic command
    with retract-on-consume approximates it until it's backed.
-5. **Declarative lift**: declarative rules (finishing what
-   `plan/effects.md` designs — the evaluator is scaffold-only today)
-   take over proven patterns —
-   same-branch rules first (with the identity-join filter and the
-   install-time lint). Cross-branch edges (the name mirror) stay
+5. **Declarative extension**: same-branch declarative commands are
+   *already shipped practice* — `table.yaml`'s `rule!:` vocabulary
+   over transient command concepts, fired by commit-time induction —
+   so this phase extends the live engine rather than building one:
+   fire over pulled deltas (wire `Branch::induce` post-pull), the
+   audience-filter lint for fresh-entity heads, per-attribute stamp
+   bindings (for stamped-bidirectional propagation), and eventually
+   cross-branch heads. Cross-branch edges (the name mirror) stay
    imperative longest: inductive rules are single-branch, so their
    cross-branch story is the addressed-message pivot — though
    state-layers' composite subscriptions (`QueryLayer::subscribe`,
