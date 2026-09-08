@@ -137,7 +137,9 @@ pub struct CommandProviders {
     /// origin), renaming itself
     /// ([`RenameRepository`](tonk_schema::command::RenameRepository),
     /// which names its space and is refused cross-space by
-    /// `may_target_space`), and — until membership moves fully
+    /// `may_target_space`), requesting an invite for itself (the space
+    /// view's share surface dispatches on the space branch and its
+    /// refusal publishes there), and — until membership moves fully
     /// profile-side —
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
     /// is likewise the origin space.
@@ -232,6 +234,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
 fn space_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<tonk_schema::command::Load>()
+        // A space may request an invite FOR ITSELF: the space view's
+        // blank-canvas share (and the seeded `tonk:invite` descriptor)
+        // dispatches on the space's own branch, and the refusal flow
+        // ("sharing unavailable") publishes to that same branch's
+        // overlay. `may_target_space` keeps it self-scoped — a space
+        // cannot mint for another space. Profile-side is still the
+        // destination once that surface moves.
+        .command::<super::repository::InviteRequest>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }

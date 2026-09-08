@@ -17,6 +17,12 @@ Two registries, selected per dispatch by `CommandOrigin`:
   field), so nothing the user drives changes behaviour.
 - **Space (content) branch**: only what a space may run on itself —
   - `Load`: its target IS the origin branch (route stamping).
+  - `InviteRequest`: a space may request an invite FOR ITSELF — the
+    space view's blank-canvas share (and the seeded `tonk:invite`
+    descriptor) dispatches on the space branch, and the refusal flow
+    ("sharing unavailable") publishes to that branch's overlay.
+    Self-scoped by `may_target_space`; profile-side remains the
+    destination once that surface moves.
   - `RenameRepository`: names its space, refused cross-space by
     `may_target_space`; kept space-side so a space can rename itself.
     The provider updates BOTH records regardless of dispatch origin:
@@ -34,17 +40,18 @@ Two registries, selected per dispatch by `CommandOrigin`:
     "make admin"), so the placement is free to change.
 
 Everything else — space lifecycle (create/remove/enable-sync), `Join`,
-`Invite`, `PromoteMember`, `ProfileRename`, `PauseSync`, and every
+`PromoteMember`, `ProfileRename`, `PauseSync`, and every
 account/passkey/device ceremony — exists only in the profile vocabulary.
 A same-shaped transient on a space branch is logged as unmatched
 ("no handler in the space '…' vocabulary") instead of relying on each
 provider's origin check. The origin checks stay as defense in depth for
 the commands both vocabularies carry.
 
-Consequence, accepted: frozen legacy library descriptors seeded on old
-space branches (a space-side `tonk:invite` share form, the legacy topbar
-"Enable sync") now match nothing when asserted there. The FAB's
-profile-dispatched equivalents are the supported paths.
+Consequence, accepted: the legacy topbar "Enable sync" descriptor
+seeded on old space branches now matches nothing when asserted there;
+the FAB's profile-dispatched `EnableSync` is the supported path. (The
+space-side `tonk:invite` dispatch is deliberately NOT contained — the
+space view's share/refusal surface lives on the space branch today.)
 
 The split is pinned by
 `a_space_origin_selects_a_vocabulary_without_profile_only_commands`

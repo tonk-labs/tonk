@@ -6051,17 +6051,11 @@ mod tests {
         // Drive the transient command through the real dispatcher, scoped
         // to the space's content branch — mirrors
         // `command::tests::it_dispatches_every_matched_command_in_a_batch`.
+        // Profile origin: `profile/rename` is a profile-vocabulary
+        // command (the FAB dispatches it routeless on the profile
+        // branch); a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameCmd", "brave-lynx");
-        crate::router::dispatch(
-            &state,
-            crate::router::CommandOrigin {
-                repo: key.clone(),
-                branch: "main".to_string(),
-                client: None,
-            },
-            changes,
-        )
-        .await;
+        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
 
         // Override is on the profile meta branch.
         {
@@ -6118,18 +6112,10 @@ mod tests {
                 .expect("the test account detaches");
         }
 
-        // Rename while focused on space A.
+        // Rename from the profile branch, where the FAB dispatches it
+        // routeless; a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
-        crate::router::dispatch(
-            &state,
-            crate::router::CommandOrigin {
-                repo: key_a.clone(),
-                branch: "main".to_string(),
-                client: None,
-            },
-            changes,
-        )
-        .await;
+        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
 
         assert_eq!(
             self_member_name(&state, &key_a).await.as_deref(),
@@ -6209,17 +6195,10 @@ mod tests {
             .await
             .expect("founder is named");
 
+        // Profile origin, like the FAB's routeless dispatch; a
+        // space-branch `profile/rename` is contained by design.
         let changes = profile_rename_transient("did:key:zRenameEmpty", "   ");
-        crate::router::dispatch(
-            &state,
-            crate::router::CommandOrigin {
-                repo: key.clone(),
-                branch: "main".to_string(),
-                client: None,
-            },
-            changes,
-        )
-        .await;
+        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
 
         assert_eq!(
             self_member_name(&state, &key).await,
