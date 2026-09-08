@@ -1,0 +1,26 @@
+<column width=fill height=fill spacing-y=1 pad-x=2 pad-y=1>
+
+  <row width=fill>
+    <text weight=bold>todo</text>
+    <text align=right fg=muted>{dom.host/count} open</text>
+  </row>
+
+  <box width=fill height=fill fg=muted>
+    <column width=fill spacing-y=0 pad-x=1 nav=vertical>
+      <row width=fill with={this} spacing-x=1
+           on:click=todo/toggle data-todo={this}
+           focused-bg=accent focused-weight=bold>
+        <text fg=muted>{status}</text>
+        <text>{title}</text>
+        <text align=right fg=muted>{owner}</text>
+      </row>
+    </column>
+  </box>
+
+  <row width=fill>
+    <el on:new=todo/create key=n label="new">+ new todo</el>
+  </row>
+
+  <keybar width=fill></keybar>
+
+</column>

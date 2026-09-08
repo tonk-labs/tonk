@@ -6087,6 +6087,7 @@ dependencies = [
 name = "tonk-tui-poc"
 version = "0.6.13"
 dependencies = [
+ "crossterm",
  "ipld-core",
  "ratatui",
  "serde_json",

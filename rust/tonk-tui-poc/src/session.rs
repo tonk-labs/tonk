@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
-use tonk_render::{Conclusion, Node};
+use tonk_render::{Conclusion, Element, Node};
 use tonk_template::event::EventDescriptor;
 
 use crate::activate::{self, Activation};
@@ -144,10 +144,11 @@ impl Session {
         self.focus.map(|index| &self.focusables[index])
     }
 
-    /// The tree to render this frame, with the focused element stamped
-    /// so the lowering promotes its `focused-*` decorations.
+    /// The tree to render this frame: the focused element stamped so
+    /// the lowering promotes its `focused-*` decorations, and an empty
+    /// `<keybar>` filled with the chips the bindings imply.
     ///
-    /// A clone rather than a mutation of the held tree: focus moves far
+    /// A clone rather than a mutation of the held tree. Focus moves far
     /// more often than the data changes, and a stamp that accumulated
     /// would leave a trail of focus rings behind the cursor.
     pub fn frame_tree(&self) -> Vec<Node> {
@@ -155,6 +156,7 @@ impl Session {
         if let Some(focusable) = self.focused() {
             focus::mark(&mut tree, &focusable.path);
         }
+        fill_keybar(&mut tree, &self.keybar());
         tree
     }
 
@@ -306,4 +308,36 @@ impl Session {
             None => Some(self.frame.first().unwrap_or(&self.empty)),
         }
     }
+}
+
+/// Fill the first *empty* `<keybar>` with one `<key>` per chip.
+///
+/// Empty on purpose: a keybar an author has written chips into is theirs
+/// to maintain, and silently replacing it would make the template lie
+/// about what it renders. An empty one is a request — "put the chips
+/// here" — which is the placement decision the host cannot make and the
+/// author can.
+fn fill_keybar(nodes: &mut [Node], chips: &[Chip]) -> bool {
+    for node in nodes {
+        let Node::Element(element) = node else {
+            continue;
+        };
+        if element.tag == "keybar" && !element.children.iter().any(|c| c.tag().is_some()) {
+            element.children = chips.iter().map(chip_node).collect();
+            return true;
+        }
+        if fill_keybar(&mut element.children, chips) {
+            return true;
+        }
+    }
+    false
+}
+
+fn chip_node(chip: &Chip) -> Node {
+    Node::Element(Element {
+        tag: "key".to_owned(),
+        attrs: Vec::new(),
+        children: vec![Node::Text(format!("{} {}", chip.key, chip.label))],
+        void: false,
+    })
 }

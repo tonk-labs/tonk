@@ -1,0 +1,31 @@
+{
+  "events": {
+    "on/click": {
+      "type": "click",
+      "prevent-default": true,
+      "where": {
+        "subject": "{this}",
+        "label": ".currentTarget.dataset.todo"
+      }
+    },
+    "on/new": {
+      "type": "click",
+      "prevent-default": true,
+      "where": {
+        "label": "\"untitled\""
+      }
+    }
+  },
+  "commands": {
+    "todo/toggle": {
+      "with": {
+        "subject": { "the": "demo.todo/subject", "as": "Entity" }
+      }
+    },
+    "todo/create": {
+      "with": {
+        "label": { "the": "demo.todo/label", "as": "Text" }
+      }
+    }
+  }
+}

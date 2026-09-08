@@ -27,6 +27,43 @@ Flags: `--size WxH`, `--explain` (outline every element, elm-ui style),
 `--tree` (print resolved rectangles instead of painting), `--plain` (no
 SGR, for snapshots), `--colour truecolor|256|ansi|none`.
 
+## Interaction
+
+Give it the view's binding tables and the frame becomes reachable:
+
+```
+cargo run -p tonk-tui-poc -- \
+  --template rust/tonk-tui-poc/demo/todo-interactive.tui.html \
+  --data rust/tonk-tui-poc/demo/todo.json \
+  --bindings rust/tonk-tui-poc/demo/todo.bindings.json \
+  --interactive
+```
+
+`Tab` / `Shift-Tab` traverse in document order, arrows traverse inside a
+container declaring `nav=`, `Enter` or `Space` activate, `Esc` leaves.
+The empty `<keybar>` fills itself from the bindings.
+
+`--keys "down down enter"` drives the same model with the terminal taken
+out, printing the frame and then whatever the keys posted — which is how
+the interaction model is tested (`plan/tui-views.md` §12) and how you can
+see a transient without a branch to send it to.
+
+Three things make this cheap, and all three are consequences of #904
+rather than of anything in this crate:
+
+- **Focusability is decidable without a DOM.** An element is focusable
+  when it carries an `on:<name>` whose declaration is in the view's
+  compiled bindings. Nothing is inferred from tag names.
+- **Activation maps onto the declaration's own `type:`**, so a `submit`
+  binding written for a browser form is reachable from a keyboard with
+  no `onactivate` twin.
+- **The only new code on the write path is the source reader**
+  (`activate.rs`) — one `match` over `Source`. The binding table, the
+  dispatch and the wire shape are shared with the browser, and the
+  command is domain-shaped, so there is nothing to translate. `{this}`
+  is *easier* here: the browser reads a rendered `data-this` back out of
+  the DOM, the terminal still has the conclusion.
+
 ## What it is meant to establish
 
 1. **The existing view pipeline needs no changes for a non-HTML
@@ -77,9 +114,11 @@ per instance as the `{this}` repeat — using a host-provided
 
 ## What it deliberately does not do
 
-- **One frame to stdout, no event loop.** No focus ring, no key
-  handling, no commands, no transients. That is M2 in the plan, and it
-  is where the remaining design risk lives.
+- **No widget-local state.** No carets, no scroll offsets, no text
+  entry. `plan/tui-views.md` §5.2 is unanswered here; a view is
+  reachable and activatable, not editable.
+- **Transients are printed, not sent.** There is no branch to transact
+  against, so `--interactive` prints what it would have posted on exit.
 - **No reactor.** Conclusions come from a JSON file, so this does not
   touch the orchestration refactor (`plan/tui-views.md` §7.1) that live
   rendering needs.

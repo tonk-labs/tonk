@@ -8,13 +8,17 @@
 //! after that seam — the terminal vocabulary, the elm-ui layout algebra,
 //! the theme and the painter — is new.
 //!
-//! It renders one frame to stdout rather than taking over the terminal.
-//! That keeps it runnable without a tty, and makes the same code path
-//! the snapshot-test harness.
+//! It renders one frame to stdout by default rather than taking over the
+//! terminal. That keeps it runnable without a tty, and makes the same
+//! code path the snapshot-test harness. `--interactive` runs the event
+//! loop instead; `--keys` drives the same interaction model headlessly,
+//! which is how it is tested.
 //!
 //! ```text
 //! tonk-tui-poc --template demo/todo.tui.html --data demo/todo.json --size 60x12
 //! tonk-tui-poc --template demo/todo.tui.html --data demo/todo.json --explain
+//! tonk-tui-poc --template demo/todo-interactive.tui.html --data demo/todo.json \
+//!   --bindings demo/todo.bindings.json --interactive
 //! ```
 
 #![forbid(unsafe_code)]
@@ -26,5 +30,7 @@ pub mod notation;
 pub mod paint;
 pub mod pipeline;
 pub mod session;
+pub mod terminal;
 pub mod theme;
 pub mod vocabulary;
+pub mod wiring;

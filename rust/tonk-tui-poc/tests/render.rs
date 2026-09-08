@@ -201,3 +201,77 @@ fn show_output_is_an_ordinary_directory_view() {
     assert!(frame.contains("this: id:1") && frame.contains("this: id:2"));
     assert!(frame.contains("e eval"), "keybar is chrome too");
 }
+
+/// Drive the interaction model through the binary, so the snapshot
+/// covers the wiring — binding tables read from a file, keys parsed,
+/// keybar generated — and not just the library.
+fn drive(keys: &str) -> String {
+    let output = Command::new(binary())
+        .arg("--template")
+        .arg(demo("todo-interactive.tui.html"))
+        .arg("--data")
+        .arg(demo("todo.json"))
+        .arg("--bindings")
+        .arg(demo("todo.bindings.json"))
+        .args(["--size", "56x14", "--plain", "--keys", keys])
+        .output()
+        .expect("running tonk-tui-poc");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("utf-8 output")
+}
+
+/// The keybar is generated from the bindings, so the empty `<keybar>`
+/// the template declares comes back carrying the one chip the view's
+/// `key=` attributes imply — and nothing the view does not handle.
+///
+/// `--plain` strips styling, so the focus ring is not in this snapshot.
+/// Which row focus is on is asserted by what activation posts, below.
+#[test]
+fn an_empty_keybar_is_filled_from_the_bindings() {
+    let frame = drive("");
+    let expected = "
+  todo                                          4 open
+
+  ┌──────────────────────────────────────────────────┐
+  │ [ ] port the view pipeline                   ada │
+  │ [x] measure text in cells                  grace │
+  │ [ ] 日本語 のタイトル                      kenji │
+  │ [ ] decide pad-x vs pad-y                    ada │
+  └──────────────────────────────────────────────────┘
+
+  + new todo
+
+   n new
+
+";
+    assert_eq!(frame, expected);
+}
+
+/// Arrows traverse the rows' `nav=vertical` container, and activation
+/// posts the row focus is actually on.
+#[test]
+fn arrows_then_enter_post_the_row_they_landed_on() {
+    let posted = drive("down down enter");
+    let body = posted.lines().last().expect("a posted transient");
+    assert!(
+        body.contains(r#""subject":"id:3""#),
+        "two downs from the first row is the third: {body}",
+    );
+}
+
+/// An accelerator fires its element without focus ever reaching it, and
+/// the declaration it fires is the one that element names — not the
+/// other `click` declaration in the same view.
+#[test]
+fn an_accelerator_fires_its_own_declaration() {
+    let posted = drive("n");
+    let body = posted.lines().last().expect("a posted transient");
+    assert!(
+        body.contains(r#""label":"untitled""#),
+        "`on/new` supplies the literal, `on/click` is not consulted: {body}",
+    );
+}

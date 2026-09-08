@@ -11,6 +11,7 @@ name = "tonk-tui-poc"
 path = "src/main.rs"
 
 [dependencies]
+crossterm = { workspace = true }
 ipld-core = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
