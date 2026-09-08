@@ -96,7 +96,12 @@ async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry
         root_did,
         provider: provider.clone(),
         email: provider.and(email),
-        display_name: super::profile_name::resolve_display_name(tonk).await,
+        // The ACCOUNT's name, not the profile's. The roster feeds the
+        // Hub's account cell, which names the account — and that name
+        // arrives with the account branch, so `None` here is what makes
+        // the cell hold a skeleton until it replicates. The profile-name
+        // override is a per-device legacy and cannot answer for it.
+        display_name: super::account_devices::account_display_name(tonk).await,
     }
 }
 
@@ -122,7 +127,7 @@ async fn inspected_entry(
         root_did,
         provider,
         email: None,
-        display_name: super::profile_name::resolve_display_name_from(profile, operator).await,
+        display_name: super::profile_name::stored_display_name_from(profile, operator).await,
     }
 }
 
@@ -163,7 +168,7 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
                 root_did: entry.root_did,
                 provider: entry.provider,
                 email: entry.email,
-                display_name: Some(entry.display_name),
+                display_name: entry.display_name,
             })
             .collect(),
     }

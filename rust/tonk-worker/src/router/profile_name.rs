@@ -31,16 +31,23 @@ const CONTENT_BRANCH: &str = "main";
 
 /// The member's effective display name: stored override, else the
 /// deterministic default derived from the profile DID.
+///
+/// The petname here is for places that must put SOME name on a person for
+/// other people to read — a membership row, a roster entry projected into
+/// a space. Anything describing this profile to its own UI wants
+/// [`stored_display_name`] instead, so an unnamed profile reads as
+/// unnamed rather than as a generated word.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    resolve_display_name_from(&tonk.profile, &tonk.operator).await
+    stored_display_name_from(&tonk.profile, &tonk.operator)
+        .await
+        .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
-/// Resolve the effective display name for an explicit profile without
-/// booting it as the active worker state.
-pub(crate) async fn resolve_display_name_from(
+/// The stored name for an explicit profile, or `None` when none is set.
+pub(crate) async fn stored_display_name_from(
     profile: &Profile,
     operator: &DefaultOperator,
-) -> String {
+) -> Option<String> {
     let profile_entity = profile.did().this();
 
     let branch = match Repository::from(profile)
@@ -52,7 +59,7 @@ pub(crate) async fn resolve_display_name_from(
         Ok(branch) => branch,
         Err(e) => {
             log!("resolve_display_name: meta acquire failed: {e}");
-            return petname(&profile.did());
+            return None;
         }
     };
 
@@ -70,7 +77,7 @@ pub(crate) async fn resolve_display_name_from(
     rows.into_iter()
         .next()
         .map(|pn| pn.name.0)
-        .unwrap_or_else(|| petname(&profile.did()))
+        .filter(|name| !name.trim().is_empty())
 }
 
 /// The routing keys of every real space the profile belongs to.

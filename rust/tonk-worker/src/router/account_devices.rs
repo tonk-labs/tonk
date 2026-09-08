@@ -217,10 +217,14 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
 }
 
 /// The chosen account display name, straight from the fact — `None` when
-/// nobody has named the account yet. Distinct from the roster's
-/// display name, which falls back to an auto-generated petname and so
-/// cannot say whether a person ever chose one.
-async fn account_display_name(state: &TonkState) -> Option<String> {
+/// nobody has named the account yet.
+///
+/// This is the AUTHORITATIVE name: it is keyed on the account DID and
+/// replicates with the account, so every device that opens it agrees.
+/// `tonk:profile/name` is a different thing — one device's own override,
+/// a legacy of naming profiles rather than accounts — and must not stand
+/// in for this one.
+pub(crate) async fn account_display_name(state: &TonkState) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
