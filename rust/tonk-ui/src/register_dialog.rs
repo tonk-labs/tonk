@@ -134,7 +134,6 @@ const DIALOG_HTML: &str = r##"
   </div>
   <div class="oexp mblk">
     <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
-    <p>To activate a new account, you’ll need to accept our <a href="https://tonk.xyz/legal/terms" target="_blank" rel="noopener noreferrer">terms of service</a>.</p>
   </div>
   <button class="ghost" id="tonk-register-dismiss">
     <span aria-hidden="true">&#9666;</span> back to space</button>
