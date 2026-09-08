@@ -175,7 +175,9 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
 
 /// Read `(row.this, Row { subject, name?, presence? })` off a raw subscription
 /// row. `None` for a missing/empty row, a missing entity id, or a missing
-/// required field. `name` is optional so pre-mirror entries remain reachable.
+/// required field. `name` is optional so pre-mirror entries remain reachable,
+/// and `presence` is optional because its absence is the not-replicated-here
+/// case rather than a malformed row.
 fn read_row(row: &JsValue) -> Option<(String, Row)> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -188,9 +190,14 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
     let name = Reflect::get(&fields, &"name".into())
         .ok()
         .and_then(|v| v.as_string());
+    // Optional in the query, and its ABSENCE is meaningful: a space the
+    // account knows about but this device has not replicated has no
+    // presence fact. Dropping such a row would hide exactly the remote
+    // spaces the switcher exists to offer.
     let presence = Reflect::get(&fields, &"presence".into())
         .ok()
-        .and_then(|v| v.as_string())?;
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
     Some((
         this_id,
         Row {
