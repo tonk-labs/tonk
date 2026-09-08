@@ -666,9 +666,9 @@ async fn it_renders_every_other_account_directory_space() {
         .expect("query")
         .expect("surviving row rendered");
     assert_eq!(
-        row.get_attribute("data-status").as_deref(),
+        row.get_attribute("data-presence").as_deref(),
         Some("tonk:active"),
-        "row must stamp data-status from the directory status"
+        "row must stamp data-presence from the directory presence"
     );
     assert_eq!(
         row.text_content().as_deref(),
