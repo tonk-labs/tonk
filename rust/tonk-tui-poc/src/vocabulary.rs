@@ -44,6 +44,7 @@ fn lower_element(element: &RenderElement) -> Option<Element> {
         .iter()
         .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
         .collect();
+    let attrs = promote_states(attrs);
 
     // `<style>` is inert here exactly as it is in the browser
     // collector: a terminal has no cascade to feed it.
@@ -83,13 +84,55 @@ fn lower_element(element: &RenderElement) -> Option<Element> {
     node.style = style_from(&attrs, &element.tag);
     node.attrs = attrs
         .into_iter()
-        .filter(|(name, _)| !LAYOUT_ATTRS.contains(&name.as_str()))
+        .filter(|(name, _)| {
+            !LAYOUT_ATTRS.contains(&name.as_str())
+                && !STATES.iter().any(|(_, prefix)| name.starts_with(prefix))
+        })
         .collect();
     Some(node)
 }
 
 fn lower_children(element: &RenderElement) -> Vec<Element> {
     element.children.iter().filter_map(lower_node).collect()
+}
+
+/// The closed set of styling states, as a flag attribute and the
+/// prefix it unlocks (`plan/tui-views.md` §6.6).
+///
+/// elm-ui's `focused` / `mouseOver` / `mouseDown` are attribute bundles
+/// on the element, not selectors, and this is that idea verbatim: no
+/// cascade, no specificity, no `<style>` block. The set is closed on
+/// purpose — an open one is a selector engine with extra steps.
+///
+/// Order is the cascade. `disabled` is the weakest because it is a
+/// standing condition; `active` is the strongest because it lasts only
+/// while a key is held, and a decoration that cannot be seen while armed
+/// is not a decoration.
+const STATES: &[(&str, &str)] = &[
+    ("disabled", "disabled-"),
+    ("focused", "focused-"),
+    ("hover", "hover-"),
+    ("active", "active-"),
+];
+
+/// Fold every state-prefixed attribute whose state is set onto the
+/// attribute it decorates, so the rest of the lowering never learns that
+/// states exist.
+fn promote_states(mut attrs: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    for (flag, prefix) in STATES {
+        if !attrs.contains_key(*flag) {
+            continue;
+        }
+        let promoted: Vec<(String, String)> = attrs
+            .iter()
+            .filter_map(|(name, value)| {
+                Some((name.strip_prefix(prefix)?.to_owned(), value.clone()))
+            })
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
+        attrs.extend(promoted);
+    }
+    attrs
 }
 
 /// Concatenate a subtree's text, collapsing whitespace the way a

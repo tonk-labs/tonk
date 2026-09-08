@@ -21,6 +21,7 @@
 
 pub mod activate;
 pub mod cli;
+pub mod focus;
 pub mod notation;
 pub mod paint;
 pub mod pipeline;
