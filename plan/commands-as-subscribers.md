@@ -317,9 +317,17 @@ monotone, classes 2–3 need placement *because* they are not.
 
 ## Open questions
 
-1. **Overlay deltas** — verify overlay asserts/retracts flow into
-   subscriber `Delta`s (see above). If not, that's a small dialog-side
-   fix, but it gates the overlay-command leg.
+1. **Overlay deltas — resolved by state-layers.** On current dialog
+   main the caution was warranted: an overlay write bypasses induction
+   (session facts can be read by rule bodies but never trigger a
+   rule — `notes/state-layers.md` names this gap explicitly). The
+   state-layers branch (`claude/dialog-db-state-layers-7p905m`) is the
+   fix: procedural writes join the commit stimulus and rule
+   conclusions into the procedural layer are observable to every
+   subscription on the branch, both covered by tests in
+   `placement.rs`. The ephemeral-command leg therefore builds on that
+   branch landing in dialog and tonk advancing its dialog pin, not on
+   hand-rolled overlay asserts.
 2. **Command entity identity** — durable dedup needs stable command ids
    shared with outcomes. Convention today is loose (`effect:system` as a
    well-known `this`); durable commands likely need caller-minted unique
@@ -344,24 +352,35 @@ its current guarantees in the unified model — neither is threatened by
 dropping transience, because durability is a **per-command tier**, not
 a consequence of unification:
 
-- **No click history.** Three storage tiers: *transient* (today's one
-  commit cycle), *overlay* (session-lived, in-memory, never replicated,
-  never in durable history — where clicks go), *durable* (only requests
-  needing delivery guarantees; retracted on consumption, so no
-  unbounded log either). An overlay-tier `Increment` has zero storage
-  overhead; the counter state persists, the clicks never do.
+- **No click history.** Storage tier is a per-command choice, and
+  dialog's state-layers branch
+  (`claude/dialog-db-state-layers-7p905m`, `notes/state-layers.md` +
+  `rust/dialog-repository/src/placement.rs`) makes it a **schema
+  property of the attribute** rather than a per-call-site verb:
+  `dialog.attribute/layer` declares where an attribute's facts live —
+  `semantic` (tree: durable, replicated), `procedural` (session
+  overlay: this process only), with `episodic`/`sensory` reserved.
+  Writers just `assert`; the commit routes by placement. `Increment`
+  declared procedural has zero storage overhead — the branch's own
+  test `it_keeps_a_procedural_only_transaction_off_the_tree` proves a
+  pure-click batch mints no revision. The counter state persists, the
+  clicks never do.
 - **Fires once.** Two mechanisms stack. Everything is edge-triggered:
   subscribers consume deltas and induction runs over a commit's
   stimulus / the induce watermark — a fact asserting is one edge, one
-  firing; nothing re-evaluates level state per pass. And consumption:
-  the handler retracts the overlay command when it processes it, so
-  even the one replaying case (snapshot on a fresh subscription within
-  the same session) cannot redeliver. Ten rapid clicks = ten asserts =
-  ten deltas = ten increments; a crash between click and handling loses
-  the click, exactly as transients do today. The once-only hazard lives
-  only in the durable tier (boot deliberately replays unconsumed
-  commands), which is why outcome-gating is mandatory there and clicks
-  do not belong in it.
+  firing; nothing re-evaluates level state per pass. On the
+  state-layers branch this holds for ephemeral asserts specifically:
+  `it_induces_over_a_procedural_write` shows a procedural write in the
+  stimulus firing rules whose semantic heads land in the tree — click
+  triggers rule, once, and the click itself never persists. And
+  consumption: the handler (or a sweep rule) retracts the procedural
+  command when processed, so even snapshot re-establishment within the
+  session cannot redeliver. Ten rapid clicks = ten asserts = ten
+  stimuli = ten increments; a crash between click and handling loses
+  the click, exactly as transients do today. The once-only hazard
+  lives only in the durable (semantic) tier — boot deliberately
+  replays unconsumed commands — which is why outcome-gating is
+  mandatory there and clicks do not belong in it.
 
 ## The plan
 
@@ -376,15 +395,25 @@ last, once its semantics are proven.
    one; only its notation is deferred.
 2. **Migrate remaining sweeps** (account-name projection, founder
    repair, mounts); delete `converge_account_state`.
-3. **Overlay-command leg**: verify overlay asserts surface in
-   subscriber deltas; move UI commands from transient dispatch to
-   overlay-triggered subscribers; retire the transient capture
-   apparatus.
+3. **Ephemeral-command leg — adopt state-layers**: once
+   `claude/dialog-db-state-layers-7p905m` lands in dialog and the tonk
+   pin advances, declare UI command attributes procedural
+   (`dialog.attribute/layer`); commands become plain asserts routed by
+   the schema, triggering rules and subscribers with no persistence;
+   retire the transient capture apparatus. (Dialog-side motivation for
+   that branch independently cites the `Provider<C>` registry as
+   "re-deriving what induction already computed" — the two efforts
+   converge.)
 4. **Durable-command leg**: command entities + `for:` audience +
-   outcome-gated consumption; pilot on `InviteRequest`-to-host.
+   outcome-gated consumption; pilot on `InviteRequest`-to-host. Note
+   the reserved `sensory` layer (replicated, never stored) is the
+   eventual natural home for cross-peer messages — a semantic command
+   with retract-on-consume approximates it until it's backed.
 5. **Declarative lift**: `effect!:` rules take over proven patterns —
    same-branch rules first (with the identity-join filter and the
    install-time lint). Cross-branch edges (the name mirror) stay
    imperative longest: inductive rules are single-branch, so their
-   cross-branch story is the addressed-message pivot, and nothing in
-   phases 1–4 blocks on it.
+   cross-branch story is the addressed-message pivot — though
+   state-layers' composite subscriptions (`QueryLayer::subscribe`,
+   per-line pins) point at the standing multi-source query that story
+   would want. Nothing in phases 1–4 blocks on it.
