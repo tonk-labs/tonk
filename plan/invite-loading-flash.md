@@ -24,3 +24,28 @@ This fixture isolates initial markup visibility. It does not replay the supplied
 staging invite or establish whether a transient `no-model` frame also occurs in
 that deployed build. No claim is made about the separate long commit timing or
 guest script error in the supplied log.
+
+## Follow-up: join failure wall (2026-09-08)
+
+Frame inspection of the new recording shows `this share link expired` while
+still on `/join`, before successful navigation. This is `tonk:join/failure`,
+not the space chrome's `invalid link` fallback addressed above.
+
+The failure template had no subject binding. When the display mounts a view it
+replays its cached frame, including an empty frame before the entity query has
+matched. The unbound wall renders as static chrome even without a failure row;
+the join route's `:has(.edge-wall--closed)` rule then hides the opening pulse.
+Binding the section with `data-id={this}` makes the whole wall conditional on
+the failure row, following the join-status template's existing pattern.
+
+Validation:
+- The Wasm browser regression
+  `cargo test -p tonk-display --target wasm32-unknown-unknown --locked it_renders_the_join_failure_wall_only_for_a_matching_row`
+  uses the actual profile-library template. Before the change it failed with
+  `a pending join must not render the expired-link wall`; after the change it
+  passes empty -> matching failure -> empty, including removal on retry.
+- The sandbox browser daemon failed to become healthy; the unchanged test ran
+  with host access and produced the red/green results above.
+- `cargo test -p tonk-worker --test standard_library --locked`: 30 passed.
+- Full invite redemption from the recording has not been replayed; this
+  regression exercises the real browser renderer at the failing frame boundary.
