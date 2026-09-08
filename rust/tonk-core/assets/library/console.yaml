@@ -69,15 +69,6 @@ concept!: &console/subscription
       the: xyz.tonk.console.subscription/subscribers
       cardinality: one
       as: unsigned-integer
-    update:
-      description: >
-        The updates delivered to this subscription — one fact per entry, so
-        the expanded row iterates them into its log. Cardinality MANY, and
-        explicitly so: an omitted cardinality defaults to `one`, which marks
-        the field scalar and would render a single entry instead of the feed.
-      the: xyz.tonk.console.subscription/update
-      cardinality: many
-      as: entity
     concept-name:
       description: >
         The concept this subscription watches, as a readable name
@@ -106,6 +97,24 @@ concept!: &console/subscription
       cardinality: one
       as: entity
   maybe:
+    update:
+      description: >
+        The updates delivered to this subscription — one fact per entry, so
+        the expanded row iterates them into its log.
+
+        OPTIONAL, and that is load-bearing: a subscription that has never
+        pushed an update has no `update` facts at all, and a required field
+        with no value makes the WHOLE row unresolvable — the concept fails
+        to match and the subscription vanishes from the console instead of
+        showing with an empty log. Every freshly opened subscription is in
+        exactly that state.
+
+        Cardinality MANY, and explicitly so: an omitted cardinality defaults
+        to `one`, which marks the field scalar and would render a single
+        entry instead of the feed.
+      the: xyz.tonk.console.subscription/update
+      cardinality: many
+      as: entity
     hash:
       description: >
         The subscription's query hash — its identity within the branch,

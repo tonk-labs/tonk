@@ -105,6 +105,63 @@ fn it_lowers_the_console_library() {
     assert_library_lowers("console library (console.yaml)", CONSOLE_LIBRARY);
 }
 
+/// Fields the console publisher cannot always supply must be declared
+/// `maybe:`, not `with:`.
+///
+/// A `with:` field is REQUIRED, and a required field with no value makes the
+/// whole row unresolvable — the concept fails to match and the row vanishes,
+/// replaced by "Concept mismatch: required attribute missing". That is not a
+/// hypothetical: a subscription that has never pushed an update has no
+/// `update` facts, and every subscription starts in exactly that state, so
+/// declaring it required broke the page for each freshly opened query.
+///
+/// This asserts the declaration directly rather than through a render,
+/// because the failure only shows up with the *right* data absent — which a
+/// browser test reproduces only by luck.
+#[test]
+fn it_declares_sometimes_absent_console_fields_as_optional() {
+    // Split at `maybe:` so each half can be searched for a field name. Only
+    // the subscription concept has both blocks, which is what this covers.
+    let subscription = CONSOLE_LIBRARY
+        .split("concept!: &console/subscription")
+        .nth(1)
+        .expect("console.yaml declares the subscription concept");
+    let subscription = subscription
+        .split("concept!:")
+        .next()
+        .expect("the concept body ends at the next declaration");
+    let (required, optional) = subscription
+        .split_once("\n  maybe:")
+        .expect("the subscription concept declares optional fields");
+
+    // Each of these is absent for a subscription in an ordinary state, so a
+    // required declaration would drop the row entirely.
+    for (field, why) in [
+        (
+            "update:",
+            "a subscription that has never updated has no update links",
+        ),
+        (
+            "last-update:",
+            "a subscription that has never updated has no last-update time",
+        ),
+        (
+            "pending:",
+            "a fully-served subscription has no pending subscribers",
+        ),
+    ] {
+        assert!(
+            !required.contains(field),
+            "`{field}` must be declared under `maybe:` — {why}, and a \
+             required field with no value makes the whole row unresolvable"
+        );
+        assert!(
+            optional.contains(field),
+            "`{field}` must still be declared, under `maybe:` — {why}"
+        );
+    }
+}
+
 /// Form controls expose their submitted value at `.value` (a
 /// `RadioNodeList` included). Nothing else on an `<input>` is a value
 /// slot, so a read path ending anywhere else resolves to `undefined`.
