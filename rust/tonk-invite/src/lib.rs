@@ -22,11 +22,14 @@
 //!   for chains minted before the meta rode the delegation.
 //! - `name` (optional): the space's display name at mint time, so the
 //!   recipient can label the space the moment it appears — before its
-//!   content (and so its authoritative name) has synced. Advisory and
-//!   possibly stale by redemption time; the space's own record supersedes
-//!   it once content hydrates. Deliberately a loose parameter, not signed
-//!   chain meta: a display hint has no integrity requirement, and baking
-//!   it into the retained delegation would preserve a stale name forever.
+//!   content (and so its authoritative name) has synced. A chain whose
+//!   delegations carry a [`SPACE_NAME`] entry records the name in the
+//!   signed grant itself — "you were invited to a space called X", a
+//!   historical fact of the invitation that stays true after any rename;
+//!   the signed value wins over this parameter, which stays as the
+//!   carrier for chains minted before the meta rode the delegation. The
+//!   space's own record supersedes either for display once content
+//!   hydrates.
 //! - `#fragment` (optional): base58 of a 32-byte Ed25519 seed. Presence marks
 //!   the invite as **audience-open** — any redeemer can claim it by
 //!   redelegating from the embedded ephemeral key. Absence marks it as
@@ -106,6 +109,36 @@ pub fn home_address_meta(address: &Url) -> BTreeMap<String, Ipld> {
     BTreeMap::from([(HOME_ADDRESS.to_owned(), Ipld::String(address.to_string()))])
 }
 
+/// UCAN delegation `meta` key naming the space's display name at mint
+/// time.
+///
+/// A historical fact of the invitation — "you were invited to a space
+/// called X" — signed into the grant, so it stays true after any rename
+/// rather than pretending to be current. The recipient uses it as the
+/// space's first label; the space's own record supersedes it for display
+/// once content syncs. Read it with [`space_name`].
+pub const SPACE_NAME: &str = "space.name";
+
+/// The space name a delegation chain records for itself, when it does.
+///
+/// Scans the chain leaf-to-root (like [`home_address`]) and returns the
+/// first [`SPACE_NAME`] entry: the delegation minted closest to the
+/// recipient is the one minted at handoff time, so its name is the one
+/// the inviter saw. Lenient where [`home_address`] is strict — a
+/// non-string or blank entry answers `None`, because display metadata
+/// must never fail a parse that would otherwise redeem.
+pub fn space_name(chain: &DelegationChain) -> Option<String> {
+    match chain.meta(SPACE_NAME) {
+        Some(Ipld::String(name)) if !name.trim().is_empty() => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// A [`SPACE_NAME`] entry ready to hand to a delegation builder's `meta`.
+pub fn space_name_meta(name: &str) -> BTreeMap<String, Ipld> {
+    BTreeMap::from([(SPACE_NAME.to_owned(), Ipld::String(name.to_owned()))])
+}
+
 /// Derive the invite base URL from a remote's endpoint.
 ///
 /// The invite has to live on the remote's own origin. That origin is the
@@ -179,9 +212,10 @@ pub struct Invite {
     pub remote_url: Option<Url>,
     /// Provider-independent relay that accepts raw signed revocation artifacts.
     pub revocation_url: Option<Url>,
-    /// The space's display name at mint time, if the inviter attached one.
-    /// Advisory: possibly stale by redemption, superseded by the space's
-    /// own record once content syncs. See the crate doc's `name` entry.
+    /// The space's display name at mint time, if the invitation records
+    /// one — from the chain's signed [`SPACE_NAME`] meta, else the legacy
+    /// `name=` parameter. A historical fact of the invitation; the
+    /// space's own record supersedes it for display once content syncs.
     pub space_name: Option<String>,
 }
 
@@ -226,11 +260,14 @@ impl Invite {
             );
         }
         Ok(Self {
+            // The chain's own signed name, when the grant records one —
+            // the invitation's historical fact, read before any loose
+            // carrier gets a say.
+            space_name: space_name(&chain),
             chain,
             audience,
             remote_url,
             revocation_url: None,
-            space_name: None,
         })
     }
 
@@ -241,13 +278,17 @@ impl Invite {
         self
     }
 
-    /// Attach the space's display name as advisory metadata for the
-    /// recipient's first render. An empty or whitespace-only name is
-    /// dropped — it would seed a blank label where the recipient's
-    /// "Untitled" fallback is strictly better.
+    /// Attach the space's display name for chains minted without the
+    /// signed [`SPACE_NAME`] meta. The signed value wins: a name already
+    /// read off the chain is never overwritten, mirroring how the signed
+    /// remote wins over the `remote=` parameter. An empty or
+    /// whitespace-only name is dropped — it would seed a blank label
+    /// where the recipient's "Untitled" fallback is strictly better.
     #[must_use]
     pub fn with_space_name(mut self, space_name: Option<String>) -> Self {
-        self.space_name = space_name.filter(|name| !name.trim().is_empty());
+        self.space_name = self
+            .space_name
+            .or(space_name.filter(|name| !name.trim().is_empty()));
         self
     }
 
@@ -388,7 +429,13 @@ impl Invite {
             if let Some(relay) = &self.revocation_url {
                 pairs.append_pair("revocation", relay.as_str());
             }
-            if let Some(name) = &self.space_name {
+            // Like the remote: a chain that records its own name carries
+            // it signed, and writing the loose parameter beside it would
+            // hand a reader two answers. The parameter is written only
+            // for chains minted before the meta rode the delegation.
+            if space_name(&self.chain).is_none()
+                && let Some(name) = &self.space_name
+            {
                 pairs.append_pair("name", name);
             }
         }
@@ -685,6 +732,65 @@ mod tests {
 
         let decoded = Invite::parse_url(&url).await.unwrap();
         assert_eq!(decoded.remote_url, Some(remote));
+    }
+
+    /// Like [`make_chain`], with a [`SPACE_NAME`] entry on the delegation.
+    async fn make_chain_with_name(
+        issuer_seed: &[u8; 32],
+        audience_did: &Did,
+        subject_did: &Did,
+        name: &str,
+    ) -> DelegationChain {
+        let issuer = Ed25519Signer::import(issuer_seed).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(issuer))
+            .audience(audience_did)
+            .subject(UcanSubject::Specific(subject_did.clone()))
+            .command(vec![])
+            .meta(space_name_meta(name))
+            .try_build()
+            .await
+            .unwrap();
+        DelegationChain::new(delegation)
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_the_space_name_from_the_delegation_meta() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain_with_name(&ISSUER_SEED, &audience, &subject, "Garden Plans").await;
+
+        // No `name=` parameter on the URL at all: the chain records it.
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
+        assert_eq!(invite.space_name.as_deref(), Some("Garden Plans"));
+        let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
+        assert!(!url.contains("name="), "{url}");
+
+        let decoded = Invite::parse_url(&url).await.unwrap();
+        assert_eq!(decoded.space_name.as_deref(), Some("Garden Plans"));
+    }
+
+    #[dialog_common::test]
+    async fn it_prefers_the_signed_space_name_over_the_url_parameter() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain_with_name(&ISSUER_SEED, &audience, &subject, "Signed Name").await;
+
+        // A loose parameter beside the signed meta loses — the same rule
+        // as the remote, whether set programmatically or spliced into
+        // the URL by hand.
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap()
+            .with_space_name(Some("Loose Name".to_owned()));
+        assert_eq!(invite.space_name.as_deref(), Some("Signed Name"));
+
+        let mut url = url::Url::parse(&invite.to_url(DEFAULT_BASE_URL).unwrap()).unwrap();
+        url.query_pairs_mut().append_pair("name", "Spliced Name");
+        let decoded = Invite::parse_url(url.as_str()).await.unwrap();
+        assert_eq!(decoded.space_name.as_deref(), Some("Signed Name"));
     }
 
     #[dialog_common::test]

@@ -243,15 +243,26 @@ async fn mint_for(
     };
 
     // With a remote, the leaf is signed with the endpoint in its
-    // `home.address` meta so the grant and the address travel together.
-    // A local-only invite has no endpoint to name and delegates plainly.
+    // `home.address` meta so the grant and the address travel together;
+    // a local-only invite has no endpoint to name. A named space also
+    // signs its display name into `space.name` — the invitation's
+    // historical fact ("you were invited to a space called X", true
+    // after any rename), which the claimer uses as the space's first
+    // label until content syncs.
+    let mut meta = std::collections::BTreeMap::new();
+    if let Some(remote) = &parsed_remote {
+        meta.extend(tonk_invite::home_address_meta(remote));
+    }
+    if let Some(name) = crate::account_spaces::repository_name(site).await {
+        meta.extend(tonk_invite::space_name_meta(&name));
+    }
     let mut delegate = site
         .profile
         .access()
         .claim(Subject::from(site.repository.did()).attenuate(Use))
         .delegate(audience.clone());
-    if let Some(remote) = &parsed_remote {
-        delegate = delegate.meta(tonk_invite::home_address_meta(remote));
+    if !meta.is_empty() {
+        delegate = delegate.meta(meta);
     }
     let delegation: UcanDelegation = delegate
         .perform(&site.operator)
@@ -273,11 +284,7 @@ async fn mint_for(
     let invite = Invite::new(chain, invite_audience, parsed_remote)
         .await
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
-        .with_revocation_url(relay)
-        // The space's display name at mint time, so the claimer's
-        // directory row is labeled before content syncs. Advisory —
-        // the space's own record supersedes it after the first pull.
-        .with_space_name(crate::account_spaces::repository_name(site).await);
+        .with_revocation_url(relay);
 
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))

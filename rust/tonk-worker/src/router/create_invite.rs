@@ -159,13 +159,23 @@ pub async fn create_invite(
     };
 
     // The leaf is signed with the space's upstream in its `home.address`
-    // meta, so the endpoint rides inside the signed grant.
+    // meta and — when one has hydrated here — its display name in
+    // `space.name`, so both ride inside the signed grant: the endpoint
+    // because the grant and the address must not be swappable
+    // independently, the name as the invitation's historical fact ("you
+    // were invited to a space called X", true after any rename).
+    let mut meta = home_address_meta(&remote.access_url);
+    if let Some(name) =
+        super::repository::repository_display_name(&tonk, &repository, &repo_name).await
+    {
+        meta.extend(tonk_invite::space_name_meta(&name));
+    }
     let delegation: UcanDelegation = tonk
         .profile
         .access()
         .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(audience_did.clone())
-        .meta(home_address_meta(&remote.access_url))
+        .meta(meta)
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
@@ -176,14 +186,7 @@ pub async fn create_invite(
         Some(remote.access_url.clone()),
     )
     .await
-    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?
-    // The space's display name at mint time, so the recipient's Hub row
-    // has a label before the content syncs. Advisory — the space's own
-    // record supersedes it after hydration — and absent while the name
-    // has not hydrated here either, rather than a misleading fallback.
-    .with_space_name(
-        super::repository::repository_display_name(&tonk, &repository, &repo_name).await,
-    );
+    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so

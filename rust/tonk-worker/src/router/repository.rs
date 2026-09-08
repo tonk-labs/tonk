@@ -1175,13 +1175,21 @@ async fn run_invite(
     let seed = bs58::encode(seed_bytes).into_string();
 
     // The leaf is signed with the space's upstream in its `home.address`
-    // meta, so the endpoint rides inside the signed grant.
+    // meta and — when one has hydrated here — its display name in
+    // `space.name`, so both ride inside the signed grant: the endpoint
+    // because the grant and the address must not be swappable
+    // independently, the name as the invitation's historical fact ("you
+    // were invited to a space called X", true after any rename).
+    let mut meta = tonk_invite::home_address_meta(&remote_execution.access_url);
+    if let Some(name) = repository_display_name(&tonk, &repository, repo_name).await {
+        meta.extend(tonk_invite::space_name_meta(&name));
+    }
     let delegation: dialog_ucan::UcanDelegation = tonk
         .profile
         .access()
         .claim(Subject::from(repository.did()).attenuate(Use))
         .delegate(membership_did)
-        .meta(tonk_invite::home_address_meta(&remote_execution.access_url))
+        .meta(meta)
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
@@ -1205,15 +1213,13 @@ async fn run_invite(
     // Assemble the invite URL the recipient opens. Built here rather than
     // concatenated in the view template so there is exactly one definition
     // of an invite URL, and so it can be shortened — an async round-trip a
-    // template can't make. The display name rides along so the recipient
-    // can label the space before its content syncs.
-    let space_name = repository_display_name(&tonk, &repository, repo_name).await;
+    // template can't make. The display name needs no URL carrier: it
+    // rides in the chain's signed `space.name` meta, inside `access=`.
     let link = invite_url(
         &proof,
         &remote,
         &seed,
         repo_name,
-        space_name.as_deref(),
         &remote_execution.access_url,
     )
     .await?;
@@ -1404,7 +1410,6 @@ async fn invite_url(
     remote: &str,
     seed: &str,
     space_key: &str,
-    space_name: Option<&str>,
     access_url: &Url,
 ) -> Result<String, TonkWorkerError> {
     // The link lives on the host serving the SPACE — the origin derived
@@ -1422,7 +1427,7 @@ async fn invite_url(
             "the space's access endpoint yields no invite base: {error:#}"
         ))
     })?;
-    let long = long_invite_url(&base, proof, remote, seed, space_key, space_name);
+    let long = long_invite_url(&base, proof, remote, seed, space_key);
     // Shortening is a convenience against the same host: a host that
     // does not provide it (or answers wrongly — the content-address and
     // redirect-probe checks) degrades to the fully functional long URL.
@@ -1475,29 +1480,10 @@ pub(super) fn worker_origin() -> Option<String> {
 /// `RemoteRefusal`). The seed is the fragment and never the query: it must not
 /// reach a server, and the shortcut service is handed only the path + query.
 ///
-/// `space_name` is the space's display name at mint time, carried as the
-/// advisory `name` query parameter (see `tonk-invite`'s URL format) so the
-/// recipient's Hub row has a label before the content syncs. A blank or
-/// absent name appends nothing — the recipient's "Untitled" fallback beats
-/// seeding an empty label.
-fn long_invite_url(
-    base: &str,
-    proof: &str,
-    remote: &str,
-    seed: &str,
-    space_key: &str,
-    space_name: Option<&str>,
-) -> String {
-    let name = space_name
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| {
-            let encoded = url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("name", name)
-                .finish();
-            format!("&{encoded}")
-        })
-        .unwrap_or_default();
-    let base = format!("{base}?access={proof}{remote}{name}#{seed}");
+/// The space's display name needs no slot here: it rides in the chain's
+/// signed `space.name` meta, inside the `access=` parameter itself.
+fn long_invite_url(base: &str, proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
+    let base = format!("{base}?access={proof}{remote}#{seed}");
     match tonk_analytics::launch::space_referral_url(&base, space_key) {
         Ok(url) => url,
         Err(error) => {
@@ -7985,7 +7971,6 @@ block/insert!:
             "&remote=https%3A%2F%2Fhub%2Fucan%2F",
             "SEED",
             "did:key:zSpace",
-            Some("Plans & notes #1"),
         );
 
         let parsed = url::Url::parse(&url).expect("invite URL parses");
@@ -8004,14 +7989,6 @@ block/insert!:
             parsed
                 .query_pairs()
                 .any(|(key, value)| { key == "remote" && value == "https://hub/ucan/" })
-        );
-        // The display name survives percent-encoding round-trip — spaces,
-        // an ampersand, a hash — and sits in the query BEFORE the `#`, so
-        // the fragment stays exactly the seed.
-        assert!(
-            parsed
-                .query_pairs()
-                .any(|(key, value)| { key == "name" && value == "Plans & notes #1" })
         );
         assert!(parsed.query_pairs().any(|(key, value)| {
             key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
@@ -8044,13 +8021,15 @@ block/insert!:
             "",
             "SEED",
             "did:key:zSpace",
-            None,
         );
         assert!(url.starts_with("https://tonk.example/join?access=PROOF&"));
         assert!(url.ends_with("#SEED"));
         assert!(url.contains("tonk_channel=reshare"));
         assert!(url.contains("tonk_space="));
         assert!(!url.contains("remote="));
-        assert!(!url.contains("name="), "no name appends nothing: {url}");
+        assert!(
+            !url.contains("name="),
+            "the name rides in the chain meta, never as a loose parameter: {url}"
+        );
     }
 }
