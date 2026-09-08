@@ -176,7 +176,14 @@ pub async fn create_invite(
         Some(remote.access_url.clone()),
     )
     .await
-    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
+    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?
+    // The space's display name at mint time, so the recipient's Hub row
+    // has a label before the content syncs. Advisory — the space's own
+    // record supersedes it after hydration — and absent while the name
+    // has not hydrated here either, rather than a misleading fallback.
+    .with_space_name(
+        super::repository::repository_display_name(&tonk, &repository, &repo_name).await,
+    );
 
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so

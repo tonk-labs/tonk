@@ -1205,8 +1205,10 @@ async fn run_invite(
     // Assemble the invite URL the recipient opens. Built here rather than
     // concatenated in the view template so there is exactly one definition
     // of an invite URL, and so it can be shortened — an async round-trip a
-    // template can't make.
-    let link = invite_url(&proof, &remote, &seed, repo_name).await;
+    // template can't make. The display name rides along so the recipient
+    // can label the space before its content syncs.
+    let space_name = repository_display_name(&tonk, &repository, repo_name).await;
+    let link = invite_url(&proof, &remote, &seed, repo_name, space_name.as_deref()).await;
 
     let authorization = Authorization {
         this: subject_entity.clone(),
@@ -1394,9 +1396,30 @@ async fn publish_share_blocked<'a>(
 /// origin the recipient will actually load. It is read here rather than
 /// taken from the page because a sealed guest's `window.location.origin` is
 /// the opaque `"null"`.
-async fn invite_url(proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
-    let long = long_invite_url(worker_origin().as_deref(), proof, remote, seed, space_key);
+async fn invite_url(
+    proof: &str,
+    remote: &str,
+    seed: &str,
+    space_key: &str,
+    space_name: Option<&str>,
+) -> String {
+    let origin = worker_origin();
+    let long = long_invite_url(
+        origin.as_deref(),
+        proof,
+        remote,
+        seed,
+        space_key,
+        space_name,
+    );
 
+    // No worker scope means the URL fell back to the hardcoded default
+    // base, which is never PUT to — the same rule as the HTTP mint path,
+    // keeping tests and offline mints network-free. Only a real origin
+    // has a shortcut service of its own to shorten against.
+    if origin.is_none() {
+        return long;
+    }
     match super::create_invite::shorten(&long).await {
         Ok(short) => short,
         Err(e) => {
@@ -1444,19 +1467,35 @@ pub(super) fn worker_origin() -> Option<String> {
 /// modern delegation whose signed metadata names the shareable remote (see
 /// `RemoteRefusal`). The seed is the fragment and never the query: it must not
 /// reach a server, and the shortcut service is handed only the path + query.
+///
+/// `space_name` is the space's display name at mint time, carried as the
+/// advisory `name` query parameter (see `tonk-invite`'s URL format) so the
+/// recipient's Hub row has a label before the content syncs. A blank or
+/// absent name appends nothing — the recipient's "Untitled" fallback beats
+/// seeding an empty label.
 fn long_invite_url(
     origin: Option<&str>,
     proof: &str,
     remote: &str,
     seed: &str,
     space_key: &str,
+    space_name: Option<&str>,
 ) -> String {
+    let name = space_name
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| {
+            let encoded = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("name", name)
+                .finish();
+            format!("&{encoded}")
+        })
+        .unwrap_or_default();
     let base = match origin {
-        Some(origin) => format!("{origin}/join?access={proof}{remote}#{seed}"),
+        Some(origin) => format!("{origin}/join?access={proof}{remote}{name}#{seed}"),
         None => {
             log!("invite: no worker origin; using the default base");
             format!(
-                "{}?access={proof}{remote}#{seed}",
+                "{}?access={proof}{remote}{name}#{seed}",
                 tonk_invite::DEFAULT_BASE_URL
             )
         }
@@ -5325,6 +5364,43 @@ mod invite_chain_tests {
             }
         }
 
+        // The minted link carries the space's display name as the
+        // advisory `name` parameter, read back through the overlay
+        // `Credential` the share view renders — so the recipient's Hub
+        // row is labeled before the space's content syncs.
+        {
+            use tonk_schema::command::Credential;
+            let tonk = state.read().await;
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            let credentials: Vec<Credential> = branch
+                .handle()
+                .query()
+                .select(Query::<Credential> {
+                    this: Term::var("this"),
+                    seed: Term::var("seed"),
+                    link: Term::var("link"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("credential query");
+            assert_eq!(credentials.len(), 1, "the mint records one credential");
+            let minted = tonk_invite::Invite::parse_url(&credentials[0].link.0)
+                .await
+                .expect("the minted link parses as an invite");
+            assert_eq!(
+                minted.space_name.as_deref(),
+                Some("Invite Chain"),
+                "the minted link names the space it invites into"
+            );
+        }
+
         // Fixture cleanup, the way account_state's own tests do it.
         let account_key = {
             let tonk = state.read().await;
@@ -7869,6 +7945,7 @@ block/insert!:
             "&remote=https%3A%2F%2Fhub%2Fucan%2F",
             "SEED",
             "did:key:zSpace",
+            Some("Plans & notes #1"),
         );
 
         let parsed = url::Url::parse(&url).expect("invite URL parses");
@@ -7887,6 +7964,14 @@ block/insert!:
             parsed
                 .query_pairs()
                 .any(|(key, value)| { key == "remote" && value == "https://hub/ucan/" })
+        );
+        // The display name survives percent-encoding round-trip — spaces,
+        // an ampersand, a hash — and sits in the query BEFORE the `#`, so
+        // the fragment stays exactly the seed.
+        assert!(
+            parsed
+                .query_pairs()
+                .any(|(key, value)| { key == "name" && value == "Plans & notes #1" })
         );
         assert!(parsed.query_pairs().any(|(key, value)| {
             key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
@@ -7918,12 +8003,14 @@ block/insert!:
             "",
             "SEED",
             "did:key:zSpace",
+            None,
         );
         assert!(url.starts_with("https://tonk.example/join?access=PROOF&"));
         assert!(url.ends_with("#SEED"));
         assert!(url.contains("tonk_channel=reshare"));
         assert!(url.contains("tonk_space="));
         assert!(!url.contains("remote="));
+        assert!(!url.contains("name="), "no name appends nothing: {url}");
     }
 
     /// Outside a worker scope there is no origin to build on (and no
@@ -7931,7 +8018,7 @@ block/insert!:
     /// base — still well-formed and redeemable, never a broken link.
     #[dialog_common::test]
     async fn it_falls_back_to_the_default_base_without_an_origin() {
-        let url = super::long_invite_url(None, "PROOF", "", "SEED", "did:key:zSpace");
+        let url = super::long_invite_url(None, "PROOF", "", "SEED", "did:key:zSpace", None);
         assert!(
             url.starts_with(tonk_invite::DEFAULT_BASE_URL),
             "expected the default base, got {url}",

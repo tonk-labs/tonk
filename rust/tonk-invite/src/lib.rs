@@ -10,7 +10,7 @@
 //! ## URL format
 //!
 //! ```text
-//! <base>?access=<base58-ucan-chain>[&remote=<access-service-url>][#<base58-seed>]
+//! <base>?access=<base58-ucan-chain>[&remote=<access-service-url>][&name=<display-name>][#<base58-seed>]
 //! ```
 //!
 //! - `access`: base58-encoded [`DelegationChain`] bytes. The chain's subject
@@ -20,6 +20,13 @@
 //!   whose delegations carry a [`HOME_ADDRESS`] entry names its own endpoint;
 //!   the signed value wins over this parameter, which stays as the carrier
 //!   for chains minted before the meta rode the delegation.
+//! - `name` (optional): the space's display name at mint time, so the
+//!   recipient can label the space the moment it appears — before its
+//!   content (and so its authoritative name) has synced. Advisory and
+//!   possibly stale by redemption time; the space's own record supersedes
+//!   it once content hydrates. Deliberately a loose parameter, not signed
+//!   chain meta: a display hint has no integrity requirement, and baking
+//!   it into the retained delegation would preserve a stale name forever.
 //! - `#fragment` (optional): base58 of a 32-byte Ed25519 seed. Presence marks
 //!   the invite as **audience-open** — any redeemer can claim it by
 //!   redelegating from the embedded ephemeral key. Absence marks it as
@@ -141,6 +148,10 @@ pub struct Invite {
     pub remote_url: Option<Url>,
     /// Provider-independent relay that accepts raw signed revocation artifacts.
     pub revocation_url: Option<Url>,
+    /// The space's display name at mint time, if the inviter attached one.
+    /// Advisory: possibly stale by redemption, superseded by the space's
+    /// own record once content syncs. See the crate doc's `name` entry.
+    pub space_name: Option<String>,
 }
 
 impl Invite {
@@ -188,6 +199,7 @@ impl Invite {
             audience,
             remote_url,
             revocation_url: None,
+            space_name: None,
         })
     }
 
@@ -195,6 +207,16 @@ impl Invite {
     #[must_use]
     pub fn with_revocation_url(mut self, revocation_url: Option<Url>) -> Self {
         self.revocation_url = revocation_url;
+        self
+    }
+
+    /// Attach the space's display name as advisory metadata for the
+    /// recipient's first render. An empty or whitespace-only name is
+    /// dropped — it would seed a blank label where the recipient's
+    /// "Untitled" fallback is strictly better.
+    #[must_use]
+    pub fn with_space_name(mut self, space_name: Option<String>) -> Self {
+        self.space_name = space_name.filter(|name| !name.trim().is_empty());
         self
     }
 
@@ -230,6 +252,7 @@ impl Invite {
         let mut access: Option<String> = None;
         let mut remote_url: Option<Url> = None;
         let mut revocation_url: Option<Url> = None;
+        let mut space_name: Option<String> = None;
         for (key, value) in parsed.query_pairs() {
             match key.as_ref() {
                 "access" => access = Some(value.into_owned()),
@@ -243,6 +266,10 @@ impl Invite {
                         .context("invite `revocation` parameter is not a valid URL")?;
                     revocation_url = Some(relay);
                 }
+                // Advisory display metadata — any string is acceptable, so
+                // a malformed value can never fail a parse that would
+                // otherwise redeem.
+                "name" => space_name = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -283,7 +310,8 @@ impl Invite {
 
         Ok(Self::new(chain, audience, remote_url)
             .await?
-            .with_revocation_url(revocation_url))
+            .with_revocation_url(revocation_url)
+            .with_space_name(space_name))
     }
 
     /// Serialize the invite as a URL rooted at `base_url`.
@@ -328,6 +356,9 @@ impl Invite {
             }
             if let Some(relay) = &self.revocation_url {
                 pairs.append_pair("revocation", relay.as_str());
+            }
+            if let Some(name) = &self.space_name {
+                pairs.append_pair("name", name);
             }
         }
 
@@ -623,6 +654,63 @@ mod tests {
 
         let decoded = Invite::parse_url(&url).await.unwrap();
         assert_eq!(decoded.remote_url, Some(remote));
+    }
+
+    #[dialog_common::test]
+    async fn it_round_trips_the_space_name_beside_an_open_seed() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let ephemeral = signer(&EPHEMERAL_SEED).await;
+        let chain = make_chain(&ISSUER_SEED, &ephemeral.did(), &subject).await;
+
+        // A name that exercises percent-encoding: spaces, an ampersand
+        // (query-pair syntax), a hash (fragment syntax), and non-ASCII.
+        let name = "Plans & notes #1 — café";
+        let invite = Invite::new(
+            chain,
+            InviteAudience::Open {
+                seed: EPHEMERAL_SEED,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .with_space_name(Some(name.to_owned()));
+
+        let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
+        let decoded = Invite::parse_url(&url).await.unwrap();
+        assert_eq!(decoded.space_name.as_deref(), Some(name));
+        // The name must not have disturbed the audience axis: the
+        // fragment still carries the seed, so the invite stays open.
+        assert!(matches!(decoded.audience, InviteAudience::Open { .. }));
+    }
+
+    #[dialog_common::test]
+    async fn it_parses_a_nameless_invite_and_writes_no_name_parameter() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
+
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
+        let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
+        assert!(!url.contains("name="), "{url}");
+        let decoded = Invite::parse_url(&url).await.unwrap();
+        assert_eq!(decoded.space_name, None);
+    }
+
+    #[dialog_common::test]
+    async fn it_drops_a_blank_space_name() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let audience = signer(&AUDIENCE_SEED).await.did();
+        let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
+
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap()
+            .with_space_name(Some("   ".to_owned()));
+        assert_eq!(invite.space_name, None);
+        assert!(!invite.to_url(DEFAULT_BASE_URL).unwrap().contains("name="));
     }
 
     #[dialog_common::test]

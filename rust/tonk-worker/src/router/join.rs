@@ -792,11 +792,22 @@ async fn perform_join(
             prepared.revocation_url.as_deref(),
         ) {
             Ok(configuration) => {
+                // A fresh install seeds the directory name from the
+                // invite's advisory `name` so the Hub row is labeled
+                // before content syncs; the mint-time name may be stale,
+                // and the space's own record supersedes it once content
+                // hydrates. A renewal seeds nothing — the directory
+                // already carries a name at least as fresh as the link's.
+                let seeded_name = if prepared.installs_replica() {
+                    prepared.invite.space_name.as_deref()
+                } else {
+                    None
+                };
                 super::repository::record_space_mount(
                     tonk,
                     &prepared.subject,
                     &configuration,
-                    None,
+                    seeded_name,
                 )
                 .await;
             }
@@ -1705,6 +1716,170 @@ mod overlay_scope_tests {
                 "{foreign} belongs to the page, not to this join"
             );
         }
+    }
+}
+
+/// Native end-to-end coverage for the invite's advisory `name`: a fresh
+/// join seeds the account directory's [`tonk_schema::SpaceName`] from the
+/// link, a renewal never overwrites what the directory already carries,
+/// and a later authoritative record supersedes the seeded value — the
+/// full "labeled immediately, stale at worst, catches up" contract.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_name_tests {
+    use super::*;
+    use dialog_credentials::ed25519::Ed25519Signer;
+    use dialog_query::{Query, Term};
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Principal as _;
+    use tonk_invite::{Invite, InviteAudience};
+
+    /// Hand-craft an audience-open, remote-free invite URL carrying a
+    /// display name. Distinct tag bytes give distinct subjects and
+    /// ephemerals, so tests never collide on a routing key.
+    async fn named_invite_url(subject_tag: u8, ephemeral_tag: u8, name: &str) -> (String, String) {
+        let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
+        let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
+        let ephemeral = Ed25519Signer::import(&[ephemeral_tag; 32]).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(subject_signer))
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let invite = Invite::new(
+            DelegationChain::new(delegation),
+            InviteAudience::Open {
+                seed: [ephemeral_tag; 32],
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .with_space_name(Some(name.to_owned()));
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
+    }
+
+    /// The directory's name rows for `key`, read off the profile branch
+    /// the way the Hub reads them.
+    async fn directory_name(state: &crate::router::AppState, key: &str) -> Vec<String> {
+        let subject: dialog_varsig::Did = key.parse().expect("subject parses");
+        let tonk = state.read().await;
+        let profile = tonk
+            .reactor
+            .profile_repository()
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::SpaceName> = profile
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::from(subject.this()),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("space-name query");
+        rows.into_iter().map(|row| row.name.0).collect()
+    }
+
+    #[dialog_common::test]
+    async fn it_seeds_the_directory_name_from_the_invite_and_lets_the_record_catch_up() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let (url, key) = named_invite_url(0xA1, 0xA2, "Garden Plans").await;
+
+        // Fresh join: the space is labeled the moment it appears, from
+        // the (possibly stale) mint-time name — not nameless until sync.
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &url).await.expect("the join succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Garden Plans".to_string()],
+            "a fresh join seeds the directory name from the invite"
+        );
+
+        // Renewal with a fresher link: the directory keeps what it has.
+        // The second link's name is DIFFERENT precisely to prove the
+        // renewal path never writes it — by the time a replica exists,
+        // the local record is at least as fresh as any link.
+        let (renewal, renewal_key) = named_invite_url(0xA1, 0xA3, "Stale Old Label").await;
+        assert_eq!(key, renewal_key, "same subject, same routing key");
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &renewal)
+                .await
+                .expect("the renewal succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Garden Plans".to_string()],
+            "a renewed join must not overwrite the directory name"
+        );
+
+        // Catch-up: the authoritative record path (what the account
+        // reconcile and the rename provider both write through) is
+        // cardinality-one on the directory entity, so the seeded value
+        // is superseded in place, never accumulated beside.
+        {
+            let tonk = state.read().await;
+            let subject: dialog_varsig::Did = key.parse().unwrap();
+            let configuration = invite_configuration(&subject, None, None).unwrap();
+            super::super::repository::record_space_mount(
+                &tonk,
+                &subject,
+                &configuration,
+                Some("Hydrated Real Name"),
+            )
+            .await;
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Hydrated Real Name".to_string()],
+            "the authoritative record supersedes the invite-seeded name"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_joins_a_nameless_invite_without_inventing_a_name() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let subject_signer = Ed25519Signer::import(&[0xB1; 32]).await.unwrap();
+        let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
+        let ephemeral = Ed25519Signer::import(&[0xB2; 32]).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(subject_signer))
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let invite = Invite::new(
+            DelegationChain::new(delegation),
+            InviteAudience::Open { seed: [0xB2; 32] },
+            None,
+        )
+        .await
+        .unwrap();
+        let url = invite.to_url("https://tonk.network/join").unwrap();
+
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &url).await.expect("the join succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            Vec::<String>::new(),
+            "a link minted before the name rode the URL seeds nothing"
+        );
     }
 }
 
