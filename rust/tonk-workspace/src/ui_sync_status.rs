@@ -22,7 +22,7 @@
 //! lives in the app stylesheet, so the disc styles wherever this mounts; the
 //! caller sizes it with `font-size`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
@@ -51,9 +51,33 @@ type ResetClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 #[derive(Default)]
 pub(crate) struct UiSyncStatus {
     subscription: Rc<RefCell<Option<Subscription>>>,
+    generation: Rc<Cell<u64>>,
     reset: Rc<RefCell<Option<ResetClosure>>>,
     update: Rc<RefCell<Option<ResetClosure>>>,
     error: Rc<RefCell<Option<ResetClosure>>>,
+}
+
+impl UiSyncStatus {
+    /// Invalidate every in-flight establishment attempt and return the token
+    /// owned by the next one. Attribute changes and disconnects advance this
+    /// before dropping the current handle, so an older async attempt can only
+    /// cancel its eventual handle, never retain it.
+    fn next_generation(&self) -> u64 {
+        let next = self.generation.get().wrapping_add(1);
+        self.generation.set(next);
+        next
+    }
+
+    fn restart_subscription(&self, this: &HtmlElement) {
+        self.subscription.borrow_mut().take();
+        let expected_generation = self.next_generation();
+        subscribe_status(
+            this,
+            self.subscription.clone(),
+            self.generation.clone(),
+            expected_generation,
+        );
+    }
 }
 
 impl CustomElement for UiSyncStatus {
@@ -110,7 +134,7 @@ impl CustomElement for UiSyncStatus {
         let _ = Reflect::set(this, &"__tonkError".into(), error.as_ref());
         *self.error.borrow_mut() = Some(error);
 
-        subscribe_status(this, self.subscription.clone());
+        self.restart_subscription(this);
     }
 
     fn attribute_changed_callback(
@@ -129,13 +153,20 @@ impl CustomElement for UiSyncStatus {
         // it). Drop it (its `Drop` cancels upstream) and subscribe against
         // where `with` points now. This is how the disc comes alive on a
         // host whose first projection stamped a blank space.
-        self.subscription.borrow_mut().take();
-        subscribe_status(this, self.subscription.clone());
+        self.restart_subscription(this);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        self.next_generation();
         // Dropping the subscription cancels the upstream host subscription.
         self.subscription.borrow_mut().take();
+        // The prototype shims keep reading these properties after detach. A
+        // late establishment attempt can still synchronously deliver a frame
+        // before its stale handle is rejected below; remove the JS references
+        // before dropping their Rust closures so the shim safely no-ops.
+        let _ = Reflect::delete_property(this.as_ref(), &"__tonkReset".into());
+        let _ = Reflect::delete_property(this.as_ref(), &"__tonkUpdate".into());
+        let _ = Reflect::delete_property(this.as_ref(), &"__tonkError".into());
         self.reset.borrow_mut().take();
         self.update.borrow_mut().take();
         self.error.borrow_mut().take();
@@ -152,22 +183,42 @@ impl CustomElement for UiSyncStatus {
 /// connected (a real re-connection re-runs `connected_callback`) or if a
 /// subscription is already live (a same-value attribute re-stamp must not
 /// double-subscribe).
-fn subscribe_status(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+fn subscribe_status(
+    this: &HtmlElement,
+    subscription: Rc<RefCell<Option<Subscription>>>,
+    generation: Rc<Cell<u64>>,
+    expected_generation: u64,
+) {
     let host = this.clone();
     spawn_local(async move {
-        if !host.is_connected() || subscription.borrow().is_some() {
+        if !host.is_connected()
+            || generation.get() != expected_generation
+            || subscription.borrow().is_some()
+        {
             return;
         }
         let consumer: Element = host.into();
         match status_query_body() {
             Ok(body) => {
                 let tag = JsValue::from_str(SUB_TAG);
-                match consumer::subscribe(&consumer, &body, Some(&tag)) {
-                    Ok(sub) => *subscription.borrow_mut() = Some(sub),
+                match consumer::subscribe_claimed(&consumer, &body, Some(&tag)).await {
+                    Ok(sub) => {
+                        if !consumer.is_connected()
+                            || generation.get() != expected_generation
+                            || subscription.borrow().is_some()
+                        {
+                            drop(sub);
+                            return;
+                        }
+                        *subscription.borrow_mut() = Some(sub);
+                    }
                     Err(err) => {
-                        // Dispatch failure: leave the pending disc;
-                        // nothing to subscribe to.
-                        tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                        // Establishment retries are intentionally quiet. Log
+                        // only the final error for the still-current route;
+                        // stale attempts have already been superseded.
+                        if consumer.is_connected() && generation.get() == expected_generation {
+                            tonk_common::log!("ui-sync-status: subscribe failed: {err:?}");
+                        }
                     }
                 }
             }
@@ -430,5 +481,236 @@ mod tests {
         assert_eq!(modifier_class("sync:unavailable"), "sync--unavailable");
         assert_eq!(modifier_class("sync:offline"), "sync--offline");
         assert_eq!(modifier_class("sync:future"), "sync--unknown");
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    mod browser {
+        use super::super::*;
+        use js_sys::{Function, Object, Promise};
+        use std::cell::Cell;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::CustomEvent;
+
+        struct FakeHost {
+            container: HtmlElement,
+            element: HtmlElement,
+            attempts: Rc<RefCell<Vec<String>>>,
+            cancels: Rc<RefCell<Vec<String>>>,
+            _listener: Closure<dyn FnMut(CustomEvent)>,
+            _cancel_slots: Rc<RefCell<Vec<Closure<dyn FnMut()>>>>,
+        }
+
+        impl FakeHost {
+            fn mount(omitted_handles: u32, route: &str) -> Self {
+                register();
+                let document = window().expect("window").document().expect("document");
+                let element: HtmlElement = document
+                    .create_element("ui-sync-status")
+                    .expect("ui-sync-status")
+                    .dyn_into()
+                    .expect("html element");
+                let container: HtmlElement = document
+                    .create_element("div")
+                    .expect("container")
+                    .dyn_into()
+                    .expect("html container");
+                container.set_attribute("with", route).expect("set route");
+                container.append_child(&element).expect("append status");
+
+                let attempts = Rc::new(RefCell::new(Vec::new()));
+                let cancels = Rc::new(RefCell::new(Vec::new()));
+                let omissions = Rc::new(Cell::new(omitted_handles));
+                let cancel_slots = Rc::new(RefCell::new(Vec::new()));
+
+                let attempts_for_listener = attempts.clone();
+                let cancels_for_listener = cancels.clone();
+                let omissions_for_listener = omissions.clone();
+                let cancel_slots_for_listener = cancel_slots.clone();
+                let listener = Closure::wrap(Box::new(move |event: CustomEvent| {
+                    event.stop_propagation();
+                    event.prevent_default();
+                    let consumer: HtmlElement = event
+                        .target()
+                        .expect("event target")
+                        .dyn_into()
+                        .expect("html consumer");
+                    let route = consumer
+                        .get_attribute("with")
+                        .or_else(|| {
+                            consumer
+                                .parent_element()
+                                .and_then(|parent| parent.get_attribute("with"))
+                        })
+                        .unwrap_or_default();
+                    attempts_for_listener.borrow_mut().push(route.clone());
+
+                    if omissions_for_listener.get() > 0 {
+                        omissions_for_listener.set(omissions_for_listener.get() - 1);
+                        return;
+                    }
+
+                    let detail: Object = event.detail().dyn_into().expect("detail object");
+                    let subscription = Object::new();
+                    let cancels = cancels_for_listener.clone();
+                    let route_for_cancel = route.clone();
+                    let cancel = Closure::wrap(Box::new(move || {
+                        cancels.borrow_mut().push(route_for_cancel.clone());
+                    }) as Box<dyn FnMut()>);
+                    Reflect::set(&subscription, &"cancel".into(), cancel.as_ref())
+                        .expect("install cancel");
+                    Reflect::set(&detail, &"subscription".into(), &subscription)
+                        .expect("install subscription");
+                    cancel_slots_for_listener.borrow_mut().push(cancel);
+
+                    let payload =
+                        JSON::parse(r#"[{"this":"state:here","fields":{"status":"sync:local"}}]"#)
+                            .expect("status frame");
+                    let options = Object::new();
+                    Reflect::set(&options, &"tag".into(), &JsValue::from_str(SUB_TAG))
+                        .expect("set tag");
+                    let reset: Function = Reflect::get(consumer.as_ref(), &"reset".into())
+                        .expect("reset method")
+                        .dyn_into()
+                        .expect("reset function");
+                    reset
+                        .call2(consumer.as_ref(), &payload, &options)
+                        .expect("deliver status frame");
+                }) as Box<dyn FnMut(CustomEvent)>);
+                element
+                    .add_event_listener_with_callback(
+                        tonk_host::events::SUBSCRIBE,
+                        listener.as_ref().unchecked_ref(),
+                    )
+                    .expect("listen");
+                document
+                    .body()
+                    .expect("body")
+                    .append_child(&container)
+                    .expect("mount");
+
+                Self {
+                    container,
+                    element,
+                    attempts,
+                    cancels,
+                    _listener: listener,
+                    _cancel_slots: cancel_slots,
+                }
+            }
+
+            fn modifier(&self) -> Option<String> {
+                self.element
+                    .query_selector(":scope > .sync")
+                    .ok()
+                    .flatten()
+                    .and_then(|sync| sync.get_attribute("class"))
+            }
+        }
+
+        async fn sleep(ms: i32) {
+            let promise = Promise::new(&mut |resolve, _reject| {
+                let _ = window()
+                    .expect("window")
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+            });
+            let _ = JsFuture::from(promise).await;
+        }
+
+        #[dialog_common::test]
+        async fn it_recovers_when_the_first_claimed_attempt_omits_its_handle() {
+            let host = FakeHost::mount(1, "main@did:key:zSpace");
+
+            for _ in 0..400 {
+                if host.attempts.borrow().len() == 2
+                    && host.modifier().as_deref() == Some("sync sync--local")
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            assert_eq!(host.attempts.borrow().len(), 2);
+            assert_eq!(host.modifier().as_deref(), Some("sync sync--local"));
+            host.element.remove();
+            host.container.remove();
+        }
+
+        #[dialog_common::test]
+        async fn it_discards_a_late_handle_after_the_route_changes() {
+            let host = FakeHost::mount(1, "main@did:key:zOld");
+            for _ in 0..200 {
+                if host.attempts.borrow().len() == 1 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            host.element
+                .set_attribute("with", "main@did:key:zNew")
+                .expect("change route");
+            for _ in 0..400 {
+                let new_attempts = host
+                    .attempts
+                    .borrow()
+                    .iter()
+                    .filter(|route| route.as_str() == "main@did:key:zNew")
+                    .count();
+                if new_attempts == 2 && host.cancels.borrow().len() == 1 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            assert_eq!(
+                host.attempts
+                    .borrow()
+                    .iter()
+                    .filter(|route| route.as_str() == "main@did:key:zOld")
+                    .count(),
+                1,
+            );
+            assert_eq!(
+                host.attempts
+                    .borrow()
+                    .iter()
+                    .filter(|route| route.as_str() == "main@did:key:zNew")
+                    .count(),
+                2,
+            );
+            assert_eq!(host.cancels.borrow().as_slice(), ["main@did:key:zNew"]);
+            assert_eq!(host.modifier().as_deref(), Some("sync sync--local"));
+
+            host.element.remove();
+            assert_eq!(
+                host.cancels.borrow().as_slice(),
+                ["main@did:key:zNew", "main@did:key:zNew"],
+            );
+            host.container.remove();
+        }
+
+        #[dialog_common::test]
+        async fn it_discards_a_late_handle_after_disconnect() {
+            let host = FakeHost::mount(1, "main@did:key:zSpace");
+            for _ in 0..200 {
+                if host.attempts.borrow().len() == 1 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            host.element.remove();
+            for _ in 0..400 {
+                if host.cancels.borrow().len() == 1 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            assert_eq!(host.attempts.borrow().len(), 2);
+            assert_eq!(host.cancels.borrow().len(), 1);
+            host.container.remove();
+        }
     }
 }
