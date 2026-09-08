@@ -638,7 +638,6 @@ async fn probe_signing(custodian: &Ed25519Signer) -> Result<Signing, TonkWorkerE
 /// second onboarding account on top of an accredited device. There is no
 /// retract for keys in the credential API, so demotion overwrites the
 /// record with a verifier.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
     use dialog_credentials::Ed25519Verifier;
     use dialog_varsig::Principal as _;

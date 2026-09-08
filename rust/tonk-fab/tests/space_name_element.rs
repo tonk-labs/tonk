@@ -374,15 +374,32 @@ fn deliver_roster(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
         .unwrap_or_else(|_| panic!("{method} call"));
 }
 
-/// Read the rendered member names off the roster's sibling rows, in DOM
-/// order.
-fn rendered_names(el: &web_sys::HtmlElement) -> Vec<String> {
+/// Read the compact member count rendered beside the roster element.
+fn rendered_count(el: &web_sys::HtmlElement) -> Option<String> {
     let menu = el.parent_element().expect("roster menu");
-    let children = menu.children();
-    (0..children.length())
-        .filter_map(|i| children.item(i))
-        .filter(|c| c.get_attribute("data-row-owner").as_deref() == Some(ROSTER_TAG))
-        .filter_map(|c| c.text_content())
+    menu.query_selector(&format!(
+        "[data-row-owner={ROSTER_TAG}][data-share-members]"
+    ))
+    .expect("query count row")
+    .and_then(|row| row.text_content())
+}
+
+/// Read the full member names from the roster-owned dialog, in DOM order.
+fn rendered_names() -> Vec<String> {
+    let dialogs = document()
+        .query_selector_all(".fabb-members")
+        .expect("query roster dialogs");
+    let dialog = dialogs
+        .item(dialogs.length().checked_sub(1).expect("roster dialog"))
+        .expect("latest roster dialog")
+        .dyn_into::<web_sys::Element>()
+        .expect("roster dialog element");
+    let names = dialog
+        .query_selector_all(".mem-row > span:first-child")
+        .expect("query member names");
+    (0..names.length())
+        .filter_map(|i| names.item(i))
+        .filter_map(|name| name.text_content())
         .collect()
 }
 
@@ -404,20 +421,19 @@ async fn it_renders_the_roster_from_delivered_frames() {
     // on the element. An element that subscribes and never renders is the
     // bug this whole scaffolding exists to catch.
     let el = mount_roster();
-    assert!(
-        rendered_names(&el).is_empty(),
-        "no members render before any frame arrives"
-    );
+    assert_eq!(rendered_count(&el).as_deref(), Some("0 members"));
+    assert!(rendered_names().is_empty());
 
     deliver_roster(
         &el,
         "reset",
         &roster_reset_payload(&[("member:1", "Alice"), ("member:2", "Bob")]),
     );
+    assert_eq!(rendered_count(&el).as_deref(), Some("2 members"));
     assert_eq!(
-        rendered_names(&el),
+        rendered_names(),
         vec!["Alice".to_string(), "Bob".to_string()],
-        "a delivered reset frame must be consumed and rendered as one sibling row per member"
+        "a delivered reset frame must populate the roster dialog"
     );
 
     // A subsequent `update` delta must also be consumed: retract Alice,
@@ -427,11 +443,14 @@ async fn it_renders_the_roster_from_delivered_frames() {
         "update",
         &roster_update_payload(&[("member:3", "Carol")], &["member:1"]),
     );
+    assert_eq!(rendered_count(&el).as_deref(), Some("2 members"));
     assert_eq!(
-        rendered_names(&el),
+        rendered_names(),
         vec!["Bob".to_string(), "Carol".to_string()],
         "a delivered update frame must retract, assert, and re-render, not be ignored"
     );
+
+    el.parent_element().expect("roster menu").remove();
 }
 
 // --- <ui-space-switcher>, built on the same subscribing scaffolding ---

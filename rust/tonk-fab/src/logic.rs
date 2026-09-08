@@ -1209,7 +1209,7 @@ impl ShareState {
 /// How long the "copied" (or "failed") confirmation stays up before the
 /// control reverts to offering "share" again. Long enough to read, short
 /// enough that the bar doesn't keep showing a stale result.
-pub const COPIED_LINGER_MS: i32 = 2_000;
+pub const COPIED_LINGER_MS: i32 = 1_200;
 
 #[cfg(test)]
 mod share {

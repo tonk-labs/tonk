@@ -191,8 +191,7 @@ pub(crate) async fn expel_member(
         publish_revocation(tonk, repo, &repository, session.handle(), &path, &target).await?;
     retract_leaf(tonk, session.handle(), &path).await;
     retract_member_rows(tonk, repo, session.handle(), &subject, member).await;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
     Ok(receipt)
 }
 
@@ -290,145 +289,66 @@ pub(crate) async fn admit_member(
         .perform(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("stamp admin role: {error}")))?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
     Ok(target)
 }
 
-/// The DID a `member/*` command names, or `None` when it does not decode.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn member_of<C>(facts: &crate::reactor::EntityFacts, member: impl Fn(&C) -> String) -> Option<Did>
-where
-    C: crate::reactor::Decode,
-{
-    facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| C::decode(entity, facts))
-        .and_then(|command| member(&command).parse::<Did>().ok())
-}
-
-/// Runs `member/promote`: dispatched by the FAB's roster with the hop the
+/// Run `member/promote`: dispatched by the FAB's roster with the hop the
 /// page minted, naming its space.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct PromoteMemberHandler {
-    attributes: Vec<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl PromoteMemberHandler {
-    pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
-        Self {
-            attributes: tonk_schema::command::PromoteMember::trigger_attributes(),
+///
+/// The real gate is cryptographic, not positional: [`admit_member`]
+/// verifies the hop is issued by this profile's account authority, admits
+/// exactly the named member, covers exactly this space, and is
+/// unattenuated — a same-shaped fact from anywhere else cannot forge
+/// that signature. Unparseable fields skip with a log.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::PromoteMember) {
+        use tonk_schema::prelude::DidExt as _;
+        let decoded = (|| {
+            let space: Did = command.space.0.to_string().parse().ok()?;
+            let member: Did = command.member.0.to_string().parse().ok()?;
+            let bytes = bs58::decode(&command.chain.0).into_vec().ok()?;
+            let hop = DelegationChain::try_from(bytes.as_slice()).ok()?;
+            Some((space.repo_key().to_owned(), member, hop))
+        })();
+        let Some((repo, member, hop)) = decoded else {
+            log!("member/promote: no/unparseable member, space, or chain; skipping");
+            return;
+        };
+        let tonk = self.state().read().await;
+        match admit_member(&tonk, &repo, &member, hop).await {
+            Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
+            Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
         }
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_promotion(facts: &crate::reactor::EntityFacts) -> Option<(String, Did, DelegationChain)> {
-    use crate::reactor::Decode as _;
-    use tonk_schema::prelude::DidExt as _;
-    let command = facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::PromoteMember::decode(entity, facts))?;
-    let space: Did = command.space.0.to_string().parse().ok()?;
-    let member: Did = command.member.0.to_string().parse().ok()?;
-    let bytes = bs58::decode(&command.chain.0).into_vec().ok()?;
-    let hop = DelegationChain::try_from(bytes.as_slice()).ok()?;
-    Some((space.repo_key().to_owned(), member, hop))
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PromoteMemberHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_promotion(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let decoded = decode_promotion(facts);
-        let env = env.clone();
-        Box::pin(async move {
-            let Some((repo, member, hop)) = decoded else {
-                log!("member/promote: no/unparseable member, space, or chain; skipping");
-                return;
-            };
-            let tonk = env.state().read().await;
-            match admit_member(&tonk, &repo, &member, hop).await {
-                Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
-                Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
-            }
-        })
-    }
-}
-
-/// Runs `member/expel`: the roster row's remove form on the space the
-/// command fires in.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct ExpelMemberHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::ExpelMember,
-        tonk_schema::command::legacy::ExpelMember,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl ExpelMemberHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+/// Run `member/expel`: the roster row's remove form on the space the
+/// command fires in. The target space is the ORIGIN — the branch the
+/// transient committed on — so a space can only expel from itself; the
+/// revocation is further gated by the access service refusing one not
+/// minted under a `/` chain.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ExpelMember> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ExpelMember) {
+        let Ok(member) = command.member.0.to_string().parse::<Did>() else {
+            log!("member/expel: no/unparseable member, skipping");
+            return;
+        };
+        let repo = self.origin().repo.clone();
+        let tonk = self.state().read().await;
+        match expel_member(&tonk, &repo, &member).await {
+            Ok(receipt) => log!(
+                "member/expel: {member} removed from {repo} (revoked {})",
+                receipt.revoked
+            ),
+            Err(error) => log!("member/expel for {member} on {repo} failed: {error}"),
         }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ExpelMemberHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        member_of::<tonk_schema::command::ExpelMember>(facts, |command| {
-            command.member.0.to_string()
-        })
-        .is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let member = member_of::<tonk_schema::command::ExpelMember>(facts, |command| {
-            command.member.0.to_string()
-        });
-        let env = env.clone();
-        Box::pin(async move {
-            let Some(member) = member else {
-                log!("member/expel: no/unparseable member, skipping");
-                return;
-            };
-            let repo = env.origin().repo.clone();
-            let tonk = env.state().read().await;
-            match expel_member(&tonk, &repo, &member).await {
-                Ok(receipt) => log!(
-                    "member/expel: {member} removed from {repo} (revoked {})",
-                    receipt.revoked
-                ),
-                Err(error) => log!("member/expel for {member} on {repo} failed: {error}"),
-            }
-        })
     }
 }
 

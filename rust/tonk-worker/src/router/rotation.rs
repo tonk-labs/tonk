@@ -92,17 +92,22 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     // rotate`), the same one the CLI runs at sign-in; only the re-issue
     // half — chains, prefixes, retention, provisioning — is this
     // adapter's.
+    // Bound as references OUTSIDE the closure: each `async move` block
+    // the `FnMut` produces captures a copy of the reference, so the
+    // closure can run once per seed without consuming the values.
+    let root_did = &root.root_did;
+    let onboarding_did = &onboarding;
     let outcome = match tonk_schema::custody::rotate(
         branch.handle(),
         secret.secret(),
         new_key,
         &tonk.operator,
-        async |kind, signer, row, replacement| {
+        |kind, signer, row, replacement| async move {
             match kind {
-                SeedKind::Space => reissue_space(tonk, &root.root_did, signer)
+                SeedKind::Space => reissue_space(tonk, root_did, onboarding_did, signer)
                     .await
                     .map_err(|error| error.to_string())?,
-                SeedKind::Invite => reissue_membership(tonk, &root.root_did, &onboarding, signer)
+                SeedKind::Invite => reissue_membership(tonk, root_did, onboarding_did, signer)
                     .await
                     .map_err(|error| error.to_string())?,
             }
@@ -113,7 +118,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .retract(row.clone())
+                .retract(row)
                 .assert(replacement.message)
                 .assert(replacement.principal)
                 .commit()
@@ -182,6 +187,7 @@ async fn sealed_to(
 async fn reissue_space(
     tonk: &TonkState,
     root: &Did,
+    onboarding: &Did,
     signer: Ed25519Signer,
 ) -> Result<(), TonkWorkerError> {
     let subject = signer.did();
@@ -195,6 +201,7 @@ async fn reissue_space(
         .map_err(|error| TonkWorkerError::Internal(format!("{subject}: delegate: {error}")))?
         .into_chain();
     install_prefix(tonk, &subject, &chain).await?;
+    migrate_membership_rows(tonk, &subject, onboarding, root).await?;
     super::account_state::retain_space_delegation(tonk, &chain).await;
     if let Err(error) = super::customer::provision_or_defer(tonk, &subject, &chain, None).await {
         log!("{subject}: provisioning skipped: {error}");
@@ -316,6 +323,107 @@ async fn replace_retained_membership(
             })?;
     }
     Ok(())
+}
+
+/// Repair a founder left behind by older created-space rotations. The
+/// current direct space grant and the old account's direct grant to this
+/// device establish the identity association; a role or petname alone does
+/// not. Retained grants remain readable after the onboarding key is retired.
+/// This changes descriptive roster facts only, never delegations.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn reconcile_founder_membership(
+    tonk: &TonkState,
+    space: &Did,
+    root: &Did,
+) -> Result<bool, TonkWorkerError> {
+    if super::identity::root_did(tonk).await.as_ref().ok() != Some(root) {
+        return Ok(false);
+    }
+    let prefix = match super::repository::space_root_prefix(tonk, space).await {
+        Ok(prefix) => prefix,
+        Err(TonkWorkerError::NotFound(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if prefix.issuer() != space || prefix.audience() != root || prefix.proofs().count() != 1 {
+        return Ok(false);
+    }
+    let session = tonk
+        .reactor
+        .repository(space.repo_key())
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: open founder roster: {error}"))
+        })?;
+    let memberships: Vec<Membership> = session
+        .handle()
+        .query()
+        .select(Query::<Membership> {
+            this: Term::var("this"),
+            subject: Term::from(space.this()),
+            member: Term::var("member"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read founder memberships: {error:?}"))
+        })?;
+    let roles: Vec<MemberRole> = session
+        .handle()
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::var("this"),
+            role: Term::var("role"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read founder roles: {error:?}"))
+        })?;
+    let profile = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("open historical account grants: {error}"))
+        })?;
+    let mut changed = false;
+    for membership in memberships {
+        if membership.member.0 == root.this()
+            || !roles.iter().any(|role| {
+                role.this == *membership.this() && role.role.0.to_string() == MemberRole::FOUNDER
+            })
+        {
+            continue;
+        }
+        let Ok(previous) = membership.member.0.to_string().parse::<Did>() else {
+            continue;
+        };
+        let Ok(grant) = super::revoke_invite::prove_path(
+            profile.handle(),
+            tonk,
+            &previous,
+            &tonk.profile.did(),
+        )
+        .await
+        else {
+            continue;
+        };
+        if grant.issuer() != &previous
+            || grant.audience() != &tonk.profile.did()
+            || grant.proofs().count() != 1
+        {
+            continue;
+        }
+        migrate_membership_rows(tonk, space, &previous, root).await?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Move the shared roster bundle from the onboarding account to the full
@@ -493,8 +601,7 @@ async fn migrate_membership_rows(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("{space}: migrate membership roster: {error}"))
         })?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(repo, js_sys::Date::now());
+    tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
     Ok(())
 }
 
@@ -824,6 +931,193 @@ mod tests {
                 .unwrap();
             assert!(links.is_empty(), "the onboarding link row is retracted");
         }
+    }
+
+    /// COLLAB-05 / B-07: creating before linking must preserve a complete
+    /// founder row when the account changes and its name is projected.
+    #[dialog_common::test]
+    async fn it_rotates_the_created_space_founder_roster() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let key = put_repo(&app, "founder-roster").await;
+        let root = {
+            let tonk = state.read().await;
+            let root = persist_test_root(&tonk).await;
+            rotate_from_onboarding(&tonk).await;
+            super::super::profile_name::project_member_name(&tonk, &key, &root, "jack")
+                .await
+                .unwrap();
+            root
+        };
+        let memberships = content_memberships(&state, &key).await;
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(
+            memberships[0].member.0,
+            root.this(),
+            "founder must name the current account"
+        );
+        let roles = content_member_roles(&state, &key).await;
+        let names = content_member_names(&state, &key).await;
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].this, *memberships[0].this());
+        assert_eq!(roles[0].role.0.to_string(), MemberRole::FOUNDER);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].this, *memberships[0].this());
+        assert_eq!(names[0].name.0, "jack");
+    }
+
+    /// Older workers retired custody after rotating authority but left the
+    /// founder bundle behind. Repair must also work with no onboarding secret.
+    #[dialog_common::test]
+    async fn it_repairs_a_retired_founder_roster_on_name_projection() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let key = put_repo(&app, "retired-founder-roster").await;
+        let old = content_memberships(&state, &key).await.remove(0);
+        let old_role = content_member_roles(&state, &key).await.remove(0);
+        let old_name = content_member_names(&state, &key).await.remove(0);
+        let tonk = state.read().await;
+        let root = persist_test_root(&tonk).await;
+        rotate_from_onboarding(&tonk).await;
+        assert!(crate::onboarding::account(&tonk).await.is_err());
+        let current = Membership::new(root.clone(), key.parse().unwrap());
+        let foreign = Membership::new(
+            Ed25519Signer::import(&[113; 32]).await.unwrap().did(),
+            key.parse().unwrap(),
+        );
+        let foreign_role = MemberRole::founder(foreign.this().clone());
+        let foreign_name = MemberName::new(foreign.this().clone(), "unrelated".into());
+        // Restore exactly the old worker's durable shape: root authority,
+        // old founder bundle, and the otherwise-orphaned account name.
+        tonk.reactor
+            .repository(&key)
+            .branch("main")
+            .transaction()
+            .retract(current.clone())
+            .retract(MemberRole::founder(current.this().clone()))
+            .assert(foreign.clone())
+            .assert(foreign_role.clone())
+            .assert(foreign_name.clone())
+            .assert(old.clone())
+            .assert(old_role)
+            .assert(old_name)
+            .assert(MemberName::new(current.this().clone(), "jack".into()))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        // A sibling branch stands in for a replica: pull the broken state,
+        // then the repair, proving that the bundle is durable sync data.
+        let source = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let replica = tonk
+            .reactor
+            .repository(&key)
+            .branch("roster-replica")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        replica
+            .handle()
+            .set_upstream(source.handle())
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        tonk.reactor
+            .repository(&key)
+            .branch("roster-replica")
+            .pull()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let wire: crate::reactor::Query =
+            serde_json::from_str(&tonk_fab::logic::member_roster_query_body()).unwrap();
+        let roster_query = wire.into_concept_query().unwrap();
+        let mut subscription = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .subscribe(roster_query.clone())
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let initial = subscription.receiver.recv().await.unwrap();
+        assert!(String::from_utf8_lossy(&initial).contains(&old.member.0.to_string()));
+        assert!(
+            super::super::profile_name::project_member_name(&tonk, &key, &root, "jack")
+                .await
+                .unwrap(),
+            "repair is a write even when the name is current"
+        );
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        let update = subscription
+            .receiver
+            .try_recv()
+            .expect("live roster receives repair");
+        let update = String::from_utf8_lossy(&update);
+        assert!(update.contains(&root.to_string()), "{update}");
+        assert!(update.contains("jack"), "{update}");
+        let branch = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let before = branch.handle().revision();
+        assert!(
+            !super::super::profile_name::project_member_name(&tonk, &key, &root, "jack")
+                .await
+                .unwrap(),
+            "repeat projection is a no-op"
+        );
+        assert_eq!(branch.handle().revision(), before);
+        tonk.reactor
+            .repository(&key)
+            .branch("roster-replica")
+            .pull()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let local_rows = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .query(roster_query.clone())
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let replicated_rows = tonk
+            .reactor
+            .repository(&key)
+            .branch("roster-replica")
+            .query(roster_query)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(local_rows).unwrap(),
+            serde_json::to_value(replicated_rows).unwrap()
+        );
+        drop(tonk);
+        let memberships = content_memberships(&state, &key).await;
+        assert_eq!(memberships.len(), 2);
+        assert!(memberships.contains(&current));
+        assert!(
+            memberships.contains(&foreign),
+            "an unrelated founder is preserved"
+        );
+        let roles = content_member_roles(&state, &key).await;
+        assert_eq!(roles.len(), 2);
+        assert!(roles.contains(&MemberRole::founder(current.this().clone())));
+        assert!(roles.contains(&foreign_role));
+        let names = content_member_names(&state, &key).await;
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&MemberName::new(current.this().clone(), "jack".into())));
+        assert!(names.contains(&foreign_name));
     }
 
     /// Accreditation replaces the onboarding account in the shared roster;

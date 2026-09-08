@@ -272,15 +272,22 @@ impl CustomElement for TonkNotebookIndexElement {
         let _ = host.add_event_listener_with_callback("switch", on_switch.as_ref().unchecked_ref());
         on_switch.forget();
 
-        // Creating one. The page MINTS the notebook's entity, so it knows
-        // where it is going and navigates itself; the worker's
-        // `CreateNotebook` handler only writes.
+        // Creating one. The page MINTS the notebook's entity and WRITES
+        // the notebook itself: one evaluated notation document asserting
+        // `notebook/named` plus the draft's blocks, through the same host
+        // consumer path the inspector's editor submits on. The worker has
+        // no part in creation — the library's own rules persist the
+        // inserted blocks, and everything the named fact needs (the
+        // entity, the typed title) is determined right here. Navigation
+        // follows the commit, so the notebook's page never queries before
+        // its facts exist.
         //
-        // Minted rather than derived: an anchor-less write takes its entity
-        // from its body digest, which this element never learns, and a rule
-        // cannot derive one either — every branch-metadata attribute
-        // (`dialog.branch/revision` & co) describes the head BEFORE the
-        // commit, so two creates from one head would collide on the same id.
+        // The entity is minted rather than derived: an anchor-less write
+        // takes its entity from its body digest, which this element never
+        // learns, and a rule cannot derive one either — every
+        // branch-metadata attribute (`dialog.branch/revision` & co)
+        // describes the head BEFORE the commit, so two creates from one
+        // head would collide on the same id.
         let creating = host.clone();
         let on_create = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
             let Some(title) = js_sys::Reflect::get(&event.detail(), &"title".into())
@@ -297,22 +304,26 @@ impl CustomElement for TonkNotebookIndexElement {
                 .and_then(|v| v.as_string())
                 .unwrap_or_default();
             let entity = format!("notebook:{}", random_uuid());
-            let detail = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(&detail, &"createdEntity".into(), &entity.as_str().into());
-            let _ = js_sys::Reflect::set(&detail, &"createdTitle".into(), &title.into());
-            let _ = js_sys::Reflect::set(&detail, &"createdBody".into(), &document.into());
-            let init = web_sys::CustomEventInit::new();
-            init.set_detail(&detail);
-            init.set_bubbles(true);
-            init.set_composed(true);
-            if let Ok(event) = CustomEvent::new_with_event_init_dict("notebookcreate", &init) {
-                let _ = creating.dispatch_event(&event);
-                // The claim the command rides is issued by the host as this
-                // event bubbles, and the write lands before the notebook's
-                // page queries for it — the same ordering the worker's own
-                // redirect relied on.
-                TonkNotebookIndexElement::navigate(&format!("notebook/{entity}"));
-            }
+            let notation = match crate::notation::create_notation(&entity, &title, &document) {
+                Ok(notation) => notation,
+                Err(error) => {
+                    web_sys::console::error_1(&format!("notebook create: {error}").into());
+                    return;
+                }
+            };
+            let target = creating.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match crate::element::evaluate(&target, &notation, true).await {
+                    Ok(_) => {
+                        TonkNotebookIndexElement::navigate(&format!("notebook/{entity}"));
+                    }
+                    Err(error) => {
+                        web_sys::console::error_1(
+                            &format!("notebook create failed: {error}").into(),
+                        );
+                    }
+                }
+            });
         });
         let _ = host.add_event_listener_with_callback("create", on_create.as_ref().unchecked_ref());
         on_create.forget();

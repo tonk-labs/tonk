@@ -129,6 +129,7 @@ dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-fab = { path = "../tonk-fab" }
+tonk-inspector = { workspace = true }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 

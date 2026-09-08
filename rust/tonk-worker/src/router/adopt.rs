@@ -67,7 +67,6 @@ pub(crate) async fn ensure_space_mounted(
         // shipped in a new bundle never reaches it. Catching up on mount
         // costs nothing for a space already on the shipped seed, and an
         // unopened space pays nothing at all.
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if let Err(error) = super::repository::upgrade_seed(tonk, suffix).await {
             log!("seed upgrade for mounted '{subject}': {error}");
         }
@@ -118,6 +117,39 @@ async fn mount_and_record(
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
         })
+}
+
+/// Pull a space this account has but this device does not.
+///
+/// The work is [`ensure_space_mounted`]'s — the same routine the lazy
+/// first-use path runs, so an explicit request and an implicit one take
+/// exactly one code path and report the same state. What the command
+/// adds is the ability to ASK, rather than tripping replication as a
+/// side effect of some unrelated query.
+///
+/// Target-agnostic: every host that can mount a space can run this, and
+/// the mount itself is already portable.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::ReplicateSpace) {
+        let key = command.space.0.to_string();
+        // A space may only ask for ITSELF; the profile may ask for any.
+        if !self.may_target_space(&key) {
+            log!("ReplicateSpace '{key}': refused from another space's branch");
+            return;
+        }
+        let tonk = self.state().read().await;
+        match ensure_space_mounted(&tonk, &key).await {
+            Ok(true) => log!("ReplicateSpace '{key}': mounted"),
+            // Not an error: the directory has no mount record for it, so
+            // there is nothing this device could pull.
+            Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
+            Err(error) => log!("ReplicateSpace '{key}': {error}"),
+        }
+    }
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.

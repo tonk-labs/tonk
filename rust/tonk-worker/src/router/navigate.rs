@@ -10,7 +10,6 @@
 //! joined space) and the create handler (drop the creator into the
 //! fresh space).
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;
 
 /// Post a `{ type: "navigate", href }` message to the originating client so
@@ -76,6 +75,17 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
             log!("navigate: post_message(navigate) failed: {e:?}");
         }
     });
+}
+
+/// Navigation is a page capability, and this host has no page: the
+/// target is logged so a host shell (CLI, TUI) that tails the log can
+/// still present it. The triggering command has already done its work —
+/// only the convenience redirect is absent, mirroring the "client is
+/// gone" path above.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    let _ = client;
+    log!("navigate: no page on this host; the target was {href}");
 }
 
 /// Ask every other top-level document to reload after the active browser
@@ -183,6 +193,17 @@ pub(crate) fn notify_analytics(
             log!("analytics: post_message failed: {error:?}");
         }
     });
+}
+
+/// A launch-funnel event with no page to deliver it to — dropped, like
+/// the "client is gone" path above. Analytics capture is a browser
+/// concern; a native host has nowhere (and no reason) to send it.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_analytics(
+    client: Option<&crate::router::ClientId>,
+    event: tonk_worker_api::AnalyticsEvent,
+) {
+    let _ = (client, event);
 }
 
 /// Ask the originating document to run a WebAuthn ceremony the worker
@@ -309,4 +330,47 @@ pub(crate) async fn request_webauthn_with(
         ));
     }
     Ok(())
+}
+
+/// No page exists on this host to show a registration UI, so the ask is
+/// refused up front — the same outcome as the browser's "originating
+/// client is gone", and the caller's refusal reporting carries it to
+/// whoever asked.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn request_account_link<'a>(
+    client: &'a crate::router::ClientId,
+    space: &'a str,
+) -> Result<(), crate::TonkWorkerError> {
+    let _ = (client, space);
+    Err(crate::TonkWorkerError::Conflict(
+        "no page is available on this host to link an account".to_string(),
+    ))
+}
+
+/// A WebAuthn ceremony needs a top-level document, and this host has
+/// none — refused rather than stubbed, so callers report the refusal
+/// (via `ceremony::report` and friends) instead of silently succeeding.
+/// A host that grows its own credential ceremony replaces this seam.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn request_webauthn(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+) -> Result<(), crate::TonkWorkerError> {
+    request_webauthn_with(client, request, None, None).await
+}
+
+/// [`request_webauthn`], carrying what the worker would do once a page
+/// answered — see the native `request_webauthn` above for why this is a
+/// refusal.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn request_webauthn_with(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
+) -> Result<(), crate::TonkWorkerError> {
+    let _ = (client, request, intent, credential_id);
+    Err(crate::TonkWorkerError::Conflict(
+        "no page is available on this host to run a passkey ceremony".to_string(),
+    ))
 }

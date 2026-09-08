@@ -81,7 +81,6 @@ async fn publish_sync_status(
 
 /// Stamp a specific `tonk/sync` `status` value into the `state:here` overlay
 /// (e.g. `offline` on a fetch failure, where there is no `SyncState` to map).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn publish_sync_status_attr(
     tonk: &crate::worker::TonkState,
     repo: &str,
@@ -121,7 +120,6 @@ pub async fn publish_sync_status_attr(
 /// just-paused replica without waiting for a status sweep (which a paused
 /// replica skips). Called by the pause-sync command handler after it commits
 /// the durable preference.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
     publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::paused_status()).await;
 }
@@ -129,7 +127,6 @@ pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, 
 /// Stamp the self-identity overlay (`state:self`) on a space branch so
 /// the topbar chip can render the member's sigil + name without seeing
 /// the profile branch. Overlay-only — never committed, never replicated.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
     use tonk_schema::{ProfileIdentity, Replica, prelude::DidExt as _};
 
@@ -169,7 +166,6 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
 /// both consult before pulling/pushing. Keyed on the replica entity (derived
 /// from `(profile, subject)`) rather than the `state:here` singleton, so the
 /// preference is this device's own.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch: &str) -> bool {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{Replica, ReplicaSyncEnabled};
@@ -1174,6 +1170,21 @@ pub async fn sync(
     }
 }
 
+/// A millisecond wall-clock stamp for sync-queue activity priority.
+/// `Date.now()` in the SW event context; native has no clock dependency
+/// (the stamp only orders sweeps, it never gates correctness), so 0 —
+/// which also keeps native tests deterministic.
+pub(crate) fn now_millis() -> f64 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        js_sys::Date::now()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        0.0
+    }
+}
+
 /// The repositories owed a sync sweep, in two sets.
 ///
 /// The service worker owns *what* needs syncing; the page only polls *when*
@@ -1268,11 +1279,6 @@ impl SyncQueue {
     /// survive the reactor's [`evict`](crate::Reactor::evict) and, on the
     /// next [`drain_sync`], get folded into the union that `sync_repository`
     /// reconciles — re-acquiring (resurrecting) the just-removed repo.
-    ///
-    /// Wasm-gated: its only caller, `remove_space_inner`, is service-worker
-    /// scoped, so a native build never reaches it (native clippy flags it
-    /// dead code otherwise).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) fn forget(&self, repo: &str) {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.remove(repo);

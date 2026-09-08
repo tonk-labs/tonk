@@ -315,64 +315,72 @@ pub async fn rotate_from_onboarding(
             anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
         })?;
 
+    // Bound as references OUTSIDE the closure: each `async move` block
+    // the `FnMut` produces captures a copy of the reference, so the
+    // closure can run once per seed without consuming the values.
+    let operator_ref = &operator;
+    let profile_ref = &profile;
+    let account_root_ref = &account_root;
     let outcome = tonk_schema::custody::rotate(
         &branch,
         secret.secret(),
         new_key,
         &operator,
-        async |kind, signer, row, replacement| match kind {
-            SeedKind::Space => {
-                let subject = signer.did();
-                let minter = dialog_repository::Repository::from(signer);
-                let chain = minter
-                    .access()
-                    .claim(&minter)
-                    .delegate(account_root.clone())
-                    .perform(&operator)
+        |kind, signer, row, replacement| async move {
+            match kind {
+                SeedKind::Space => {
+                    let subject = signer.did();
+                    let minter = dialog_repository::Repository::from(signer);
+                    let chain = minter
+                        .access()
+                        .claim(&minter)
+                        .delegate(account_root_ref.clone())
+                        .perform(operator_ref)
+                        .await
+                        .map_err(|error| format!("{subject}: delegate: {error}"))?
+                        .into_chain();
+                    let bytes = chain
+                        .to_bytes()
+                        .map_err(|error| format!("{subject}: serialize: {error}"))?;
+                    profile_ref
+                        .credential()
+                        .site(tonk_account::prefix::space_root_site(
+                            &subject,
+                            account_root_ref,
+                        ))
+                        .save(bytes)
+                        .perform(operator_ref)
+                        .await
+                        .map_err(|error| format!("{subject}: prefix: {error}"))?;
+                    // Every write for this row goes through one fresh
+                    // handle: the retention advances the branch, and the
+                    // replacement must commit on top of that, not on a
+                    // version held from before it.
+                    let commit_branch = open_local_account_branch(profile_ref, operator_ref)
+                        .await
+                        .map_err(|error| format!("{subject}: open: {error:#}"))?;
+                    tonk_account::delegations::retain_space_delegation(
+                        &commit_branch,
+                        &chain,
+                        operator_ref,
+                    )
                     .await
-                    .map_err(|error| format!("{subject}: delegate: {error}"))?
-                    .into_chain();
-                let bytes = chain
-                    .to_bytes()
-                    .map_err(|error| format!("{subject}: serialize: {error}"))?;
-                profile
-                    .credential()
-                    .site(tonk_account::prefix::space_root_site(
-                        &subject,
-                        &account_root,
-                    ))
-                    .save(bytes)
-                    .perform(&operator)
-                    .await
-                    .map_err(|error| format!("{subject}: prefix: {error}"))?;
-                // Every write for this row goes through one fresh
-                // handle: the retention advances the branch, and the
-                // replacement must commit on top of that, not on a
-                // version held from before it.
-                let commit_branch = open_local_account_branch(&profile, &operator)
-                    .await
-                    .map_err(|error| format!("{subject}: open: {error:#}"))?;
-                tonk_account::delegations::retain_space_delegation(
-                    &commit_branch,
-                    &chain,
-                    &operator,
-                )
-                .await
-                .map_err(|error| format!("{subject}: retain: {error}"))?;
-                commit_branch
-                    .transaction()
-                    .retract(row.clone())
-                    .assert(replacement.message)
-                    .assert(replacement.principal)
-                    .commit()
-                    .publish()
-                    .perform(&operator)
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| format!("{subject}: reseal commit: {error}"))
-            }
-            SeedKind::Invite => {
-                Err("an invite seed rotates from a browser, not the CLI".to_string())
+                    .map_err(|error| format!("{subject}: retain: {error}"))?;
+                    commit_branch
+                        .transaction()
+                        .retract(row)
+                        .assert(replacement.message)
+                        .assert(replacement.principal)
+                        .commit()
+                        .publish()
+                        .perform(operator_ref)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| format!("{subject}: reseal commit: {error}"))
+                }
+                SeedKind::Invite => {
+                    Err("an invite seed rotates from a browser, not the CLI".to_string())
+                }
             }
         },
     )

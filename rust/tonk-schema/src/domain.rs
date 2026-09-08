@@ -478,47 +478,6 @@ pub mod command {
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
 
-    /// The notebook title typed into the index's heading switcher.
-    ///
-    /// Its own attribute (`…detail/created-title`), NOT the
-    /// `detail/title` a retitle carries: decode does not consider concept
-    /// identity, so two transients of the same shape both decode from one
-    /// event — every rename would also create a notebook.
-    pub mod notebook {
-        use super::super::Entity;
-        use super::Attribute;
-
-        /// The title a create carries.
-        ///
-        /// The event detail key is `createdTitle`: every path segment is
-        /// kebab→camel-cased at read time, so the hyphen here becomes a
-        /// capital there. A detail key written `created-title` never
-        /// matches, and the command silently fails to decode.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.detail")]
-        pub struct CreatedTitle(pub String);
-
-        /// The draft's whole document, so the notebook that gets created
-        /// keeps what the author already wrote under the heading.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.detail")]
-        pub struct CreatedBody(pub String);
-
-        /// The entity the notebook is created UNDER, minted by the page.
-        ///
-        /// The page mints it so it knows where it is going: the entity of
-        /// an anchor-less write derives from its body, which the element
-        /// that fired the command never learns, and a rule cannot derive
-        /// one either — every branch-metadata attribute
-        /// (`dialog.branch/revision` & co) describes the head BEFORE the
-        /// commit, so two creates from one head would collide. A minted
-        /// UUID is unique without coordination, and the page can navigate
-        /// to it the moment the write lands.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.detail")]
-        pub struct CreatedEntity(pub Entity);
-    }
-
     /// The address read from the registration form's submit event:
     /// `event.currentTarget.elements.email.value` (the `<wa-input
     /// name="email">` inside `<form onsubmit=account/register>`).
@@ -1074,36 +1033,6 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.create-space")]
             pub struct Name(pub String);
-        }
-
-        /// `notebook/create` — write a notebook and go to it.
-        ///
-        /// The domain is `xyz.tonk.notebook.create`, not
-        /// `xyz.tonk.command.create-notebook`: `notebook.yaml` declares
-        /// this command and the YAML is the schema of record, so the
-        /// struct follows it rather than the other way round.
-        pub mod create_notebook {
-            use dialog_query::Attribute;
-
-            /// The title typed into the heading switcher. Named `title`,
-            /// not `created-title`: the old name existed only so a
-            /// retitle's `detail/title` would not also decode as a
-            /// create.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.notebook.create")]
-            pub struct Title(pub String);
-
-            /// The draft's whole document, so the new notebook keeps
-            /// what was already written under the heading.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.notebook.create")]
-            pub struct Body(pub String);
-
-            /// The notebook entity, minted by the page so the handler
-            /// writes at a known address and the page navigates itself.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.notebook.create")]
-            pub struct Entity(pub dialog_artifacts::Entity);
         }
 
         /// `space/remove` — drop a space from this device.

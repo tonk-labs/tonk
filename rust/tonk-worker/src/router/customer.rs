@@ -157,90 +157,37 @@ pub(crate) async fn enroll_customer(
     Ok(receipt)
 }
 
-/// Runs the `tonk:enroll` command.
+/// Run the `tonk:enroll` command.
 ///
 /// The outcome is the `AccountCustomer` fact the core already writes, so
 /// there is nothing to answer: a caller that used to await the receipt
 /// subscribes to that fact instead, and sees the same state arrive on
 /// every other tab and device at the same time.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct EnrollCustomerHandler {
-    attributes: Vec<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl EnrollCustomerHandler {
-    pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
-        Self {
-            attributes: tonk_schema::command::EnrollCustomer::trigger_attributes(),
-        }
-    }
-}
-
-/// The address and deposits a `tonk:enroll` transient carries.
 ///
-/// Both fields are optional in meaning though present on the wire: a
-/// command's fields are scalars and a concept resolves only when every
-/// one is there, so "unset" is the empty string. Empty email means the
-/// account's recorded address; empty deposits mean no ceremony is at
-/// hand.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-/// What a `tonk:enroll` transient carries: the address and deposits, and
-/// the custody material every enrollment must present.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct Enrollment {
-    email: Option<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_enrollment(facts: &crate::reactor::EntityFacts) -> Option<Enrollment> {
-    use crate::reactor::Decode as _;
-    let command = facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::EnrollCustomer::decode(entity, facts))?;
-    let email = (!command.email.0.trim().is_empty()).then(|| command.email.0.trim().to_owned());
-    Some(Enrollment { email })
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustomerHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_enrollment(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let decoded = decode_enrollment(facts);
-        let env = env.clone();
-        Box::pin(async move {
-            let Some(enrollment) = decoded else {
-                log!("tonk:enroll: unparseable command; skipping");
-                return;
-            };
-            // Enrollment must present custody material, and minting it
-            // needs a passkey the worker cannot prompt for. So the page
-            // is asked to mediate: it runs one assertion and posts the
-            // derivation handles back, and the handoff does the rest —
-            // including this enrollment, which travels with it.
-            let Some(client) = env.client().cloned() else {
-                log!("tonk:enroll: no originating client to mediate a passkey; skipping");
-                return;
-            };
-            super::custody::request_mediation(&client, enrollment.email).await;
-        })
+/// A command's fields are scalars and a concept resolves only when every
+/// one is there, so "unset" is the empty string; an empty email means
+/// the account's recorded address.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::EnrollCustomer) {
+        let email = (!command.email.0.trim().is_empty()).then(|| command.email.0.trim().to_owned());
+        // Enrollment must present custody material, and minting it
+        // needs a passkey the worker cannot prompt for. So the page
+        // is asked to mediate: it runs one assertion and posts the
+        // derivation handles back, and the handoff does the rest —
+        // including this enrollment, which travels with it.
+        let Some(client) = self.client().cloned() else {
+            log!("tonk:enroll: no originating client to mediate a passkey; skipping");
+            return;
+        };
+        super::custody::request_mediation(&client, email).await;
     }
 }
 
-/// Runs the `account/resend-activation` command: sign the self-subjected
+/// Run the `account/resend-activation` command: sign the self-subjected
 /// `/customer/resend` invocation and post it.
 ///
 /// No ceremony and no custody material — the enrollment's rows stand at
@@ -248,83 +195,45 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for EnrollCustome
 /// the person waiting on their inbox never asked for. Outcome is the
 /// mail itself; failures are logged, and the rate limit means a silent
 /// round is the ordinary answer to an impatient second press.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct ResendActivationHandler {
-    attributes: Vec<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl ResendActivationHandler {
-    pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
-        Self {
-            attributes: tonk_schema::command::ResendActivation::trigger_attributes(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_resend(facts: &crate::reactor::EntityFacts) -> bool {
-    use crate::reactor::Decode as _;
-    facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::ResendActivation::decode(entity, facts))
-        .is_some()
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ResendActivationHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_resend(facts)
-    }
-
-    fn run(
-        &self,
-        _facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let env = env.clone();
-        Box::pin(async move {
-            let state = env.state().read().await;
-            let account = match super::identity::root_did(&state).await {
-                Ok(account) => account,
-                Err(error) => {
-                    log!("resend-activation: no account root: {error}");
-                    return;
-                }
-            };
-            let device = state.profile.signer().signer().clone();
-            let body = match tonk_identity::request::build_resend_invocation(device, &account).await
-            {
-                Ok(body) => body,
-                Err(error) => {
-                    log!("resend-activation: invocation did not build: {error:#}");
-                    return;
-                }
-            };
-            let origin = match service_origin() {
-                Ok(origin) => origin,
-                Err(error) => {
-                    log!("resend-activation: no service origin: {error}");
-                    return;
-                }
-            };
-            let endpoint = match ucan_endpoint(&origin) {
-                Ok(endpoint) => endpoint,
-                Err(error) => {
-                    log!("resend-activation: {error}");
-                    return;
-                }
-            };
-            if let Err(error) = post_cbor(&endpoint, &body).await {
-                log!("resend-activation: the service refused: {error}");
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::ResendActivation) {
+        let state = self.state().read().await;
+        let account = match super::identity::root_did(&state).await {
+            Ok(account) => account,
+            Err(error) => {
+                log!("resend-activation: no account root: {error}");
+                return;
             }
-        })
+        };
+        let device = state.profile.signer().signer().clone();
+        let body = match tonk_identity::request::build_resend_invocation(device, &account).await {
+            Ok(body) => body,
+            Err(error) => {
+                log!("resend-activation: invocation did not build: {error:#}");
+                return;
+            }
+        };
+        let origin = match service_origin() {
+            Ok(origin) => origin,
+            Err(error) => {
+                log!("resend-activation: no service origin: {error}");
+                return;
+            }
+        };
+        let endpoint = match ucan_endpoint(&origin) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                log!("resend-activation: {error}");
+                return;
+            }
+        };
+        if let Err(error) = post_cbor(&endpoint, &body).await {
+            log!("resend-activation: the service refused: {error}");
+        }
     }
 }
 
@@ -791,7 +700,6 @@ pub(crate) async fn retract_space_provider(
 
 /// Whether the account db records a provider for `consumer` — the read
 /// a share consults instead of running `/provider/add` per click.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn space_provider_recorded(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,

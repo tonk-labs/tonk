@@ -201,7 +201,7 @@ pub async fn evaluate(
         let tonk_state = state.read().await;
         tonk_state
             .sync_queue
-            .mark_dirty(&path.repo, super::transact::now_millis());
+            .mark_dirty(&path.repo, super::sync::now_millis());
     }
 
     // Dispatch the document's transient commands, mirroring `/transact`:
@@ -629,7 +629,11 @@ async fn evaluate_on_branch_with<'a>(
 /// the same logic as [`evaluate_on_branch`] but accepts plain
 /// `String` arguments instead of HTTP-level types so the bridge
 /// handler can call it without constructing an axum request.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Gated to match its callers: every seeding path that needs its record
+/// to name the installing commit now goes through
+/// [`evaluate_body_recording`], leaving this reachable only from tests
+/// and the service worker.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -675,7 +679,6 @@ pub async fn evaluate_body_with_transients(
 /// the next link of the same batch — one publish for both. Nothing
 /// predicts a version, and no reader ever sees a library without the
 /// record describing it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_body_recording(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -705,7 +708,6 @@ pub async fn evaluate_body_recording(
 /// installing its replacement is one staged commit, so a subscriber never
 /// sees a space with no definitions, and the record naming it chains on
 /// before the single publish.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_with_retractions(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -725,7 +727,6 @@ pub async fn evaluate_with_retractions(
 /// [`evaluate_profile_body`], with a second commit naming the first's
 /// version — the profile branch's counterpart to
 /// [`evaluate_body_recording`].
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_profile_body_recording(
     tonk_state: &crate::worker::TonkState,
     branch: &str,
@@ -753,6 +754,10 @@ pub async fn evaluate_profile_body_recording(
 /// `<tonk-display>` reading the profile (e.g. the Hub) can resolve the
 /// library's concepts and views there. SW-only — its sole caller
 /// (`seed_profile_library`) is gated to the service-worker scope.
+/// Gated to match its callers: the profile-seeding path now goes through
+/// [`evaluate_profile_body_recording`] so the seed record can name the
+/// commit that installed it, leaving this reachable only from the
+/// service-worker tests.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_profile_body(
     tonk_state: &crate::worker::TonkState,

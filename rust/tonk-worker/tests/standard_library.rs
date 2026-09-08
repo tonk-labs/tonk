@@ -271,16 +271,34 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "the absent-space statement must override the global heading skin with local mode ink"
     );
     for contract in [
+        "padding:48px 16px 80px",
+        ".space-unknown-mast { position:relative; display:block; width:132px;",
+        "margin:0 auto 56px",
+        ".space-unknown-wall { width:min(576px, 100%); margin:0 auto;",
+    ] {
+        assert!(
+            absent.contains(contract),
+            "the absent-space state must use the shared upper-page geometry `{contract}`"
+        );
+    }
+    for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "you don't have this space",
-        "join a space",
+        "invalid link",
+        "class=\"space-unknown-home\" href=\"/\">go to home",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("class=\"space-unknown-narrator\"")
+            .count(),
+        1,
+        "the absent-space explanation must render as one card"
+    );
     assert!(
         !PROFILE_LIBRARY.contains("you don't have this spot")
             && !PROFILE_LIBRARY.contains("join a spot"),
@@ -326,7 +344,11 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 
 #[test]
 fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
-    for contract in [".hubcol", "width:432px", ".hc-view"] {
+    for contract in [
+        ".hubcol",
+        "width:min(576px, calc(100vw - 32px))",
+        ".hc-view",
+    ] {
         assert!(
             HUB_STYLES.contains(contract),
             "the centered Hub launcher must contain `{contract}`",
@@ -347,7 +369,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
             "the centered Hub bar must reject `{rejected}`",
         );
     }
-    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:288px")] {
+    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:432px")] {
         assert!(
             css_rule(HUB_STYLES, selector).contains(width),
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
@@ -551,17 +573,11 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert!(!failure.contains("tonk-join-retry"));
     assert!(!failure.contains("join this space"));
     assert!(!failure.contains("start a new space"));
-    assert!(route.contains("you do not have access to this space"));
-    assert!(route.contains("start a new space"));
-    assert!(route.contains("join this space"));
-    for wall in [("closed", failure), ("no-access", route)] {
-        assert_eq!(
-            wall.1.matches("class=\"ebtn solid\"").count(),
-            1,
-            "the {} wall must carry exactly one solid ink door",
-            wall.0,
-        );
-    }
+    assert!(!route.contains("<form"));
+    assert!(!route.contains("<input"));
+    assert!(!route.contains("tonk-invite-link"));
+    assert!(route.contains("<tonk-page on:join=tonk:join>"));
+    assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
 }
 
 #[test]
@@ -634,6 +650,17 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
         fallback < dynamic,
         "the dynamic viewport declaration must follow and override the fallback"
     );
+    for contract in [
+        "padding:48px 16px 80px",
+        ".edge-mast { position:relative; display:block; width:132px;",
+        "margin:0 auto 56px",
+        ".edge-wall { width:min(576px, 100%); margin:0 auto;",
+    ] {
+        assert!(
+            route.contains(contract),
+            "the join state must use the shared upper-page geometry `{contract}`"
+        );
+    }
 }
 
 #[test]
@@ -648,11 +675,8 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
         );
     }
     for contract in [
-        ".edge-mast { left:16px; top:18px; width:98px; min-height:44px;",
-        ".edge-field, .ebtn { height:44px; min-height:44px; }",
-        ".edge-field { height:44px; padding-bottom:0; align-items:stretch; }",
-        ".edge-input { min-height:44px; font-size:16px; }",
-        ".edge-noun, .edge-cur { align-self:flex-end; margin-bottom:8px; }",
+        ".edge-mast { width:98px; min-height:44px; margin-bottom:40px;",
+        ".ebtn { height:44px; min-height:44px; }",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -955,10 +979,6 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
         (
             "tonk/load",
             tonk_schema::command::Load::trigger_attributes(),
-        ),
-        (
-            "notebook/create",
-            tonk_schema::command::CreateNotebook::trigger_attributes(),
         ),
     ];
 
