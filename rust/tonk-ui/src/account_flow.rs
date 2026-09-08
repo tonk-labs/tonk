@@ -3436,8 +3436,7 @@ mod tests {
 
     /// A passkey login from a fresh browser finishes only once the account's
     /// portable name is available, then returns straight to the complete Hub.
-    /// The ceremony is anchored under the Hub bar, so its terminal action must
-    /// name that destination instead of claiming there is a space behind it.
+    /// Login leaves the ceremony automatically, without a return-action click.
     #[cfg(feature = "integration-tests")]
     #[dialog_common::test]
     async fn it_returns_a_new_browser_login_to_the_synced_hub(env: TestEnvironment) -> Result<()> {
@@ -3465,30 +3464,25 @@ mod tests {
         type_into_register_dialog(&second, EMAIL).await?;
         await_register_action(&second, "log in with your passkey").await?;
         click_register_action(&second).await?;
-        await_settled_row(&second, "passkey").await?;
-
-        // Login success is the boundary: the account branch must already be
-        // hydrated, rather than exposing the fresh profile's petname until a
-        // later background sweep happens to catch up.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        while second.find(By::Css("#tonk-register")).await.is_ok() {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "login left the registration ceremony standing"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_service_worker(&second).await?;
+        await_url_path(&second, "/").await?;
+        anyhow::ensure!(
+            second.find(By::Css("#tonk-register")).await.is_err(),
+            "login must leave the registration ceremony automatically"
+        );
         let summary = get_json(&second, "/api/account/summary").await?;
         assert_eq!(
             successful_body("read the newly linked account", &summary)["displayName"],
             NAME
         );
-        await_register_action(&second, "return to hub").await?;
-
-        enter_hub(&second).await?;
-        wait_for_text(&second, "[data-account-label]", NAME).await?;
-        second.enter_default_frame().await?;
-        click_register_action(&second).await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while second.find(By::Css("#tonk-register")).await.is_ok() {
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "return to hub left the registration ceremony standing"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
 
         enter_hub(&second).await?;
         assert!(

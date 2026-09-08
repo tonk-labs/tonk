@@ -2055,6 +2055,12 @@ pub(crate) fn finish_ceremony() {
         if host.query_selector(NAME_ROW).ok().flatten().is_some() {
             return;
         }
+        if signing_in && pending_share().is_none() {
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().assign("/");
+            }
+            return;
+        }
         match named {
             Some(name) => {
                 add_row(
