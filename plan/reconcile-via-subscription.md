@@ -1,8 +1,10 @@
 # Reconciliation via subscription
 
-Replace the account sweep's re-query loop with delta-driven reconcilers
-riding the same subscription engine that feeds SSE. Exploration/assessment;
-no implementation yet.
+Retire the account sweep's re-query loop by making the worker a subscriber
+to its own branches — the same `Branch::subscribe` path every SSE client
+and portal guest already uses. No second sync mechanism: the profile's
+view of a space follows the space because something is subscribed to the
+space, exactly like everything else in the system.
 
 ## The sweep layer today
 
@@ -29,215 +31,186 @@ A drain runs on a ~2 s self-scheduled loop while a visible tab has live
 subscribers (`SYNC_LOOP_MS`, `worker.rs:2344`), plus debounced fetch
 triggers. Each sweep pass is **O(spaces)**: `real_space_keys` enumerates
 `Replica` rows, then two independent passes (`project_member_names`,
-`reconcile_account_spaces`) each open every space's branch and re-run the
+`reconcile_account_spaces`) each open every space's branch, re-run the
 same queries, diff against current state, and usually write nothing.
 The whole layer is wasm-gated; native (CLI, tests) gets a no-op stub.
 
-## Correcting the framing
+## Why subscription is the right mechanism — and what it already provides
 
-"Subscription instead of sweeps" suggests moving from polling to
-event-driven. That is not what the subscription machinery is. **Nothing in
-tonk is push-driven**: there is no commit-notification stream from remotes;
-the clock is the same drain loop, and subscriptions are re-polled from it.
-What a subscription adds is the **demand gate**
-(`dialog-repository/.../branch/subscription.rs:457`):
+The subscription engine (`dialog-repository/.../branch/subscription.rs`)
+is pull-driven with a demand gate: same revision + same overlay epoch →
+`Ok(None)` at the cost of a compare; a moved tree is intersected with the
+query's demand cover; only a touched query re-derives, producing a
+`Delta { asserted, retracted }`. The reactor already exploits it on the
+hot path — `Pull::perform` (`dialog-reactor/src/pull.rs:77-83`) polls a
+branch's subscriptions only when the pulled tree actually moved.
 
-- same revision + same overlay epoch → `Ok(None)`, zero work;
-- tree diff intersected with the query's demand cover → touched or not;
-- touched → incremental re-derivation, producing a `Delta { asserted,
-  retracted }`.
+So the engine already computes exactly the deltas the sweep spends
+O(spaces) re-deriving every 2 s. Two built-in semantics make it
+sufficient without any new primitive:
 
-And the reactor already exploits it on the hot path: `Pull::perform`
-(`dialog-reactor/src/pull.rs:77-83`) polls a branch's subscriptions **only
-when the pulled tree actually moved**. An idle drain does zero subscription
-work.
+- **Snapshot on establishment.** A subscriber in `Status::Pending`
+  receives a `Frame::Snapshot` of the full current result set before any
+  deltas (`dialog-reactor/src/subscription/reference.rs:166`). Catch-up
+  and one-time repair are not a separate code path: establishing the
+  subscription *is* the repair pass. Today's boot-time sweep becomes
+  "subscriptions get established at boot".
+- **Diffed writes make dual writes harmless.** A propagated write that
+  finds the target already current commits nothing. So a producer may
+  write only the source of truth and let propagation follow, or
+  proactively write both — in which case the echo from the subscription
+  is a no-op. The two differ only in latency (same turn vs. next drain),
+  never correctness.
 
-So the honest claim is not "event-driven instead of polling" but:
-**the engine already computes exactly the deltas the sweep spends O(spaces)
-re-deriving — and then hands them only to SSE clients.** The sweep exists
-because there is no way to register in-process code as a delta consumer.
-That is the gap to close.
+## The gap: the worker never subscribes to itself
 
-## What exists, what's missing
+Every consumer of a subscription frame today is an **external** client:
+an SSE response body (`router/query.rs:149-219`) or a `<tonk-portal>`
+guest, for whom the bridge subscribes and pumps envelopes
+(`router/bridge.rs` — `.subscribe(query).client(client_id)` plus a
+`spawn_local` pump). Deltas computed for `RepositoryName` on a space go
+nowhere unless a page happens to be watching.
 
-| Primitive | Reacts to | Runs user code? | Cross-branch write? |
-|---|---|---|---|
-| `Subscription::poll` (dialog) | tree diff vs demand cover | no — produces `Delta` | read-only |
-| `run_scheduled_polls` fan-out | scheduled/pulled branches | no — SSE frames only | no |
-| `CommandRegistry` dispatch (`router/command.rs:270`) | **transient** asserted in a local `/transact` | yes (`Provider<C>::execute`) | yes — the only mechanism |
-| dialog induction (`dialog.rule/on`) | local commit's touched attributes | declarative head only | same branch |
-| `PendingSubscription` adoption | branch materialization | no | no |
+Closing the gap means the worker does what the bridge already does on
+behalf of guests, for itself: open the subscription, consume the
+receiver, run a handler per frame. A client of the existing mechanism —
+not a registry, not a parallel dispatch system.
 
-Missing: a consumer of **durable deltas** (including pulled ones) that runs
-Rust and may write other branches. Commands can't be it: transients don't
-replicate (by design — `plan/effects.md`, "Pull doesn't fire effects"), so
-nothing pulled ever dispatches. Effects V1 can't be it either: it
-deliberately rejects rules with persistent-only premises, because a
-replicated derivation re-firing on every pull breaks convergence under
-partial replication.
+For contrast, the two mechanisms that look adjacent but are not this:
 
-That rejection is correct for **replicated** state transitions — and
-irrelevant here. The sweep layer is a different species: **local
-projections and repairs**. Its outputs are either device-scoped (mount
-config, overlay stamps) or idempotent copies whose source is authoritative
-(name mirror, roster migration). Every peer maintaining its own projection
-by re-firing locally on pull is exactly the desired semantics, not a
-convergence bug. Effects and reconcilers are complementary layers, and the
-transient-trigger restriction on effects stays untouched.
+- **Commands** (`router/command.rs`) trigger on transients, which don't
+  replicate (by design — `plan/effects.md`, "Pull doesn't fire effects").
+  Nothing arriving via pull can dispatch one. Commands remain the write
+  path; they are not the propagation path.
+- **Effects V1** deliberately rejects rules with persistent-only
+  premises, because a *replicated* derivation re-firing on every pull
+  breaks convergence under partial replication. Propagation here is a
+  **local projection** — each device maintains its own directory labels —
+  so re-firing locally on pull is the desired semantics, and the effects
+  restriction stays untouched.
 
-## Design sketch: a reconciler registry
+## The name flow, end to end
 
-Mirror the command registry's shape, but keyed on durable queries instead
-of transient concepts:
+Authoritative record: `RepositoryName` on the space's own `main`.
+Directory label: `SpaceName` on profile `main` — it must remain a
+materialized fact (not a live join) because the Hub lists spaces this
+device has never replicated; for those the seeded label is all there is.
 
-```rust
-trait Reconciler<Env> {
-    /// The branch scope + query whose deltas this reconciler consumes.
-    fn subscription(&self) -> (BranchScope, Query);
-    /// Establishment: runs once over the full current result set
-    /// (the level-trigger — covers repair of pre-existing state).
-    async fn establish(&self, env: &Env, snapshot: &[Row]) -> Result<()>;
-    /// Steady state: runs on each non-empty delta.
-    async fn react(&self, env: &Env, delta: &Delta) -> Result<()>;
-}
-```
+- **Worker self-subscription**, per mounted space: subscribe space `main`
+  to `Query<RepositoryName>{ this: space }`. Snapshot and every delta run
+  the same handler: write `SpaceName` on profile `main` iff different.
+  The "joined before content hydrated" case needs no retry loop —
+  hydration is a pull that moves the tree, which fires the subscription.
+- **Rename** (`RenameRepository`): the provider writes the space's
+  `RepositoryName`; it may keep the proactive `SpaceName` write it does
+  today (label updates in the same turn) or drop it (label follows on the
+  next drain). Either way the subscription echo diffs to a no-op.
+- **Invite seeding**: unchanged — join seeds the directory label from the
+  signed `space.name`; the space's own record supersedes it via the
+  subscription snapshot once hydrated; a renewal never overwrites.
+- **No echo loop**: the propagated write lands on profile `main`; the
+  subscription watches space `main`. Different branch. The general review
+  rule: a self-subscription handler must write outside its own demand
+  cover, or be diffed (then a same-branch write converges in one no-op
+  poll).
 
-Wiring:
+The other sweeps map the same way:
 
-- The registry holds one dialog `Subscription` engine per registered
-  (branch × query), registered as an internal subscriber on the
-  `BranchState` — polled by the same `schedule_poll` /
-  `run_scheduled_polls` / pull-inline machinery that already exists. No new
-  clock.
-- Handler execution follows `dispatch`'s lock discipline
-  (`router/command.rs:285-334`): collect deltas under the read lock, build
-  `'static` futures, drop the lock, `join_all`, then one
-  `run_scheduled_polls` so the reconcilers' own writes fan out in the same
-  turn.
-- **Establishment = boot sweep.** Subscription state is in-memory, so
-  every worker boot re-establishes and `establish` runs over the snapshot.
-  Today's boot-time full pass falls out of the mechanism instead of being
-  a separate code path.
-- **Failure = re-establish.** The sweep's retry story is "next pass
-  re-diffs". A delta consumer that fails has consumed a delta it didn't
-  act on; rather than inventing per-handler watermarks, drop the failed
-  reconciler's engine and re-create it — the establishment snapshot is the
-  repair pass. Handlers stay idempotent and diff-before-write (they
-  already are).
-- Registration is per-space for space-scoped reconcilers, driven by a
-  profile-scoped reconciler over `Replica` rows — the registrar is itself
-  a reconciler, replacing `real_space_keys` re-enumeration.
+- `AccountDisplayName → ProfileName + MemberName` fan-out: one
+  self-subscription on profile `main` for the account's display name;
+  handler projects on actual change instead of every drain.
+- `reconcile_founder_membership`: self-subscription on each space's
+  `Membership` rows; the snapshot arm runs the migration once per
+  establishment, deltas catch stray founder rows later. The handler keeps
+  its grant-proof guards and its browser-only identity dependencies —
+  capability-gated per handler, not per layer.
+- Mount reconcile / local-only adoption: self-subscription on the
+  directory rows (`Space` + `Remote`, profile `main`).
+- Registration itself: a self-subscription on `Replica` rows maintains
+  the set of per-space subscriptions, replacing `real_space_keys`
+  re-enumeration.
 
-An alternative hook exists — `Branch::induce`
-(`dialog-repository/.../transaction.rs:280`, the documented "post-pull
-instant", never called from tonk) — but it runs declarative rules on one
-branch. The reconcilers need imperative cross-branch writes, so the
-registry is the right layer; `induce` remains available for declarative
-same-branch level triggers later.
+## Per-target consumer placement
 
-## The name-sync case, expressed on it
+This decides whether the layer actually un-gates, so it is explicit:
 
-1. **Space name mirror** (replaces `record_space_name` + its sweep site):
-   per space, subscribe space `main` to `Query<RepositoryName>{ this:
-   space }`. On delta (and establishment), write `SpaceName` on profile
-   `main` iff different. The "content not yet hydrated" case needs no
-   retry loop: hydration is a pull that moves the tree, which triggers the
-   subscription.
-2. **Account name projection** (replaces `converge_account_state` steps):
-   subscribe profile `main` to `Query<AccountDisplayName>{ this: root }`.
-   On delta, update `ProfileName`, then fan `MemberName` out to each
-   space's roster and `mark_dirty` — same writes, but only when the name
-   actually changed instead of diffed every 2 s.
-3. **Founder repair**: level-triggered — `establish` over
-   `Query<Membership>{ role: FOUNDER }` per space runs the migration once
-   per boot/mount; deltas re-run it if a stray founder row lands later.
-4. **Mount reconcile / local-only adoption**: reconciler on the directory
-   (`Space` + `SpaceName` + `Remote` rows, profile `main`).
+- **wasm (service worker)**: a `spawn_local` pump per self-subscription,
+  the bridge's exact pattern. Frames arrive when the drain (or an inline
+  pull poll) pushes them; the pump wakes, runs the handler, and the
+  handler's own commit schedules the target branch's poll so downstream
+  subscribers see it on the drain's closing `run_scheduled_polls`.
+- **native (CLI, tests)**: request-scoped, no long-lived pump — and none
+  needed. `auto_sync` pulls before each command; establishment delivers
+  the snapshot; the handler must be **awaited within the command's
+  lifetime**, not detached, or the process exits before propagation runs
+  and the wasm-only layer is silently reintroduced. Concretely: after the
+  pre-command pull, drain the self-subscription receivers to quiescence
+  before executing the command.
 
-### Echo analysis
+Handlers follow the dispatch lock discipline (`router/command.rs:285-334`):
+capture what's needed under the read lock, drop it, run, then let the
+normal poll machinery fan out.
 
-- Mirror write (1) lands on **profile** main; the trigger subscription
-  watches **space** main. Different branch — no echo possible.
-- `MemberName` writes (2) land on space main, which (1) also watches — but
-  the demand cover is fact-range-scoped: `MemberName` assertions don't
-  intersect a `RepositoryName` query's cover, so no false re-derivation.
-- Same-attribute self-triggering (a reconciler writing what it watches) is
-  the only real loop shape; diff-before-write converges it in one extra
-  no-op poll. Keep it as a review rule: a reconciler must either write
-  outside its own demand cover or be a diffed fixpoint.
+## Consistency and failure
 
-### Who wins when both records changed
+- **Who wins**: unchanged. The space's `RepositoryName` is the source of
+  truth; the label always follows it; renewal never overwrites. The
+  mechanism moves *when* the copy runs, not which way it points.
+- **Failure = re-establish.** The sweep's retry story was "next pass
+  re-diffs". A subscriber that fails mid-handler has consumed a delta it
+  didn't act on; rather than per-handler watermarks, drop and re-open the
+  subscription — the establishment snapshot is the repair. Handlers stay
+  idempotent and diffed.
+- **Profile-main serialization.** The tear concern behind
+  `ensure_account_state_swept`'s mutex (interleaved multi-step commits on
+  profile main wedging the worker) doesn't vanish. Single-transaction
+  diffed writes serialize on the branch transactor and converge under
+  races; any handler doing a multi-step read-modify-write on profile main
+  must take the same serialization the sweep takes today.
+- **Lifetime honesty**: propagation runs only while a worker (or a CLI
+  command) is alive to consume frames. That is the same guarantee the
+  sweep gives — it also only runs inside a live worker — with the boot
+  catch-up now provided by the snapshot instead of a hand-written pass.
 
-Unchanged, and worth stating: the mechanism moves *when* the copy runs,
-not *which way it points*. The space's `RepositoryName` stays the source
-of truth; the profile `SpaceName` mirror always follows it; an invite
-renewal never overwrites a hydrated name. Conflict semantics live in the
-handlers, exactly as today.
-
-## What it buys
-
-- **Per-drain cost**: O(spaces) branch opens + queries → O(watched
-  branches) revision compares (the `Ok(None)` fast path), with real work
-  only on actual change. The 2 s loop stops being a 2 s full sweep.
-- **Un-gates the layer.** Registration and handlers are plain reconciler
-  code with `Provider`-style env bounds — they compile everywhere. On
-  native, the CLI already pulls before each command (`auto_sync`); the
-  pull-inline poll runs the same reconcilers, so CLI and tests get
-  reconciliation for free instead of a stub. Only the founder repair's
-  browser-only identity dependencies (`identity::root_did`,
-  `prove_path`) stay gated — per handler via a capability bound, not per
-  layer. This is the `target-agnostic-providers` argument applied to
-  reconciliation.
-- **One mechanism, not N call sites.** The five ad-hoc
-  `converge_account_state` invocation sites and the account-sweep special
-  case in `sync_repository` collapse into "polls run, reconcilers react".
-
-## What stays outside it
+## What stays outside
 
 - `sync_ready`'s non-reconcile duties (`adopt_account_access`,
   `record_activation`, `seed_sealed_inbox`, `describe_own_device`, push) —
-  sync lifecycle, not state reaction.
-- `stamp_local_spaces` — writes non-durable overlays that die with the
-  worker; establishment-time work, arguably expressible as `establish`
-  with no `react`, but fine as a boot task.
-- The serialization concern behind `ensure_account_state_swept`'s mutex
-  (interleaved profile-main commits tearing an artifact) doesn't vanish:
-  reconcilers writing profile main must go through the same transactor
-  path; the registry should serialize handlers per target branch.
+  sync lifecycle, not state propagation.
+- `stamp_local_spaces` — boot-time non-durable overlay stamps; dies with
+  the worker by design.
 
 ## Open questions
 
-1. **Ordering.** Today founder repair runs before the name projection
-   inside one function. Independent reconcilers on the same branch need
-   either declared ordering or proven commutativity. Probably: registry
-   preserves registration order per branch, and handlers stay commutative
-   where possible.
-2. **Engine residency.** One subscription engine per (space × query) held
-   open — pinned root + demand cover per space. Modest memory, but O(spaces)
-   resident engines vs today's transient queries. Likely a win (the sweep
-   re-opens every branch anyway), worth measuring.
-3. **Delta vs snapshot in handlers.** Some handlers (name mirror) want the
-   new value only; others (founder repair) want the full row set. The
-   `establish`/`react` split covers it, but handler signatures should
-   receive typed concept rows, not raw frames — reuse the `Decode`
-   machinery from `dialog-reactor/src/command.rs:95`.
-4. **Safety net.** Is establishment-on-boot enough, or keep a
-   low-frequency full sweep as belt-and-braces during migration? Proposal:
-   keep the old sweep behind a flag through phase 2, assert equivalence in
-   tests, then delete.
+1. **Rename dual write: keep or drop?** Keeping it gives same-turn Hub
+   updates; dropping it makes the space the only write target and accepts
+   ~one drain of label lag. Leaning keep, purely for UI latency.
+2. **Subscription residency.** One engine per (space × query) held open —
+   pinned root + demand cover each. The sweep re-opened every branch per
+   pass anyway, so this trades repeated opens for resident state; likely
+   a win, worth a number.
+3. **Ordering.** Founder repair currently runs before the name projection
+   inside one function. Independent self-subscriptions on the same branch
+   should either be commutative (preferred) or share one subscription
+   whose handler sequences the steps.
+4. **Migration safety net.** Keep the old sweep behind a flag through the
+   first phase, assert equivalence in tests, then delete — rather than a
+   permanent low-frequency backstop.
 
 ## Phasing
 
-1. **Registry + pilot: the space-name mirror.** Land `Reconciler`, the
-   internal-subscriber wiring, establishment semantics; port
-   `record_space_name`. Tests: rename on space main → one drain → mirror
-   updated; quiet drain → zero reconciler executions (observable via a
-   counter); worker reboot → establishment repairs a mirror diverged while
-   down. Native test proves the un-gating (no wasm stub).
+1. **Pilot: the space-name flow.** Worker self-subscription on
+   `RepositoryName` per mounted space (plus the `Replica`-driven
+   registrar), replacing `record_space_name` and its sweep site. Tests:
+   rename on space main → propagated label after one drain; quiet drain →
+   zero handler executions (counter-observable); worker reboot with a
+   diverged label → snapshot repairs it; **native run of the same flow**
+   proving the un-gating (no wasm stub). Validate with default features —
+   `--all-features` silently skips `#[dialog_common::test]` natives.
 2. **Account name projection** (`ProfileName` + `MemberName` fan-out),
    deleting the corresponding `converge_account_state` steps.
-3. **Founder repair** as a level-triggered reconciler, identity deps
-   behind a per-handler capability bound.
-4. **Mount reconcile + local-only adoption**; delete
-   `reconcile_account_spaces` and the sweep's special-casing in
-   `drain_sync`/`sync_repository`.
+3. **Founder repair** as a snapshot-triggered self-subscription, identity
+   deps behind a per-handler capability bound.
+4. **Mounts + local-only adoption**; delete `reconcile_account_spaces`
+   and the account-sweep special-casing in `drain_sync` /
+   `sync_repository`.
