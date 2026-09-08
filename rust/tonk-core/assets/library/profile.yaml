@@ -362,26 +362,85 @@ command!: &tonk/check-update
       the: xyz.tonk.command.check-update/space
       as: entity
 
-# What a check found, overlay-only. `status` alone resolves while one is
-# in flight, so a view can show "checking" and "update ready" as distinct
-# states rather than waiting for both fields.
-concept!: &space/update
-  this: tonk:space/update
-  description: What a seed-update check found for a space.
+# A seed-update check IN FLIGHT on this device, keyed on the replica —
+# the entity that already pairs this profile with this subject, so a
+# check on one device says nothing about another. Replica records live
+# on the profile meta branch and never replicate, which is exactly the
+# scope of "am I checking right now".
+#
+# Presence IS the state: the attribute is asserted before the fetch and
+# retracted when the check settles, so a view asks whether it exists
+# rather than comparing against a `case:` value. It holds the check's
+# own transient entity rather than a boolean, so a marker stranded by a
+# crashed worker is identifiable and a second check cannot silently
+# clobber the first.
+concept!: &replica/checking
+  this: tonk:replica/checking
+  description: A seed-update check in flight on this device.
   with:
-    status:
-      description: '`case:current`, `case:available`, `case:unreachable`, or `case:unrecorded`.'
-      the: xyz.tonk.update/status
+    checking:
+      description: The dispatched check's transient entity.
+      the: xyz.tonk.replica/checking
       cardinality: one
       as: entity
 
-concept!: &space/update-available
-  this: tonk:space/update-available
-  description: The seed a check found waiting.
+# When the last check COMPLETED on this device. Separate from the
+# in-flight marker above so it survives the next check starting: a
+# single status field would have to overwrite the previous result to
+# say "pending", losing the answer the view is showing.
+concept!: &replica/checked
+  this: tonk:replica/checked
+  description: When this device last completed a seed-update check.
   with:
-    available:
-      description: The waiting seed, identified by the hash of its bytes.
-      the: xyz.tonk.update/available
+    checked:
+      description: The completing check's timestamp.
+      the: xyz.tonk.replica/checked
+      cardinality: one
+      as: float
+
+# Why the last check FAILED, asserted only on failure and retracted on
+# the next success. Text rather than a case: an unreachable source and
+# a malformed document are different problems and the message is the
+# useful part. A space that never recorded a seed is NOT a failure —
+# it simply has no installed-seed fact, and that absence is the answer.
+concept!: &replica/check-failure
+  this: tonk:replica/check-failure
+  description: Why this device's last seed-update check failed.
+  with:
+    failure:
+      description: What went wrong, as reported to the person.
+      the: xyz.tonk.replica/check-failure
+      cardinality: one
+      as: text
+
+# A seed that EXISTS and where its bytes came from — global, durable,
+# and silent about whether anything installed it. The entity is the
+# content hash of the bytes, so two devices fetching the same library
+# converge on one entity without coordinating.
+#
+# `seed/installed` below adds the install-specific fields on this same
+# entity. Keeping them apart means a fetched-but-uninstalled seed can
+# never look half-installed, and `version` never has an absent case a
+# reader has to interpret.
+concept!: &seed/available
+  this: tonk:seed/available
+  description: A seed that exists, and where its bytes came from.
+  with:
+    source:
+      description: >
+        Where these bytes were fetched from. The entity is the content
+        hash alone, so the source rides alongside because a custom seed
+        is a different URL at the same shape.
+      the: xyz.tonk.seed/source
+      cardinality: one
+      as: text
+    replaces:
+      description: >
+        The installed seed this one would supersede — the backlink that
+        makes an available seed answerable on its own ("this is an
+        update to what you are running") rather than only by joining it
+        against the space's install record.
+      the: xyz.tonk.seed/replaces
       cardinality: one
       as: entity
 
@@ -610,19 +669,10 @@ concept!: &route
 # it would dangle. `route` doubles as the router's precedence signal: a
 # route named here came from the seed, and one that is not came from the
 # space, which wins an equal-specificity tie.
-concept!: &space/seed
-  this: tonk:space/seed
-  description: A seed install — its identity, source, and what it replaced.
+concept!: &seed/installed
+  this: tonk:seed/installed
+  description: The seed a space is running — what an upgrade withdraws.
   with:
-    source:
-      description: >
-        Where this seed was fetched from. The entity is the content hash
-        alone, so two devices installing the same bytes converge; the
-        source rides alongside because a custom seed is a different URL
-        at the same shape.
-      the: xyz.tonk.seed/source
-      cardinality: one
-      as: text
     prior:
       description: >
         The seed this one replaced, or `seed:none` on a first install —
@@ -639,8 +689,10 @@ concept!: &space/seed
         knowable before the batch is written — which is what lets this
         record ride the same commit as the claims it describes.
 
-        It is also the record of WHAT the seed installed, since a
-        commit's history lists every claim it wrote.
+        This is the whole upgrade mechanism: nothing tags individual
+        definitions, so an upgrade reads THIS commit's history, inverts
+        its assertions into retractions, and applies them alongside the
+        new library in one atomic commit.
       the: xyz.tonk.seed/version
       cardinality: one
       as: text

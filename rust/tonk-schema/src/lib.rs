@@ -111,7 +111,9 @@ pub mod space;
 pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path};
 
 pub mod site;
-pub use site::{Route, Seed, SeedUpdate, SeedUpdateAvailable, Site};
+pub use site::{
+    ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable, SeedInstalled, Site,
+};
 
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};

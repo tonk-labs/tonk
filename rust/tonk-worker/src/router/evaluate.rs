@@ -232,6 +232,79 @@ pub async fn evaluate_profile(
     result
 }
 
+/// Builds the facts recording a seed install, given the version its
+/// library commit minted.
+///
+/// Called once the library has STAGED, so the version it receives is
+/// authoritative rather than predicted; the facts it returns commit as
+/// the next link of the same batch.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub type SeedRecord<'a> = &'a (
+        dyn Fn(&dialog_artifacts::history::Version) -> Vec<dialog_artifacts::Instruction>
+            + Send
+            + Sync
+    );
+
+/// Commit the evaluated transaction, optionally chaining a second commit
+/// that names the first's version, then publish the whole chain.
+///
+/// The two-commit shape is what lets a fact name its own commit. A
+/// branch transaction's commit STAGES: the revision is minted, so
+/// `batch.version()` is authoritative rather than predicted, but the
+/// branch head has not moved and nothing is visible yet. The record
+/// commits as the next link, and the single `publish` moves the head to
+/// the chain tip — so either both land or neither does, and no reader
+/// ever observes a library without the record describing it.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+async fn stage_and_publish(
+    tonk_state: &crate::worker::TonkState,
+    txn: dialog_repository::Transaction<&dialog_repository::Branch>,
+    record: Option<SeedRecord<'_>>,
+) -> Result<dialog_artifacts::Revision, dialog_repository::CommitError> {
+    let batch = txn.commit().perform(&tonk_state.operator).await?;
+    let Some(record) = record else {
+        return batch.publish().perform(&tonk_state.operator).await;
+    };
+
+    // Authoritative, not predicted: the commit that minted this version
+    // has already happened. It just is not visible yet.
+    let instructions = record(&batch.version());
+    let mut next = batch.transaction();
+    for instruction in instructions {
+        next = match instruction {
+            dialog_artifacts::Instruction::Assert(artifact)
+            | dialog_artifacts::Instruction::Replace(artifact) => {
+                next.assert(crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    unique: false,
+                })
+            }
+            dialog_artifacts::Instruction::Retract(artifact) => {
+                next.retract(crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    unique: false,
+                })
+            }
+        };
+    }
+    next.commit()
+        .perform(&tonk_state.operator)
+        .await?
+        .publish()
+        .perform(&tonk_state.operator)
+        .await
+}
+
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is
 /// the only difference between the two routes.
@@ -241,11 +314,12 @@ async fn evaluate_on_branch<'a>(
     body: Bytes,
     query: EvaluateQuery,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
-    evaluate_on_branch_with(tonk_state, tonk_branch, body, query, Vec::new()).await
+    evaluate_on_branch_with(tonk_state, tonk_branch, body, query, Vec::new(), None).await
 }
 
 /// [`evaluate_on_branch`], with `retract` folded into the same batch the
-/// document commits in.
+/// document commits in, and an optional second commit that can name the
+/// first's version.
 ///
 /// A seed upgrade is the caller: it withdraws the previous seed's claims
 /// and installs the new library atomically. Order matters and is fixed
@@ -253,6 +327,14 @@ async fn evaluate_on_branch<'a>(
 /// because a retract followed by an assert of the same fact KEEPS it,
 /// citing what it overrode, while the reverse order cancels. So the
 /// overlap between two seeds survives an upgrade untouched.
+///
+/// `record` is how a seed record names the very commit that installed
+/// the library. The document's commit STAGES rather than publishes, so
+/// its version is already minted and authoritative when `record` is
+/// handed it; the facts it returns are committed as the next link of the
+/// same batch, and one publish makes both visible at once. Nothing
+/// predicts a version, and no reader ever sees a library without its
+/// record.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
@@ -263,6 +345,7 @@ async fn evaluate_on_branch_with<'a>(
     body: Bytes,
     query: EvaluateQuery,
     retract: Vec<crate::router::claim::RawClaim>,
+    record: Option<SeedRecord<'_>>,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
@@ -395,7 +478,7 @@ async fn evaluate_on_branch_with<'a>(
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
             let t_commit = web_time::Instant::now();
-            match evaluated.txn.commit().perform(&tonk_state.operator).await {
+            match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
                     break (
                         revision_before,
@@ -480,58 +563,44 @@ pub async fn evaluate_body(
         .map(|Json(r)| r)
 }
 
-/// The version the next commit on `repo`/`branch` will mint.
+/// [`evaluate_body`], with a second commit that names the first's
+/// version.
 ///
-/// A caller that wants to record a fact NAMING its own commit — the seed
-/// record does, so an upgrade is one batch rather than two — builds the
-/// document with this in hand.
+/// The seed install's entry point. The document stages, its minted
+/// version is handed to `record`, and the facts that come back commit as
+/// the next link of the same batch — one publish for both. Nothing
+/// predicts a version, and no reader ever sees a library without the
+/// record describing it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn pending_version(
+pub async fn evaluate_body_recording(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
     branch: &str,
-) -> Result<Option<dialog_artifacts::history::Version>, TonkWorkerError> {
-    let session = tonk_state
-        .reactor
-        .repository(repo)
-        .branch(branch)
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-    session
-        .handle()
-        .transaction()
-        .version(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("read pending version: {e}")))
+    body: String,
+    record: SeedRecord<'_>,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
+    let query = EvaluateQuery { transact: true };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        bytes,
+        query,
+        Vec::new(),
+        Some(record),
+    )
+    .await
+    .map(|Json(r)| r)
 }
 
-/// [`pending_version`] against the **profile** repository's branch.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn pending_profile_version(
-    tonk_state: &crate::worker::TonkState,
-    branch: &str,
-) -> Result<Option<dialog_artifacts::history::Version>, TonkWorkerError> {
-    let session = tonk_state
-        .reactor
-        .profile_repository()
-        .branch(branch)
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-    session
-        .handle()
-        .transaction()
-        .version(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("read pending version: {e}")))
-}
-
-/// [`evaluate_body`], with `retract` folded into the same commit.
+/// [`evaluate_body`], with `retract` folded into the same commit and a
+/// `record` naming that commit's version.
 ///
 /// The seed upgrade's entry point: withdrawing the previous seed and
-/// installing its replacement is one batch, so a subscriber never sees a
-/// space with no definitions.
+/// installing its replacement is one staged commit, so a subscriber never
+/// sees a space with no definitions, and the record naming it chains on
+/// before the single publish.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn evaluate_with_retractions(
     tonk_state: &crate::worker::TonkState,
@@ -539,13 +608,39 @@ pub async fn evaluate_with_retractions(
     branch: &str,
     body: String,
     retract: Vec<crate::router::claim::RawClaim>,
+    record: SeedRecord<'_>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
     let query = EvaluateQuery { transact: true };
     let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch_with(tonk_state, tonk_branch, bytes, query, retract)
+    evaluate_on_branch_with(tonk_state, tonk_branch, bytes, query, retract, Some(record))
         .await
         .map(|Json(r)| r)
+}
+
+/// [`evaluate_profile_body`], with a second commit naming the first's
+/// version — the profile branch's counterpart to
+/// [`evaluate_body_recording`].
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_profile_body_recording(
+    tonk_state: &crate::worker::TonkState,
+    branch: &str,
+    body: String,
+    record: SeedRecord<'_>,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
+    let query = EvaluateQuery { transact: true };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        bytes,
+        query,
+        Vec::new(),
+        Some(record),
+    )
+    .await
+    .map(|Json(r)| r)
 }
 
 /// Like [`evaluate_body`], but against the **profile** repository's

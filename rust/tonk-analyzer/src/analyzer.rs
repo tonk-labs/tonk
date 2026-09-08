@@ -940,6 +940,7 @@ mod tests {
             txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("concept assertion commits");
@@ -1036,6 +1037,7 @@ mod tests {
                 txn = txn.assert(the.of(entity.clone()).is(attr_entity));
             }
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("pinned concept assertion commits");
@@ -1050,6 +1052,7 @@ mod tests {
                 .transaction()
                 .assert(the!("db.name/referent").of(id_entity).is(entity))
                 .commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("name publication commits");
@@ -4966,19 +4969,25 @@ mod library_analysis_tests {
         );
     }
 
-    /// The seed record the worker writes must analyze against the library
-    /// it follows: a head naming a component per line, keyed on the seed
-    /// entity.
+    /// The seed record's two concepts must analyze against the library
+    /// that declares them.
     ///
-    /// The worker builds it from the entities EVALUATION derived, which
-    /// this test cannot run — see `it_evaluates_both_shipped_libraries`
-    /// for that. What is pinned here is the shape.
+    /// The worker asserts these as typed facts rather than notation, so
+    /// what is pinned here is that the DECLARATIONS exist and accept the
+    /// shape: identity plus source on `seed/available`, and the install
+    /// fields on `seed/installed` over the same entity. A seed a check
+    /// merely found asserts only the first, which is why the two are
+    /// separable rather than one concept with optional fields.
     #[test]
     fn it_analyzes_a_seed_record() {
         let core = include_str!("../../tonk-core/assets/library/core.yaml");
-        let body = r#"space/seed!:
+        let body = r#"seed/available!:
   this: seed:abc
   source: "/library/core.yaml"
+  replaces: seed:none
+
+seed/installed!:
+  this: seed:abc
   prior: seed:none
   version: "1@abc"
 "#;

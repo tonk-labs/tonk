@@ -125,41 +125,84 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
-/// What a seed-update check found — overlay-only, so it dies with the
-/// worker rather than replicating a device-local observation.
+/// A seed-update check IN FLIGHT on this device, keyed on the replica.
 ///
-/// `status` alone resolves while a check is in flight; `available` only
-/// exists once one has been found, so a view can render "checking" and
-/// "update ready" as distinct states.
+/// The replica entity already pairs this profile with this subject, and
+/// replica records live on the profile meta branch and never replicate —
+/// exactly the scope of "am I checking right now". Keying on the space
+/// alone would let one device's check overwrite another's.
+///
+/// Presence IS the state: asserted before the fetch, retracted when the
+/// check settles, so a view asks whether the attribute exists rather
+/// than comparing against a case value. It holds the check's own
+/// transient entity rather than a boolean, so a marker stranded by a
+/// crashed worker is identifiable and a second check cannot silently
+/// clobber the first's record.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedUpdate {
-    /// The space checked.
+pub struct ReplicaChecking {
+    /// The replica entity being stamped.
     pub this: Entity,
-    /// `case:current`, `case:available`, or `case:unreachable`.
-    pub status: crate::domain::update::Status,
+    /// The dispatched check's transient entity.
+    pub checking: crate::domain::check::Checking,
 }
 
-/// The seed a check found waiting, on the same entity as its status.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SeedUpdateAvailable {
-    /// The space checked.
+/// When this device last COMPLETED a seed-update check.
+///
+/// Separate from [`ReplicaChecking`] so it survives the next check
+/// starting: a single status field would have to overwrite the previous
+/// result to say "pending", losing the answer a view is showing.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ReplicaChecked {
+    /// The replica entity being stamped.
     pub this: Entity,
-    /// The waiting seed, identified by the hash of its bytes.
-    pub available: crate::domain::update::Available,
+    /// The completing check's timestamp.
+    pub checked: crate::domain::check::Checked,
 }
 
-/// A seed install: what it was, where it came from, and the version of
-/// the commit that installed it.
+/// Why this device's last seed-update check FAILED — asserted only on
+/// failure, retracted on the next success.
+///
+/// Text rather than a case: an unreachable source and a malformed
+/// document are different problems and the message is the useful part.
+/// A space that never recorded a seed is not a failure — it simply has
+/// no [`SeedInstalled`] fact, and that absence is the answer.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReplicaCheckFailure {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// What went wrong, as reported to the person.
+    pub failure: crate::domain::check::Failure,
+}
+
+/// A seed that EXISTS and where its bytes came from — global, durable,
+/// and silent about whether anything installed it.
+///
+/// The entity is the content hash of the bytes, so two devices fetching
+/// the same library converge on one entity without coordinating.
+/// [`SeedInstalled`] adds the install-specific fields on this same
+/// entity; keeping them apart means a fetched-but-uninstalled seed can
+/// never look half-installed.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedAvailable {
+    /// The seed's entity: the content hash of its bytes.
+    pub this: Entity,
+    /// Where these bytes were fetched from.
+    pub source: crate::domain::seed::Source,
+    /// The installed seed this one would supersede — the backlink that
+    /// makes an available seed answerable on its own.
+    pub replaces: crate::domain::seed::Replaces,
+}
+
+/// The seed a space is RUNNING — the install-specific half, asserted on
+/// the same entity as [`SeedAvailable`].
 ///
 /// The version names the commit that installed it, and a commit's history
 /// is a changelog — so an upgrade inverts that commit's assertions rather
 /// than consulting a per-component tag.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Seed {
+pub struct SeedInstalled {
     /// The seed's entity: the content hash of its bytes.
     pub this: Entity,
-    /// Where it was fetched from.
-    pub source: crate::domain::seed::Source,
     /// The seed it replaced, or `seed:none` on a first install.
     pub prior: crate::domain::seed::Prior,
     /// The version of the commit that installed it.

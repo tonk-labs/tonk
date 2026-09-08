@@ -727,12 +727,11 @@ async fn match_route(
     // at: a route it installed is a claim it asserted, so the changelog
     // already names them and nothing has to be recorded twice. A route the
     // space authored is simply absent.
-    let seeds: Vec<tonk_schema::Seed> = state
+    let seeds: Vec<tonk_schema::SeedInstalled> = state
         .handle()
         .query()
-        .select(Query::<tonk_schema::Seed> {
+        .select(Query::<tonk_schema::SeedInstalled> {
             this: Term::var("this"),
-            source: Term::var("source"),
             prior: Term::var("prior"),
             version: Term::var("version"),
         })
@@ -801,34 +800,24 @@ mod match_route_tests {
         let key = crate::router::tests::put_repo(&app, "route-e2e").await;
         let tonk = state.read().await;
 
-        let installed = crate::router::evaluate::evaluate_body(
+        let installed = crate::router::evaluate::evaluate_body_recording(
             &tonk,
             &key,
             "main",
             format!("{LIBRARY}\n{seed}"),
-            true,
+            &|minted| {
+                crate::router::repository::seed_record_facts(
+                    "seed:probe",
+                    "/library/core.yaml",
+                    "seed:none",
+                    "seed:none",
+                    &crate::router::repository::encode_seed_version(minted),
+                )
+            },
         )
         .await
         .expect("the seed installs");
-        let revision = installed
-            .revision_after
-            .expect("a committing seed has a revision")
-            .version();
-        let record = format!(
-            r#"space/seed!:
-  this: seed:probe
-  source: "/library/core.yaml"
-  prior: seed:none
-  version: "{}"
-"#,
-            crate::router::repository::encode_seed_version(&revision)
-        );
-        let recorded =
-            crate::router::evaluate::evaluate_body(&tonk, &key, "main", record.clone(), true).await;
-        assert!(
-            recorded.is_ok(),
-            "the seed record must commit: {recorded:?}\n{record}"
-        );
+        let _ = installed;
 
         if let Some(authored) = authored {
             crate::router::evaluate::evaluate_body(&tonk, &key, "main", authored.to_owned(), true)

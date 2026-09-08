@@ -315,6 +315,7 @@ impl Registry {
             .transaction()
             .assert(DeviceProfile::new(profile, storage_name))
             .commit()
+            .publish()
             .perform(operator)
             .await
             .map(|_| ())
@@ -350,6 +351,7 @@ impl Registry {
                 .transaction()
                 .retract(entry)
                 .commit()
+                .publish()
                 .perform(operator)
                 .await
                 .map_err(|error| {

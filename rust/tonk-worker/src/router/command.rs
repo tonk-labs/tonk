@@ -102,7 +102,11 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for CommandE
             return;
         };
         let tonk = self.state().read().await;
-        if let Err(error) = super::repository::check_seed_update(&tonk, &subject).await {
+        // The command's own entity marks the check in flight, so a
+        // marker stranded by a crashed worker names the check that left
+        // it rather than being an anonymous flag.
+        let check = command.this.clone();
+        if let Err(error) = super::repository::check_seed_update(&tonk, &subject, check).await {
             tonk_common::log!("CheckUpdate '{subject}': {error}");
         }
     }

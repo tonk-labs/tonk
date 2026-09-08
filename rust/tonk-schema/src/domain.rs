@@ -347,24 +347,41 @@ pub mod route {
 /// Attributes describing a seed update this device has looked for —
 /// overlay-only, so they die with the worker rather than replicating a
 /// device-local observation.
-pub mod update {
+pub mod check {
     use super::{Attribute, Entity};
 
-    /// What the check found: `case:current`, `case:available`, or
-    /// `case:unreachable` when the source could not be fetched.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.update")]
-    #[cardinality(one)]
-    pub struct Status(pub Entity);
-
-    /// The seed the check found waiting, when one is.
+    /// The in-flight check's own transient entity, stamped on the
+    /// replica while a check runs.
     ///
-    /// Its identity is the hash of the fetched bytes, so a caller can
-    /// tell one available update from the next without re-fetching.
+    /// Presence is the state — the attribute is asserted before the
+    /// fetch and retracted when the check settles. It holds the
+    /// transient rather than a boolean so a marker stranded by a
+    /// crashed worker is identifiable, and a second check cannot
+    /// silently clobber the first's record.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.update")]
+    #[domain("xyz.tonk.replica")]
     #[cardinality(one)]
-    pub struct Available(pub Entity);
+    pub struct Checking(pub Entity);
+
+    /// When the last check completed on this device.
+    ///
+    /// Kept apart from [`Checking`] so it survives the next check
+    /// starting: one status field would have to overwrite the previous
+    /// result to say "pending".
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.replica")]
+    #[cardinality(one)]
+    pub struct Checked(pub f64);
+
+    /// Why the last check failed, asserted only on failure.
+    ///
+    /// Text rather than a case: an unreachable source and a malformed
+    /// document are different problems and the message is the useful
+    /// part.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.replica")]
+    #[cardinality(one)]
+    pub struct Failure(pub String);
 }
 
 /// Attributes recording what a seed version seeded, one per component
@@ -397,6 +414,16 @@ pub mod seed {
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
     pub struct Prior(pub Entity);
+
+    /// The installed seed an available one would supersede.
+    ///
+    /// The backlink that makes an available seed answerable on its own
+    /// ("this is an update to what you are running") rather than only by
+    /// joining it against the space's install record.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Replaces(pub Entity);
 
     /// The version of the commit that installed this seed.
     ///
