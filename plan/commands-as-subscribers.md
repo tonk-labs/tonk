@@ -129,9 +129,17 @@ facts the UI already subscribes to.
 
 ## The executor notion for declarative rules
 
-The V1 transient-trigger requirement guards a real property: a
-replicated `effect!:` rule triggered by durable facts would evaluate on
-every peer that pulls them. Lifting it needs an **executor** notion —
+A note on notation: `effect!:` does **not exist**. `plan/effects.md`
+is a design — `InductiveRule` landed upstream and the effect-storage
+schema exists, but the evaluator is scaffold-only (the hooks pass the
+transaction through unchanged). Everywhere this document shows rule
+YAML it is sketching the *planned* notation; the shipping reactive
+machinery is subscriptions plus registered Rust handlers.
+
+The planned design's transient-trigger requirement guards a real
+property: a replicated declarative rule triggered by durable facts
+would evaluate on every peer that pulls them. Lifting it needs an
+**executor** notion —
 and Dedalus (the framing `plan/effects.md` is already built on) names
 it: the **location specifier**. Every Dedalus fact lives at a site; a
 rule whose head is at a different site than its body is a
@@ -146,7 +154,8 @@ rule; it is an audience field on the message, filtered by an ordinary
 premise:
 
 ```yaml
-effect!:
+# planned notation — no declarative-rule surface exists yet
+rule!:
   assert!: invite
   when:
     - assert: invite-request
@@ -262,17 +271,31 @@ schema-level constraints as sufficient, or use a guard-rule pattern (a
 requested-name fact from which a rule derives the canonical
 `RepositoryName`), which is itself a propagator.
 
-**Not "vice versa" as a standing rule.** A standing propagation in
-each direction on a cardinality-one register does not converge:
-overwrite registers are not lattices, so two live rules ping-pong
-whenever the records differ (diff-guards stop the loop, not the
-arbitrary winner). The shape that works: **one standing propagation,
-space → profile** (the mirror always follows), and a profile-side
-rename is an *action* that writes the space's record (plus optionally
-the mirror, for same-turn UI). Editing the label from the Hub works by
-writing the source of truth, not via a reverse rule. Symmetric standing
-sync would require LWW metadata on the name so the merge becomes a
-join — possible, unneeded.
+**"Vice versa" — what bidirectional standing sync actually needs.**
+Conceptually the store is already closer to a lattice than a naive
+register: a fact's history is a monotone set of assertion/retraction
+records reconciled at read time (a retraction evicts from the indexes;
+the record set only grows), and within one branch rebase totally
+orders concurrent records, so a cardinality-one attribute is already
+deterministic-LWW *inside a branch*. What a naive value-copying rule
+in each direction still gets wrong is **cross-branch comparability**:
+the two branches' histories are not mutually ordered, so each side
+treats the other's copy as a fresh edit and concurrent edits ping-pong
+(space=X, profile=Y → copies swap them → swap again). The fix is not
+new machinery, just discipline about *what propagates*: the rule must
+copy the value **with its provenance stamp** (some cross-branch
+comparable version — the source record's stamp carried along), and
+each side reconciles latest-wins over both records. Then both sides
+agree on the winner and the propagation quiesces — the two registers
+become one logical LWW register spread over two branches, editable
+from either side. That is the "kind of what I wanted" shape.
+
+For phase 1, ship the directed form anyway — space → profile standing,
+profile-side rename writes the space record — because it needs no
+cross-branch stamp at all and matches the settled semantics (space's
+record wins, renewal never overwrites). Upgrading the name edge to
+stamped-bidirectional later is additive: same subscription, richer
+copied payload.
 
 Containment consequence: the space vocabulary from PR #911 shrinks —
 `RenameRepository` drops out of it entirely.
@@ -409,7 +432,9 @@ last, once its semantics are proven.
    the reserved `sensory` layer (replicated, never stored) is the
    eventual natural home for cross-peer messages — a semantic command
    with retract-on-consume approximates it until it's backed.
-5. **Declarative lift**: `effect!:` rules take over proven patterns —
+5. **Declarative lift**: declarative rules (finishing what
+   `plan/effects.md` designs — the evaluator is scaffold-only today)
+   take over proven patterns —
    same-branch rules first (with the identity-join filter and the
    install-time lint). Cross-branch edges (the name mirror) stay
    imperative longest: inductive rules are single-branch, so their

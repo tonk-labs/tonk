@@ -82,7 +82,9 @@ For contrast, the two mechanisms that look adjacent but are not this:
   replicate (by design — `plan/effects.md`, "Pull doesn't fire effects").
   Nothing arriving via pull can dispatch one. Commands remain the write
   path; they are not the propagation path.
-- **Effects V1** deliberately rejects rules with persistent-only
+- **The planned declarative-effects design** (`plan/effects.md` —
+  design only; its evaluator is scaffold) deliberately rejects rules
+  with persistent-only
   premises, because a *replicated* derivation re-firing on every pull
   breaks convergence under partial replication. Propagation here is a
   **local projection** — each device maintains its own directory labels —
