@@ -300,7 +300,7 @@ mod tests {
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
-            commands: crate::router::command_registry(),
+            commands: crate::router::command_providers(),
             clients: Default::default(),
             account_keys: Default::default(),
             registry: crate::device::Registry {

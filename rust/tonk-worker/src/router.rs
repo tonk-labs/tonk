@@ -149,7 +149,7 @@ mod migration;
 mod navigate;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
+pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
 #[cfg(test)]
 mod route_table;
@@ -668,7 +668,7 @@ pub mod tests {
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
-            commands: super::command_registry(),
+            commands: super::command_providers(),
             clients: Default::default(),
             account_keys: Default::default(),
             registry,

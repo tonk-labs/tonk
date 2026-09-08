@@ -1,8 +1,10 @@
 //! Command registration and post-commit dispatch.
 //!
-//! [`command_registry`] builds the registry of supported command *types*
-//! the worker carries on [`TonkState`]. [`dispatch`] runs the commands a
-//! freshly-committed transient batch triggers.
+//! [`command_providers`] builds the two command vocabularies the worker
+//! carries on [`TonkState`] — one for the profile branch, one for space
+//! (content) branches — and [`dispatch`] runs the commands a
+//! freshly-committed transient batch triggers against the vocabulary its
+//! origin selects.
 //!
 //! A command is a [`dialog_capability::Command`] run by a
 //! [`Provider<C>`](dialog_capability::Provider) — there is no handler
@@ -114,17 +116,74 @@ impl CommandEnv {
     }
 }
 
-/// Build the registry of supported command *types*. Registration is just
-/// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
+/// The worker's two command vocabularies, selected per dispatch by the
+/// triggering commit's [`CommandOrigin`].
 ///
-/// The same registry builds for EVERY target — the browser, the CLI, a
-/// TUI, a test. A command whose effect needs a page (a passkey
+/// This is the registry-level expression of the containment rule
+/// [`CommandEnv::may_target_space`] enforces per provider: WHERE a
+/// transient committed decides WHAT it can mean. The profile branch —
+/// the Hub/FAB evaluation surface, the one the user actually drives —
+/// carries the full vocabulary. A space (content) branch carries only
+/// the commands that are genuinely that space's to run; everything else
+/// (space lifecycle, joins, account/passkey ceremonies, member
+/// promotion) simply does not exist there, so a same-shaped fact
+/// committed on a joined space's branch matches nothing instead of
+/// relying on each provider to notice and refuse.
+pub struct CommandProviders {
+    /// The full vocabulary — every command the worker supports.
+    profile: CommandRegistry<CommandEnv>,
+    /// What a space branch may run on itself: loading a site
+    /// ([`Load`](tonk_schema::command::Load), whose target IS the
+    /// origin), renaming itself
+    /// ([`RenameRepository`](tonk_schema::command::RenameRepository),
+    /// which names its space and is refused cross-space by
+    /// `may_target_space`), and — until membership moves fully
+    /// profile-side —
+    /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
+    /// is likewise the origin space.
+    space: CommandRegistry<CommandEnv>,
+}
+
+impl CommandProviders {
+    /// Build the pair explicitly. Production uses
+    /// [`command_providers`]; tests use this to install doubles.
+    pub fn new(profile: CommandRegistry<CommandEnv>, space: CommandRegistry<CommandEnv>) -> Self {
+        Self { profile, space }
+    }
+
+    /// The vocabulary for a commit that landed at `origin`: the full
+    /// set for the profile branch, the space set for a content branch.
+    pub fn select(&self, origin: &CommandOrigin) -> &CommandRegistry<CommandEnv> {
+        if origin.repo.is_empty() {
+            &self.profile
+        } else {
+            &self.space
+        }
+    }
+}
+
+impl Default for CommandProviders {
+    fn default() -> Self {
+        Self::new(CommandRegistry::new(), CommandRegistry::new())
+    }
+}
+
+/// Build both command vocabularies. Registration is just the type — the
+/// behaviour is the `Provider<C>` impl on [`CommandEnv`].
+///
+/// The same vocabularies build for EVERY target — the browser, the CLI,
+/// a TUI, a test. A command whose effect needs a page (a passkey
 /// ceremony, a redirect) still registers everywhere; its provider
 /// refuses visibly on a host without one rather than silently not
 /// existing there. Where a chain genuinely needs a browser API, the
 /// `cfg` sits on that leaf (`delete_space_storage_for`,
 /// `worker_origin`, the `navigate` client messaging), never on a
 /// registration.
+pub fn command_providers() -> CommandProviders {
+    CommandProviders::new(profile_commands(), space_commands())
+}
+
+/// The profile branch's vocabulary: everything.
 ///
 /// Three commands register through wrapper request types rather than
 /// their schema concept, because their transients carry facts outside
@@ -146,7 +205,7 @@ impl CommandEnv {
 /// [`CreateSpaceRequest`]: super::repository::CreateSpaceRequest
 /// [`InviteRequest`]: super::repository::InviteRequest
 /// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
-pub fn command_registry() -> CommandRegistry<CommandEnv> {
+fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
@@ -165,6 +224,15 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
+        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
+}
+
+/// A space branch's vocabulary — see [`CommandProviders`] for why each
+/// of the three is here and nothing else is.
+fn space_commands() -> CommandRegistry<CommandEnv> {
+    CommandRegistry::new()
+        .command::<tonk_schema::command::Load>()
+        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
 
@@ -197,17 +265,20 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
     // through its env).
     let run_futures = {
         let tonk = state.read().await;
-        if tonk.commands.is_empty() {
-            // No command providers — but the triggering transact already
-            // committed and scheduled a poll, so still drain below.
+        let registry = tonk.commands.select(&origin);
+        if registry.is_empty() {
+            // No command providers for this origin — but the triggering
+            // transact already committed and scheduled a poll, so still
+            // drain below.
             Vec::new()
         } else {
-            let env = CommandEnv::new(state.clone(), origin);
-            let fired = tonk.commands.match_transients(&transients);
+            let fired = registry.match_transients(&transients);
             // The one place a command that decodes as nothing can be
             // seen: the transient committed, so the page believes it
             // asked, and nothing else says which attributes reached
-            // the registry.
+            // the registry. On a space origin this is also where a
+            // profile-only shape (a join, a create, a ceremony)
+            // surfaces as contained rather than run.
             if fired.is_empty() {
                 let attributes: std::collections::BTreeSet<String> = transients
                     .clone()
@@ -222,9 +293,18 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     })
                     .collect();
                 if !attributes.is_empty() {
-                    log!("commands: no handler matched a transient over {attributes:?}");
+                    let surface = if origin.repo.is_empty() {
+                        "profile".to_string()
+                    } else {
+                        format!("space '{}'", origin.repo)
+                    };
+                    log!(
+                        "commands: no handler in the {surface} vocabulary matched a \
+                         transient over {attributes:?}"
+                    );
                 }
             }
+            let env = CommandEnv::new(state.clone(), origin);
             fired
                 .into_iter()
                 .map(|(handler, facts)| handler.run(&facts, &env))
@@ -307,13 +387,125 @@ pub(crate) mod tests {
         // `command::<Ping>()` compiles only because `CommandEnv:
         // Provider<Ping>` — the capability gate. The registered type
         // matches its trigger.
-        let registry = command_registry().command::<Ping>();
+        let registry = profile_commands().command::<Ping>();
         let changes = ping_transient("did:key:zPing", "hi");
         assert_eq!(
             registry.match_transients(&changes).len(),
             1,
             "the registered Ping command should match its trigger"
         );
+    }
+
+    /// The vocabulary split itself: every transient here DECODES as its
+    /// command (each shape matches at least once on the profile), so a
+    /// zero-match on the space vocabulary means the command is absent
+    /// there — not that the probe was malformed.
+    #[dialog_common::test]
+    fn a_space_origin_selects_a_vocabulary_without_profile_only_commands() {
+        let providers = command_providers();
+        let profile = CommandOrigin::default();
+        let space = CommandOrigin {
+            repo: "did:key:zSomeSpace".to_string(),
+            branch: "main".to_string(),
+            client: None,
+        };
+        let entity = |uri: &str| uri.parse::<Entity>().expect("entity URI");
+
+        // Profile-only shapes: lifecycle, joining, membership grants.
+        let mut create = Changes::new();
+        the!("xyz.tonk.command.create-space/name")
+            .of(entity("cmd:create"))
+            .is("Probe".to_string())
+            .assert(&mut create);
+
+        let mut remove = Changes::new();
+        the!("xyz.tonk.command.remove-space/subject")
+            .of(entity("cmd:remove"))
+            .is(entity("did:key:zVictimSpace"))
+            .assert(&mut remove);
+
+        let mut join = Changes::new();
+        the!("xyz.tonk.command.join/url")
+            .of(entity("cmd:join"))
+            .is("https://tonk.xyz/join#secret".to_string())
+            .assert(&mut join);
+
+        let mut promote = Changes::new();
+        the!("xyz.tonk.promote/member")
+            .of(entity("cmd:promote"))
+            .is(entity("did:key:zMember"))
+            .assert(&mut promote);
+        the!("xyz.tonk.promote/space")
+            .of(entity("cmd:promote"))
+            .is(entity("did:key:zSomeSpace"))
+            .assert(&mut promote);
+        the!("xyz.tonk.promote/chain")
+            .of(entity("cmd:promote"))
+            .is("z6chain".to_string())
+            .assert(&mut promote);
+
+        for (name, changes) in [
+            ("space/create", &create),
+            ("space/remove", &remove),
+            ("tonk/join", &join),
+            ("member/promote", &promote),
+        ] {
+            assert!(
+                !providers
+                    .select(&profile)
+                    .match_transients(changes)
+                    .is_empty(),
+                "`{name}` must match on the profile — a zero here means the \
+                 probe shape no longer decodes and this test proves nothing"
+            );
+            assert!(
+                providers
+                    .select(&space)
+                    .match_transients(changes)
+                    .is_empty(),
+                "`{name}` must not exist in a space branch's vocabulary"
+            );
+        }
+
+        // Space-side shapes: a space acting on itself. These stay
+        // dispatchable from the profile too — the FAB is routeless.
+        let mut load = Changes::new();
+        the!("xyz.tonk.site/path")
+            .of(entity("site:probe"))
+            .is("/".to_string())
+            .assert(&mut load);
+
+        let mut rename = Changes::new();
+        the!("xyz.tonk.command.rename-repository/name")
+            .of(entity("cmd:rename"))
+            .is("Renamed".to_string())
+            .assert(&mut rename);
+        the!("xyz.tonk.rename-repository/space")
+            .of(entity("cmd:rename"))
+            .is(entity("did:key:zSomeSpace"))
+            .assert(&mut rename);
+
+        let mut expel = Changes::new();
+        the!("xyz.tonk.command.expel-member/member")
+            .of(entity("cmd:expel"))
+            .is(entity("did:key:zMember"))
+            .assert(&mut expel);
+
+        for (name, changes) in [
+            ("tonk/load", &load),
+            ("tonk/rename-repository", &rename),
+            ("member/expel", &expel),
+        ] {
+            for (surface, origin) in [("profile", &profile), ("space", &space)] {
+                assert!(
+                    !providers
+                        .select(origin)
+                        .match_transients(changes)
+                        .is_empty(),
+                    "`{name}` must be dispatchable from the {surface}"
+                );
+            }
+        }
     }
 
     // The `run` and `dispatch` tests build a real `CommandEnv` from an
@@ -402,7 +594,10 @@ pub(crate) mod tests {
             // Install the registry on the state so `dispatch` sees it.
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandRegistry::new().command::<Ping>();
+                tonk.commands = CommandProviders::new(
+                    CommandRegistry::new().command::<Ping>(),
+                    CommandRegistry::new(),
+                );
             }
 
             // Two distinct Ping entities in one batch → two invocations.
@@ -429,7 +624,10 @@ pub(crate) mod tests {
             let (state, _env) = env().await;
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandRegistry::new().command::<Ping>();
+                tonk.commands = CommandProviders::new(
+                    CommandRegistry::new().command::<Ping>(),
+                    CommandRegistry::new(),
+                );
             }
             let mut changes = Changes::new();
             the!("xyz.tonk.unrelated/noise")
@@ -444,7 +642,7 @@ pub(crate) mod tests {
 
     /// Native end-to-end dispatch over REAL commands — the test the
     /// whole target-agnostic registry exists for. Its failure mode is
-    /// silent absence: a `command_registry()` whose native arm returned
+    /// silent absence: a `command_providers()` whose native arm returned
     /// an empty registry compiled green while no command ran anywhere
     /// but the browser, so nothing short of dispatching a real command
     /// against real state proves the conversion means anything.
@@ -481,7 +679,7 @@ pub(crate) mod tests {
                 view_bindings: Default::default(),
                 bridges: Default::default(),
                 sync_queue: Default::default(),
-                commands: crate::router::command_registry(),
+                commands: crate::router::command_providers(),
                 clients: Default::default(),
                 account_keys: Default::default(),
                 registry: crate::device::Registry {

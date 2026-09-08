@@ -398,9 +398,11 @@ pub struct TonkState {
     /// abort handles for any open subscriptions on that client.
     pub bridges: BridgeRegistry,
     /// Registered command handlers — the typed-Rust effects fired by
-    /// transient command concepts after a commit. Consulted by the
-    /// transact path's post-commit dispatch.
-    pub commands: crate::reactor::CommandRegistry<crate::router::CommandEnv>,
+    /// transient command concepts after a commit. Two vocabularies
+    /// (profile / space), selected per dispatch by the triggering
+    /// commit's origin; consulted by the transact path's post-commit
+    /// dispatch.
+    pub commands: crate::router::CommandProviders,
     /// Repositories with un-pushed local commits. A commit enqueues its repo;
     /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
@@ -1770,7 +1772,7 @@ pub(crate) async fn boot_state(
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
-        commands: crate::router::command_registry(),
+        commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
         account_keys: Default::default(),

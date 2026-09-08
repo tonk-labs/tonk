@@ -1,8 +1,51 @@
 # Command containment: which space may invoke what
 
 Status: the origin rule below is ENFORCED (see `CommandEnv::may_target_space`
-in `rust/tonk-worker/src/router/command.rs`); the capability-scoped operator
-under "Where this should go" is a proposal awaiting a decision.
+in `rust/tonk-worker/src/router/command.rs`), and the VOCABULARY SPLIT is
+landed (`CommandProviders` in the same file): dispatch selects the registry
+by origin, so a profile-only command asserted on a space branch matches
+nothing at all. The capability-scoped operator under "Where this should go"
+is a proposal awaiting a decision.
+
+## The vocabulary split (enforced)
+
+Two registries, selected per dispatch by `CommandOrigin`:
+
+- **Profile branch** (empty origin repo): the full vocabulary — every
+  command the worker supports. All UI dispatch is routeless (the FAB and
+  Hub commit on the profile branch, commands NAME their target space as a
+  field), so nothing the user drives changes behaviour.
+- **Space (content) branch**: only what a space may run on itself —
+  - `Load`: its target IS the origin branch (route stamping).
+  - `RenameRepository`: names its space, refused cross-space by
+    `may_target_space`; kept space-side so a space can rename itself
+    (the provider should eventually update both the profile record and
+    the space record from a space dispatch — today it updates the
+    profile's replica label).
+  - `ExpelMember`: target is the origin space (the command carries only
+    the member DID). Interim — "a space could REQUEST to expel, but it's
+    really a profile's job"; moving it profile-side needs the command to
+    grow a space field, since a profile-branch dispatch has no origin
+    space. No shipped UI dispatches it today (the roster only offers
+    "make admin"), so the placement is free to change.
+
+Everything else — space lifecycle (create/remove/enable-sync), `Join`,
+`Invite`, `PromoteMember`, `ProfileRename`, `PauseSync`, and every
+account/passkey/device ceremony — exists only in the profile vocabulary.
+A same-shaped transient on a space branch is logged as unmatched
+("no handler in the space '…' vocabulary") instead of relying on each
+provider's origin check. The origin checks stay as defense in depth for
+the commands both vocabularies carry.
+
+Consequence, accepted: frozen legacy library descriptors seeded on old
+space branches (a space-side `tonk:invite` share form, the legacy topbar
+"Enable sync") now match nothing when asserted there. The FAB's
+profile-dispatched equivalents are the supported paths.
+
+The split is pinned by
+`a_space_origin_selects_a_vocabulary_without_profile_only_commands`
+(`router/command.rs`), which proves each probe shape decodes on the
+profile before asserting its absence on the space side.
 
 ## The problem
 
@@ -45,7 +88,7 @@ Per command:
 | `EnableSync` | raw-fact DID | `may_target_space` + `require_real_space` |
 | `Invite` | fact DID, else origin | `may_target_space` (self-invite from a space's own branch stays legal — frozen legacy descriptors dispatch it) |
 | `ExpelMember` | the origin | safe by construction; revocation chain is the real gate |
-| `CreateNotebook`, `Load` | the origin | safe by construction |
+| `Load` | the origin | safe by construction (`CreateNotebook` is gone — notebook creation is pure rules + the page-built notation) |
 | `PromoteMember` | DID field | unconstrained by origin: the hop must be SIGNED by this profile's account authority over exactly that space, which no foreign branch can forge |
 | `ProfileRename`, `Join`, account/ceremony commands | the profile/account | no space target; guarded by email match / passkey ceremony / signed chains |
 
