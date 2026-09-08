@@ -444,13 +444,17 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 fn open_delete_dialog(this: &HtmlElement) {
     let requested = requested_space_deletion();
     let deleting_space = requested.is_some();
-    let confirmation = DELETE_ACCOUNT_CONFIRMATION;
+    let confirmation = if deleting_space {
+        "delete space"
+    } else {
+        DELETE_ACCOUNT_CONFIRMATION
+    };
     set_text(this, "[data-delete-confirm-label]", confirmation);
     set_text(
         this,
         "[data-delete-submit-label]",
         if deleting_space {
-            "delete space permanently"
+            "delete space"
         } else {
             "delete account"
         },
@@ -464,7 +468,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         let _ = dialog.set_attribute(
             "heading",
             if deleting_space {
-                "confirm permanent space deletion"
+                "delete this space?"
             } else {
                 "confirm account deletion"
             },
@@ -474,7 +478,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         this,
         "[data-delete-question]",
         if deleting_space {
-            "are you sure you want to delete this space for every member?"
+            "Everyone will lose access to this space through Tonk. Your account and other spaces will stay."
         } else {
             "are you sure you want to delete all data associated with this account?"
         },
@@ -483,7 +487,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         this,
         "[data-delete-consequence]",
         if deleting_space {
-            "this action is permanent. Tonk cannot erase copies already saved on other devices, but they will no longer be able to sync this space with Tonk."
+            "This cannot be undone. Copies saved on other devices may remain, but they will no longer sync."
         } else {
             "this action is permanent. there is no option to recover your data."
         },
@@ -536,13 +540,11 @@ fn open_delete_dialog(this: &HtmlElement) {
                     .is_none_or(|subject| space.subject == subject)
             })
             .collect();
-        if let Some(subject) = &requested
-            && spaces.is_empty()
-        {
+        if requested.is_some() && spaces.is_empty() {
             set_text(
                 &host,
                 "[data-delete-scope]",
-                &format!("{subject} is not an owned hosted space of this account."),
+                "This space cannot be deleted from this account. Go back to your spaces and check that you are signed into the account that owns it.",
             );
             return;
         }
@@ -553,7 +555,13 @@ fn open_delete_dialog(this: &HtmlElement) {
         let owned = spaces.len();
         let names: Vec<&str> = spaces
             .iter()
-            .map(|space| space.name.as_deref().unwrap_or(&space.subject))
+            .map(|space| {
+                space
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("unnamed space")
+            })
             .collect();
         let listed = if names.is_empty() {
             String::new()
@@ -561,7 +569,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             format!(": {}", names.join(", "))
         };
         let confirmation = if requested.is_some() {
-            format!("delete {}", names[0])
+            "delete space".to_owned()
         } else {
             DELETE_ACCOUNT_CONFIRMATION.to_owned()
         };
@@ -570,9 +578,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             &host,
             "[data-delete-scope]",
             &if requested.is_some() {
-                format!(
-                    "this permanently deletes the selected owned space{listed} from Tonk and makes it unavailable to every member. your account and every other space remain."
-                )
+                format!("Permanently delete {} from Tonk?", names[0])
             } else {
                 format!(
                     "{owned} owned hosted space{} will be deleted{listed}. {} joined space{} will be left intact.",
@@ -1244,7 +1250,27 @@ mod tests {
             .unwrap();
         assert_eq!(
             dialog.get_attribute("heading").as_deref(),
-            Some("confirm permanent space deletion")
+            Some("delete this space?")
+        );
+        let native: web_sys::HtmlDialogElement = dialog
+            .shadow_root()
+            .unwrap()
+            .query_selector("dialog")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(
+            native.open(),
+            "the deletion URL opens the dialog on arrival"
+        );
+        assert_eq!(
+            host.query_selector("[data-delete-confirm-label]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("delete space")
         );
         assert!(
             host.query_selector("[data-delete-question]")
@@ -1252,7 +1278,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .unwrap_or_default()
-                .contains("for every member")
+                .contains("Everyone will lose access")
         );
         assert!(
             host.query_selector("[data-delete-consequence]")
@@ -1260,7 +1286,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .unwrap_or_default()
-                .contains("cannot erase copies already saved")
+                .contains("Copies saved on other devices may remain")
         );
         assert_eq!(
             host.query_selector("[data-delete-passkey]")
@@ -1272,6 +1298,39 @@ mod tests {
         );
         host.remove();
         clear_context();
+    }
+
+    #[wasm_bindgen_test]
+    fn deletion_copy_wraps_long_space_names() {
+        clear_context();
+        let document = window().unwrap().document().unwrap();
+        let style = document.create_element("style").unwrap();
+        style.set_text_content(Some(include_str!("../../tonk-ui/styles.css")));
+        document.body().unwrap().append_child(&style).unwrap();
+        let host = mount();
+        super::open_delete_dialog(&host);
+        super::set_text(&host, "[data-delete-scope]", &"long-space-name".repeat(30));
+        let dialog: HtmlElement = host
+            .query_selector("[data-delete-account-dialog]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let body: HtmlElement = dialog
+            .shadow_root()
+            .unwrap()
+            .query_selector("[part=body]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(body.client_width() > 0);
+        assert!(
+            body.scroll_width() <= body.client_width(),
+            "long names must wrap within the dialog"
+        );
+        host.remove();
+        style.remove();
     }
 
     #[wasm_bindgen_test]

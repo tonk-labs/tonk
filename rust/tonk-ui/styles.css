@@ -2247,9 +2247,11 @@ ui-account-settings tonk-dialog {
     --fabb-ring: var(--ring); --fabb-sep: var(--sep);
     --fabb-hover: var(--wash); --fabb-press: var(--wash);
     --fabb-dim: var(--dim); }
-ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
+ui-account-settings .confirm-body { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
+ui-account-settings .confirm-body > span { display: block; margin-bottom: 10px; }
+ui-account-settings .confirm-body > span:empty { display: none; }
 ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
     letter-spacing: 0.02em; color: var(--soft);
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
