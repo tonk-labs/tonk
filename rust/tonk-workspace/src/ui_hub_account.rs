@@ -81,7 +81,8 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             // exact wrong thing to say while the link is running.
             let linking = this.has_attribute("data-account-linking");
             label.set_text_content(Some(if linking {
-                crate::hub_account::LINKING_LABEL
+                // The skeleton speaks for it; see `apply_account_linking`.
+                ""
             } else if active.provider.is_some() {
                 profile_label(active)
             } else {
@@ -815,11 +816,12 @@ fn frame_has_row(payload: &JsValue) -> bool {
 fn apply_account_linking(this: &HtmlElement, linking: bool) {
     if linking {
         let _ = this.set_attribute("data-account-linking", "");
-        set_text(
-            this,
-            "[data-account-label]",
-            crate::hub_account::LINKING_LABEL,
-        );
+        // EMPTY, not a word: the marker turns the label into a skeleton
+        // (see `ui-hub-account[data-account-linking]` in styles.css), and
+        // a skeleton with text in it is just text. The shape says a name
+        // is coming; naming the machinery instead described a step
+        // already finished by the time this shows.
+        set_text(this, "[data-account-label]", "");
     } else {
         let _ = this.remove_attribute("data-account-linking");
     }
@@ -1888,6 +1890,65 @@ mod tests {
         );
 
         hubcol.remove();
+    }
+
+    /// While the link runs the cell shows a SKELETON, not a word and not
+    /// a guess.
+    ///
+    /// The bug this pins: the roster falls back to the profile petname
+    /// when an account has no display name yet, so a slow link showed
+    /// something like "gentle-mole" — a generated name presented as the
+    /// person's account. The marker attribute is what the stylesheet
+    /// turns into the pulsing bar, and the label must be empty for that
+    /// bar to read as a shape rather than as text.
+    #[wasm_bindgen_test]
+    fn it_holds_a_skeleton_rather_than_naming_an_account_that_has_not_arrived() {
+        let host = account_element();
+        super::apply_account_linking(&host, true);
+
+        let label = host
+            .query_selector("[data-account-label]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            label.text_content().as_deref(),
+            Some(""),
+            "the skeleton is the signal, so the label carries no text"
+        );
+        assert!(
+            host.has_attribute("data-account-linking"),
+            "the stylesheet keys the skeleton off this marker"
+        );
+
+        // The roster answering mid-link must not paint the petname over
+        // it: both the roster read and the name subscription race the
+        // linking fact, and on a slow network either can land first.
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "gentle-mole".into(),
+                profiles: vec![profile("gentle-mole", None, None, Some("tonk"), true)],
+            },
+        );
+        assert_eq!(
+            label.text_content().as_deref(),
+            Some(""),
+            "a roster answer mid-link must not name the account with a petname"
+        );
+
+        // A live name arriving mid-link stands down the same way.
+        super::apply_account_name(&host, "Ada Lovelace");
+        assert_eq!(
+            label.text_content().as_deref(),
+            Some(""),
+            "a name arriving mid-link waits for the link to settle"
+        );
+
+        // Settled: the marker comes down and the name is free to paint.
+        super::apply_account_linking(&host, false);
+        assert!(!host.has_attribute("data-account-linking"));
+        super::apply_account_name(&host, "Ada Lovelace");
+        assert_eq!(label.text_content().as_deref(), Some("Ada Lovelace"));
     }
 
     /// A live `xyz.tonk.account/display-name` frame is the login signal:

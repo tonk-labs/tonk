@@ -3497,21 +3497,17 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 .stack { width:100%; margin-top:7px; display:flex;
   flex-direction:column; gap:7px; }
 .stack[hidden] { display:none; }
-.sempty { height:36px; padding:0 10px 9px 16px; display:flex;
-  align-items:flex-end; justify-content:flex-end; color:var(--soft);
-  background:var(--frost-solid); box-shadow:0 0 0 1px var(--sep); }
-.stack:has(.srow-wrap) .sempty { display:none; }
-/* While the account is linking, that line speaks for the stack: "no
-   spaces yet" is a claim nobody has established, so it stands down until
-   the link settles and the display's row disappears with the fact. */
-.stack:has(.slinking) > .sempty { display:none; }
-.slinking { justify-content:space-between; align-items:center;
-  padding-bottom:0; }
-.slinking .tonk-pulse { width:9px; height:9px; }
-/* The account cell while its link runs: the house pulse on the label, so
-   the cell says it is working rather than looking stuck on a word. The
-   wireframes' rule — waiting blinks, and never takes a color. */
+/* The account cell while its link runs: a skeleton standing in for the
+   name that has not arrived, pulsing in place. The wireframes' rule —
+   waiting blinks, and never takes a color — so this is the page's own
+   ink at low alpha, not a tint. A name is a fact; until one arrives the
+   cell shows the SHAPE of one rather than a guess (the profile petname)
+   or a word about the machinery ("linking account"). */
 ui-hub-account[data-account-linking] [data-account-label] {
+  /* The label's own text is replaced by the skeleton, so nothing has to
+     be hidden: the element carries no text while the marker is up. */
+  display:inline-block; width:88px; height:1em; border-radius:2px;
+  background:currentColor; opacity:0.14; vertical-align:-0.15em;
   animation:tonk-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
 /* the wrapper, not the link, is the positioning context: the verbs
    and the confirm cluster sit OUTSIDE the anchor (a control inside
@@ -3595,6 +3591,6 @@ ui-space-remove { display:contents; }
   /* account holds its 144; the spaces cell follows the column */
   .hc-view { width:auto; flex:1; min-width:0; }
   .hubbar, .hcell { height:44px; min-height:44px; }
-  .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
+  .account-menu__row, .srow, .snew { min-height:44px; }
   .m-cancel, .m-go { min-height:44px; }
 }

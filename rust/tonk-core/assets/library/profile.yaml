@@ -258,19 +258,13 @@ view!:
           <ui-hub-account></ui-hub-account>
 
         <div class="stack chrome" data-spaces-view aria-label="spaces">
-          <!-- While the account is linking, the stack says so instead of
-               claiming there is nothing here. Login finishes as soon as
-               custody is recovered, so this window is real: signed in,
-               spaces not here yet. The display renders only while the
-               `account/linking` fact exists — its slots are empty, so
-               once the link settles the line simply goes and `.sempty`
-               (or the rows that arrived) takes over. -->
-          <tonk-display model=tonk:account/linking>
-            <span slot="no-entity"></span>
-            <span slot="no-model"></span>
-            <span slot="loading"></span>
-          </tonk-display>
-          <div class="sempty">no spaces yet</div>
+          <!-- No empty-state bar. An account with no spaces and an
+               account whose spaces are still arriving look identical
+               from here, so any words this row could carry are wrong in
+               one of those two cases. The waiting is stated where the
+               waiting is known: the account cell, which holds a skeleton
+               while the link runs. An empty stack simply shows the one
+               row that is always true — "create new space". -->
           <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
                link, so the verbs and the confirm cluster travel with the row
                while staying outside it: reaching for the action never opens the space.
@@ -1315,23 +1309,6 @@ concept!: &account/linking
       the: xyz.tonk.account/linking
       cardinality: one
       as: boolean
-
-# What the stack shows while the account is linking: the fact, with the
-# house pulse. Not a spinner and not a percentage — the wireframes' rule
-# is that waiting states what it is doing.
-view!:
-  this: tonk:account/linking
-  show:
-    # DIRECTORY, not `ui`: the stack mounts this with no `entity`, so the
-    # display is a directory over however many linking facts exist (zero
-    # or one) and asks for the `directory` facet. A `ui` facet here left
-    # it with no match, and the default rendered the concept's raw fields
-    # — the entity DID and `linking: true` — into the stack.
-    directory: |
-      <div class="sempty slinking">
-        <span>downloading your spaces</span>
-        <span class="tonk-pulse" aria-hidden="true"></span>
-      </div>
 
 concept!: &account/active
   this: tonk:account/active

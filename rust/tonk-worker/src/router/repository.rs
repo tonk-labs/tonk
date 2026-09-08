@@ -2947,13 +2947,14 @@ pub(crate) async fn check_seed_update(
 
     // Announce the check BEFORE the fetch, so a view can show it running
     // rather than only ever learning the outcome.
-    stamp_checking(tonk, replica.clone(), Some(check)).await;
+    stamp_checking(tonk, replica.clone(), check.clone()).await;
 
     let outcome = run_seed_check(tonk, subject).await;
 
     // The in-flight marker is retracted either way; what lands beside it
-    // is what differs.
-    stamp_checking(tonk, replica.clone(), None).await;
+    // is what differs. The SAME check entity, so the retraction matches
+    // the fact that was asserted.
+    clear_checking(tonk, replica.clone(), check).await;
     match outcome {
         Ok(found) => {
             stamp_check_failure(tonk, replica.clone(), None).await;
@@ -3053,30 +3054,49 @@ async fn publish_available_seed(tonk: &TonkState, subject: &Did, found: &FoundSe
     }
 }
 
-/// Stamp (or clear) the in-flight marker on this device's replica.
+/// Stamp the in-flight marker on this device's replica.
 ///
 /// Presence is the state, so clearing means retracting the attribute
-/// rather than writing a "done" value.
+/// rather than writing a "done" value — see [`clear_checking`], which
+/// needs the SAME check entity this stored.
 async fn stamp_checking(
     tonk: &TonkState,
     replica: dialog_artifacts::Entity,
-    check: Option<dialog_artifacts::Entity>,
+    check: dialog_artifacts::Entity,
 ) {
     let transaction = tonk
         .reactor
         .profile_repository()
         .branch(PROFILE_BRANCH)
-        .transaction();
-    let transaction = match check {
-        Some(check) => transaction.assert(tonk_schema::ReplicaChecking {
+        .transaction()
+        .assert(tonk_schema::ReplicaChecking {
             this: replica,
             checking: tonk_schema::domain::check::Checking(check),
-        }),
-        None => transaction.retract(tonk_schema::ReplicaChecking {
-            this: replica.clone(),
-            checking: tonk_schema::domain::check::Checking(replica),
-        }),
-    };
+        });
+    commit_replica_stamp(tonk, transaction).await;
+}
+
+/// Drop the in-flight marker [`stamp_checking`] left.
+///
+/// A retraction matches on the VALUE as well as the entity and
+/// attribute, so this has to name the same `check` that was asserted.
+/// Passing anything else (the replica entity, say) retracts a fact that
+/// was never stored and leaves the real marker standing, so a settled
+/// check still reads as running.
+async fn clear_checking(
+    tonk: &TonkState,
+    replica: dialog_artifacts::Entity,
+    check: dialog_artifacts::Entity,
+) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .retract(tonk_schema::ReplicaChecking {
+            this: replica,
+            checking: tonk_schema::domain::check::Checking(check),
+        });
     commit_replica_stamp(tonk, transaction).await;
 }
 
