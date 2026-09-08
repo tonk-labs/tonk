@@ -57,15 +57,14 @@ fn validate_state(state: &AccountSessionState) -> Result<()> {
     if state.active.is_some() && state.pending_login.is_some() {
         anyhow::bail!("account-session state cannot be active and pending simultaneously");
     }
-    if let Some(journal) = &state.replacement {
-        if state.version != VERSION
+    if let Some(journal) = &state.replacement
+        && (state.version != VERSION
             || state.pending_login.is_some()
             || journal.operation_id.is_empty()
             || (state.active.as_ref() != Some(&journal.previous)
-                && state.active.as_ref() != Some(&journal.replacement))
-        {
-            anyhow::bail!("invalid account replacement journal");
-        }
+                && state.active.as_ref() != Some(&journal.replacement)))
+    {
+        anyhow::bail!("invalid account replacement journal");
     }
     Ok(())
 }

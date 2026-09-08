@@ -3862,7 +3862,7 @@ async fn claim_invite(
                         Ok(name) => name,
                         Err(error) => {
                             let fallback = tonk_cli::handoff::fallback_name(
-                                &outcome.subject.to_string(),
+                                outcome.subject.as_ref(),
                                 &registry,
                             );
                             eprintln!(

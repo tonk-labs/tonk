@@ -1937,7 +1937,7 @@ mod tests {
         .await
         .unwrap();
         let bytes = hex::decode(&authorized.delegation_hex).unwrap();
-        let chain = validate_account_grant(&profile, &bytes).await.unwrap();
+        let chain = validate_account_grant(profile, &bytes).await.unwrap();
         crate::account_session::ActiveAccount {
             root_did: chain.issuer().to_string(),
             credential_id: authorized.root_did,
