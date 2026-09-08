@@ -5384,6 +5384,7 @@ dependencies = [
  "tonk-evaluator",
  "tonk-fab",
  "tonk-identity",
+ "tonk-inspector",
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",

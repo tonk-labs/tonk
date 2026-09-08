@@ -1609,7 +1609,7 @@ pub(crate) async fn rename_display_name(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use dialog_credentials::Ed25519Signer;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -1815,7 +1815,7 @@ mod tests {
     /// descriptor. Callers stop the service and clean up the on-disk verifier
     /// repository themselves, the way the offline test does.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn ready_account_state(
+    pub(crate) async fn ready_account_state(
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
     ) -> (
         TonkState,
@@ -1972,7 +1972,7 @@ mod tests {
     /// Remove the on-disk verifier repository `NativeSpace` rooted in the
     /// package working directory for one randomized fixture.
     #[cfg(not(target_arch = "wasm32"))]
-    fn discard(state: TonkState, key: &str) {
+    pub(crate) fn discard(state: TonkState, key: &str) {
         let local = std::env::current_dir().unwrap().join(key);
         drop(state);
         if local.is_dir() {

@@ -33,6 +33,9 @@ pub mod blocks;
 /// builds and tests on every target.
 pub mod cell_output;
 
+/// Notation documents the elements evaluate — pure, target-agnostic.
+pub mod notation;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element;
 

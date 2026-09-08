@@ -200,50 +200,6 @@ impl Command for CreateSpace {
     type Output = ();
 }
 
-/// Create a notebook from the index's heading switcher, and drop the
-/// author into it.
-///
-/// The handler does both halves: it writes the notebook and then posts a
-/// `navigate` to the originating client. The navigation cannot happen in
-/// the page, because the notebook's entity is derived when the fact is
-/// written — the element that fired the command never learns it.
-///
-/// The fields are `title` and `body`. They were `created-title` and
-/// `created-body` only so a retitle's `detail/title` would not also
-/// decode as a create; the namespace does that now.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CreateNotebook {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The notebook entity, minted by the page so the handler writes at
-    /// a known address and the page navigates itself.
-    pub entity: crate::domain::command::current::create_notebook::Entity,
-    /// The title typed into the heading.
-    pub title: crate::domain::command::current::create_notebook::Title,
-    /// The draft's document, blocks and all.
-    pub body: crate::domain::command::current::create_notebook::Body,
-}
-
-impl From<legacy::CreateNotebook> for CreateNotebook {
-    fn from(legacy: legacy::CreateNotebook) -> Self {
-        Self {
-            entity: crate::domain::command::current::create_notebook::Entity(legacy.entity.0),
-            title: crate::domain::command::current::create_notebook::Title(legacy.title.0),
-            body: crate::domain::command::current::create_notebook::Body(legacy.body.0),
-            this: legacy.this,
-        }
-    }
-}
-
-/// `CreateNotebook` is a [`dialog_capability::Command`]; the worker
-/// registers a custom handler for it (the work needs the branch handle
-/// and the originating client, which the decoded command does not
-/// carry).
-impl Command for CreateNotebook {
-    type Input = Self;
-    type Output = ();
-}
-
 /// Load the requesting tab's site for its current path.
 ///
 /// Asserted transiently by `<tonk-site>` (via the regular transact API) instead
@@ -615,7 +571,9 @@ impl Command for ExpelMember {
 /// overlay-only [`Credential`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Authorization {
-    /// The membership DID the invite was issued to.
+    /// The SPACE subject the invite is for — cardinality-one per space,
+    /// so a re-mint supersedes the prior grant in place. The membership
+    /// DID the invite admits is the proof chain's audience, not this key.
     pub this: Entity,
     /// The base58 delegation chain (`?access=`).
     pub proof: crate::domain::authorization::Proof,

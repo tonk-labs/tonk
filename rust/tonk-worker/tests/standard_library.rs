@@ -956,10 +956,6 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
             "tonk/load",
             tonk_schema::command::Load::trigger_attributes(),
         ),
-        (
-            "notebook/create",
-            tonk_schema::command::CreateNotebook::trigger_attributes(),
-        ),
     ];
 
     for (name, required) in handled {

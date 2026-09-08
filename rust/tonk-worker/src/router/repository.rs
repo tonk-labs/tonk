@@ -1746,174 +1746,6 @@ async fn run_rename_repository(
     Ok(())
 }
 
-/// Run the [`CreateNotebook`] command.
-///
-/// The index's heading switcher fires this when the author names a
-/// notebook that does not exist. The provider writes it into the ORIGIN
-/// space — the notebook belongs to the space whose page the author was
-/// on, and a command that NAMED its target could be committed against
-/// any branch. An EMPTY origin repo is the profile, not a missing
-/// origin.
-///
-/// This provider is a WORKAROUND, and creating a notebook does not otherwise
-/// want a bespoke command: the library's own rules already turn a written
-/// intent into blocks and positions. It exists because a rule that derived
-/// the notebook could not then assert a navigation anything would act on —
-/// commit-time induction folds its rounds into one commit, so a
-/// rule-concluded transient is dropped before any handler can match it
-/// (dialog-db#483). Once a rule can conclude into an ephemeral-but-
-/// observable layer, this provider, `create_notebook_inner`, and the
-/// write-then-read-back-by-title dance below all go away.
-///
-/// [`CreateNotebook`]: tonk_schema::command::CreateNotebook
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<tonk_schema::command::CreateNotebook>
-    for crate::router::CommandEnv
-{
-    async fn execute(&self, command: tonk_schema::command::CreateNotebook) {
-        let entity = command.entity.0.to_string();
-        let title = command.title.0;
-        let body = command.body.0;
-        let repo = self.origin().repo.clone();
-        if title.trim().is_empty() {
-            log!("CreateNotebook: blank title, skipping");
-            return;
-        }
-        log!("command CreateNotebook title={title} entity={entity} repo={repo}");
-
-        // No redirect: the page minted the entity, so it already knows
-        // where it is going and navigates itself once the write lands.
-        if let Err(error) = create_notebook_inner(self, &repo, &entity, &title, &body).await {
-            log!("CreateNotebook '{title}' failed: {error}");
-        }
-    }
-}
-
-/// Evaluate a notation document against the space the command fired in —
-/// a named repository, or the PROFILE when `repo` is empty.
-///
-/// A profile-branch commit carries an empty `origin.repo`: the profile lives
-/// outside the named-repo namespace, so there is no name to load it by (see
-/// `transact_profile`). Handlers that took that string as a repository name
-/// asked for repository `""` and failed, which is why creating a notebook
-/// from the index worked in a space and did nothing on a profile.
-///
-/// Both surfaces use branch `main`, so only the repository half differs.
-async fn evaluate_in_space(
-    tonk: &TonkState,
-    repo: &str,
-    document: String,
-    transact: bool,
-) -> Result<super::evaluate::EvaluateResponse, TonkWorkerError> {
-    if repo.is_empty() {
-        super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, document, transact).await
-    } else {
-        super::evaluate::evaluate_body(tonk, repo, CONTENT_BRANCH, document, transact).await
-    }
-}
-
-/// Write the notebook at the entity the page minted.
-///
-/// Through notation rather than a typed assert: the notebook concept lives
-/// in the YAML library, not in `tonk-schema`, so the shape stays in one
-/// place. `notebook/named` is the title-only concept — a notebook with no
-/// blocks yet cannot satisfy `notebook`, which requires one.
-async fn create_notebook_inner(
-    env: &crate::router::CommandEnv,
-    repo: &str,
-    entity: &str,
-    title: &str,
-    body: &str,
-) -> Result<(), RepositoryError> {
-    let tonk = env.state().read().await;
-    // The title is data, and goes in as a quoted scalar so a colon or a
-    // quote in a notebook's name cannot change the document's shape.
-    let document = format!(
-        "notebook/named!:\n  this: {entity}\n  title: {}\n",
-        serde_json::to_string(title)
-            .map_err(|e| RepositoryError::Internal(format!("unquotable title: {e}")))?
-    );
-    let response = evaluate_in_space(&tonk, repo, document, true)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("notebook create failed: {e}")))?;
-
-    if response.commits.claims == 0 {
-        return Err(RepositoryError::Internal(
-            "notebook create wrote nothing".to_owned(),
-        ));
-    }
-
-    // Carry the draft's body over, and always leave at least one block.
-    //
-    // Everything under the heading is content the author already typed, so
-    // the notebook they land in has to open with it — otherwise naming a
-    // draft silently discards the writing that prompted the name.
-    //
-    // A title-only create has no body at all, and a notebook with no block
-    // does not satisfy `tonk:notebook` (which requires one), so the page
-    // you land on reports a missing attribute instead of rendering. An
-    // empty first block is also just what a new document is: somewhere to
-    // start typing.
-    let mut blocks = draft_blocks(body);
-    if blocks.is_empty() {
-        blocks.push(String::new());
-    }
-    {
-        let mut document = String::new();
-        // Written back to front and chained forward by `next`, the shape
-        // the library's position rules expect (see `insert_notation`):
-        // a variable must be bound by an earlier assertion than the one
-        // naming it.
-        for (index, source) in blocks.iter().enumerate().rev() {
-            document.push_str("block/insert!:\n");
-            document.push_str(&format!("  this: ?b{index}\n"));
-            document.push_str(&format!("  notebook: {entity}\n"));
-            document.push_str(&format!("  source: {}\n", yaml_block_scalar(source)));
-            if index + 1 < blocks.len() {
-                document.push_str(&format!("  next: ?b{}\n", index + 1));
-            } else {
-                document.push_str("  next: case:none\n");
-            }
-            document.push_str("  prev: tonk:notebook/edge\n\n");
-        }
-        evaluate_in_space(&tonk, repo, document, true)
-            .await
-            .map_err(|e| RepositoryError::Internal(format!("draft body failed: {e}")))?;
-    }
-
-    Ok(())
-}
-
-/// The draft's blocks, heading and all.
-///
-/// The heading is KEPT. It also becomes the notebook's title, but a title
-/// is metadata: a notebook's document IS its blocks projected, so dropping
-/// the heading opens the new notebook without the line the author just
-/// wrote — they typed `# Counter` and land on an empty page.
-///
-/// Blocks are separated by a blank line, which is what prosemirror-markdown
-/// emits between top-level blocks.
-fn draft_blocks(body: &str) -> Vec<String> {
-    body.split("\n\n")
-        .map(str::trim)
-        .filter(|chunk| !chunk.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-/// A source as a YAML block scalar, so markdown with newlines, colons and
-/// backticks survives without escaping.
-fn yaml_block_scalar(source: &str) -> String {
-    let mut out = String::from("|-\n");
-    for line in source.lines() {
-        out.push_str("    ");
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.trim_end().to_owned()
-}
-
 /// Run the [`RemoveSpace`] command: the user confirmed a Hub row's
 /// delete overlay. Removal is device-local and ordered so the visible
 /// state commits first and cleanup is best-effort behind it — see
@@ -3857,9 +3689,8 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     Ok(())
 }
 
-/// Fetch and seed the lean profile library onto the profile
-/// branch. SW-only — the fetch needs a service-worker scope.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Fetch and seed the lean profile library onto the profile branch —
+/// on every target, since the fetch reads the embedded assets natively.
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
     let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
@@ -3870,12 +3701,6 @@ async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
         .map_err(|e| {
             RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
         })
-}
-
-/// Native stub — no service-worker scope to fetch the served library.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn seed_profile_library(_tonk: &TonkState) -> Result<(), RepositoryError> {
-    Ok(())
 }
 
 /// Load a repository by name and return its [`RepositoryInfo`].
@@ -5142,6 +4967,276 @@ mod next_untitled_label_tests {
 /// The pure library-URL selector. Native.
 /// The rename result → outcome mapping. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod notebook_creation_tests {
+    use super::*;
+
+    const NOTEBOOK_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+
+    /// Notebook creation with NO worker provider: the page-built notation
+    /// (the inspector element's `create_notation`, evaluated through the
+    /// same pipeline its host consumer submits on) writes `notebook/named`
+    /// and the draft's blocks in one commit, and the library's own rules
+    /// persist the inserted blocks. This is the end-to-end guard for the
+    /// retired `CreateNotebook` provider — its failure mode is the old
+    /// one: creation silently doing nothing.
+    #[dialog_common::test]
+    async fn it_creates_a_notebook_from_the_page_built_notation_alone() {
+        use futures_util::StreamExt as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(&state, "Notebook Host")
+            .await
+            .expect("the space creates");
+        let tonk = state.read().await;
+        // The notebook library installs onto the space, rules and all —
+        // what a notebook-using space carries.
+        super::super::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            CONTENT_BRANCH,
+            NOTEBOOK_LIBRARY.to_owned(),
+            true,
+        )
+        .await
+        .expect("the notebook library installs");
+
+        let notation = tonk_inspector::notation::create_notation(
+            "notebook:probe",
+            "Groceries: a \"list\"",
+            "# Groceries\n\nmilk\n\neggs",
+        )
+        .expect("the document builds");
+        let response =
+            super::super::evaluate::evaluate_body(&tonk, &key, CONTENT_BRANCH, notation, true)
+                .await
+                .expect("the creation evaluates");
+        assert!(
+            response.commits.claims > 0,
+            "the creation must commit, not silently no-op"
+        );
+
+        // Read back what landed on the notebook entity and its blocks.
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the content branch opens");
+        let entity: dialog_artifacts::Entity = "notebook:probe".parse().unwrap();
+        let stream = session
+            .handle()
+            .claims()
+            .select(dialog_artifacts::ArtifactSelector::new().of(entity))
+            .perform(&tonk.operator)
+            .await
+            .expect("the notebook claims select");
+        tokio::pin!(stream);
+        let mut named = None;
+        let mut sequence_entries = 0usize;
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact
+                .expect("a claim reads")
+                .to_owned()
+                .expect("a claim decodes");
+            let attribute = artifact.the.to_string();
+            if attribute == "xyz.tonk.notebook/title"
+                && let dialog_artifacts::Value::String(title) = &artifact.is
+            {
+                named = Some(title.clone());
+            }
+            if attribute.starts_with("xyz.tonk.notebook/") {
+                sequence_entries += 1;
+            }
+        }
+        let named = named.expect("the notebook is named");
+        assert_eq!(
+            named, "Groceries: a \"list\"",
+            "the YAML-hostile title survives as data"
+        );
+        assert!(
+            sequence_entries >= 3,
+            "the three draft blocks land in the sequence (got {sequence_entries} notebook facts)"
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_chain_tests {
+    use super::*;
+
+    /// The `Authorization` rows a mint records on the content branch —
+    /// the durable half of an invite, carrying the base58 proof chain.
+    async fn authorizations(
+        state: &crate::router::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::command::Authorization> {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::Authorization> {
+                this: Term::var("this"),
+                proof: Term::var("proof"),
+                remote: Term::var("remote"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("authorization query")
+    }
+
+    /// The chain a real mint produces, via the real path end to end: a
+    /// linked, activated account against a live access service,
+    /// `create_space_inner` (which delegates the fresh space to the
+    /// ACCOUNT), `enable_sync_inner` (which provisions and attaches the
+    /// remote), then `run_invite`.
+    ///
+    /// The shape pinned is `space → account → profile → membership`, and
+    /// its durability: an invite is claimed hours or days after minting,
+    /// so the presign path's session-bounded operator claim must never
+    /// appear in it — the two claims live one seam apart
+    /// (`Delegate::perform` binds the profile signer; the presign's
+    /// `Authorize` binds the operator's), and nothing else fails if a
+    /// refactor swaps them. The links would just start dying within
+    /// `SESSION_TTL_SECONDS` (12h) of minting.
+    #[dialog_common::test]
+    async fn it_mints_the_durable_space_account_profile_membership_chain() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let profile_did = tonk.profile.did().to_string();
+        let operator_did = tonk.operator.did().to_string();
+        let session_expiry = tonk.session_expires_at;
+        let account_did = root.did().to_string();
+
+        // A creation custodies the space seed to the account's sealed
+        // recipient, which a real ceremony hands back with the root; the
+        // base fixture deliberately leaves it unpublished, so record one
+        // the way `persist_test_root` does.
+        let recipient =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([7u8; 32]))
+                .secret()
+                .did();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "invite-chain-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .expect("the root persists with a recipient");
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+
+        let key = create_space_inner(&state, "Invite Chain")
+            .await
+            .expect("the space creates");
+        enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        run_invite(&env, &key, 1.0).await.expect("the mint settles");
+        drop(env);
+
+        let rows = authorizations(&state, &key).await;
+        assert_eq!(rows.len(), 1, "the mint records one authorization");
+        assert_eq!(
+            rows[0].this.to_string(),
+            key,
+            "the Authorization row is keyed on the space subject (cardinality-one per space)"
+        );
+        let bytes = bs58::decode(&rows[0].proof.0)
+            .into_vec()
+            .expect("the proof is base58");
+        let chain =
+            DelegationChain::try_from(bytes.as_slice()).expect("the proof parses as a chain");
+        // The membership principal is freshly minted per invite; the chain's
+        // audience is the only place it appears.
+        let membership = chain.audience().to_string();
+        for held in [&key, &account_did, &profile_did, &operator_did] {
+            assert_ne!(
+                &membership, held,
+                "the membership keypair is fresh, not a principal this device holds"
+            );
+        }
+        let hops: Vec<_> = chain.proofs().collect();
+
+        assert_eq!(
+            hops.len(),
+            3,
+            "the chain is space → account → profile → membership"
+        );
+        assert_eq!(
+            hops[0].issuer().to_string(),
+            key,
+            "the space signs its consent"
+        );
+        assert_eq!(
+            hops[0].audience().to_string(),
+            account_did,
+            "creation delegates the space to the ACCOUNT, not the device"
+        );
+        assert_eq!(hops[1].issuer().to_string(), account_did);
+        assert_eq!(
+            hops[1].audience().to_string(),
+            profile_did,
+            "the link ceremony's account → profile grant bridges to this device"
+        );
+        assert_eq!(hops[2].issuer().to_string(), profile_did);
+        assert_eq!(
+            hops[2].audience().to_string(),
+            membership,
+            "the profile signs the membership leaf"
+        );
+        for hop in &hops {
+            assert_ne!(
+                hop.issuer().to_string(),
+                operator_did,
+                "no hop may be issued by the session-scoped operator"
+            );
+            if let Some(expiration) = hop.expiration() {
+                assert!(
+                    expiration.to_unix() > session_expiry,
+                    "a hop expiring at {} dies with the operator session ({})",
+                    expiration.to_unix(),
+                    session_expiry,
+                );
+            }
+        }
+
+        // Fixture cleanup, the way account_state's own tests do it.
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_outcome_tests {
     use super::{RenameOutcome, rename_outcome};
     use crate::RepositoryError;
@@ -6136,246 +6231,6 @@ block/insert!:
             &document[3..],
             &["one", "two", "three"],
             "the run reads in document order, after the seeded blocks: {document:#?}"
-        );
-    }
-
-    /// The index switcher creates a notebook on a PROFILE too.
-    ///
-    /// Typing a title and pressing Enter fires `notebook/create`, and the
-    /// handler writes the notebook then redirects into it. On a profile the
-    /// commit's origin carries an EMPTY repo (the profile is outside the
-    /// named-repo namespace), so a handler that reads `origin.repo` as the
-    /// repository to write bails out and the notebook is never created —
-    /// which is exactly what a profile author sees: Enter does nothing.
-    #[dialog_common::test]
-    async fn it_creates_a_notebook_on_a_profile() {
-        let (_app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        {
-            let tonk = state.read().await;
-            const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-            for library in [PROFILE, NOTEBOOK] {
-                crate::router::evaluate::evaluate_profile_body(
-                    &tonk,
-                    "main",
-                    library.to_owned(),
-                    true,
-                )
-                .await
-                .expect("the library installs on the profile");
-            }
-        }
-
-        // An empty origin repo is what a profile-branch commit carries.
-        let env = crate::router::CommandEnv::new(
-            state.clone(),
-            crate::router::CommandOrigin {
-                repo: String::new(),
-                branch: "main".to_owned(),
-                client: None,
-            },
-        );
-        super::create_notebook_inner(&env, "", "notebook:probe", "Groceries", "")
-            .await
-            .expect("the create writes a notebook on the profile");
-    }
-
-    /// The create handler writes a titled notebook at the page's entity.
-    ///
-    /// The page mints it, so it can navigate there itself — the handler
-    /// no longer writes-then-reads-back to discover a derived entity.
-    #[dialog_common::test]
-    async fn it_creates_a_notebook_at_the_minted_entity() {
-        let (_app, state, key) = fresh_repo("test-notebook-switcher-create").await;
-        let repo = key.as_str();
-        seed(&state, repo, CORE).await;
-        seed(&state, repo, NOTEBOOK).await;
-
-        let env = crate::router::CommandEnv::new(
-            state.clone(),
-            crate::router::CommandOrigin {
-                repo: repo.to_owned(),
-                branch: "main".to_owned(),
-                client: None,
-            },
-        );
-        let entity = "notebook:minted";
-        super::create_notebook_inner(&env, repo, entity, "Groceries", "")
-            .await
-            .expect("the create writes a notebook");
-
-        let named = rows(
-            &state,
-            repo,
-            "notebook/named:\n  this: ?this\n  title: ?title\n",
-        )
-        .await;
-        let titled: Vec<&str> = named
-            .iter()
-            .filter_map(|row| row.get("title")?.as_str())
-            .collect();
-        assert!(
-            titled.contains(&"Groceries"),
-            "the notebook is readable by title: {named:#?}"
-        );
-        assert!(
-            named
-                .iter()
-                .any(|row| row.get("this").and_then(|v| v.as_str()) == Some(entity)),
-            "and the notebook lands at the entity the page minted: {entity} not in {named:#?}"
-        );
-    }
-
-    /// A title with a colon or a quote must not reshape the notation.
-    #[dialog_common::test]
-    async fn it_creates_a_notebook_whose_title_carries_yaml_syntax() {
-        let (_app, state, key) = fresh_repo("test-notebook-title-syntax").await;
-        let repo = key.as_str();
-        seed(&state, repo, CORE).await;
-        seed(&state, repo, NOTEBOOK).await;
-
-        let env = crate::router::CommandEnv::new(
-            state.clone(),
-            crate::router::CommandOrigin {
-                repo: repo.to_owned(),
-                branch: "main".to_owned(),
-                client: None,
-            },
-        );
-        let awkward = r#"Notes: "on" quoting"#;
-        super::create_notebook_inner(&env, repo, "notebook:awkward", awkward, "")
-            .await
-            .expect("an awkward title still writes");
-
-        let named = rows(
-            &state,
-            repo,
-            "notebook/named:\n  this: ?this\n  title: ?title\n",
-        )
-        .await;
-        let titled: Vec<&str> = named
-            .iter()
-            .filter_map(|row| row.get("title")?.as_str())
-            .collect();
-        assert!(
-            titled.contains(&awkward),
-            "the title survives verbatim: {named:#?}"
-        );
-    }
-
-    /// Naming a draft keeps what was already written under the heading.
-    ///
-    /// The body is the reason the index is a real notebook rather than a
-    /// search box: the author types into it before the notebook exists,
-    /// and naming it must not throw that away.
-    #[dialog_common::test]
-    async fn it_carries_a_drafts_body_into_the_notebook() {
-        let (_app, state, key) = fresh_repo("test-notebook-draft-body").await;
-        let repo = key.as_str();
-        seed(&state, repo, CORE).await;
-        seed(&state, repo, NOTEBOOK).await;
-
-        let env = crate::router::CommandEnv::new(
-            state.clone(),
-            crate::router::CommandOrigin {
-                repo: repo.to_owned(),
-                branch: "main".to_owned(),
-                client: None,
-            },
-        );
-        let entity = "notebook:draft";
-        super::create_notebook_inner(
-            &env,
-            repo,
-            entity,
-            "Groceries",
-            "# Groceries\n\nmilk and eggs\n\n```dialog-yaml\nconcept:\n```",
-        )
-        .await
-        .expect("the draft creates a notebook");
-
-        let blocks = rows(
-            &state,
-            repo,
-            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
-        )
-        .await;
-        let sources: Vec<&str> = blocks
-            .iter()
-            .filter_map(|row| row.get("source")?.as_str())
-            .collect();
-        assert!(
-            sources.contains(&"milk and eggs"),
-            "the body's prose carries over: {blocks:#?}"
-        );
-        assert!(
-            sources.iter().any(|s| s.contains("dialog-yaml")),
-            "and so does a fence: {blocks:#?}"
-        );
-        assert!(
-            sources.iter().any(|s| s.starts_with("# Groceries")),
-            "and so does the heading: it is the title AND the document's \
-             first line, so dropping it opens the notebook blank: {blocks:#?}"
-        );
-    }
-
-    /// A title-only create still leaves a block.
-    ///
-    /// `tonk:notebook` requires one, so a blockless notebook renders as a
-    /// missing-attribute callout instead of a document — which is what the
-    /// author lands on right after naming it.
-    #[dialog_common::test]
-    async fn it_creates_a_notebook_with_a_block_from_a_bare_title() {
-        let (_app, state, key) = fresh_repo("test-notebook-bare-title").await;
-        let repo = key.as_str();
-        seed(&state, repo, CORE).await;
-        seed(&state, repo, NOTEBOOK).await;
-
-        let env = crate::router::CommandEnv::new(
-            state.clone(),
-            crate::router::CommandOrigin {
-                repo: repo.to_owned(),
-                branch: "main".to_owned(),
-                client: None,
-            },
-        );
-        // What the switcher sends for a title with nothing typed under it.
-        let entity = "notebook:counter";
-        super::create_notebook_inner(&env, repo, entity, "Counter", "# Counter")
-            .await
-            .expect("a bare title creates a notebook");
-
-        let placed = count(
-            &state,
-            repo,
-            &format!("notebook:\n  this: {entity}\n  title: ?title\n  block: {{?key: ?block}}\n"),
-        )
-        .await;
-        assert!(
-            placed > 0,
-            "the notebook resolves as `tonk:notebook`, so the page renders"
-        );
-
-        let blocks = rows(
-            &state,
-            repo,
-            &format!("notebook/block:\n  this: ?this\n  notebook: {entity}\n  source: ?source\n"),
-        )
-        .await;
-        let sources: Vec<&str> = blocks
-            .iter()
-            .filter_map(|row| row.get("source")?.as_str())
-            .collect();
-        assert!(
-            sources.iter().any(|s| s.starts_with("# Counter")),
-            "the heading is kept: {blocks:#?}"
-        );
-        assert_eq!(
-            sources.len(),
-            1,
-            "and it is the ONLY block: an empty second one would be dropped \
-             by `project` and collapsed by markdown, so the caret does that \
-             job instead: {blocks:#?}"
         );
     }
 

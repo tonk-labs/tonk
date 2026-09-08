@@ -163,7 +163,6 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
         .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
         .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
-        .migrated::<tonk_schema::command::CreateNotebook, tonk_schema::command::legacy::CreateNotebook>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
@@ -246,7 +245,7 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(missing_docs)]
 
     use super::*;
@@ -450,7 +449,7 @@ mod tests {
     /// but the browser, so nothing short of dispatching a real command
     /// against real state proves the conversion means anything.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    mod native {
+    pub(crate) mod native {
         use super::*;
         use crate::router::AppState;
         use crate::worker::TonkState;
@@ -462,7 +461,7 @@ mod tests {
         /// construction `account_state`'s native tests use, minus the
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
-        async fn test_state() -> AppState {
+        pub(crate) async fn test_state() -> AppState {
             use dialog_operator::Profile;
             use dialog_storage::provider::storage::Storage;
 
