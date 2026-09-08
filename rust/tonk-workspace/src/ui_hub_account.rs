@@ -38,6 +38,21 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     }
 }
 
+/// Set (or drop) an accessible name on a control whose visible label is
+/// standing in for something that has not arrived.
+fn set_label(this: &HtmlElement, selector: &str, label: Option<&str>) {
+    if let Ok(Some(element)) = this.query_selector(selector) {
+        match label {
+            Some(label) => {
+                let _ = element.set_attribute("aria-label", label);
+            }
+            None => {
+                let _ = element.remove_attribute("aria-label");
+            }
+        }
+    }
+}
+
 fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
     if let Ok(Some(element)) = this.query_selector(selector)
         && let Ok(element) = element.dyn_into::<HtmlElement>()
@@ -822,8 +837,13 @@ fn apply_account_linking(this: &HtmlElement, linking: bool) {
         // is coming; naming the machinery instead described a step
         // already finished by the time this shows.
         set_text(this, "[data-account-label]", "");
+        // The skeleton is a VISUAL signal, so the trigger would otherwise
+        // read as an unlabelled button. Name the wait for a screen reader
+        // rather than leaving it silent.
+        set_label(this, "[data-account-trigger]", Some("account is loading"));
     } else {
         let _ = this.remove_attribute("data-account-linking");
+        set_label(this, "[data-account-trigger]", None);
     }
 }
 
@@ -1919,6 +1939,15 @@ mod tests {
             host.has_attribute("data-account-linking"),
             "the stylesheet keys the skeleton off this marker"
         );
+        let trigger = host
+            .query_selector("[data-account-trigger]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            trigger.get_attribute("aria-label").as_deref(),
+            Some("account is loading"),
+            "a skeleton is visual only, so the wait has to be named for a screen reader"
+        );
 
         // The roster answering mid-link must not paint the petname over
         // it: both the roster read and the name subscription race the
@@ -1947,6 +1976,10 @@ mod tests {
         // Settled: the marker comes down and the name is free to paint.
         super::apply_account_linking(&host, false);
         assert!(!host.has_attribute("data-account-linking"));
+        assert!(
+            trigger.get_attribute("aria-label").is_none(),
+            "once the name is real it labels the control; the stand-in goes"
+        );
         super::apply_account_name(&host, "Ada Lovelace");
         assert_eq!(label.text_content().as_deref(), Some("Ada Lovelace"));
     }
