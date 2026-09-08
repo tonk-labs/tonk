@@ -3549,19 +3549,7 @@ ui-space-remove { display:contents; }
 .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
   width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
   color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
-.snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
-/* joining by pasted link — the quiet row under creation; the input is
-   chrome like the rows above it, so creation keeps the only solid ink */
-.sjoin-form { display:flex; }
-.sjoin-url { flex:1; min-width:0; height:36px; padding:9px 10px 9px 16px;
-  border:0; background:var(--card); color:var(--ink); font:inherit;
-  font-size:13px; text-transform:none; }
-.sjoin-url::placeholder { color:inherit; opacity:.55; text-transform:lowercase; }
-.sjoin { display:flex; align-items:flex-end; justify-content:flex-end;
-  height:36px; padding:0 10px 9px 24px; border:0; background:var(--card);
-  color:var(--ink); font:inherit; font-size:13px; cursor:pointer; }
-.sjoin:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
-.remove-form { margin:0; font-family:var(--sans); font-weight:600;
+.snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }.remove-form { margin:0; font-family:var(--sans); font-weight:600;
   font-size:13.5px; line-height:1.6; text-transform:none; }
 .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
   min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
@@ -3595,8 +3583,6 @@ ui-space-remove { display:contents; }
   /* account holds its 144; the spaces cell follows the column */
   .hc-view { width:auto; flex:1; min-width:0; }
   .hubbar, .hcell { height:44px; min-height:44px; }
-  .account-menu__row, .sempty, .srow, .snew, .sjoin, .sjoin-url { min-height:44px; }
+  .account-menu__row, .sempty, .srow, .snew { min-height:44px; }
   .m-cancel, .m-go { min-height:44px; }
-  /* 16px keeps mobile Safari from zooming the focused field */
-  .sjoin-url { font-size:16px; }
 }
