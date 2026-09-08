@@ -942,7 +942,7 @@ view!:
              EVERY matching child, not the first). `no-entity` keeps the
              quiet placeholder: the concept resolved, the row just is not
              here yet. -->
-        <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+        <tonk-title slot="no-entity" hidden text="Untitled — Tonk"></tonk-title>
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
@@ -954,7 +954,9 @@ view!:
              Slotted rather than left to the built-in fallback, which
              would show "Model not found — concept: tonk:repository" to
              someone whose actual problem is that they were never invited. -->
-        <div slot="no-model" class="space-unknown">
+        <!-- Light-DOM slots must be hidden in the template too: before the
+             display initializes they otherwise paint as ordinary content. -->
+        <div slot="no-model" hidden class="space-unknown">
           <tonk-title text="Not here — Tonk"></tonk-title>
           <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
           <div class="space-unknown-wall">
@@ -974,7 +976,7 @@ view!:
              built-in red `<wa-callout>` fires. This inert child suppresses
              that callout while pushing no title, leaving the tab exactly
              as it was — the behavior for older spaces. -->
-        <span slot="no-view"></span>
+        <span slot="no-view" hidden></span>
       </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
