@@ -137,57 +137,88 @@ it: the **location specifier**. Every Dedalus fact lives at a site; a
 rule whose head is at a different site than its body is a
 *communication rule*, and some specific site is responsible for
 performing it. Tonk has the geography: branches are the locations, DIDs
-are the sites. A rule reading `invite-request` on a space branch and
-asserting an `invite` is a communication rule; its executor names the
-site that runs it.
+are the sites.
+
+Crucially, in Dedalus the location is **not rule metadata — it is a
+column of the fact** (`p(X, @L)`), bound and matched by rules like any
+other field. So the executor is not an `executor:` annotation on the
+rule; it is an audience field on the message, filtered by an ordinary
+premise:
 
 ```yaml
 effect!:
-  executor: host          # a role, resolved against roster/authority facts
   assert!: invite
   when:
     - assert: invite-request
-      where: ...
+      where: { for: ?role, ... }
+    - assert: role-holder        # roster: who holds ?role
+      where: { role: ?role, member: ?me }
+    - assert: self               # device-local ground atom (see below)
+      where: { this: ?me }
 ```
 
-Three design choices:
+Rules just filter out messages that aren't for them. What this requires
+instead of rule vocabulary is exactly one ground primitive: **a
+device-local `self` fact to join against** — query evaluation today is
+deliberately site-independent (same branch state → same results
+everywhere), so "who am I" must enter as a fact. The session overlay is
+the right home: overlay facts never replicate and die with the worker,
+and the sync path already stamps self-identity overlays
+(`publish_self_identity`, `router/sync.rs:130`). Role resolution is
+then plain joins over roster/custody facts — which also gets the
+rotation-safety of roles over raw DIDs for free, since the roster is
+what the founder-migration keeps current.
 
-- **Role, not DID.** `executor: host` (or `founder`, `submitter`)
-  resolved against roster facts at fire time. Raw DIDs go stale under
-  key rotation — the founder-row migration exists because of exactly
-  this — while the role indirection survives it.
-- **Enforcement by proof, not discipline.** Soft layer: non-executor
-  peers skip the rule during induction (placement — avoids duplicate
-  work). Hard layer: the head write requires authority the executor can
-  prove (the UCAN chain on the commit), and peers validate provenance
-  on pull, so a rogue peer firing anyway produces commits that fail
-  validation. The executor is thus an extension of the
-  capability-scoped invocation direction (`plan/command-containment.md`):
-  fundamentally, the executor *is* whoever can prove the authority the
-  head needs; the annotation tells everyone else not to try.
-- **Which rules need one** — the taxonomy that bounds the feature:
+Design consequences:
+
+- **Enforcement by proof, unchanged.** The audience filter is
+  placement, not security. The head write requires authority the
+  audience can prove (the UCAN chain on the commit); peers validate
+  provenance on pull, so a peer that ignores the filter produces
+  commits that fail validation. This never depended on where the
+  addressing lived — it extends the capability-scoped invocation
+  direction (`plan/command-containment.md`): the executor *is* whoever
+  can prove the authority the head needs.
+- **Message-less triggers compose through messages.** A placement-
+  needing rule fired by a plain state change ("when X crosses
+  threshold, mint Y") has no message to carry `for:`. The answer is a
+  pivot: a monotone rule — safe to run everywhere — derives *a message
+  addressed to the audience*; the effectful rule triggers on that
+  message. Addressing needs are always expressible by deriving an
+  addressed fact, which is exactly Dedalus's communication move.
+- **The forgettability lint.** Rule metadata made addressing
+  structurally mandatory; a field makes it omittable — an effectful
+  rule without an audience premise silently runs on every peer. Restore
+  the guard as an install-time check in the same slot as the V1 trigger
+  validation: a rule whose head mints a fresh entity (the only
+  nondeterminism a declarative head has) must carry an audience-filter
+  premise reaching the `self` fact.
+- **Which rules need addressing** — the taxonomy that bounds the
+  feature:
   1. *Deterministic, monotone derivations* (head a pure function of the
-     body, assert-only): **no executor**. Every peer may fire; identical
-     conclusions merge idempotently; redundant firing is a no-op. The V1
-     restriction was over-broad for this class — these are safe to
-     replicate and evaluate everywhere.
+     body, assert-only): **no addressing needed**. Every peer may fire;
+     identical conclusions merge idempotently; redundant firing is a
+     no-op. The V1 restriction was over-broad for this class — these are
+     safe to replicate and evaluate everywhere.
   2. *Nondeterministic or effectful heads* (mint an entity id, sign,
-     timestamp, external IO): **executor required**. The divergence risk
-     was never the re-firing — it is two peers deriving *different*
+     timestamp, external IO): **addressing required**. The divergence
+     risk was never the re-firing — it is two peers deriving *different*
      facts from the same inputs.
   3. *Non-monotone rules* (`retract!:` heads, `unless` over replicated
-     state): an executor helps (designate the peer with the
+     state): addressing helps (designate the peer with the
      authoritative view — usually the host), but negation under partial
      replication is hard regardless: absence is indistinguishable from
      not-yet-pulled. Most caution here, independent of placement.
 
-Consumption has a declarative spelling: the executor's rule negates its
-own trigger — an outcome fact plus `unless: outcome` in the body, or a
-`retract!:` of the request — the declarative twin of the imperative
-side's outcome-gated dedup, expressible in the existing rule vocabulary.
+Consumption has a declarative spelling and is separate from the
+audience filter (a failed filter is placement, not consumption): the
+audience's rule negates its own trigger — an outcome fact plus
+`unless: outcome` in the body, or a `retract!:` of the request — the
+declarative twin of the imperative side's outcome-gated dedup,
+expressible in the existing rule vocabulary.
 
-Until executor lands, effects trigger on transient or overlay facts
-only.
+Until the `self` ground atom and the install-time lint land, effects
+trigger on transient or overlay facts only.
 
 ## Rename dissolves into a fact
 
