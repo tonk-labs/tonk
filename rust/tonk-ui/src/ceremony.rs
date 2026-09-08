@@ -42,6 +42,7 @@ pub(crate) fn begin_login_ceremony(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn run_account_ceremony(
     email: &str,
+    display_name: &str,
     narrate: impl Fn(&str),
 ) -> Result<(), crate::custody_relay::CeremonyError> {
     narrate("Waiting for your passkey…");
@@ -51,6 +52,7 @@ pub(crate) async fn run_account_ceremony(
         "createPasskey",
         tonk_worker_api::CustodyIntent::CreateAccount(tonk_worker_api::AccountCreation {
             email: email.to_owned(),
+            display_name: Some(display_name.to_owned()),
             device_name: crate::device_name::current(),
             remote: proposed_remote()?,
             provider,

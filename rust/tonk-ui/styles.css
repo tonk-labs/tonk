@@ -3131,12 +3131,6 @@ tonk-notebook-index {
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
-  /* Email activation continues in the page's existing column. */
-  #tonk-register[data-inline] { position: static; overflow: visible; }
-  #tonk-register[data-inline] .ocol { width: 100%; margin: 7px 0 0; }
-  #tonk-register[data-inline] #tonk-register-head { display: none; }
-
-
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
      read thin and a size too large. */

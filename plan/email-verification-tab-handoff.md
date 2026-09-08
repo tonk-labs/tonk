@@ -1,6 +1,54 @@
 # Email verification tab handoff
 
-Status: implemented and verified locally.
+Status: original-tab setup revision implemented and verified in local Chrome (2026-09-08).
+
+## Original-tab setup revision
+
+Collect the display name in the original signup dialog before creating the
+passkey. Carry it in `AccountCreation` and durably save it in the worker before
+`enroll` sends the email. Verification still uses the existing accept-and-activate
+step; its success page says “account verified” and asks the user to close the tab
+and return to the original tab, with no resumed setup or onward navigation.
+The original dialog observes activation and returns to the signed-in Hub;
+interrupted sharing retains its copy-link action. Focus probes must check
+activation, since a saved name now exists before verification.
+
+Validation: all ten focused Chrome cases passed with retries disabled against
+an immutable snapshot of the freshly rebuilt debug bundle: original-tab signup
+(including empty-name rejection and durable name before email verification),
+signup-to-share, activation on another device, unrelated-account activation,
+returning login, duplicate registration actions, passkey retry, activation
+layout, duplicate activation submission, and two waiting devices completing
+when a third confirms. All six input/caret checks, `cargo fmt --all -- --check`,
+and `git diff --check` passed. Release compilation was stopped after successful
+debug-browser verification; release-mode execution, Safari, and the full E2E
+suite remain unverified.
+
+- Debug bundle snapshot: `/tmp/tonk-initial-name-spike`.
+- Test server: `/tmp/tonk-initial-name-spike-server`.
+- Test archive: `/nix/store/8vqdcbmsb3g23xkz5wzcarcyhx060ibw-tests-e2e-0.6.14/tests-e2e.tar.zst`.
+- Logs: `/tmp/tonk-initial-name-spike.log`, `/tmp/tonk-initial-name-related.log`,
+  `/tmp/tonk-initial-name-two-devices.log`.
+- Runner: `/tmp/tonk-inline-run.sh` with the archive manifest
+  `/tmp/tonk-original-tab-complete-artifacts.json` and the debug test server
+  explicitly supplied. The archive's test bodies match this revision; browser
+  execution uses the snapshot containing the corrected worker name seed.
+
+The historical evidence below covers the superseded activation-tab flow.
+
+The first new two-tab test stopped at the Hub trigger: its archive expected
+“add an account”, while the web snapshot still contained “link an account”.
+Concurrent commit `bad52a165` landed during snapshotting. Rebuilding both
+artifacts from the settled worktree addresses this verification mismatch;
+the failure occurred before signup and does not diagnose the new flow.
+
+The signup-to-share regression then exposed a real ordering constraint:
+`rename_display_name` requires hydrated account state, unavailable before
+activation. Creation now authors the initial `AccountDisplayName` directly on
+profile main for the root this ceremony just created, before enrollment. The
+first activation sweep publishes and converges it; ordinary rename guards stay
+in place. The static activation-page layout check passed.
+
 
 ## Behavior
 

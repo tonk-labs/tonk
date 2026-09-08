@@ -86,7 +86,7 @@ enum ReturnFocus {
 const DIALOG_ID: &str = "tonk-register";
 const COMMITTED_EMAIL_ATTR: &str = "data-register-email";
 /// Which ceremony ran: `signup` created the account, `login` reached an
-/// existing one. Only signup's finish asks for a display name.
+/// existing one. Signup collects a display name before creating the account.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const CEREMONY_KIND_ATTR: &str = "data-register-ceremony";
 const EMAIL_INPUT: &str = "#tonk-register-email";
@@ -142,16 +142,16 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
-    open_with_return(None, None);
+    open_with_return(None);
 }
 
 /// Raise the dialog for a sealed-guest request and invoke `restore` only after
 /// the native modal has closed and its top-page host has been removed.
 pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
-    open_with_return(Some(Box::new(restore)), None);
+    open_with_return(Some(Box::new(restore)));
 }
 
-fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Option<&Element>) {
+fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
     }
@@ -167,14 +167,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Opt
             .map(ReturnFocus::Direct),
     };
     RETURN_FOCUS.with(|held| *held.borrow_mut() = return_focus);
-    let (Some(body), Ok(host)) = (
-        document.body(),
-        document.create_element(if inline_parent.is_some() {
-            "section"
-        } else {
-            "dialog"
-        }),
-    ) else {
+    let (Some(body), Ok(host)) = (document.body(), document.create_element("dialog")) else {
         OPEN.with(|open| open.set(false));
         RETURN_FOCUS.with(|held| *held.borrow_mut() = None);
         return;
@@ -184,12 +177,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Opt
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
-    if let Some(parent) = inline_parent {
-        let _ = host.set_attribute("data-inline", "");
-        let _ = parent.append_child(&host);
-    } else {
-        let _ = body.append_child(&host);
-    }
+    let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     crate::account_observability::record_instant_success(
@@ -210,9 +198,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Opt
     });
     let _ = host.add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
     cancel.forget();
-    if inline_parent.is_none() {
-        contain_tab_focus(&host);
-    }
+    contain_tab_focus(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
     watch_address(&host);
@@ -221,11 +207,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Opt
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     focus_on_row_click(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if inline_parent.is_none() {
-        // Resumed setup already knows the account. Replaying email lookup
-        // answers here could restore a login action over the name step.
-        watch_answers(&host);
-    }
+    watch_answers(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_setup_completion(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1476,6 +1458,37 @@ pub(crate) fn run_signup_ceremony() {
         tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
     );
 
+    let display_name = if existing {
+        String::new()
+    } else {
+        let Some(host) = host_element() else {
+            finish_action();
+            return;
+        };
+        if host.query_selector(NAME_ROW).ok().flatten().is_none() {
+            let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
+            settle_named_row(EMAIL_ROW, "email", &email);
+            ask_for_name(&host);
+            set_action("create a passkey", true);
+            return;
+        }
+        let name = host
+            .query_selector("#tonk-register-name")
+            .ok()
+            .flatten()
+            .and_then(|field| js_sys::Reflect::get(field.as_ref(), &"value".into()).ok())
+            .and_then(|value| value.as_string())
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if name.is_empty() {
+            set_status("Enter a display name to continue.");
+            finish_action();
+            return;
+        }
+        name
+    };
+
     // The address is answered; settle its row so it reads as a record
     // and the step in front of you is the only one taking input.
     if let Some(host) = host_element() {
@@ -1525,7 +1538,7 @@ pub(crate) fn run_signup_ceremony() {
         let outcome = match login {
             Some(Ok(mediation)) => mediation.finish().await,
             Some(Err(error)) => Err(error),
-            None => crate::ceremony::run_account_ceremony(&email, set_status).await,
+            None => crate::ceremony::run_account_ceremony(&email, &display_name, set_status).await,
         };
         match outcome {
             // The account exists and registered, but nobody has opened
@@ -1593,6 +1606,9 @@ pub(crate) fn run_signup_ceremony() {
                 // panel that shows the account only once the dialog is
                 // dismissed is a panel that disagrees with the page.
                 announce_account_change();
+                if !existing {
+                    settle_named_row(NAME_ROW, "display name", &display_name);
+                }
                 // The passkey is the step's record, named by the device
                 // that holds it — "Chrome on macOS" is more use than a
                 // credential id nobody can act on.
@@ -1902,50 +1918,8 @@ fn hide_action() {
     }
 }
 
-/// Resume setup only for the account this browser actually holds. An email
-/// link can also be opened on an unrelated device or with another account selected.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn resume_activated_account(customer: &str, parent: &Element) {
-    if !matches!(crate::api::account_status().await,
-        Ok(tonk_worker_api::AccountStatus::Registered { root_did, .. }) if root_did == customer)
-    {
-        return;
-    }
-    let Ok(summary) = crate::api::account_summary().await else {
-        return;
-    };
-    if summary
-        .display_name
-        .as_deref()
-        .is_some_and(|name| !name.trim().is_empty())
-    {
-        return;
-    }
-    let Some(email) = summary.email else {
-        return;
-    };
-    open_with_return(None, Some(parent));
-    let Some(host) = host_element() else {
-        return;
-    };
-    let _ = host.set_attribute("aria-labelledby", "activate-done-title");
-    let _ = parent.set_attribute("data-finishing-setup", "");
-    let _ = host.set_attribute(CEREMONY_KIND_ATTR, "signup");
-    let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
-    let _ = host.set_attribute(RETURN_PATH, "/");
-    if let Ok(Some(head)) = host.query_selector("#tonk-register-head") {
-        let _ = head.set_attribute("hidden", "");
-    }
-    if let Ok(Some(back)) = host.query_selector(DISMISS) {
-        back.set_text_content(Some("back to Tonk"));
-    }
-    settle_named_row(EMAIL_ROW, "email", &email);
-    hide_action();
-    finish_ceremony();
-}
-
-/// A returning signup tab re-reads the durable name even if it already has
-/// an editable name row. Verification alone does not finish setup.
+/// Returning to the original signup tab probes activation immediately.
+/// The persisted name alone is insufficient: it now predates the email.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn watch_setup_completion(host: &Element) {
     let Some(window) = web_sys::window() else {
@@ -1959,7 +1933,6 @@ fn watch_setup_completion(host: &Element) {
         let host = target.clone();
         if !host.is_connected()
             || host.get_attribute(CEREMONY_KIND_ATTR).as_deref() != Some("signup")
-            || host.has_attribute("data-saving-name")
             || host.has_attribute("data-checking-setup")
             || web_sys::window()
                 .and_then(|window| window.document())
@@ -1969,44 +1942,12 @@ fn watch_setup_completion(host: &Element) {
         {
             return;
         }
-        let Some(email) = host.get_attribute(COMMITTED_EMAIL_ATTR) else {
-            return;
-        };
         let _ = host.set_attribute("data-checking-setup", "");
         wasm_bindgen_futures::spawn_local(async move {
-            let summary = crate::api::account_summary().await;
+            let activated = account_is_activated().await;
             let _ = host.remove_attribute("data-checking-setup");
-            if !host.is_connected() || host.has_attribute("data-saving-name") {
-                return;
-            }
-            let Ok(summary) = summary else {
-                return;
-            };
-            if !summary
-                .email
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(&email))
-            {
-                return;
-            }
-            let Some(name) = summary.display_name.filter(|name| !name.trim().is_empty()) else {
-                return;
-            };
-            if pending_share().is_some() {
-                if host.query_selector(NAME_ROW).ok().flatten().is_some() {
-                    settle_named_row(NAME_ROW, "display name", &name);
-                } else {
-                    add_row(
-                        &host,
-                        NAME_ROW.trim_start_matches('#'),
-                        "display name",
-                        &name,
-                    );
-                }
-                settle_named_row(CONFIRM_ROW, "email", "verified");
-                conclude("Your account is ready.");
-            } else if let Some(window) = web_sys::window() {
-                let _ = window.location().assign("/");
+            if host.is_connected() && activated {
+                finish_ceremony();
             }
         });
     });
@@ -2016,7 +1957,7 @@ fn watch_setup_completion(host: &Element) {
     SETUP_WATCH.with(|held| *held.borrow_mut() = Some(listener));
 }
 
-/// The account is ready: ask for a name, then close out.
+/// The account is activated: return to the Hub or finish the interrupted share.
 ///
 /// Called once activation lands — from the ceremony directly when
 /// signing in (already activated), or from the `EmailStatus`
@@ -2031,11 +1972,11 @@ pub(crate) fn finish_ceremony() {
     let Some(host) = host_element() else {
         return;
     };
-    // Already past this point — a second activation frame must not
-    // unfold a second name row.
-    if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+    // Coalesce activation frames while reading the durable account summary.
+    if host.has_attribute("data-finishing-ceremony") {
         return;
     }
+    let _ = host.set_attribute("data-finishing-ceremony", "");
     let activation_was_pending = host.query_selector(CONFIRM_ROW).ok().flatten().is_some();
     // The row that was awaiting the link is the one that resolves; the
     // address row above it keeps saying which address. Where no
@@ -2059,6 +2000,22 @@ pub(crate) fn finish_ceremony() {
     // registered — either way, asking here would have every device's
     // answer overwrite the last one's.
     let signing_in = host.get_attribute(CEREMONY_KIND_ATTR).as_deref() == Some("login");
+    // A settled signup name is the worker's durable save receipt. No further
+    // name read is needed to complete this tab after activation.
+    if !signing_in
+        && host
+            .query_selector(NAME_ROW)
+            .ok()
+            .flatten()
+            .is_some_and(|row| !row.class_list().contains("editing"))
+    {
+        if pending_share().is_some() {
+            conclude("Your account is ready.");
+        } else if let Some(window) = web_sys::window() {
+            let _ = window.location().assign("/");
+        }
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async move {
         // The summary's display name is the CHOSEN one — the
         // `AccountDisplayName` fact, absent until the registering
@@ -2075,11 +2032,7 @@ pub(crate) fn finish_ceremony() {
         if !host.is_connected() {
             return;
         }
-        // A second frame can race the summary read past the guard above.
-        if host.query_selector(NAME_ROW).ok().flatten().is_some() {
-            return;
-        }
-        if signing_in && pending_share().is_none() {
+        if (signing_in || named.is_some()) && pending_share().is_none() {
             if let Some(window) = web_sys::window() {
                 let _ = window.location().assign("/");
             }
@@ -2087,12 +2040,16 @@ pub(crate) fn finish_ceremony() {
         }
         match named {
             Some(name) => {
-                add_row(
-                    &host,
-                    NAME_ROW.trim_start_matches('#'),
-                    "display name",
-                    &name,
-                );
+                if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+                    settle_named_row(NAME_ROW, "display name", &name);
+                } else {
+                    add_row(
+                        &host,
+                        NAME_ROW.trim_start_matches('#'),
+                        "display name",
+                        &name,
+                    );
+                }
                 conclude("Your account is ready.");
             }
             None if signing_in => conclude("You're signed in."),
@@ -2414,10 +2371,8 @@ pub fn is_open() -> bool {
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
         .is_some_and(|host| {
-            host.has_attribute("data-inline")
-                || host
-                    .dyn_ref::<HtmlDialogElement>()
-                    .is_some_and(|dialog| dialog.open())
+            host.dyn_ref::<HtmlDialogElement>()
+                .is_some_and(|dialog| dialog.open())
         })
 }
 

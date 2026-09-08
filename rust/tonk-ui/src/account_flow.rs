@@ -935,6 +935,7 @@ mod tests {
             .json()
             .clone();
         click_register_action(driver).await?;
+        type_into_settled_row(driver, "display name", "Tab Owner").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         loop {
             // Creating an account under an already-account-bound local
@@ -1050,88 +1051,87 @@ mod tests {
         Ok(())
     }
 
-    #[dialog_common::test]
-    async fn it_finishes_signup_in_the_activation_tab(env: TestEnvironment) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        let email = "activation-tab@example.com";
-        enroll_only(&driver, &env, email).await?;
-        let original = driver.window().await?;
-        let activation = driver.new_tab().await?;
-        driver.switch_to_window(activation.clone()).await?;
-        goto(&driver, &activation_link(&env, email).await?).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
-        wait_for_displayed(&driver, "#activate-done").await?;
-        element(&driver, "#tonk-register-name").await?;
-        let presentation = driver
-            .execute(
-                r#"const setup = document.querySelector('#tonk-register');
-                   return {
-                     inline: !!setup?.closest('#activate-done'),
-                     modal: !!document.querySelector(':modal'),
-                     position: setup && getComputedStyle(setup).position
-                   };"#,
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(presentation.json()["inline"], true);
-        assert_eq!(presentation.json()["modal"], false);
-        assert_eq!(presentation.json()["position"], "static");
-        driver
-            .execute(
-                r#"const original = window.fetch;
-                   window.fetch = (...args) => {
-                     if (String(args[0]?.url || args[0]).endsWith('/api/account/display-name')) {
-                       window.fetch = original;
-                       const response = new Response(JSON.stringify({error: {kind: 'Internal'}}), {
-                         status: 503, headers: {'content-type': 'application/json'}
-                       });
-                       // reqwest reads Response.url, which a synthetic response leaves empty.
-                       Object.defineProperty(response, 'url', {value: String(args[0]?.url || args[0])});
-                       return Promise.resolve(response);
-                     }
-                     return original(...args);
-                   };"#,
-                Vec::new(),
-            )
-            .await?;
-        await_register_action(&driver, "save display name").await?;
-        let narrator_hidden = driver
-            .execute(
-                "return document.querySelector('#tonk-register-status').parentElement.hidden",
-                Vec::new(),
-            )
-            .await?;
-        assert_eq!(narrator_hidden.json(), &serde_json::json!(true));
-        element(&driver, "#tonk-register-name")
-            .await?
-            .send_keys("Unsaved")
-            .await?;
-        click_register_action(&driver).await?;
-        await_narrator_containing(&driver, "couldn't save").await?;
-        let summary = get_json(&driver, "/api/account/summary").await?;
-        assert!(successful_body("unsaved account summary", &summary)["displayName"].is_null());
-        driver.switch_to_window(original.clone()).await?;
-        element(&driver, "#tonk-register").await?;
-        driver.switch_to_window(activation).await?;
-        type_into_settled_row(&driver, "display name", "Tab Owner").await?;
-        await_narrator_containing(&driver, "Your account is ready").await?;
-        dismiss_register_dialog(&driver).await?;
-        assert_eq!(driver.current_url().await?.path(), "/");
-
-        driver.switch_to_window(original).await?;
+    async fn await_signup_hub(driver: &WebDriver) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             if driver.current_url().await?.path() == "/"
                 && driver.find_all(By::Css("#tonk-register")).await?.is_empty()
             {
-                break;
+                return Ok(());
             }
-            assert!(
+            anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
                 "original tab did not finish signup"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    #[dialog_common::test]
+    async fn it_finishes_signup_in_the_original_tab(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "activation-tab@example.com";
+        wait_for_service_worker(&driver).await?;
+        raise_cluster_from_hub(&driver, &env).await?;
+        type_into_register_dialog(&driver, email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+        click_register_action(&driver).await?;
+        element(&driver, "#tonk-register-name").await?;
+        // An empty name cannot create the account or send its email.
+        click_register_action(&driver).await?;
+        await_narrator_containing(&driver, "Enter a display name").await?;
+        let inbox: Vec<(String, String)> = reqwest::get(env.access_service.join("_test/emails")?)
+            .await?
+            .json()
+            .await?;
+        assert!(
+            !inbox.iter().any(|(to, _)| to == email),
+            "an empty name must not send verification email"
+        );
+        type_into_settled_row(&driver, "display name", "Tab Owner").await?;
+        await_narrator_containing(&driver, "confirmation link").await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("pending account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
+        // Returning before verification must keep the ceremony waiting.
+        driver
+            .execute("window.dispatchEvent(new Event('focus'))", Vec::new())
+            .await?;
+        await_row_value(&driver, "email", "awaiting confirmation").await?;
+        let original = driver.window().await?;
+        let activation = driver.new_tab().await?;
+        driver.switch_to_window(activation).await?;
+        goto(&driver, &activation_link(&env, email).await?).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        wait_for_displayed(&driver, "#activate-done").await?;
+        assert!(driver.find_all(By::Css("#tonk-register")).await?.is_empty());
+        assert_eq!(
+            element(&driver, "#activate-done-title")
+                .await?
+                .text()
+                .await?,
+            "account verified"
+        );
+        assert!(
+            element(&driver, "#activate-done")
+                .await?
+                .text()
+                .await?
+                .contains("You may close this tab")
+        );
+        assert!(
+            driver
+                .find_all(By::Css(
+                    "#activate-done a, #activate-done button, #activate-done input"
+                ))
+                .await?
+                .is_empty()
+        );
+        driver.close_window().await?;
+        driver.switch_to_window(original).await?;
+        await_signup_hub(&driver).await?;
         let summary = get_json(&driver, "/api/account/summary").await?;
         assert_eq!(
             successful_body("account summary", &summary)["displayName"],
@@ -1160,7 +1160,7 @@ mod tests {
         let summary = get_json(&other, "/api/account/summary").await?;
         let summary = successful_body("other account summary", &summary);
         assert_eq!(summary["email"], "other-account@example.com");
-        assert!(summary["displayName"].is_null());
+        assert_eq!(summary["displayName"], "Tab Owner");
         owner.quit().await?;
         other.quit().await?;
         Ok(())
@@ -1242,7 +1242,7 @@ mod tests {
         // The waiting row resolves from the sweep alone — inside the
         // helper's one-minute patience, where the ceremony's own nudge
         // cadence is seconds.
-        await_row_value(&driver, "email", "verified").await?;
+        await_signup_hub(&driver).await?;
         driver.quit().await?;
         Ok(())
     }
@@ -1282,12 +1282,11 @@ mod tests {
         activate_over_http(&env, email).await?;
 
         // Device A's ceremony resolves from its own sweep.
-        await_row_value(&device_a, "email", "verified").await?;
+        await_signup_hub(&device_a).await?;
         // Device B's parked login finishes silently: verified, with the
         // passkey row the completed sign-in shows — and nothing asked
         // for a second assertion.
-        await_row_value(&device_b, "email", "verified").await?;
-        await_settled_row(&device_b, "passkey").await?;
+        await_signup_hub(&device_b).await?;
 
         device_a.quit().await?;
         device_b.quit().await?;
@@ -1706,18 +1705,16 @@ mod tests {
             .execute(
                 r#"document.querySelector('#activate-confirm').hidden = true;
                     document.querySelector('#activate-done').hidden = false;
-                    const action = document.querySelector('#activate-done .account__run').getBoundingClientRect();
+                    const actions = document.querySelectorAll('#activate-done a, #activate-done button');
                     return {
                       heading: document.querySelector('#activate-done-title').textContent.trim(),
-                      actionWidth: Math.round(action.width),
-                      actionHeight: Math.round(action.height)
+                      actions: actions.length
                     };"#,
                 Vec::new(),
             )
             .await?;
-        assert_eq!(done.json()["heading"], "account activated");
-        assert_eq!(done.json()["actionWidth"], 576);
-        assert_eq!(done.json()["actionHeight"], 36);
+        assert_eq!(done.json()["heading"], "account verified");
+        assert_eq!(done.json()["actions"], 0);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver
@@ -1963,12 +1960,18 @@ mod tests {
         type_into_register_dialog(&driver, "one-action@example.com").await?;
         await_register_action(&driver, "create a passkey").await?;
 
+        click_register_action(&driver).await?;
+        element(&driver, "#tonk-register-name")
+            .await?
+            .send_keys("One Action")
+            .await?;
+
         driver
             .execute(
                 r#"const action = document.querySelector('#tonk-register-action');
-                   const email = document.querySelector('#tonk-register-email');
+                   const name = document.querySelector('#tonk-register-name');
                    action.click();
-                   email.dispatchEvent(new KeyboardEvent('keydown', {
+                   name.dispatchEvent(new KeyboardEvent('keydown', {
                      key: 'Enter', bubbles: true, cancelable: true
                    }));"#,
                 Vec::new(),
@@ -2014,6 +2017,7 @@ mod tests {
         type_into_register_dialog(&driver, email).await?;
         await_register_action(&driver, "create a passkey").await?;
         click(&driver, "#tonk-register-action").await?;
+        type_into_settled_row(&driver, "display name", "Retry Name").await?;
         await_register_action(&driver, "create a passkey").await?;
 
         let first = driver
@@ -2801,6 +2805,7 @@ mod tests {
         // listened for that request the dialog still reported success,
         // so the credential count is what tells the difference.
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Nobody").await?;
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
@@ -2818,7 +2823,7 @@ mod tests {
         // as verified, the name commits, and the closing action is the
         // thing the share was for.
         await_row_value(&driver, "email", "verified").await?;
-        type_into_settled_row(&driver, "display name", "Nobody").await?;
+        assert_eq!(await_settled_row(&driver, "display name").await?, "Nobody");
         await_register_action(&driver, "copy share link").await?;
         click_register_action(&driver).await?;
 
@@ -3045,6 +3050,7 @@ mod tests {
         // 11–12. Running it waits on the platform, and says so.
         let before = credential_count(&driver, &authenticator).await?;
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Alice").await?;
         await_register_action(&driver, "waiting for your device").await?;
 
         // 12–13. The ceremony settles into a record naming the device.
@@ -3073,7 +3079,6 @@ mod tests {
             await_row_value(&driver, "email", "verified").await?;
 
             // 19. Then the name, typed and committed.
-            type_into_settled_row(&driver, "display name", "Alice").await?;
             assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
 
             // 20–22. The closing action is the thing the share was for.
@@ -3186,6 +3191,7 @@ mod tests {
         type_into_register_dialog(&driver, "hub-one-step@example.com").await?;
         await_register_action(&driver, "create a passkey").await?;
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Hub Owner").await?;
         await_settled_row(&driver, "passkey").await?;
         await_narrator_containing(&driver, "confirmation link").await?;
 
