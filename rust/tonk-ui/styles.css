@@ -3497,18 +3497,25 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
 .stack { width:100%; margin-top:7px; display:flex;
   flex-direction:column; gap:7px; }
 .stack[hidden] { display:none; }
-/* The account cell while its link runs: a skeleton standing in for the
-   name that has not arrived, pulsing in place. The wireframes' rule —
-   waiting blinks, and never takes a color — so this is the page's own
-   ink at low alpha, not a tint. A name is a fact; until one arrives the
-   cell shows the SHAPE of one rather than a guess (the profile petname)
-   or a word about the machinery ("linking account"). */
-ui-hub-account[data-account-linking] [data-account-label] {
-  /* The label's own text is replaced by the skeleton, so nothing has to
-     be hidden: the element carries no text while the marker is up. */
-  display:inline-block; width:88px; height:1em; border-radius:2px;
-  background:currentColor; opacity:0.14; vertical-align:-0.15em;
-  animation:tonk-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+/* The account cell while its name is still replicating: a <wa-skeleton>
+   standing in for the name that has not arrived. A name is a fact; until
+   one arrives the cell shows the SHAPE of one rather than a guess (the
+   profile handle) or a word about the machinery.
+
+   `--color` is overridden so the bar is the page's own ink at low alpha
+   rather than the neutral fill: the wireframes' rule is that waiting
+   never takes a color. The sheen carries the motion, so nothing here
+   animates by hand. */
+ui-hub-account [data-account-skeleton] {
+  /* BOTH stops, explicitly. The component derives `--sheen-color` by
+     mixing `--color` with `--wa-color-surface-raised`; a translucent
+     `--color` makes that mix collapse toward the same value and the
+     sheen becomes invisible. Two opaque-enough inks keep the travelling
+     highlight readable while staying achromatic. */
+  --color: color-mix(in srgb, currentColor 12%, transparent);
+  --sheen-color: color-mix(in srgb, currentColor 26%, transparent);
+  width:88px; height:0.7em; min-height:0; align-self:center;
+  flex:0 0 auto; }
 /* the wrapper, not the link, is the positioning context: the verbs
    and the confirm cluster sit OUTSIDE the anchor (a control inside
    one is invalid markup, and a label inside one navigates instead of

@@ -30,7 +30,6 @@ const REGISTERED_TAG: &str = "ui-hub-account:registered";
 const LINKING_TAG: &str = "ui-hub-account:linking";
 
 /// Marks the cell as holding a skeleton where the account's name will go.
-/// The stylesheet keys the pulsing bar off it.
 const WAITING_ATTR: &str = "data-account-linking";
 
 /// Sent into the sealed guest when its top-page account ceremony is gone.
@@ -48,6 +47,9 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 /// name goes up with it so the trigger is not an unlabelled button while
 /// the bar stands in for the name.
 fn set_waiting(this: &HtmlElement, waiting: bool) {
+    // The <wa-skeleton> carries the wait; the marker remains so the
+    // stylesheet (and tests) can key off the cell's state.
+    set_hidden(this, "[data-account-skeleton]", !waiting);
     if waiting {
         let _ = this.set_attribute(WAITING_ATTR, "");
         set_label(this, "[data-account-trigger]", Some("account is loading"));

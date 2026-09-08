@@ -8,6 +8,10 @@
     aria-controls="hub-account-menu"
   >
     <span data-account-label>account</span>
+    <!-- Stands in for the name while the account replicates one. Hidden
+         unless the cell is waiting; `data-account-label` empties itself
+         then, so the two never show at once. -->
+    <wa-skeleton effect="sheen" data-account-skeleton hidden></wa-skeleton>
   </button>
   <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
     spaces
