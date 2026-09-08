@@ -420,7 +420,7 @@ impl Command for ForgetInvite {
     type Output = ();
 }
 
-/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
+/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {
     type Input = Self;
