@@ -1,0 +1,2890 @@
+{
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+  "warm": [
+    {
+      "kind": "space",
+      "ms": 12.800000011920929,
+      "status": 200,
+      "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+      "phases": "state-lock;dur=0,admission;dur=6,requested-query;dur=3",
+      "counts": "2,2,2"
+    },
+    {
+      "kind": "space",
+      "ms": 1.199999988079071,
+      "status": 200,
+      "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+      "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+      "counts": "2,2,2"
+    },
+    {
+      "kind": "space",
+      "ms": 1,
+      "status": 200,
+      "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+      "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+      "counts": "2,2,2"
+    },
+    {
+      "kind": "space",
+      "ms": 0.8999999761581421,
+      "status": 200,
+      "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+      "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+      "counts": "2,2,2"
+    }
+  ],
+  "runs": [
+    [
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 419.7000000476837,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=2",
+            "counts": "0,0,0",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 18.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=16,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 1,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 1.0999999642372131,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 1,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 1,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 2,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 1.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 2,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.9000000357627869,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 3,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 3,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 4,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.8999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 4,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 4,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.7000000476837158,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 0.8999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 4,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.8999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 1,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.8999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 8,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 1.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.4000000357627869,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 8,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.8999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.9000000357627869,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 1.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 2,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 2.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 16,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 1.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 4.400000035762787,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.400000035762787,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 5.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 16,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 1.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 1.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 2.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 2.399999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 2.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.900000035762787,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.799999952316284,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      }
+    ],
+    [
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 1.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.7000000476837158,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=1,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 1,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 1,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 2,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.5999999642372131,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 2,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 3,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 3,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 1,
+        "round": 4,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.6000000238418579,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 1,
+        "round": 4,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.3999999761581421,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 4,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.6000000238418579,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 0.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 0.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 0.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 4,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 0.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.800000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.7999999523162842,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 0.7999999523162842,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 8,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 0.9000000357627869,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.2999999523162842,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.4000000357627869,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 1.5,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 8,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 3.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 3.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.699999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 5.600000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "profile",
+        "width": 16,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "profile",
+            "ms": 9.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=1,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11.100000023841858,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 10.900000035762787,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 11,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 10.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "profile",
+            "ms": 10.899999976158142,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      },
+      {
+        "kind": "space",
+        "width": 16,
+        "round": 0,
+        "samples": [
+          {
+            "kind": "space",
+            "ms": 3.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.200000047683716,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.200000047683716,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.300000011920929,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.299999952316284,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.199999988079071,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4.099999964237213,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          },
+          {
+            "kind": "space",
+            "ms": 4,
+            "status": 200,
+            "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+            "counts": "1,1,1",
+            "bytes": 97
+          }
+        ]
+      }
+    ]
+  ],
+  "fixture": {
+    "origin": "http://127.0.0.1:4187",
+    "worker_wasm_sha256": "1b3ac2694eee4166e2e851751d4fd145f8780ac847b7d7e19664bc0e7ecdb873",
+    "base_git_revision": "d4a7ad5eace82c89568eeb90855d246981bc652d",
+    "build": "local dev cdylib with temporary phase headers and scoped counters",
+    "http_cache": "browser default; unchanged",
+    "remote": "loopback UCAN stub; no remote content served",
+    "source_probes_removed": true
+  },
+  "empty_query_control": {
+    "beforeCounts": "1,1,1",
+    "samples": [
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 17.5,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.30000001192093,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.100000023841858,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=12",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.19999998807907,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.30000001192093,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.400000035762787,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.399999976158142,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.399999976158142,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.30000001192093,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.19999998807907,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.19999998807907,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20.099999964237213,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=14",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20,
+        "phases": "state-lock;dur=0,admission;dur=1,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 20,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 19.899999976158142,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=13",
+        "counts": "1,1,1"
+      },
+      {
+        "status": 200,
+        "body": "[]",
+        "ms": 19.899999976158142,
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=12",
+        "counts": "1,1,1"
+      }
+    ]
+  },
+  "final_build": {
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+    "warm": [
+      {
+        "kind": "space",
+        "ms": 195.39999997615814,
+        "status": 200,
+        "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+        "phases": "state-lock;dur=0,admission;dur=9,requested-query;dur=1",
+        "counts": "1,1,1"
+      },
+      {
+        "kind": "space",
+        "ms": 1,
+        "status": 200,
+        "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+        "counts": "1,1,1"
+      },
+      {
+        "kind": "space",
+        "ms": 1,
+        "status": 200,
+        "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+        "counts": "1,1,1"
+      },
+      {
+        "kind": "space",
+        "ms": 1.4000000357627869,
+        "status": 200,
+        "body": "[{\"this\":\"0xff\",\"fields\":{\"parts\":[{\"hex\":\"0xff\",\"kind\":\"opaque\",\"text\":\"ff\"}],\"tag\":\"unknown\"}}]",
+        "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+        "counts": "1,1,1"
+      }
+    ],
+    "runs": [
+      [
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 1.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 1,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.6000000238418579,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 1,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.6000000238418579,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 2,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.6000000238418579,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 2,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.5999999642372131,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 3,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.40000003576278687,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 3,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.40000003576278687,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 4,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 4,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.5999999642372131,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 4,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 0.9000000357627869,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 0.8999999761581421,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 4,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 1.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.2000000476837158,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 8,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.7000000476837158,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 8,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.8999999761581421,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 0.8999999761581421,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.5999999642372131,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 16,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 1.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.2999999523162842,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.9000000357627869,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.9000000357627869,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 16,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 1.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 1.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.8999999761581421,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 1,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 2.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 1,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.6000000238418579,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 2,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.6000000238418579,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 2,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 3,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 3,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 1,
+          "round": 4,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 1.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 1,
+          "round": 4,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 4,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1.9000000357627869,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 4,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 0.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 0.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 8,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 0.7999999523162842,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 1,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=1",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 5.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 5.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 5.100000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 8,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 3.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 4,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "profile",
+          "width": 16,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "profile",
+              "ms": 2,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 2.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.799999952316284,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.899999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.800000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.899999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.899999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 4,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 4,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.899999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.899999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.799999952316284,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.699999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "profile",
+              "ms": 3.599999964237213,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        },
+        {
+          "kind": "space",
+          "width": 16,
+          "round": 0,
+          "samples": [
+            {
+              "kind": "space",
+              "ms": 1.2000000476837158,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 1.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 2.399999976158142,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.199999988079071,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.600000023841858,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.5,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.400000035762787,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.400000035762787,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            },
+            {
+              "kind": "space",
+              "ms": 3.300000011920929,
+              "status": 200,
+              "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=0",
+              "counts": "1,1,1",
+              "bytes": 97
+            }
+          ]
+        }
+      ]
+    ],
+    "worker_wasm_sha256": "e350d990ae655cb4743316770071cee2cfa07a21af3dbf853cbfcc8c119182cd",
+    "empty_query_control": {
+      "beforeCounts": "1,1,1",
+      "samples": [
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 12.900000035762787,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=9",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.300000011920929,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=7",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.199999988079071,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=7",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.099999964237213,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.199999988079071,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.100000023841858,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=7",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.200000047683716,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=7",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.200000047683716,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13.100000023841858,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 13,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 12.900000035762787,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 12.900000035762787,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 12.800000011920929,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=8",
+          "counts": "1,1,1"
+        },
+        {
+          "status": 200,
+          "body": "[]",
+          "ms": 12.800000011920929,
+          "phases": "state-lock;dur=0,admission;dur=0,requested-query;dur=9",
+          "counts": "1,1,1"
+        }
+      ]
+    }
+  }
+}
