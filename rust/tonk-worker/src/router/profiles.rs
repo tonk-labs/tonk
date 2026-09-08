@@ -127,7 +127,9 @@ async fn inspected_entry(
         root_did,
         provider,
         email: None,
-        display_name: super::profile_name::stored_display_name_from(profile, operator).await,
+        // The ACCOUNT's name, like the active row — read from this
+        // profile's own repository, since each names its own account.
+        display_name: super::account_devices::account_display_name_for(profile, operator).await,
     }
 }
 

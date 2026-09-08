@@ -216,6 +216,46 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     Ok(summary)
 }
 
+/// The account name for an explicit profile, read without booting it.
+///
+/// The switcher lists other profiles on this device; each names its own
+/// account, so the lookup has to run against that profile's repository
+/// rather than the active one's.
+pub(crate) async fn account_display_name_for(
+    profile: &dialog_operator::Profile,
+    operator: &crate::worker::DefaultOperator,
+) -> Option<String> {
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_repository::Repository;
+    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+
+    let account = super::identity::historical_root_did(profile, operator)
+        .await
+        .ok()
+        .flatten()?;
+    let branch = Repository::from(profile)
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .ok()?;
+    let names: Vec<AccountDisplayName> = branch
+        .query()
+        .select(Query::<AccountDisplayName> {
+            this: Term::from(account.this()),
+            name: Term::var("name"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names
+        .into_iter()
+        .next()
+        .map(|row| row.name.0)
+        .filter(|name| !name.trim().is_empty())
+}
+
 /// The chosen account display name, straight from the fact — `None` when
 /// nobody has named the account yet.
 ///
