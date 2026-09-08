@@ -49,8 +49,47 @@ const LABEL_ATTRIBUTE: &str = "label";
 /// conclusion the clone was rendered from.
 const ROW_ATTRIBUTE: &str = "with";
 
+/// The attribute a container declares to make arrow keys traverse its
+/// focusables (`nav=vertical` / `nav=horizontal`).
+const NAV_ATTRIBUTE: &str = "nav";
+
 /// The `data-` prefix a browser strips to reach `dataset`.
 const DATASET_PREFIX: &str = "data-";
+
+/// Which axis a container's arrow keys traverse.
+///
+/// Tab always walks the whole document; arrows are container-scoped, so
+/// a list and a toolbar on the same screen each get the arrows that suit
+/// them without either stealing the other's (§5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// `Up` / `Down`.
+    Vertical,
+    /// `Left` / `Right`.
+    Horizontal,
+}
+
+impl Axis {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "vertical" | "y" | "column" => Some(Self::Vertical),
+            "horizontal" | "x" | "row" => Some(Self::Horizontal),
+            _ => None,
+        }
+    }
+}
+
+/// The container an arrow key traverses within: its axis and its path,
+/// which is the identity two focusables compare to decide whether they
+/// are siblings for traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nav {
+    /// Which arrows move within it.
+    pub axis: Axis,
+    /// The declaring container's path, so two focusables under the same
+    /// container compare equal.
+    pub scope: Vec<usize>,
+}
 
 /// One `on:<name>=<command>` binding carried by a focusable element.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +117,8 @@ pub struct Focusable {
     pub bindings: Vec<Bound>,
     /// Whether the element is inside a `<form>` subtree — or is one.
     pub in_form: bool,
+    /// The nearest enclosing container declaring `nav=`, if any.
+    pub nav: Option<Nav>,
     /// What a keybar chip would say: the `label=` attribute, else the
     /// element's own text.
     pub label: String,
@@ -128,15 +169,25 @@ impl Focusable {
 pub fn collect(nodes: &[Node], events: &BTreeMap<String, EventDescriptor>) -> Vec<Focusable> {
     let mut out = Vec::new();
     let mut path = Vec::new();
-    walk(nodes, events, None, false, &mut path, &mut out);
+    walk(nodes, events, Context::default(), &mut path, &mut out);
     out
 }
 
-fn walk(
-    nodes: &[Node],
-    events: &BTreeMap<String, EventDescriptor>,
-    subject: Option<&str>,
+/// What an element inherits from its ancestors.
+#[derive(Debug, Clone, Default)]
+struct Context<'a> {
+    /// The conclusion behind the nearest enclosing repeat clone.
+    subject: Option<&'a str>,
+    /// Whether a `<form>` encloses it.
     in_form: bool,
+    /// The nearest enclosing `nav=` container.
+    nav: Option<Nav>,
+}
+
+fn walk<'a>(
+    nodes: &'a [Node],
+    events: &BTreeMap<String, EventDescriptor>,
+    context: Context<'a>,
     path: &mut Vec<usize>,
     out: &mut Vec<Focusable>,
 ) {
@@ -145,12 +196,21 @@ fn walk(
             continue;
         };
         path.push(index);
-        let subject = row_subject(element).or(subject);
-        let in_form = in_form || element.tag == "form";
-        if let Some(focusable) = describe(element, events, subject, in_form, path) {
+        let mut inner = Context {
+            subject: row_subject(element).or(context.subject),
+            in_form: context.in_form || element.tag == "form",
+            nav: context.nav.clone(),
+        };
+        if let Some(axis) = attribute(element, NAV_ATTRIBUTE).and_then(Axis::parse) {
+            inner.nav = Some(Nav {
+                axis,
+                scope: path.clone(),
+            });
+        }
+        if let Some(focusable) = describe(element, events, &inner, path) {
             out.push(focusable);
         }
-        walk(&element.children, events, subject, in_form, path, out);
+        walk(&element.children, events, inner, path, out);
         path.pop();
     }
 }
@@ -158,18 +218,21 @@ fn walk(
 /// The conclusion stamp `tonk_render` puts on a repeat clone, if this is
 /// one.
 fn row_subject(element: &Element) -> Option<&str> {
+    attribute(element, ROW_ATTRIBUTE)
+}
+
+fn attribute<'a>(element: &'a Element, wanted: &str) -> Option<&'a str> {
     element
         .attrs
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(ROW_ATTRIBUTE))
+        .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
         .map(|(_, value)| value.as_str())
 }
 
 fn describe(
     element: &Element,
     events: &BTreeMap<String, EventDescriptor>,
-    subject: Option<&str>,
-    in_form: bool,
+    context: &Context<'_>,
     path: &[usize],
 ) -> Option<Focusable> {
     let mut bindings = Vec::new();
@@ -208,10 +271,11 @@ fn describe(
 
     Some(Focusable {
         path: path.to_vec(),
-        subject: subject.map(str::to_owned),
+        subject: context.subject.map(str::to_owned),
         attributes,
         bindings,
-        in_form,
+        in_form: context.in_form,
+        nav: context.nav.clone(),
         label,
         key,
     })

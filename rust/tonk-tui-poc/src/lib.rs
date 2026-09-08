@@ -25,5 +25,6 @@ pub mod focus;
 pub mod notation;
 pub mod paint;
 pub mod pipeline;
+pub mod session;
 pub mod theme;
 pub mod vocabulary;
