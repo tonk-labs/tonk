@@ -1061,6 +1061,21 @@ mod tests {
         goto(&driver, &activation_link(&env, email).await?).await?;
         element(&driver, "#activate-accept").await?.click().await?;
         wait_for_displayed(&driver, "#activate-done").await?;
+        element(&driver, "#tonk-register-name").await?;
+        let presentation = driver
+            .execute(
+                r#"const setup = document.querySelector('#tonk-register');
+                   return {
+                     inline: !!setup?.closest('#activate-done'),
+                     modal: !!document.querySelector(':modal'),
+                     position: setup && getComputedStyle(setup).position
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(presentation.json()["inline"], true);
+        assert_eq!(presentation.json()["modal"], false);
+        assert_eq!(presentation.json()["position"], "static");
         driver
             .execute(
                 r#"const original = window.fetch;
@@ -1079,7 +1094,19 @@ mod tests {
                 Vec::new(),
             )
             .await?;
-        type_into_settled_row(&driver, "display name", "Unsaved").await?;
+        await_register_action(&driver, "save display name").await?;
+        let narrator_hidden = driver
+            .execute(
+                "return document.querySelector('#tonk-register-status').parentElement.hidden",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(narrator_hidden.json(), &serde_json::json!(true));
+        element(&driver, "#tonk-register-name")
+            .await?
+            .send_keys("Unsaved")
+            .await?;
+        click_register_action(&driver).await?;
         await_narrator_containing(&driver, "couldn't save").await?;
         let summary = get_json(&driver, "/api/account/summary").await?;
         assert!(successful_body("unsaved account summary", &summary)["displayName"].is_null());
@@ -1679,18 +1706,17 @@ mod tests {
             .execute(
                 r#"document.querySelector('#activate-confirm').hidden = true;
                     document.querySelector('#activate-done').hidden = false;
-                    const row = document.querySelector('#activate-done .account__row').getBoundingClientRect();
                     const action = document.querySelector('#activate-done .account__run').getBoundingClientRect();
                     return {
                       heading: document.querySelector('#activate-done-title').textContent.trim(),
-                      rowWidth: Math.round(row.width),
+                      actionWidth: Math.round(action.width),
                       actionHeight: Math.round(action.height)
                     };"#,
                 Vec::new(),
             )
             .await?;
         assert_eq!(done.json()["heading"], "account activated");
-        assert_eq!(done.json()["rowWidth"], 576);
+        assert_eq!(done.json()["actionWidth"], 576);
         assert_eq!(done.json()["actionHeight"], 36);
 
         driver.set_window_rect(0, 0, 390, 844).await?;

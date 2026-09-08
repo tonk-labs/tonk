@@ -53,6 +53,11 @@
     box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
 }
 
+/* Inline ceremony editors use the native caret as their focus indicator. */
+tonk-activate #tonk-register[data-inline] .ed:focus-visible {
+    box-shadow: none;
+}
+
 .account {
     width: min(576px, calc(100vw - 32px));
 }
@@ -901,4 +906,11 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
         animation: none;
     }
+}
+
+/* The resumed ceremony supplies the next action, narrator, and way back. */
+#activate-done[data-finishing-setup] > .account__stack > .account__run,
+#activate-done[data-finishing-setup] > .account__narrator,
+.account__ceremony:has(#activate-done[data-finishing-setup]) > .account__ghost {
+    display: none;
 }

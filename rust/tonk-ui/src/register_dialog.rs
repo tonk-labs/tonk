@@ -142,16 +142,16 @@ const DIALOG_HTML: &str = r##"
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
-    open_with_return(None);
+    open_with_return(None, None);
 }
 
 /// Raise the dialog for a sealed-guest request and invoke `restore` only after
 /// the native modal has closed and its top-page host has been removed.
 pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
-    open_with_return(Some(Box::new(restore)));
+    open_with_return(Some(Box::new(restore)), None);
 }
 
-fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
+fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>, inline_parent: Option<&Element>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
     }
@@ -167,7 +167,14 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
             .map(ReturnFocus::Direct),
     };
     RETURN_FOCUS.with(|held| *held.borrow_mut() = return_focus);
-    let (Some(body), Ok(host)) = (document.body(), document.create_element("dialog")) else {
+    let (Some(body), Ok(host)) = (
+        document.body(),
+        document.create_element(if inline_parent.is_some() {
+            "section"
+        } else {
+            "dialog"
+        }),
+    ) else {
         OPEN.with(|open| open.set(false));
         RETURN_FOCUS.with(|held| *held.borrow_mut() = None);
         return;
@@ -177,7 +184,12 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
-    let _ = body.append_child(&host);
+    if let Some(parent) = inline_parent {
+        let _ = host.set_attribute("data-inline", "");
+        let _ = parent.append_child(&host);
+    } else {
+        let _ = body.append_child(&host);
+    }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     crate::account_observability::record_instant_success(
@@ -198,7 +210,9 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     });
     let _ = host.add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
     cancel.forget();
-    contain_tab_focus(&host);
+    if inline_parent.is_none() {
+        contain_tab_focus(&host);
+    }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
     watch_address(&host);
@@ -207,7 +221,11 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     focus_on_row_click(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    watch_answers(&host);
+    if inline_parent.is_none() {
+        // Resumed setup already knows the account. Replaying email lookup
+        // answers here could restore a login action over the name step.
+        watch_answers(&host);
+    }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_setup_completion(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1247,6 +1265,7 @@ fn submit() {
         .map(|action| action.text_content().unwrap_or_default())
         .unwrap_or_default();
     match label.trim() {
+        SAVE_NAME => save_name(),
         COPY_LINK => copy_the_share_link(),
         RETURN_TO_SPACE | RETURN_TO_HUB => return_to_previous(),
         "" => finish_action(),
@@ -1257,6 +1276,9 @@ fn submit() {
 /// Mint the invite and copy it: the close, once an account exists.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const COPY_LINK: &str = "copy share link";
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SAVE_NAME: &str = "save display name";
 
 /// And the step after it. The ceremony ends where it interrupted
 /// something, so it offers the way back rather than leaving the person
@@ -1883,7 +1905,7 @@ fn hide_action() {
 /// Resume setup only for the account this browser actually holds. An email
 /// link can also be opened on an unrelated device or with another account selected.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn resume_activated_account(customer: &str) {
+pub(crate) async fn resume_activated_account(customer: &str, parent: &Element) {
     if !matches!(crate::api::account_status().await,
         Ok(tonk_worker_api::AccountStatus::Registered { root_did, .. }) if root_did == customer)
     {
@@ -1902,15 +1924,17 @@ pub(crate) async fn resume_activated_account(customer: &str) {
     let Some(email) = summary.email else {
         return;
     };
-    open();
+    open_with_return(None, Some(parent));
     let Some(host) = host_element() else {
         return;
     };
+    let _ = host.set_attribute("aria-labelledby", "activate-done-title");
+    let _ = parent.set_attribute("data-finishing-setup", "");
     let _ = host.set_attribute(CEREMONY_KIND_ATTR, "signup");
     let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
     let _ = host.set_attribute(RETURN_PATH, "/");
     if let Ok(Some(head)) = host.query_selector("#tonk-register-head") {
-        head.set_text_content(Some("finish your account"));
+        let _ = head.set_attribute("hidden", "");
     }
     if let Ok(Some(back)) = host.query_selector(DISMISS) {
         back.set_text_content(Some("back to Tonk"));
@@ -2080,7 +2104,7 @@ pub(crate) fn finish_ceremony() {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    set_status("What should we call you?");
+    set_status("");
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2108,6 +2132,7 @@ fn ask_for_name(host: &Element) {
         }
     }
     unfold(&row);
+    set_action(SAVE_NAME, true);
     commit_name_on_enter(host);
     if let Some(field) = host
         .query_selector("#tonk-register-name")
@@ -2131,26 +2156,34 @@ fn commit_name_on_enter(host: &Element) {
                 return;
             }
             event.prevent_default();
-            let name = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| {
-                    document
-                        .query_selector("#tonk-register-name")
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|field| js_sys::Reflect::get(field.as_ref(), &"value".into()).ok())
-                .and_then(|value| value.as_string())
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            if name.is_empty() {
-                return;
-            }
-            offer_the_link(&name);
+            submit();
         });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
+}
+
+/// Save the name through the same action for both click and Enter.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn save_name() {
+    let field =
+        host_element().and_then(|host| host.query_selector("#tonk-register-name").ok().flatten());
+    let name = field
+        .as_ref()
+        .and_then(|field| js_sys::Reflect::get(field.as_ref(), &"value".into()).ok())
+        .and_then(|value| value.as_string())
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        finish_action();
+        set_status("Enter a display name to continue.");
+        if let Some(field) = field.and_then(|field| field.dyn_into::<HtmlElement>().ok()) {
+            let _ = field.focus();
+        }
+        return;
+    }
+    set_status("");
+    offer_the_link(&name);
 }
 
 /// The close: the thing the share was for.
@@ -2166,6 +2199,7 @@ fn offer_the_link(name: &str) {
         return;
     }
     let _ = host.set_attribute("data-saving-name", "");
+    set_action("saving display name…", false);
     if let Ok(Some(field)) = host.query_selector("#tonk-register-name") {
         let _ = field.set_attribute("disabled", "");
     }
@@ -2207,6 +2241,7 @@ fn offer_the_link(name: &str) {
                         }
                     }
                     set_status(&problem.message);
+                    set_action(SAVE_NAME, true);
                 }
             }
         }
@@ -2293,6 +2328,13 @@ fn set_status(text: &str) {
         .and_then(|document| document.query_selector(STATUS).ok().flatten())
     {
         slot.set_text_content(Some(text));
+        if let Some(narrator) = slot.parent_element() {
+            if text.is_empty() {
+                let _ = narrator.set_attribute("hidden", "");
+            } else {
+                let _ = narrator.remove_attribute("hidden");
+            }
+        }
     }
 }
 
@@ -2371,8 +2413,12 @@ pub fn is_open() -> bool {
     web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
-        .and_then(|host| host.dyn_into::<HtmlDialogElement>().ok())
-        .is_some_and(|dialog| dialog.open())
+        .is_some_and(|host| {
+            host.has_attribute("data-inline")
+                || host
+                    .dyn_ref::<HtmlDialogElement>()
+                    .is_some_and(|dialog| dialog.open())
+        })
 }
 
 /// Hide the standing cluster without closing it: the account tab it is a

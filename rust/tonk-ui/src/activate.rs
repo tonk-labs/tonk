@@ -253,8 +253,10 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 // hub this page hands back to is already served.
                 let _ = crate::api::customer_state().await;
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                if let Some(customer) = body["customer"].as_str() {
-                    crate::register_dialog::resume_activated_account(customer).await;
+                if let Some(customer) = body["customer"].as_str()
+                    && let Ok(Some(done)) = host.query_selector("#activate-done")
+                {
+                    crate::register_dialog::resume_activated_account(customer, &done).await;
                 }
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {

@@ -28,3 +28,63 @@ The initial test wrapper re-evaluated the concurrently changing worktree after b
 - Logs: `/tmp/tonk-email-handoff-final.log`, `/tmp/tonk-email-handoff-green.log`, `/tmp/tonk-email-handoff-unit.log`.
 
 The fixed web bundle predates a concurrent terms-of-service paragraph added to the dialog. That copy change was preserved; the tested handoff logic matches current production source. Safari and the full E2E suite were not run.
+
+## Inline activation-tab follow-up (2026-09-08)
+
+The activation tab now mounts resumed setup as a section inside the existing
+activated panel. The activated heading remains above the shared
+email/name rows; the setup narrator and back action replace the panel's terminal
+copy and links. It has no modal backdrop, fixed positioning, or focus trap.
+Already-named accounts and activation for a different local account keep the
+standalone activation result. Resumed setup skips email-lookup subscriptions,
+which could otherwise replay a login action over the name step.
+
+Verification:
+
+- The strengthened two-tab regression failed against the previous UI bundle at
+  the inline-parent assertion, then passed against the updated bundle (4.55s).
+  It also checks static positioning, no modal, failed-save retry, durable name
+  storage, and original-tab completion.
+- Four related Chrome cases passed with retries disabled: another account's
+  activation, activation on another device, returning login, and signup-to-share.
+- All six input/caret CSS checks passed; Rust formatting and diff checks passed.
+- A synthetic desktop/narrow-column Chrome preview confirmed the inline layout
+  without horizontal overflow. Its font/logo assets were not served; this was
+  layout evidence only.
+- Tested server: `/nix/store/a952iy2zz5w0q5n2fhxx88vinml1b3rv-tonk-ui-test-server/bin/tonk-ui-test-server`.
+- Tested archive: `/nix/store/fyr791xm0inrhgqndnaj1z2j82cfchnm-tests-e2e-0.6.14/tests-e2e.tar.zst`.
+- Logs: `/tmp/tonk-inline-red.log`, `/tmp/tonk-inline-green.log`, and
+  `/tmp/tonk-inline-related.log`; runner: `/tmp/tonk-inline-run.sh`.
+- These pinned artifacts include the inline-setup changes but predate concurrent
+  login auto-return, anchored-column outline, profile-library, and display-view
+  edits. Those edits were preserved and are not covered by this run. Safari and
+  the full E2E suite were not run.
+
+### Presentation cleanup
+
+Removed the redundant sync-activation receipt row and suppressed the account
+page's inset focus shadow on inline ceremony editors. The native caret remains.
+Updated the existing activation layout assertion to measure the remaining action.
+Verified in an isolated Chrome fixture: the focused input has no shadow or outline,
+retains its ink-colored caret, and the redundant row is absent. Six CSS checks,
+Rust formatting, and diff checks pass. The full activation E2E was not rebuilt
+for this HTML/CSS-only follow-up.
+
+### Explicit display-name save
+
+The name editor now offers `save display name`; Enter is a shortcut for the same
+action. The standalone question is omitted. Empty narrator content collapses its
+row; validation and save errors restore it. Saving disables the action and field,
+then either restores Save for retry or offers the existing return/share action.
+The two-tab regression exercises a failed save by clicking the button and a
+successful retry using Enter.
+
+Verification: the regression failed against the prior bundle because Save was
+never offered, then passed on the new bundle (4.18s). Signup-to-share and the
+activation layout test also passed, with retries disabled. All six CSS checks,
+Rust formatting, and diff checks passed. Safari and the full suite were not run.
+
+- Server: `/nix/store/dj5k6ckqf8mb8536708nwi5g8s3kl7yp-tonk-ui-test-server/bin/tonk-ui-test-server`.
+- Archive: `/nix/store/cs78ca81ilcjc9b5wbfm3rh1019jcf3a-tests-e2e-0.6.14/tests-e2e.tar.zst`.
+- Logs: `/tmp/tonk-name-save-red.log`, `/tmp/tonk-name-save-green.log`,
+  `/tmp/tonk-name-save-related.log`.
