@@ -1050,6 +1050,95 @@ mod tests {
         Ok(())
     }
 
+    #[dialog_common::test]
+    async fn it_finishes_signup_in_the_activation_tab(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "activation-tab@example.com";
+        enroll_only(&driver, &env, email).await?;
+        let original = driver.window().await?;
+        let activation = driver.new_tab().await?;
+        driver.switch_to_window(activation.clone()).await?;
+        goto(&driver, &activation_link(&env, email).await?).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        wait_for_displayed(&driver, "#activate-done").await?;
+        driver
+            .execute(
+                r#"const original = window.fetch;
+                   window.fetch = (...args) => {
+                     if (String(args[0]?.url || args[0]).endsWith('/api/account/display-name')) {
+                       window.fetch = original;
+                       const response = new Response(JSON.stringify({error: {kind: 'Internal'}}), {
+                         status: 503, headers: {'content-type': 'application/json'}
+                       });
+                       // reqwest reads Response.url, which a synthetic response leaves empty.
+                       Object.defineProperty(response, 'url', {value: String(args[0]?.url || args[0])});
+                       return Promise.resolve(response);
+                     }
+                     return original(...args);
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        type_into_settled_row(&driver, "display name", "Unsaved").await?;
+        await_narrator_containing(&driver, "couldn't save").await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert!(successful_body("unsaved account summary", &summary)["displayName"].is_null());
+        driver.switch_to_window(original.clone()).await?;
+        element(&driver, "#tonk-register").await?;
+        driver.switch_to_window(activation).await?;
+        type_into_settled_row(&driver, "display name", "Tab Owner").await?;
+        await_narrator_containing(&driver, "Your account is ready").await?;
+        dismiss_register_dialog(&driver).await?;
+        assert_eq!(driver.current_url().await?.path(), "/");
+
+        driver.switch_to_window(original).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver.current_url().await?.path() == "/"
+                && driver.find_all(By::Css("#tonk-register")).await?.is_empty()
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "original tab did not finish signup"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_resume_signup_for_another_accounts_activation(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        enroll_only(&owner, &env, "link-owner@example.com").await?;
+        let other = driver_with_prf(&env).await?;
+        enroll_only(&other, &env, "other-account@example.com").await?;
+        goto(
+            &other,
+            &activation_link(&env, "link-owner@example.com").await?,
+        )
+        .await?;
+        element(&other, "#activate-accept").await?.click().await?;
+        wait_for_displayed(&other, "#activate-done").await?;
+        assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
+        let summary = get_json(&other, "/api/account/summary").await?;
+        let summary = successful_body("other account summary", &summary);
+        assert_eq!(summary["email"], "other-account@example.com");
+        assert!(summary["displayName"].is_null());
+        owner.quit().await?;
+        other.quit().await?;
+        Ok(())
+    }
+
     /// Present `email`'s activation invocation to the access service
     /// over plain HTTP — what another device's activation page does, as
     /// far as this browser can tell: nothing in it handles the link.

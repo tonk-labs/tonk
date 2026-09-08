@@ -73,6 +73,8 @@ thread_local! {
     static REGISTRATION_WATCH: RefCell<Option<crate::account_observability::WebAccountAttempt>> = const { RefCell::new(None) };
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     static ACTIVATION_WATCH: RefCell<Option<crate::account_observability::WebAccountAttempt>> = const { RefCell::new(None) };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    static SETUP_WATCH: RefCell<Option<Closure<dyn FnMut()>>> = const { RefCell::new(None) };
 }
 
 enum ReturnFocus {
@@ -207,6 +209,8 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     focus_on_row_click(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     watch_answers(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    watch_setup_completion(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     open_when_upgraded(&host);
 }
@@ -461,6 +465,22 @@ pub fn close() {
         // opener this close is about to restore focus to.
         ANNOUNCED.with(|announced| announced.set(false));
         finish_action();
+        SETUP_WATCH.with(|held| {
+            if let Some(listener) = held.borrow_mut().take()
+                && let Some(window) = web_sys::window()
+            {
+                let _ = window.remove_event_listener_with_callback(
+                    "focus",
+                    listener.as_ref().unchecked_ref(),
+                );
+                if let Some(document) = window.document() {
+                    let _ = document.remove_event_listener_with_callback(
+                        "visibilitychange",
+                        listener.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+        });
         ANSWERS.with(|held| {
             if let Some(mut subscription) = held.borrow_mut().take() {
                 subscription.cancel();
@@ -1253,7 +1273,10 @@ const RETURN_TO_HUB: &str = "return to hub";
 /// Offer the destination the ceremony actually replaced.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn set_return_action() {
-    let anchored = host_element().is_some_and(|host| host.has_attribute("data-anchored"));
+    let anchored = host_element().is_some_and(|host| {
+        host.has_attribute("data-anchored")
+            || host.get_attribute(RETURN_PATH).as_deref() == Some("/")
+    });
     set_action(
         if anchored {
             RETURN_TO_HUB
@@ -1858,6 +1881,118 @@ fn hide_action() {
     }
 }
 
+/// Resume setup only for the account this browser actually holds. An email
+/// link can also be opened on an unrelated device or with another account selected.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn resume_activated_account(customer: &str) {
+    if !matches!(crate::api::account_status().await,
+        Ok(tonk_worker_api::AccountStatus::Registered { root_did, .. }) if root_did == customer)
+    {
+        return;
+    }
+    let Ok(summary) = crate::api::account_summary().await else {
+        return;
+    };
+    if summary
+        .display_name
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty())
+    {
+        return;
+    }
+    let Some(email) = summary.email else {
+        return;
+    };
+    open();
+    let Some(host) = host_element() else {
+        return;
+    };
+    let _ = host.set_attribute(CEREMONY_KIND_ATTR, "signup");
+    let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
+    let _ = host.set_attribute(RETURN_PATH, "/");
+    if let Ok(Some(head)) = host.query_selector("#tonk-register-head") {
+        head.set_text_content(Some("finish your account"));
+    }
+    if let Ok(Some(back)) = host.query_selector(DISMISS) {
+        back.set_text_content(Some("back to Tonk"));
+    }
+    settle_named_row(EMAIL_ROW, "email", &email);
+    hide_action();
+    finish_ceremony();
+}
+
+/// A returning signup tab re-reads the durable name even if it already has
+/// an editable name row. Verification alone does not finish setup.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn watch_setup_completion(host: &Element) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let target = host.clone();
+    let listener = Closure::<dyn FnMut()>::new(move || {
+        let host = target.clone();
+        if !host.is_connected()
+            || host.get_attribute(CEREMONY_KIND_ATTR).as_deref() != Some("signup")
+            || host.has_attribute("data-saving-name")
+            || host.has_attribute("data-checking-setup")
+            || web_sys::window()
+                .and_then(|window| window.document())
+                .is_none_or(|document| {
+                    document.visibility_state() != web_sys::VisibilityState::Visible
+                })
+        {
+            return;
+        }
+        let Some(email) = host.get_attribute(COMMITTED_EMAIL_ATTR) else {
+            return;
+        };
+        let _ = host.set_attribute("data-checking-setup", "");
+        wasm_bindgen_futures::spawn_local(async move {
+            let summary = crate::api::account_summary().await;
+            let _ = host.remove_attribute("data-checking-setup");
+            if !host.is_connected() || host.has_attribute("data-saving-name") {
+                return;
+            }
+            let Ok(summary) = summary else {
+                return;
+            };
+            if !summary
+                .email
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(&email))
+            {
+                return;
+            }
+            let Some(name) = summary.display_name.filter(|name| !name.trim().is_empty()) else {
+                return;
+            };
+            if pending_share().is_some() {
+                if host.query_selector(NAME_ROW).ok().flatten().is_some() {
+                    settle_named_row(NAME_ROW, "display name", &name);
+                } else {
+                    add_row(
+                        &host,
+                        NAME_ROW.trim_start_matches('#'),
+                        "display name",
+                        &name,
+                    );
+                }
+                settle_named_row(CONFIRM_ROW, "email", "verified");
+                conclude("Your account is ready.");
+            } else if let Some(window) = web_sys::window() {
+                let _ = window.location().assign("/");
+            }
+        });
+    });
+    let _ = window.add_event_listener_with_callback("focus", listener.as_ref().unchecked_ref());
+    let _ = document
+        .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref());
+    SETUP_WATCH.with(|held| *held.borrow_mut() = Some(listener));
+}
+
 /// The account is ready: ask for a name, then close out.
 ///
 /// Called once activation lands — from the ceremony directly when
@@ -1914,9 +2049,9 @@ pub(crate) fn finish_ceremony() {
             .and_then(|summary| summary.display_name)
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty());
-        let Some(host) = host_element() else {
+        if !host.is_connected() {
             return;
-        };
+        }
         // A second frame can race the summary read past the guard above.
         if host.query_selector(NAME_ROW).ok().flatten().is_some() {
             return;
@@ -2007,7 +2142,6 @@ fn commit_name_on_enter(host: &Element) {
             if name.is_empty() {
                 return;
             }
-            settle_named_row(NAME_ROW, "display name", &name);
             offer_the_link(&name);
         });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
@@ -2020,6 +2154,16 @@ fn commit_name_on_enter(host: &Element) {
 /// go back to, so the cluster simply says the account is ready.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn offer_the_link(name: &str) {
+    let Some(host) = host_element() else {
+        return;
+    };
+    if host.has_attribute("data-saving-name") {
+        return;
+    }
+    let _ = host.set_attribute("data-saving-name", "");
+    if let Ok(Some(field)) = host.query_selector("#tonk-register-name") {
+        let _ = field.set_attribute("disabled", "");
+    }
     wasm_bindgen_futures::spawn_local({
         let name = name.to_owned();
         async move {
@@ -2028,16 +2172,21 @@ fn offer_the_link(name: &str) {
                 tonk_analytics::account::Surface::RegistrationDialog,
                 tonk_analytics::account::Trigger::User,
                 tonk_analytics::account::AccountState::Ready,
-                crate::api::transact_profile(profile_rename_claim(&name)),
+                crate::api::set_display_name(&name),
             )
             .await;
-            let status = match result {
-                Ok(()) => {
+            let _ = host.remove_attribute("data-saving-name");
+            if !host.is_connected() {
+                return;
+            }
+            match result {
+                Ok(saved) => {
                     attempt.finish(
                         tonk_analytics::account::Stage::LocalCommit,
                         tonk_analytics::account::AccountOutcome::success(),
                     );
-                    "Your account is ready.".to_owned()
+                    settle_named_row(NAME_ROW, "display name", &saved.name);
+                    conclude("Your account is ready.");
                 }
                 Err(error) => {
                     tonk_common::log!("register: could not record the display name: {error}");
@@ -2046,10 +2195,15 @@ fn offer_the_link(name: &str) {
                         &error.to_string(),
                     );
                     attempt.finish(tonk_analytics::account::Stage::LocalCommit, problem.outcome);
-                    problem.message
+                    if let Ok(Some(field)) = host.query_selector("#tonk-register-name") {
+                        let _ = field.remove_attribute("disabled");
+                        if let Some(field) = field.dyn_ref::<HtmlElement>() {
+                            let _ = field.focus();
+                        }
+                    }
+                    set_status(&problem.message);
                 }
-            };
-            conclude(&status);
+            }
         }
     });
 }
@@ -2073,29 +2227,6 @@ fn conclude(status: &str) {
             focus_action();
         }
     }
-}
-
-/// The `profile/rename` claim, in the shape the seeded descriptor
-/// decodes.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn profile_rename_claim(name: &str) -> serde_json::Value {
-    serde_json::json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "description": "Rename the signed-in member (set their display name).",
-                        "with": {
-                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
-                        }
-                    }
-                },
-                "parameters": { "name": name }
-            }
-        }]
-    })
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]

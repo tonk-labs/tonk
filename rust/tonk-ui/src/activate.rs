@@ -247,12 +247,16 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 set_busy(&host, false, true);
                 clear_error(&host);
                 set_status(&host, "");
-                show_panel(&host, "#activate-done");
                 // Tell this browser's worker now rather than at its next
                 // sweep: the probe records the activation and replays the
                 // custody publish and provisioning it deferred, so the
                 // hub this page hands back to is already served.
                 let _ = crate::api::customer_state().await;
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                if let Some(customer) = body["customer"].as_str() {
+                    crate::register_dialog::resume_activated_account(customer).await;
+                }
+                show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
                 attempt.finish(
                     tonk_analytics::account::Stage::AccessService,

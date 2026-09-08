@@ -373,7 +373,7 @@ fn fallback(action: AccountAction) -> &'static str {
             "We couldn't update this screen automatically. Open the verification link, then return to settings to continue."
         }
         AccountAction::SaveInitialDisplayName => {
-            "Your account is ready, but we couldn't save that display name. You can change it later in settings."
+            "We couldn't save that display name. Press Enter to try again."
         }
         AccountAction::CopyInvite => {
             "The invite link is ready, but this browser couldn't copy it. Share the space again to retry."
@@ -492,7 +492,7 @@ mod tests {
             (
                 AccountAction::SaveInitialDisplayName,
                 "POST /api/profile returned 503 Service Unavailable",
-                "Your account is ready, but we couldn't save that display name. You can change it later in settings.",
+                "We couldn't save that display name. Press Enter to try again.",
             ),
             (
                 AccountAction::CopyInvite,
