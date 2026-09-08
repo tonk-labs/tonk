@@ -13,7 +13,7 @@ mod tests {
     use tempfile::TempDir;
     use thirtyfour::extensions::cdp::ChromeDevTools;
     use thirtyfour::prelude::*;
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::{Child, Command};
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
@@ -2262,28 +2262,49 @@ mod tests {
         stderr: &mut tokio::process::ChildStderr,
         prefix: String,
     ) -> Result<CliOutput> {
+        let mut stdout_rest = String::new();
+        let mut stderr_text = String::new();
         let completion = async {
-            let mut stdout_rest = String::new();
-            let mut stderr_text = String::new();
             let (status, _, _) = tokio::try_join!(
                 child.wait(),
-                stdout.read_to_string(&mut stdout_rest),
-                stderr.read_to_string(&mut stderr_text),
+                async {
+                    loop {
+                        let mut line = String::new();
+                        if stdout.read_line(&mut line).await? == 0 {
+                            break;
+                        }
+                        stdout_rest.push_str(&line);
+                    }
+                    Ok::<(), std::io::Error>(())
+                },
+                async {
+                    let mut reader = BufReader::new(stderr);
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).await? == 0 {
+                            break;
+                        }
+                        stderr_text.push_str(&line);
+                    }
+                    Ok::<(), std::io::Error>(())
+                },
             )?;
-            Ok::<_, std::io::Error>((status, stdout_rest, stderr_text))
+            Ok::<_, std::io::Error>(status)
         };
         match tokio::time::timeout(Duration::from_secs(60), completion).await {
             Ok(result) => {
-                let (status, stdout_rest, stderr) = result?;
+                let status = result?;
                 Ok(CliOutput {
                     status,
                     stdout: format!("{prefix}{stdout_rest}"),
-                    stderr,
+                    stderr: stderr_text,
                 })
             }
             Err(_) => {
                 child.kill().await?;
-                Err(anyhow!("timed out waiting for `tonk account login`"))
+                Err(anyhow!(
+                    "timed out waiting for CLI completion; stdout={stdout_rest}; stderr={stderr_text}"
+                ))
             }
         }
     }
@@ -2488,7 +2509,6 @@ mod tests {
             Duration::from_secs(120),
             tonk_command_in(env, profile)
                 .args(["account", "devices", "--json"])
-                .env("TONK_TRACE", "1")
                 .env(
                     "RUST_LOG",
                     "debug,hyper=trace,hyper_util=trace,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
@@ -2870,7 +2890,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_replaces_agent_link_progress_with_the_share_refusal(
+    async fn it_replaces_agent_link_progress_with_the_account_handoff_refusal(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -2881,14 +2901,14 @@ mod tests {
         await_url_containing(&driver, &format!("/space/{key}")).await?;
         enter_space_view(&driver).await?;
 
-        wait_for_displayed(&driver, ".local-invite-notice").await?;
+        wait_for_displayed(&driver, "[data-agent-handoff-status]").await?;
         let canvas = element(&driver, ".blank-canvas__deeplink")
             .await?
             .text()
             .await?;
         assert!(
-            canvas.contains("sharing unavailable"),
-            "the settled refusal needs a neutral label: {canvas:?}"
+            canvas.contains("Create an account or sign in to connect an agent"),
+            "the settled refusal must explain the failure: {canvas:?}"
         );
         assert!(
             !canvas.contains("Generating link"),
@@ -5633,6 +5653,203 @@ mod tests {
         Ok(())
     }
 
+    async fn capture_handoff_page(driver: &WebDriver, name: &str) -> Result<()> {
+        if let Some(directory) = std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory)?;
+            // Optional review capture waits for the shell's entrance animation;
+            // test readiness and actions do not depend on this delay.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            driver
+                .screenshot(&directory.join(format!("{name}.png")))
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_connects_as_the_scoped_browser_account_after_explicit_consent(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let first = driver_with_prf(&env).await?;
+        sign_up(&first, &env, "handoff-a@example.com").await?;
+        let linked = link_cli(&first, &env).await?;
+        first.quit().await?;
+        let registry_path = linked.profile.path().join("spaces/spaces.json");
+        let registry_before = std::fs::read(&registry_path)?;
+        let status_before =
+            run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
+
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "handoff-b@example.com").await?;
+        let root = get_json(&browser, "/api/identity/root").await?;
+        let expected = successful_body("browser B root", &root)["rootDid"]
+            .as_str()
+            .context("missing B root")?
+            .to_owned();
+        let key = create_space_awaiting_remote(&browser, "Agent handoff", true).await?;
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push B's space", &pushed);
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        enter_space_view(&browser).await?;
+        wait_for_displayed(&browser, ".agent-prompt__copy").await?;
+        watch_clipboard(&browser).await?;
+        click(&browser, ".agent-prompt__copy").await?;
+        let prompt = copied_text(&browser).await?;
+        capture_handoff_page(&browser, "copied-prompt").await?;
+        assert!(prompt.contains(&format!("--switch-account {expected}")));
+        assert!(prompt.contains("ask me before switching"));
+        let invite = prompt
+            .split("connect '")
+            .nth(1)
+            .and_then(|rest| rest.split('\'').next())
+            .context("copied prompt has no connect URL")?
+            .to_owned();
+        browser.enter_default_frame().await?;
+        let via = env.tonk_web.join("settings/link")?.to_string();
+        let args = vec![
+            "connect".into(),
+            invite.clone(),
+            "--name".into(),
+            "agent-handoff".into(),
+            "--no-open".into(),
+            "--via".into(),
+            via.clone(),
+        ];
+        let refused = run_cli(&env, &linked.profile, &args).await?;
+        assert!(!refused.status.success());
+        assert!(
+            refused
+                .stderr
+                .contains(&format!("--switch-account {expected}"))
+        );
+        assert_eq!(std::fs::read(&registry_path)?, registry_before);
+        assert!(!refused.stdout.contains("Open this URL"));
+
+        for approve in [false, true] {
+            let mut command = tonk_command_in(&env, &linked.profile);
+            command
+                .args(&args)
+                .args(["--switch-account", &expected])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let mut child = command.spawn()?;
+            let mut stdout = BufReader::new(child.stdout.take().context("connect stdout missing")?);
+            let mut stderr = child.stderr.take().context("connect stderr missing")?;
+            let approval = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let mut line = String::new();
+                    if stdout.read_line(&mut line).await? == 0 {
+                        return Err(anyhow!("connect exited before approval"));
+                    }
+                    if line.starts_with("http") {
+                        return Ok::<_, anyhow::Error>(line.trim().to_owned());
+                    }
+                }
+            })
+            .await
+            .context("connect never asked for approval")??;
+            let approval_url = url::Url::parse(&approval)?;
+            assert!(
+                approval_url
+                    .query_pairs()
+                    .any(|(key, value)| key == "expectedAccount" && value == expected)
+            );
+            goto(&browser, &approval).await?;
+            enter_hub(&browser).await?;
+            wait_for_displayed(&browser, "ui-account-settings [data-pane=\"link\"]").await?;
+            assert_eq!(
+                element(&browser, "[data-link-account]")
+                    .await?
+                    .text()
+                    .await?,
+                expected
+            );
+            capture_handoff_page(&browser, "expected-account-approval").await?;
+            let request = browser
+                .execute("return window.tonk.context.search", Vec::new())
+                .await?;
+            let request = url::form_urlencoded::parse(
+                request
+                    .json()
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches('?')
+                    .as_bytes(),
+            )
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+            let intended = approval_url
+                .query_pairs()
+                .into_owned()
+                .collect::<std::collections::HashMap<_, _>>();
+            assert_eq!(
+                request.get("callback"),
+                intended.get("callback"),
+                "approval must target the current CLI listener"
+            );
+            eprintln!("HANDOFF phase=approval-page approve={approve}");
+            if approve {
+                click(&browser, "[data-link-approve]").await?;
+                use_passkey_consent(&browser).await?;
+            } else {
+                click(&browser, "[data-link-decline]").await?;
+            }
+            if let Err(error) = await_url_path(&browser, "/settings").await {
+                enter_hub(&browser).await?;
+                let status = element(&browser, "[data-ceremony-status]")
+                    .await?
+                    .text()
+                    .await?;
+                return Err(error).context(format!(
+                    "handoff callback did not return; approve={approve}; status={status}"
+                ));
+            }
+            let landed = browser.current_url().await?;
+            assert_eq!(
+                landed
+                    .query_pairs()
+                    .find(|(key, _)| key == "link")
+                    .map(|(_, value)| value.into_owned())
+                    .as_deref(),
+                Some(if approve { "ok" } else { "denied" })
+            );
+            eprintln!("HANDOFF phase=callback-returned approve={approve}");
+            eprintln!("HANDOFF phase=await-cli approve={approve}");
+            let outcome = finish_link(&mut child, &mut stdout, &mut stderr, String::new()).await?;
+            eprintln!("HANDOFF phase=cli-finished approve={approve}");
+            if !approve {
+                assert!(!outcome.status.success());
+                assert_eq!(std::fs::read(&registry_path)?, registry_before);
+                let retained =
+                    run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
+                assert_eq!(retained.stdout, status_before.stdout);
+            } else {
+                assert!(outcome.status.success(), "{}", outcome.stderr);
+                assert!(outcome.stdout.contains("Agent connection confirmed"));
+            }
+        }
+        let status = run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
+        assert!(status.stdout.contains(&expected));
+        let resumed = run_cli(
+            &env,
+            &linked.profile,
+            &["--space".into(), "agent-handoff".into(), "connect".into()],
+        )
+        .await?;
+        assert!(resumed.status.success(), "{}", resumed.stderr);
+        assert!(resumed.stdout.contains("Agent connection confirmed"));
+        assert!(!resumed.stdout.contains("Open this URL"));
+        browser.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -5849,18 +6066,71 @@ mod tests {
     /// proves is the half the CLI tests cannot: that the ceremony runs and
     /// the page delivers something the CLI would accept.
     #[dialog_common::test]
+    async fn it_rejects_the_wrong_account_for_an_agent_handoff(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let before = get_json(&driver, "/api/identity/root").await?;
+        let (callback, mut delivered) = waiting_cli().await?;
+        let expected = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let mut url = env.tonk_web.join("settings/link")?;
+        url.query_pairs_mut()
+            .append_pair("audience", expected)
+            .append_pair("callback", &callback)
+            .append_pair("expectedAccount", expected);
+        goto(&driver, url.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        assert_eq!(
+            element(&driver, "[data-link-account]")
+                .await?
+                .text()
+                .await?,
+            expected
+        );
+        click(&driver, "[data-link-approve]").await?;
+        use_passkey_consent(&driver).await?;
+        enter_hub(&driver).await?;
+        wait_for_text_containing(
+            &driver,
+            "[data-ceremony-status]",
+            "this handoff requires account",
+        )
+        .await?;
+        assert!(
+            matches!(
+                delivered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "wrong-account approval must not deliver a grant"
+        );
+        let after = get_json(&driver, "/api/identity/root").await?;
+        assert_eq!(
+            successful_body("before", &before)["rootDid"],
+            successful_body("after", &after)["rootDid"]
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_authorizes_a_waiting_cli_from_the_browser(env: TestEnvironment) -> Result<()> {
         use base64::Engine as _;
 
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
 
+        let root = get_json(&driver, "/api/identity/root").await?;
+        let expected = successful_body("expected account", &root)["rootDid"]
+            .as_str()
+            .context("root DID missing")?
+            .to_owned();
         let (callback, delivered) = waiting_cli().await?;
         let audience = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
         let mut url = env.tonk_web.join("settings/link")?;
         url.query_pairs_mut()
             .append_pair("audience", audience)
-            .append_pair("callback", &callback);
+            .append_pair("callback", &callback)
+            .append_pair("expectedAccount", &expected);
         goto(&driver, url.as_str()).await?;
 
         // The settings page names the device that is waiting, so the
@@ -5869,9 +6139,37 @@ mod tests {
         wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
         let shown = element(&driver, "[data-link-did]").await?.text().await?;
         assert_eq!(shown, audience, "the page must name the waiting device");
+        assert_eq!(
+            element(&driver, "[data-link-account]")
+                .await?
+                .text()
+                .await?,
+            expected
+        );
 
         click(&driver, "[data-link-approve]").await?;
+        driver.enter_default_frame().await?;
+        driver
+            .execute(
+                r#"window.__cliLinkAllowCredentials = "not called";
+                   const realGet = navigator.credentials.get.bind(navigator.credentials);
+                   navigator.credentials.get = options => {
+                     window.__cliLinkAllowCredentials =
+                       options?.publicKey?.allowCredentials?.length ?? null;
+                     return realGet(options);
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
         use_passkey_consent(&driver).await?;
+        let allowed = driver
+            .execute("return window.__cliLinkAllowCredentials", Vec::new())
+            .await?;
+        assert_eq!(
+            allowed.json(),
+            &serde_json::Value::Null,
+            "CLI linking must let the passkey provider offer any credential for this account"
+        );
 
         // Generous: approving runs a passkey assertion, the unlock, and
         // the device registration before the callback navigation, and a loaded

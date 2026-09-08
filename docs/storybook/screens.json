@@ -42,7 +42,7 @@
       "artifact": "app/screens/web-03-space-home.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["SPACE-09", "DATA-02", "DATA-09", "UI-04"],
+      "journey_ids": ["ACCT-C13", "SPACE-09", "DATA-02", "DATA-09", "UI-04"],
       "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-fab/src/markup.rs"]
     },
     {
@@ -246,8 +246,8 @@
       "artifact": "app/screens/cli-05-account-login.png",
       "capture": "captured CLI output",
       "status": "captured",
-      "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06"],
-      "source_paths": ["rust/tonk-cli/src/account.rs", "rust/tonk-cli/src/account_session.rs", "rust/tonk-cli/src/callback.rs"]
+      "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06", "ACCT-C13"],
+      "source_paths": ["rust/tonk-cli/src/account.rs", "rust/tonk-cli/src/account_session.rs", "rust/tonk-cli/src/callback.rs", "rust/tonk-cli/src/handoff.rs"]
     },
     {
       "id": "CLI-06",
@@ -270,8 +270,8 @@
       "artifact": "app/screens/cli-07-collaboration.png",
       "capture": "captured CLI output",
       "status": "captured",
-      "journey_ids": ["COLLAB-01", "COLLAB-02", "COLLAB-03", "COLLAB-04", "COLLAB-05"],
-      "source_paths": ["rust/tonk-cli/src/invite.rs", "rust/tonk-cli/src/space_link.rs", "rust/tonk-cli/src/output.rs"]
+      "journey_ids": ["ACCT-C13", "COLLAB-01", "COLLAB-02", "COLLAB-03", "COLLAB-04", "COLLAB-05"],
+      "source_paths": ["rust/tonk-cli/src/handoff.rs", "rust/tonk-cli/src/invite.rs", "rust/tonk-cli/src/space_link.rs", "rust/tonk-cli/src/output.rs"]
     },
     {
       "id": "CLI-08",

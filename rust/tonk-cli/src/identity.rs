@@ -53,8 +53,8 @@ fn missing_credential(error: &CredentialError) -> bool {
 /// against one fails with "no mount for {did}" before it ever reaches
 /// the store — on every machine, provisioned or not.
 pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
-    let operator = crate::account_state::credential_operator(profile).await?;
-    local_root_with_operator(profile, &operator).await
+    let store = crate::space::SpaceStore::open()?;
+    local_root_in(profile, &store).await
 }
 
 /// Load the local root from one explicit native profile store.
@@ -63,7 +63,20 @@ pub async fn local_root_in(
     store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    local_root_with_operator(profile, &operator).await
+    local_root_for_store(profile, &operator, store).await
+}
+
+/// Read the canonical root while recovering interrupted account replacements.
+pub(crate) async fn local_root_for_store(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<LocalRoot>> {
+    let guard = crate::account_session::exclusive_transition_guard(store)?;
+    crate::account_session::ensure_initialized(profile, operator, &guard).await?;
+    // Recovery has converged the projection and the guard prevents a new
+    // replacement until this read finishes. Signed-out local roots survive.
+    local_root_with_operator(profile, operator).await
 }
 
 /// Load the local root through an already-mounted site operator.

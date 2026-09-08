@@ -474,3 +474,28 @@ pub async fn authorizing_page(
         _handle: handle,
     })
 }
+
+// These copy-only fixtures deliberately use readable synthetic DIDs. Supply
+// canonical display identity, not a registry label that cannot sign in a
+// device. No remote authority is exercised by these reporting fixtures.
+pub fn set_display_account(site: &TonkSite, root: &str) -> Result<()> {
+    let key = blake3::hash(site.profile.did().as_ref().as_bytes()).to_hex();
+    let path = site
+        .account_store
+        .account_dir()
+        .join(format!("tonk-account-session-v1-{key}.json"));
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "active": {
+                "credential_id": "copy-fixture", "root_did": root,
+                "delegation_cid": "copy-fixture", "delegation_hex": "",
+                "remote": null, "attachment_id": "copy-fixture", "attached_at": 0
+            },
+            "pending_login": null, "replacement": null,
+            "legacy_repository_root": root
+        }))?,
+    )?;
+    Ok(())
+}

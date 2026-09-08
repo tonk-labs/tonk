@@ -211,13 +211,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
+        .command::<tonk_schema::command::AgentHandoff>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
-        .command::<tonk_schema::command::AuthorizeDevice>()
+        .command::<super::ceremony::AuthorizeDeviceRequest>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
@@ -242,6 +243,7 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // cannot mint for another space. Profile-side is still the
         // destination once that surface moves.
         .command::<super::repository::InviteRequest>()
+        .command::<tonk_schema::command::AgentHandoff>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }

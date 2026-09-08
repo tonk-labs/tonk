@@ -143,7 +143,7 @@ mod when_the_service_refuses_a_sync {
         let tmp = tempfile::tempdir()?;
         let (store, config) = fixture(tmp.path())?;
         let site = founded_by(&store, &config, "roadmap", ACCOUNT_A, Some("Ada Lovelace")).await?;
-        store.set_account(Some(AccountRecord::new(ACCOUNT_B)))?;
+        common::set_display_account(&site, ACCOUNT_B)?;
 
         let report =
             tonk_cli::sync::rejection_report(&site, "roadmap", "subject is not provisioned").await;
@@ -170,7 +170,7 @@ mod when_the_service_refuses_a_sync {
         let tmp = tempfile::tempdir()?;
         let (store, config) = fixture(tmp.path())?;
         let site = founded_by(&store, &config, "garden", ACCOUNT_A, None).await?;
-        store.set_account(Some(AccountRecord::new(ACCOUNT_A)))?;
+        common::set_display_account(&site, ACCOUNT_A)?;
 
         let report =
             tonk_cli::sync::rejection_report(&site, "garden", "principal is revoked").await;
@@ -194,7 +194,7 @@ mod when_the_service_refuses_a_sync {
         let (store, config) = fixture(tmp.path())?;
         let owned = founded_by(&store, &config, "garden", ACCOUNT_A, None).await?;
         let foreign = founded_by(&store, &config, "roadmap", ACCOUNT_B, None).await?;
-        store.set_account(Some(AccountRecord::new(ACCOUNT_A)))?;
+        common::set_display_account(&owned, ACCOUNT_A)?;
 
         for (site, name) in [(&owned, "garden"), (&foreign, "roadmap")] {
             let report = tonk_cli::sync::rejection_report(site, name, "policy 'is member'").await;
@@ -218,7 +218,7 @@ mod when_the_service_refuses_a_sync {
         let tmp = tempfile::tempdir()?;
         let (store, config) = fixture(tmp.path())?;
         let site = founded_by(&store, &config, "roadmap", ACCOUNT_A, Some("Ada")).await?;
-        store.set_account(Some(AccountRecord::new(ACCOUNT_B)))?;
+        common::set_display_account(&site, ACCOUNT_B)?;
 
         // Before the membership row exists, the space has never heard of us.
         let stranger = tonk_cli::sync::rejection_report(&site, "roadmap", "denied").await;

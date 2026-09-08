@@ -280,3 +280,40 @@ but invitation minting fails with an explicit configuration error.
 parses with `tonk-notation`, reads schema types from `tonk-schema`, builds
 invites with `tonk-invite`, and talks to dialog repositories, storage, UCAN
 credentials, and the UCAN-S3 remote through the `dialog-*` crates.
+
+### Connect an agent from the browser
+
+Copy a fresh agent prompt from the space's blank canvas, then run its
+`tonk connect 'URL'` command. The invitation is scoped to the browser account,
+including when that account is collaborating in someone else's space.
+Ordinary `tonk join` continues to accept open collaboration invitations.
+
+If the CLI is signed in to a different account, `connect` reports both DIDs and
+exits before claiming or binding the space. Ask the user before rerunning with
+`--switch-account EXPECTED_DID`. The flag records consent for that exact account;
+it still requires browser passkey approval. The previous account stays active
+until the approved replacement commits. Cancelling or rejecting approval keeps
+the previous account, its local spaces, and its bindings. Account hydration can
+fail after activation; the replacement stays active and the command reports the
+sync warning.
+
+After joining, `tonk --space NAME connect` resumes using local
+`agent-handoff.json` identity metadata. This file contains the repository,
+invitation identity, and required account, without the bearer URL. Resumes repeat
+the account check. A replica without that metadata needs the original scoped
+handoff URL. If its installed authority belongs to another account, use a fresh
+`--name` rather than rewriting that replica's authority. Only `Agent connection
+confirmed` means both the space pull and receipt push completed.
+
+Old browser prompts can contain open invitations. `connect` rejects these with
+an instruction to obtain a new account-scoped handoff; they remain valid for
+`join`. Existing spaces retain their seeded views, so upgrading the application
+alone does not replace an old prompt. From a checkout of this version, explicitly
+update the selected space's built-in views and commands with:
+
+```sh
+tonk --space NAME eval /path/to/tonk/rust/tonk-core/assets/library/core.yaml
+```
+
+Reload the space after that evaluation syncs. `connect` does not rewrite an
+existing space's library.

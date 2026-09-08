@@ -41,6 +41,7 @@ instances. Reads and writes are notation, evaluated against the space
 start a space (see also: tonk help spaces)
    space      List spaces, create one, or bind this directory to one
    join       Join a shared space from an invite URL
+   connect    Connect an agent to a browser space
 
 examine state
    status     Where you are: space, branch, sync, account
@@ -325,6 +326,24 @@ enum Command {
         /// Space name to register the joined repo under.
         #[arg(long, value_name = "NAME")]
         name: String,
+    },
+
+    /// Connect an agent to the space copied from the browser.
+    Connect {
+        /// Space invite copied from Tonk. Omit with --space to finish an interrupted connection.
+        url: Option<String>,
+        /// Override the local name (defaults to the pulled space's synced name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Browser account approval page, for local or staging development.
+        #[arg(long)]
+        via: Option<String>,
+        /// Print the account approval URL without opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Explicit consent to replace the current CLI account with this exact DID.
+        #[arg(long, value_name = "DID")]
+        switch_account: Option<String>,
     },
 
     /// Push local main to its upstream
@@ -1122,6 +1141,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
+        Command::Connect { .. } => ("connect", None),
         Command::Remote { command, .. } => (
             "remote",
             Some(match command {
@@ -1343,7 +1363,20 @@ async fn main() {
             )
             .await
         }
-        Command::Join { url, name } => claim_invite(url, name, space.as_deref()).await,
+        Command::Join { url, name } => claim_invite(url, Some(name), space.as_deref(), None).await,
+        Command::Connect {
+            url,
+            name,
+            via,
+            no_open,
+            switch_account,
+        } => match url {
+            Some(url) => connect_agent(url, name, via, no_open, switch_account).await,
+            None if space.is_none() => {
+                print_error("provide an invite URL, or use `tonk --space NAME connect` to resume")
+            }
+            None => resume_agent(space.as_deref().unwrap(), switch_account, via, no_open).await,
+        },
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
@@ -3504,6 +3537,238 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
     eprintln!("audience: {} (ephemeral)", outcome.audience);
 }
 
+/// One deliberately small vertical slice: account approval, space pull, receipt.
+async fn connect_agent(
+    url: String,
+    name: Option<String>,
+    via: Option<String>,
+    no_open: bool,
+    switch_account: Option<String>,
+) -> ExitCode {
+    if let Some(name) = &name
+        && let Err(error) = tonk_cli::space::validate_name(name)
+    {
+        return print_failure(error);
+    }
+    // Validate the complete bearer capability before asking the person to
+    // authorize a CLI device. For a shortcut this also resolves once, and the
+    // claim below reuses the long URL instead of repeating a network request.
+    let invite = match tonk_cli::handoff::preflight_connect(&url).await {
+        Ok(invite) => invite,
+        Err(error) => return print_failure(error),
+    };
+    let via = match tonk_cli::handoff::approval_page(via.as_deref()) {
+        Ok(page) => Some(page),
+        Err(error) => return print_failure(error),
+    };
+    let url = invite.url.clone();
+    let store = match tonk_cli::space::SpaceStore::open() {
+        Ok(store) => store,
+        Err(error) => return print_failure(error),
+    };
+    let registry = match store.load() {
+        Ok(registry) => registry,
+        Err(error) => return print_failure(error),
+    };
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    if let Err(code) = ensure_agent_account(
+        &store,
+        &invite.metadata.expected_root,
+        switch_account.as_deref(),
+        via.clone(),
+        no_open,
+    )
+    .await
+    {
+        return code;
+    }
+    let matched =
+        tonk_cli::handoff::matching_invitation(&registry, &config, &invite.invitation).await;
+    for diagnostic in matched.diagnostics {
+        eprintln!("warning: {diagnostic}");
+    }
+    let existing = matched.name;
+    if let Some(existing) = existing {
+        if name.as_ref().is_some_and(|name| name != &existing) {
+            eprintln!(
+                "warning: this invite was already claimed as '{existing}'; reclaiming it under the explicitly requested name"
+            );
+        } else {
+            let existing_site =
+                match site::TonkSite::open_with(&registry.spaces[&existing].site, config.clone())
+                    .await
+                {
+                    Ok(site) => site,
+                    Err(error) => return print_failure(error),
+                };
+            if let Err(error) = invite.metadata.validate_replica(&existing_site).await {
+                return print_failure(error);
+            }
+            if let Err(error) = invite.metadata.save(&existing_site.root) {
+                return print_failure(error);
+            }
+            let cwd = match working_directory().and_then(|path| path.canonicalize().ok()) {
+                Some(cwd) => cwd,
+                None => return print_error("could not read the current directory"),
+            };
+            if let Err(error) = tonk_cli::space::bind(&store, &existing, &cwd) {
+                return print_failure(error);
+            }
+            println!("Space already joined as '{existing}'; resuming connection.");
+            return confirm_selected_agent(Some(&existing), true).await;
+        }
+    }
+    if let Some(name) = &name
+        && registry.spaces.contains_key(name)
+    {
+        return print_error(format!(
+            "space '{name}' already exists; choose another --name"
+        ));
+    }
+    if let Some(name) = &name {
+        let root = store.canonical_site(name);
+        if root.exists() {
+            return print_coded(invite::InviteError::SiteAlreadyExists(root));
+        }
+    }
+    claim_invite(url, name, None, Some(&invite.metadata)).await
+}
+
+async fn ensure_agent_account(
+    store: &tonk_cli::space::SpaceStore,
+    expected: &dialog_varsig::Did,
+    consent: Option<&str>,
+    via: Option<String>,
+    no_open: bool,
+) -> Result<(), ExitCode> {
+    let profile = identity::open().await.map_err(print_failure)?;
+    let active = account::active_in(&profile, store)
+        .await
+        .map_err(print_failure)?;
+    let approval = tonk_cli::handoff::check_account(
+        active.as_ref().map(|account| account.root_did.as_str()),
+        expected,
+        consent,
+    )
+    .map_err(print_failure)?;
+    if approval {
+        let options = account::LinkOptions {
+            device_name: "Tonk agent".to_owned(),
+            open_browser: !no_open,
+            via,
+            announce: None,
+            store: Some(store.clone()),
+        };
+        let outcome =
+            account::link_expected_in(&profile, store, &options, expected, active.as_ref())
+                .await
+                .map_err(print_failure)?;
+        if let Some(warning) = outcome.warning {
+            eprintln!("warning: {warning}");
+        }
+    }
+    Ok(())
+}
+
+async fn resume_agent(
+    name: &str,
+    consent: Option<String>,
+    via: Option<String>,
+    no_open: bool,
+) -> ExitCode {
+    let store = match tonk_cli::space::SpaceStore::open() {
+        Ok(store) => store,
+        Err(error) => return print_failure(error),
+    };
+    let resolved = match store.resolve(Some(name), None, None) {
+        Ok(resolved) => resolved,
+        Err(error) => return print_failure(error),
+    };
+    let metadata = match tonk_cli::handoff::HandoffMetadata::read(&resolved.site) {
+        Ok(metadata) => metadata,
+        Err(error) => return print_failure(error),
+    };
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    let replica = match site::TonkSite::open_with(&resolved.site, config).await {
+        Ok(replica) => replica,
+        Err(error) => return print_failure(error),
+    };
+    if let Err(error) = metadata.validate_replica(&replica).await {
+        return print_failure(error);
+    }
+    let via = match tonk_cli::handoff::approval_page(via.as_deref()) {
+        Ok(via) => Some(via),
+        Err(error) => return print_failure(error),
+    };
+    if let Err(code) = ensure_agent_account(
+        &store,
+        &metadata.expected_root,
+        consent.as_deref(),
+        via,
+        no_open,
+    )
+    .await
+    {
+        return code;
+    }
+    confirm_selected_agent(Some(name), false).await
+}
+
+async fn confirm_selected_agent(space: Option<&str>, fresh_claim_available: bool) -> ExitCode {
+    let (resolved, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let metadata = match tonk_cli::handoff::HandoffMetadata::read(&site.root) {
+        Ok(metadata) => metadata,
+        Err(error) => return print_failure(error),
+    };
+    if let Err(error) = metadata.validate_replica(&site).await {
+        return print_failure(error);
+    }
+    let store = match tonk_cli::space::SpaceStore::open() {
+        Ok(store) => store,
+        Err(error) => return print_failure(error),
+    };
+    let active = match account::active_in(&site.profile, &store).await {
+        Ok(active) => active,
+        Err(error) => return print_failure(error),
+    };
+    match tonk_cli::handoff::check_account(
+        active.as_ref().map(|active| active.root_did.as_str()),
+        &metadata.expected_root,
+        None,
+    ) {
+        Ok(false) => {}
+        Ok(true) => {
+            return print_error("approve the handoff account before resuming this connection");
+        }
+        Err(error) => return print_failure(error),
+    }
+    let name = &resolved.name;
+    println!("Confirming agent connection for '{name}'...");
+    if let Err(error) = tonk_cli::handoff::confirm_connection(&site).await {
+        eprintln!("Resume with `tonk --space {name} connect`.");
+        if fresh_claim_available {
+            eprintln!(
+                "If this space's saved authority was revoked, reclaim the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`."
+            );
+        }
+        return print_failure(error);
+    }
+    println!(
+        "Agent connection confirmed. Return to your space in Tonk to see the acknowledgement."
+    );
+    println!("next: tonk --space {name} status");
+    ExitCode::Success
+}
+
 /// `tonk join` — claim an invite into a fresh canonical space:
 /// site at `spaces/<name>/`, registered and bound here on success.
 /// The early registry load below is only a cheap fail-fast
@@ -3515,8 +3780,15 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 /// A failed join never leaves a dangling registry entry (a
 /// partial site dir may remain; re-running with the same name
 /// reports it).
-async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode {
-    if let Err(err) = tonk_cli::space::validate_name(&name) {
+async fn claim_invite(
+    url: String,
+    requested_name: Option<String>,
+    flag: Option<&str>,
+    agent: Option<&tonk_cli::handoff::HandoffMetadata>,
+) -> ExitCode {
+    if let Some(name) = &requested_name
+        && let Err(err) = tonk_cli::space::validate_name(name)
+    {
         return print_failure(err);
     }
     let store = match tonk_cli::space::SpaceStore::open() {
@@ -3532,10 +3804,23 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
         Ok(registry) => registry,
         Err(err) => return print_failure(err),
     };
-    if registry.spaces.contains_key(&name) {
-        return print_error(tonk_cli::space::SpaceError::Exists(name).to_string());
+    if let Some(name) = &requested_name
+        && registry.spaces.contains_key(name)
+    {
+        return print_error(tonk_cli::space::SpaceError::Exists(name.clone()).to_string());
     }
-    let root = store.canonical_site(&name);
+    // Storage identity is independent of the human name, which is only known
+    // after pulling. Keep interrupted data here rather than using a TempDir.
+    let storage_name = requested_name.clone().unwrap_or_else(|| {
+        format!(
+            "connection-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    });
+    let root = store.canonical_site(&storage_name);
 
     // Same default site config `tonk space new` writes against, so
     // the joined site picks up the user's normal profile.
@@ -3557,10 +3842,43 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
                 }
             };
 
+            if let Some(metadata) = agent
+                && let Err(error) = metadata.save(&root)
+            {
+                return print_failure(error);
+            }
             let mut registry = match store.load() {
                 Ok(registry) => registry,
                 Err(err) => return print_failure(err),
             };
+            let name = match &requested_name {
+                Some(name) => name.clone(),
+                None => {
+                    let synced_name = match site::TonkSite::open_with(&root, config.clone()).await {
+                        Ok(site) => tonk_cli::handoff::synced_name(&site, &registry).await,
+                        Err(error) => Err(error),
+                    };
+                    match synced_name {
+                        Ok(name) => name,
+                        Err(error) => {
+                            let fallback = tonk_cli::handoff::fallback_name(
+                                outcome.subject.as_ref(),
+                                &registry,
+                            );
+                            eprintln!(
+                                "warning: the synced space name is not available yet: {error:#}"
+                            );
+                            eprintln!(
+                                "registered as '{fallback}' so the connection can resume after an interruption"
+                            );
+                            fallback
+                        }
+                    }
+                }
+            };
+            if let Err(error) = tonk_cli::space::validate_name(&name) {
+                return print_failure(error);
+            }
             if registry.spaces.contains_key(&name) {
                 return print_error(format!(
                     "{err}\nthe site was claimed at {root}; register it with \
@@ -3585,9 +3903,18 @@ async fn claim_invite(url: String, name: String, flag: Option<&str>) -> ExitCode
             }
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_space_resolution(store, flag, Some(&cwd));
-            match site::TonkSite::open_with(&root, config).await {
-                Ok(site) => record_space_best_effort(&name, &site).await,
-                Err(error) => eprintln!("warning: account directory update skipped: {error:#}"),
+            if agent.is_some() {
+                // The source browser already owns the directory entry. Do not put an
+                // unrelated account push between a successful join and its UI receipt.
+                println!(
+                    "Space joined; agent confirmation is still pending. If interrupted, run `tonk --space {name} connect`."
+                );
+                return confirm_selected_agent(Some(&name), false).await;
+            } else {
+                match site::TonkSite::open_with(&root, config).await {
+                    Ok(site) => record_space_best_effort(&name, &site).await,
+                    Err(error) => eprintln!("warning: account directory update skipped: {error:#}"),
+                }
             }
             ExitCode::Success
         }
@@ -4344,6 +4671,38 @@ async fn open_selected(
 
 #[cfg(test)]
 mod account_spaces_parser_tests {
+    #[test]
+    fn connect_carries_the_exact_invite_and_local_name() {
+        let invite = "https://example.test/join?access=proof#secret";
+        let cli =
+            Cli::try_parse_from(["tonk", "connect", invite, "--name", "my-agent", "--no-open"])
+                .expect("copied handoff parses");
+        assert!(
+            matches!(cli.command, Some(Command::Connect { url: Some(url), name, no_open: true, via: None, switch_account: None })
+            if url == invite && name.as_deref() == Some("my-agent"))
+        );
+    }
+
+    #[test]
+    fn connect_defaults_to_the_synced_space_name() {
+        let cli =
+            Cli::try_parse_from(["tonk", "connect", "https://example.test/join#secret"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Connect { name: None, .. })
+        ));
+    }
+
+    #[test]
+    fn interrupted_connect_accepts_a_global_space() {
+        let cli = Cli::try_parse_from(["tonk", "--space", "agent-space-2", "connect"]).unwrap();
+        assert_eq!(cli.space.as_deref(), Some("agent-space-2"));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Connect { url: None, .. })
+        ));
+    }
+
     use super::*;
 
     #[test]

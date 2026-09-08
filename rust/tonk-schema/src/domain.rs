@@ -641,6 +641,11 @@ pub mod command {
         #[domain("xyz.tonk.authorize-device")]
         pub struct Callback(pub String);
 
+        /// The account required by a scoped agent handoff; never an authorization grant.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.authorize-device")]
+        pub struct ExpectedAccount(pub Entity);
+
         /// The name the waiting process gave itself. The derived
         /// attribute is `xyz.tonk.authorize-device/name`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1664,4 +1669,25 @@ pub mod remote_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.remote-execution")]
     pub struct RevocationUrl(pub String);
+}
+
+/// Separate transient agent-handoff command and response attributes.
+pub mod agent_handoff {
+    use super::{Attribute, Entity};
+    /// Timestamp of the request.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.agent-handoff")]
+    pub struct Time(pub f64);
+    /// Ready marker or a user-facing pending/failure explanation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-handoff")]
+    pub struct Status(pub String);
+    /// Scoped invitation URL, present only while ready in the session overlay.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-handoff")]
+    pub struct Link(pub String);
+    /// Account whose passkey must authorize the waiting CLI.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-handoff")]
+    pub struct Account(pub Entity);
 }

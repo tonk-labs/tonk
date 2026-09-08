@@ -554,16 +554,39 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
 }
 
 #[test]
-fn it_displays_and_copies_the_same_agent_prompt() {
-    let ending = "Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.";
+fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
+    let copied = STANDARD_LIBRARY
+        .split("copy-label=\"Copy prompt\"")
+        .nth(1)
+        .and_then(|tail| tail.split("</wa-copy-button>").next())
+        .expect("the agent prompt copy button");
+    let command = "npx --yes @tonk/cli connect '{link}'";
     assert_eq!(
-        STANDARD_LIBRARY.matches(ending).count(),
-        2,
-        "the copy-button value and visible prompt must share the complete ending",
+        copied.matches(command).count(),
+        1,
+        "the clipboard prompt must carry one production CLI command",
     );
     assert!(
-        !STANDARD_LIBRARY.contains("Then build.\"></wa-copy-button>"),
-        "the clipboard prompt must not retain its shorter ending",
+        !STANDARD_LIBRARY
+            .split("copy-label=\"Copy prompt\"")
+            .next()
+            .unwrap_or_default()
+            .contains(command),
+        "machine instructions must not be visible before the copy button",
+    );
+    assert!(
+        copied.contains(
+            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
+        ),
+        "the clipboard prompt must define the success boundary",
+    );
+    assert!(
+        copied.contains("npx --yes @tonk/cli --space NAME connect"),
+        "the resume command must work without a globally installed CLI",
+    );
+    assert!(
+        copied.contains("npx --yes @tonk/cli connect INVITE --name NEW_NAME"),
+        "the prompt must explain how to reclaim after revoked saved authority",
     );
 }
 

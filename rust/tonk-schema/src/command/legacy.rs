@@ -355,3 +355,12 @@ impl RegisterAccount {
     /// of the compatibility surface, not of the command.
     pub const MARKER: &str = "tonk:register-account";
 }
+
+/// Ordinary login may omit the account constraint added for agent handoffs.
+#[derive(dialog_query::Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AuthorizeDevice {
+    pub this: dialog_artifacts::Entity,
+    pub audience: crate::domain::command::authorize_device::Audience,
+    pub callback: crate::domain::command::authorize_device::Callback,
+    pub name: crate::domain::command::authorize_device::Name,
+}
