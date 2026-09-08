@@ -3120,7 +3120,11 @@ tonk-notebook-index {
   #tonk-register[data-anchored] .ocol {
     position: absolute; margin: 0;
     left: var(--anchor-left, 0); top: var(--anchor-top, 0);
-    width: var(--anchor-width, 432px);
+    width: var(--anchor-width, 576px);
+    /* The Hub account menu remains mounted in the sealed guest while this
+       top-page ceremony replaces it. Paint the column's gaps as well as its
+       blocks so menu labels cannot show through between ceremony rows. */
+    background: var(--page);
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
@@ -3141,7 +3145,7 @@ tonk-notebook-index {
     color: var(--on-ink);
   }
   .tonk-ceremony .ocol {
-    width: min(432px, calc(100vw - 48px));
+    width: min(576px, calc(100vw - 32px));
     margin: 22vh auto 80px;
     display: flex; flex-direction: column;
   }
@@ -3349,7 +3353,7 @@ tonk-notebook-index {
   }
 
 /* ──────── hub page — the space directory at `/` and the /settings route.
-   Both views render the same chrome (logo, 432 column, two-cell bar,
+   Both views render the same chrome (logo, 576 column, two-cell bar,
    account view, spaces stack), so its CSS lives here beside the theme
    tokens rather than inside either view. ──────── */
 
@@ -3410,12 +3414,12 @@ tonk-notebook-index {
    corner mark was the left anchor's partner, and the anchor is gone) ── */
 .hub-logo { display:flex; justify-content:center; margin:48px 0 0;
   color:var(--ink); user-select:none; }
-.hub-logo svg { display:block; height:36px; width:auto; }
-/* two cells now: account 144 · spaces 288 = 432 — the settings cell
+.hub-logo svg { display:block; width:132px; height:auto; }
+/* two cells now: account 144 · spaces 432 = 576 — the settings cell
    left the bar for the account view (settings is an account place,
-   and under the name is where hands look for it). 432 is the sheet's
-   own cluster width, and the hub speaks it too. */
-.hubcol { width:432px; margin:56px auto 120px; }
+   and under the name is where hands look for it). 576 is the shared
+   ceremony width, and the hub speaks it too. */
+.hubcol { width:min(576px, calc(100vw - 32px)); margin:56px auto 120px; }
 .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
   width:100%; height:36px; background:var(--frost-solid);
   box-shadow:0 0 0 1px var(--ring); }
@@ -3427,7 +3431,7 @@ tonk-notebook-index {
 .hcell:active { background:var(--wash-2); }
 /* the account cell flushes its name LEFT against the bar's end */
 .hc-acct { width:144px; min-width:0; justify-content:flex-start; }
-.hc-view { width:288px; border-left:1px solid var(--sep); }
+.hc-view { width:432px; border-left:1px solid var(--sep); }
 /* the view you are in wears CURRENT (near-ink) — solid ink stays the
    CTA register, so a tab never outshouts an action */
 .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
@@ -3575,7 +3579,7 @@ ui-space-remove { display:contents; }
 }
 @media (max-width:640px) {
   .hub-logo { margin-top:20px; }
-  .hub-logo svg { height:28px; }
+  .hub-logo svg { width:98px; }
   .hubcol { width:calc(100vw - 32px); margin:40px auto 120px; }
   /* account holds its 144; the spaces cell follows the column */
   .hc-view { width:auto; flex:1; min-width:0; }
