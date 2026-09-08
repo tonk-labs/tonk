@@ -223,6 +223,17 @@
     margin: 0;
 }
 
+.account__narrator a {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.account__narrator a:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 3px;
+}
+
 .account__error {
     color: var(--ink);
 }

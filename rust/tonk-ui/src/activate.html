@@ -5,10 +5,10 @@
     <section id="activate-confirm" class="account__activation-state" aria-labelledby="activate-confirm-title" hidden>
       <div class="account__stack">
         <h1 id="activate-confirm-title" class="account__ceremony-head">activate your account</h1>
-        <button id="activate-accept" class="account__run" type="button" aria-describedby="activate-working activate-error">accept and activate</button>
+        <button id="activate-accept" class="account__run" type="button" aria-describedby="activate-terms activate-working activate-error">accept and activate</button>
       </div>
       <div class="account__narrator">
-        <p>Confirm your email address to activate syncing for your Tonk account. By selecting accept and activate, you agree to the terms of service.</p>
+        <p id="activate-terms">Confirm your email address to activate syncing for your Tonk account. By selecting accept and activate, you agree to the <a href="https://tonk.xyz/legal/terms" target="_blank" rel="noopener noreferrer">terms of service</a>.</p>
       </div>
     </section>
 
@@ -25,9 +25,6 @@
       </div>
     </section>
 
-    <!-- The terms document does not exist yet; link it from the narrator
-         once it does, and keep SIGNUP_TERMS in the access service naming
-         the version this page presents. -->
     <p id="activate-working" class="account__working" role="status" aria-live="polite"></p>
     <p id="activate-error" class="account__error" role="alert" hidden></p>
     <a class="account__ghost" href="/"><span aria-hidden="true">&#9666;</span> back to Tonk</a>

@@ -3300,6 +3300,13 @@ tonk-notebook-index {
   .tonk-ceremony .oexp p b {
     font-weight: 600; color: var(--ink);
   }
+  .tonk-ceremony .oexp a {
+    color: var(--ink);
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  .tonk-ceremony .oexp a:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: 3px;
+  }
 
   /* The way out: the quietest thing on screen. */
   .tonk-ceremony .ghost {
