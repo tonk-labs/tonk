@@ -136,3 +136,35 @@ Rust formatting, and diff checks passed. Safari and the full suite were not run.
 - Archive: `/nix/store/cs78ca81ilcjc9b5wbfm3rh1019jcf3a-tests-e2e-0.6.14/tests-e2e.tar.zst`.
 - Logs: `/tmp/tonk-name-save-red.log`, `/tmp/tonk-name-save-green.log`,
   `/tmp/tonk-name-save-related.log`.
+
+## Original-tab activation recovery follow-up
+
+Status: implemented and verified in local Chrome.
+
+The waiting dialog previously only posted `/api/sync`; that route returns
+success even when the scheduler declines a drain, and completion depends on a
+subscription callback. Focus/visibility events separately probe `/api/customer`.
+The new regression holds the original tab open, suppresses activation callbacks,
+verifies over HTTP, confirms the customer is Active, and requires automatic Hub
+navigation without reload. This models missed delivery; the precise live-session
+cause is not yet established.
+
+The regression failed against the unchanged debug bundle with `original tab did
+not finish signup`, after its explicit customer read confirmed `Active`.
+The waiting loop now probes `/api/customer` every three seconds and calls the
+normal completion path on `Active`, independently of subscription delivery.
+Transient errors leave the wait alive. The loop captures its original dialog
+and checks connection after the request so stale results cannot finish a newer
+dialog.
+
+Verification: the missed-notification regression passed in 6.35 seconds against
+`/tmp/tonk-activation-recovery`, an immutable copy of the freshly rebuilt debug
+bundle, served by `/tmp/tonk-activation-recovery-server`. Four related Chrome
+cases passed with retries disabled: cross-device verification, original-tab
+completion, signup-to-share, and two waiting devices verified elsewhere.
+`cargo fmt -p tonk-ui -- --check` and `git diff --check` passed. The tests use the
+current local native test binary via `cargo test` / `cargo nextest`, not an old
+archive. Logs: `/tmp/tonk-activation-stall-red.log`,
+`/tmp/tonk-activation-stall-green.log`, and
+`/tmp/tonk-activation-recovery-related.log`. Safari and the user's live session
+were not verified; missed delivery was injected explicitly in the regression.

@@ -1645,9 +1645,8 @@ pub(crate) fn run_signup_ceremony() {
                             tonk_analytics::account::FailureKind::AwaitingActivation,
                         ),
                     );
-                    // What happens next arrives as facts: the emailed
-                    // link lands `AccountCustomer`, and the subscription
-                    // renders it. Nothing here polls for it.
+                    // Prefer the live activation fact, with a direct status
+                    // probe while waiting in case subscription delivery stalls.
                     // A row of its own, so the step in front of you is
                     // visible as a row and not only as a sentence.
                     add_row(
@@ -1663,13 +1662,7 @@ pub(crate) fn run_signup_ceremony() {
                     });
                     if let Some(host) = host_element() {
                         await_activation(&host);
-                        // The activation signal is the account sweep's
-                        // own pull being served, so drive the sweeps at
-                        // the ceremony's cadence: confirmation should
-                        // land here seconds after the link is opened,
-                        // not whenever the background heartbeat next
-                        // comes around.
-                        nudge_sync_while_waiting();
+                        watch_activation_while_waiting();
                     }
                 }
             }
@@ -1677,24 +1670,21 @@ pub(crate) fn run_signup_ceremony() {
     });
 }
 
-/// Ask the worker to drain sync every few seconds while the ceremony
-/// waits on the emailed link.
-///
-/// The sweep that is finally served records the activation fact in the
-/// same pass, and the subscription flips the ceremony — this loop only
-/// controls how soon that sweep runs. Stops with the wait: a settled
-/// row, a dismissed cluster.
+/// Observe activation directly while signup waits, even if its subscription
+/// stops delivering. A sync poke alone is insufficient: it can return success
+/// without running a drain, and its completion does not update this dialog.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn nudge_sync_while_waiting() {
-    /// Fast enough that confirming feels answered, slow enough not to
-    /// hammer a drain that also runs on its own heartbeat.
+fn watch_activation_while_waiting() {
     const EVERY: i32 = 3_000;
+    let Some(host) = host_element() else {
+        return;
+    };
 
     wasm_bindgen_futures::spawn_local(async move {
         loop {
-            let Some(host) = host_element() else {
+            if !host.is_connected() {
                 return;
-            };
+            }
             let still_waiting = host
                 .query_selector(&format!("{CONFIRM_ROW} .v"))
                 .ok()
@@ -1703,6 +1693,22 @@ fn nudge_sync_while_waiting() {
                 .is_some_and(|value| value.trim() == "awaiting confirmation");
             if !still_waiting {
                 return;
+            }
+            let state = crate::api::customer_state().await;
+            // A dismissed dialog must never finish a newer signup after an
+            // outstanding request returns. The host is fixed for this watch.
+            if !host.is_connected() {
+                return;
+            }
+            match state {
+                Ok(state) if state["status"].as_str() == Some("Active") => {
+                    finish_ceremony();
+                    return;
+                }
+                Err(error) => {
+                    tonk_common::log!("register: activation probe failed: {error}");
+                }
+                _ => {}
             }
             if let Err(error) = crate::api::kick_sync().await {
                 tonk_common::log!("register: sync nudge did not run: {error}");

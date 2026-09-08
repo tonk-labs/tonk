@@ -1247,6 +1247,39 @@ mod tests {
         Ok(())
     }
 
+    /// A stalled live subscription must not strand an already-verified signup.
+    /// Verification happens elsewhere while the original tab stays visible,
+    /// with no focus event or page reload to drive completion.
+    #[dialog_common::test]
+    async fn it_finishes_signup_when_activation_subscription_stalls(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "activation-stream-stalled@example.com";
+        enroll_only(&driver, &env, email).await?;
+        driver
+            .execute(
+                r#"const host = document.querySelector('#tonk-register');
+               host.reset = host.update = () => {};"#,
+                Vec::new(),
+            )
+            .await?;
+        activate_over_http(&env, email).await?;
+        let customer = get_json(&driver, "/api/customer").await?;
+        assert_eq!(
+            successful_body("verified customer", &customer)["status"],
+            "Active"
+        );
+        await_signup_hub(&driver).await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The whole three-device story. Device A starts registration and
     /// waits. Device B signs in with the same passkey while the email
     /// is unopened — parked on the same awaiting row, not an error.
