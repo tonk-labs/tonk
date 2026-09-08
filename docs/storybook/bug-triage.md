@@ -111,7 +111,7 @@ behavior remain in the verification backlog rather than this file.
   [journey `ACCT-B03`](journey-catalog.md#accounts-browser-lifecycle).
 - **Status:** Fixed. `it_offers_sign_in_for_a_taken_address_without_minting`
   asserts a credential count of zero. The account panel's Create / Log in fork
-  is gone: one "link an account" button raises the same dialog, so there is no
+  is gone: one "add an account" button raises the same dialog, so there is no
   longer a place to answer the question wrongly.
 
 ### B-04: Busy account pages leave navigation links operational

@@ -446,7 +446,7 @@ Add
 5. Remove only A's credential from the test virtual authenticator with
    `WebAuthn.removeCredential`, modeling the user choosing B in a discoverable
    credential picker without changing any Tonk storage.
-6. Use the ordinary provider-free `link an account` flow and
+6. Use the ordinary provider-free `add an account` flow and
    `run_cluster_login` for B. Do not call `/api/profiles/add`.
 7. Assert B's existing profile becomes active, the profile count does not grow,
    account summary reports B, and B's profile space list omits A's retained

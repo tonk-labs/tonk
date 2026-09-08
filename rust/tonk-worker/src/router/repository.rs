@@ -1066,7 +1066,7 @@ async fn run_invite(
                 && let Some(client) = env.client()
                 && let Err(error) = super::navigate::request_account_link(client, &subject).await
             {
-                log!("Invite: could not ask the page to link an account: {error}");
+                log!("Invite: could not ask the page to add an account: {error}");
             }
 
             // `not-synced` is not a refusal either: the account has a
@@ -1122,8 +1122,10 @@ async fn run_invite(
     // when `/provider/add` succeeds and retracted when the gate stops
     // serving the subject, so a provisioned space mints its link with
     // no registration call at all. Only a space with no record runs the
-    // ceremony — a legacy space provisioned before the fact existed, or
-    // one whose earlier attempt failed — and success records the fact,
+    // ceremony for owned authority — a legacy space provisioned before the
+    // fact existed, or one whose earlier attempt failed. Joined authority
+    // keeps its existing provider; this account need not have its record.
+    // Success for an owned space records the fact,
     // so it runs once, not per share. Best effort like the enable-sync
     // attach: a foreign remote (self-hosted, a test server) is not our
     // access service, and refusing the mint over it would make those
@@ -3008,8 +3010,8 @@ pub async fn create_repository(
     Ok(repository)
 }
 
-/// Provision `subject` under this profile's account, repairing a stale
-/// consent first.
+/// Provision owned `subject` under this profile's account, repairing a stale
+/// consent first. Indirect joined authority keeps its existing provider.
 ///
 /// A space created before sign-in mints its consent to the account the
 /// profile held THEN — the onboarding account — and the stored chain
@@ -3027,6 +3029,13 @@ pub(crate) async fn provision_space_consumer(
     subject: &Did,
 ) -> Result<(), TonkWorkerError> {
     let held = match space_root_prefix(tonk, subject).await {
+        // A joined prefix is `space -> ... -> account`, not the direct
+        // `space -> account` consent used to provision an owned space.
+        // `/provider/add` consumes its FIRST proof, whose audience belongs
+        // to the inviter, and correctly refuses it for this customer.
+        // Leave that provider alone. This is not an access check: minting
+        // and sync still prove their authority through the full chain.
+        Ok(prefix) if prefix.proofs().nth(1).is_some() => return Ok(()),
         Ok(prefix) => match super::identity::root_did(tonk).await {
             Ok(root) if prefix.audience() != &root => None,
             _ => Some(prefix),
@@ -3061,7 +3070,7 @@ fn remote_is_own_service(remote: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Load the exact provider-neutral `space → root` prefix persisted at creation.
+/// Load the provider-neutral `space → … → root` prefix saved at creation or join.
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -7081,6 +7090,16 @@ block/insert!:
 
         let _ = post_remote(&app, &key, "https://sync.example.test/ucan/", None).await;
         let subject: dialog_varsig::Did = key.parse().expect("joined subject DID");
+        {
+            let tonk = state.read().await;
+            assert!(
+                !crate::router::customer::space_provider_recorded(&tonk, &subject).await,
+                "joining does not make this account the provider",
+            );
+            super::provision_space_consumer(&tonk, &subject)
+                .await
+                .expect("joined authority must leave provisioning with the existing provider");
+        }
         let before = content_invitations(&state, &key).await.len();
 
         crate::router::dispatch(
@@ -7098,6 +7117,25 @@ block/insert!:
         assert!(
             share_blocked_rows(&state, &key).await.is_empty(),
             "a joined member's valid authority must not be reported as a refused share",
+        );
+    }
+
+    /// Direct owned authority must still reach provisioning. This harness
+    /// has no worker origin, so reaching the service boundary returns an
+    /// error rather than silently treating the owned space as already served.
+    #[dialog_common::test]
+    async fn it_requires_provisioning_for_owned_space_authority() {
+        let (_app, state, key) = fresh_repo("owned-space-provisioning").await;
+        let tonk = state.read().await;
+        let subject = key.parse().unwrap();
+        let prefix = super::space_root_prefix(&tonk, &subject).await.unwrap();
+        assert_eq!(prefix.proofs().count(), 1);
+        let error = super::provision_space_consumer(&tonk, &subject)
+            .await
+            .expect_err("owned authority must still attempt provisioning");
+        assert!(
+            matches!(error, crate::TonkWorkerError::Internal(ref detail) if detail == "the worker origin is unavailable"),
+            "expected the service boundary, got {error}",
         );
     }
 

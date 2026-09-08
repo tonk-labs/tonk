@@ -210,7 +210,7 @@ pub(crate) fn notify_analytics(
 /// cannot: it has no `window`. The page answers through the ordinary API
 /// (`POST /api/identity/root`), which is what the worker then waits on.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-/// Ask the page to link an account, on behalf of `space`.
+/// Ask the page to add an account, on behalf of `space`.
 ///
 /// Sent when a share cannot proceed because nothing is registered. The
 /// worker owns that judgement — the page is told what to do, not why —
@@ -343,7 +343,7 @@ pub(crate) async fn request_account_link<'a>(
 ) -> Result<(), crate::TonkWorkerError> {
     let _ = (client, space);
     Err(crate::TonkWorkerError::Conflict(
-        "no page is available on this host to link an account".to_string(),
+        "no page is available on this host to add an account".to_string(),
     ))
 }
 

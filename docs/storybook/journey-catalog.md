@@ -99,7 +99,7 @@ the most important gaps, not the only variants required.
 | `COLLAB-02` | Mint a recipient-root invite. | Valid/wrong DID; accountless/account recipient; remote variants. | Partial invite tests. | Full claim boundary, wrong recipient, root rotation, URL leakage. |
 | `COLLAB-03` | Join or claim an invite into a named space. | Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed; no passkey account. | Join, profile, and authority tests; accountless claim terminates at the onboarding account and remains usable after account union. | Process error matrix, crash between claim and registration, response loss, concurrent claim, browser-only invite-seed rotation after native login. |
 | `COLLAB-04` | Revoke an invite and observe access loss. | Before/after claim; local replica; online/offline recipient; several remotes. | Invite revocation integration and real-browser access cutoff. | Multi-remote partial publish, later reconnection, local-write semantics, idempotent revoke. |
-| `COLLAB-05` | Claim while accountless, later link an account, recover on another device. | Provider-free root; customer activation states; second device. | Whole integration/browser flow exists for claim retention and backup. | Restart at each retention/push stage, duplicate claims, different-root account attempt. |
+| `COLLAB-05` | Claim while accountless, later add an account, recover on another device. | Provider-free root; customer activation states; second device. | Whole integration/browser flow exists for claim retention and backup. | Restart at each retention/push stage, duplicate claims, different-root account attempt. |
 
 ## Authoring, data, rendering, and transfer
 

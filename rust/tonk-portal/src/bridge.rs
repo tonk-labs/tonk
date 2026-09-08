@@ -320,6 +320,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     var env=event.data; if(!env) return;
     switch(env.type){
       case "ready": tonk.context=env.context; resolveReady(); return;
+      case "context": tonk.context=env.context; return;
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
@@ -1636,6 +1637,17 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
     set_v1(&ready, "ready");
     let _ = Reflect::set(&ready, &"context".into(), &build_context(host, state));
     let _ = port.post_message(&ready);
+}
+
+/// Update URL context before a reused guest receives the next route frame.
+pub(crate) fn refresh_context(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    let port = state.borrow().port.clone();
+    if let Some(port) = port {
+        let envelope = Object::new();
+        set_v1(&envelope, "context");
+        let _ = Reflect::set(&envelope, &"context".into(), &build_context(host, state));
+        let _ = port.post_message(&envelope);
+    }
 }
 
 // --- Envelope dispatch (parent side) ------------------------------
@@ -3463,6 +3475,41 @@ mod tests {
         assert!(
             get_str(&context, "search").is_some(),
             "context carries a `search` field forwarded from the host location",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refreshes_location_in_a_reused_guest() {
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+        let win = window().unwrap();
+        let original = win.location().href().unwrap();
+        win.history()
+            .unwrap()
+            .push_state_with_url(
+                &JsValue::NULL,
+                "",
+                Some("/settings?delete-space=did%3Akey%3AzOwned#delete-account"),
+            )
+            .unwrap();
+        refresh_context(&consumer, &state);
+        let update = listener.wait_for("context").await;
+        let context = Reflect::get(&update, &"context".into()).unwrap();
+        win.history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original))
+            .unwrap();
+        assert_eq!(get_str(&context, "path").as_deref(), Some("/settings"));
+        assert_eq!(
+            get_str(&context, "search").as_deref(),
+            Some("?delete-space=did%3Akey%3AzOwned")
+        );
+        assert_eq!(
+            get_str(&context, "hash").as_deref(),
+            Some("#delete-account")
         );
     }
 

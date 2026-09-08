@@ -2247,9 +2247,11 @@ ui-account-settings tonk-dialog {
     --fabb-ring: var(--ring); --fabb-sep: var(--sep);
     --fabb-hover: var(--wash); --fabb-press: var(--wash);
     --fabb-dim: var(--dim); }
-ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
+ui-account-settings .confirm-body { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
+ui-account-settings .confirm-body > span { display: block; margin-bottom: 10px; }
+ui-account-settings .confirm-body > span:empty { display: none; }
 ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
     letter-spacing: 0.02em; color: var(--soft);
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -3096,7 +3098,7 @@ tonk-notebook-index {
      the [open] rule so it wins their specificity tie. */
   #tonk-register[data-suspended] { display: none; }
   #tonk-register::backdrop { background: var(--dim); }
-  /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
+  /* Anchored — the Hub's add-an-account tab raised it: the ceremony rows
      ARE that tab's page, seated in the column one gap under the bar, so
      there is no veil and no head row (the tab is the head). */
   #tonk-register[data-anchored]::backdrop { background: transparent; }
@@ -3125,6 +3127,7 @@ tonk-notebook-index {
        top-page ceremony replaces it. Paint the column's gaps as well as its
        blocks so menu labels cannot show through between ceremony rows. */
     background: var(--page);
+    box-shadow: 0 0 0 1px var(--page);
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
@@ -3299,6 +3302,13 @@ tonk-notebook-index {
   }
   .tonk-ceremony .oexp p b {
     font-weight: 600; color: var(--ink);
+  }
+  .tonk-ceremony .oexp a {
+    color: var(--ink);
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  .tonk-ceremony .oexp a:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: 3px;
   }
 
   /* The way out: the quietest thing on screen. */

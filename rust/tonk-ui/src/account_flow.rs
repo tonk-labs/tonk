@@ -533,7 +533,7 @@ mod tests {
     async fn raise_cluster_from_hub(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
         goto(driver, env.tonk_web.as_str()).await?;
         enter_hub(driver).await?;
-        wait_for_text_containing(driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(driver, "[data-account-trigger]", "add an account").await?;
         click(driver, "[data-account-trigger]").await?;
         driver.enter_default_frame().await?;
         await_register_dialog(driver).await?;
@@ -935,6 +935,7 @@ mod tests {
             .json()
             .clone();
         click_register_action(driver).await?;
+        type_into_settled_row(driver, "display name", "Tab Owner").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         loop {
             // Creating an account under an already-account-bound local
@@ -1050,6 +1051,121 @@ mod tests {
         Ok(())
     }
 
+    async fn await_signup_hub(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver.current_url().await?.path() == "/"
+                && driver.find_all(By::Css("#tonk-register")).await?.is_empty()
+            {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "original tab did not finish signup"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_finishes_signup_in_the_original_tab(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "activation-tab@example.com";
+        wait_for_service_worker(&driver).await?;
+        raise_cluster_from_hub(&driver, &env).await?;
+        type_into_register_dialog(&driver, email).await?;
+        await_register_action(&driver, "create a passkey").await?;
+        click_register_action(&driver).await?;
+        element(&driver, "#tonk-register-name").await?;
+        // An empty name cannot create the account or send its email.
+        click_register_action(&driver).await?;
+        await_narrator_containing(&driver, "Enter a display name").await?;
+        let inbox: Vec<(String, String)> = reqwest::get(env.access_service.join("_test/emails")?)
+            .await?
+            .json()
+            .await?;
+        assert!(
+            !inbox.iter().any(|(to, _)| to == email),
+            "an empty name must not send verification email"
+        );
+        type_into_settled_row(&driver, "display name", "Tab Owner").await?;
+        await_narrator_containing(&driver, "confirmation link").await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("pending account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
+        // Returning before verification must keep the ceremony waiting.
+        driver
+            .execute("window.dispatchEvent(new Event('focus'))", Vec::new())
+            .await?;
+        await_row_value(&driver, "email", "awaiting confirmation").await?;
+        let original = driver.window().await?;
+        let activation = driver.new_tab().await?;
+        driver.switch_to_window(activation).await?;
+        goto(&driver, &activation_link(&env, email).await?).await?;
+        element(&driver, "#activate-accept").await?.click().await?;
+        wait_for_displayed(&driver, "#activate-done").await?;
+        assert!(driver.find_all(By::Css("#tonk-register")).await?.is_empty());
+        assert_eq!(
+            element(&driver, "#activate-done-title")
+                .await?
+                .text()
+                .await?,
+            "account verified"
+        );
+        assert!(
+            element(&driver, "#activate-done")
+                .await?
+                .text()
+                .await?
+                .contains("You may close this tab")
+        );
+        assert!(
+            driver
+                .find_all(By::Css(
+                    "#activate-done a, #activate-done button, #activate-done input"
+                ))
+                .await?
+                .is_empty()
+        );
+        driver.close_window().await?;
+        driver.switch_to_window(original).await?;
+        await_signup_hub(&driver).await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_resume_signup_for_another_accounts_activation(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        enroll_only(&owner, &env, "link-owner@example.com").await?;
+        let other = driver_with_prf(&env).await?;
+        enroll_only(&other, &env, "other-account@example.com").await?;
+        goto(
+            &other,
+            &activation_link(&env, "link-owner@example.com").await?,
+        )
+        .await?;
+        element(&other, "#activate-accept").await?.click().await?;
+        wait_for_displayed(&other, "#activate-done").await?;
+        assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
+        let summary = get_json(&other, "/api/account/summary").await?;
+        let summary = successful_body("other account summary", &summary);
+        assert_eq!(summary["email"], "other-account@example.com");
+        assert_eq!(summary["displayName"], "Tab Owner");
+        owner.quit().await?;
+        other.quit().await?;
+        Ok(())
+    }
+
     /// Present `email`'s activation invocation to the access service
     /// over plain HTTP — what another device's activation page does, as
     /// far as this browser can tell: nothing in it handles the link.
@@ -1126,7 +1242,40 @@ mod tests {
         // The waiting row resolves from the sweep alone — inside the
         // helper's one-minute patience, where the ceremony's own nudge
         // cadence is seconds.
-        await_row_value(&driver, "email", "verified").await?;
+        await_signup_hub(&driver).await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A stalled live subscription must not strand an already-verified signup.
+    /// Verification happens elsewhere while the original tab stays visible,
+    /// with no focus event or page reload to drive completion.
+    #[dialog_common::test]
+    async fn it_finishes_signup_when_activation_subscription_stalls(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let email = "activation-stream-stalled@example.com";
+        enroll_only(&driver, &env, email).await?;
+        driver
+            .execute(
+                r#"const host = document.querySelector('#tonk-register');
+               host.reset = host.update = () => {};"#,
+                Vec::new(),
+            )
+            .await?;
+        activate_over_http(&env, email).await?;
+        let customer = get_json(&driver, "/api/customer").await?;
+        assert_eq!(
+            successful_body("verified customer", &customer)["status"],
+            "Active"
+        );
+        await_signup_hub(&driver).await?;
+        let summary = get_json(&driver, "/api/account/summary").await?;
+        assert_eq!(
+            successful_body("account summary", &summary)["displayName"],
+            "Tab Owner"
+        );
         driver.quit().await?;
         Ok(())
     }
@@ -1166,12 +1315,11 @@ mod tests {
         activate_over_http(&env, email).await?;
 
         // Device A's ceremony resolves from its own sweep.
-        await_row_value(&device_a, "email", "verified").await?;
+        await_signup_hub(&device_a).await?;
         // Device B's parked login finishes silently: verified, with the
         // passkey row the completed sign-in shows — and nothing asked
         // for a second assertion.
-        await_row_value(&device_b, "email", "verified").await?;
-        await_settled_row(&device_b, "passkey").await?;
+        await_signup_hub(&device_b).await?;
 
         device_a.quit().await?;
         device_b.quit().await?;
@@ -1590,19 +1738,16 @@ mod tests {
             .execute(
                 r#"document.querySelector('#activate-confirm').hidden = true;
                     document.querySelector('#activate-done').hidden = false;
-                    const row = document.querySelector('#activate-done .account__row').getBoundingClientRect();
-                    const action = document.querySelector('#activate-done .account__run').getBoundingClientRect();
+                    const actions = document.querySelectorAll('#activate-done a, #activate-done button');
                     return {
                       heading: document.querySelector('#activate-done-title').textContent.trim(),
-                      rowWidth: Math.round(row.width),
-                      actionHeight: Math.round(action.height)
+                      actions: actions.length
                     };"#,
                 Vec::new(),
             )
             .await?;
-        assert_eq!(done.json()["heading"], "account activated");
-        assert_eq!(done.json()["rowWidth"], 576);
-        assert_eq!(done.json()["actionHeight"], 36);
+        assert_eq!(done.json()["heading"], "account verified");
+        assert_eq!(done.json()["actions"], 0);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver
@@ -1719,7 +1864,7 @@ mod tests {
         // address is on the settings page.
         let signed_in = async {
             enter_hub(&driver).await?;
-            wait_for_text_without(&driver, "[data-account-trigger]", "link an account").await?;
+            wait_for_text_without(&driver, "[data-account-trigger]", "add an account").await?;
             driver.enter_default_frame().await?;
             open_hub_settings(&driver, &env).await?;
             wait_for_text_containing(&driver, "[data-settings-email]", EMAIL).await?;
@@ -1848,12 +1993,18 @@ mod tests {
         type_into_register_dialog(&driver, "one-action@example.com").await?;
         await_register_action(&driver, "create a passkey").await?;
 
+        click_register_action(&driver).await?;
+        element(&driver, "#tonk-register-name")
+            .await?
+            .send_keys("One Action")
+            .await?;
+
         driver
             .execute(
                 r#"const action = document.querySelector('#tonk-register-action');
-                   const email = document.querySelector('#tonk-register-email');
+                   const name = document.querySelector('#tonk-register-name');
                    action.click();
-                   email.dispatchEvent(new KeyboardEvent('keydown', {
+                   name.dispatchEvent(new KeyboardEvent('keydown', {
                      key: 'Enter', bubbles: true, cancelable: true
                    }));"#,
                 Vec::new(),
@@ -1899,6 +2050,7 @@ mod tests {
         type_into_register_dialog(&driver, email).await?;
         await_register_action(&driver, "create a passkey").await?;
         click(&driver, "#tonk-register-action").await?;
+        type_into_settled_row(&driver, "display name", "Retry Name").await?;
         await_register_action(&driver, "create a passkey").await?;
 
         let first = driver
@@ -2686,6 +2838,7 @@ mod tests {
         // listened for that request the dialog still reported success,
         // so the credential count is what tells the difference.
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Nobody").await?;
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
@@ -2703,7 +2856,7 @@ mod tests {
         // as verified, the name commits, and the closing action is the
         // thing the share was for.
         await_row_value(&driver, "email", "verified").await?;
-        type_into_settled_row(&driver, "display name", "Nobody").await?;
+        assert_eq!(await_settled_row(&driver, "display name").await?, "Nobody");
         await_register_action(&driver, "copy share link").await?;
         click_register_action(&driver).await?;
 
@@ -2930,6 +3083,7 @@ mod tests {
         // 11–12. Running it waits on the platform, and says so.
         let before = credential_count(&driver, &authenticator).await?;
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Alice").await?;
         await_register_action(&driver, "waiting for your device").await?;
 
         // 12–13. The ceremony settles into a record naming the device.
@@ -2958,7 +3112,6 @@ mod tests {
             await_row_value(&driver, "email", "verified").await?;
 
             // 19. Then the name, typed and committed.
-            type_into_settled_row(&driver, "display name", "Alice").await?;
             assert_eq!(await_settled_row(&driver, "display name").await?, "Alice");
 
             // 20–22. The closing action is the thing the share was for.
@@ -3007,11 +3160,11 @@ mod tests {
         Ok(())
     }
 
-    /// The Hub offers to link an account, and does it in one step.
+    /// The Hub offers to add an account, and does it in one step.
     ///
     /// It used to read "log in" and navigate to `/settings`, which put
     /// two surfaces between the label and the ceremony — press it, land
-    /// on a panel, press "link an account" there, meet the cluster only
+    /// on a panel, press "add an account" there, meet the cluster only
     /// then. It also named the wrong act: the address decides whether it
     /// creates a passkey or signs you in, so half of "log in"'s readers
     /// were told something untrue before they had typed anything.
@@ -3019,7 +3172,7 @@ mod tests {
     /// Both halves are asserted from the page, because both are what a
     /// person sees: the word on the control, and what one press does.
     #[dialog_common::test]
-    async fn it_links_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
+    async fn it_adds_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
 
@@ -3027,7 +3180,7 @@ mod tests {
         // action, so it must not dress up as a dropdown: no caret ever
         // (the cell is a tab of the hub bar), no menu-button ARIA.
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "add an account").await?;
         let affordance = driver
             .execute(
                 r##"
@@ -3043,7 +3196,7 @@ mod tests {
         assert_eq!(
             affordance.json()["haspopup"],
             serde_json::Value::Null,
-            "the link-an-account trigger is not a menu button",
+            "the add-an-account trigger is not a menu button",
         );
         assert_eq!(
             affordance.json()["caret"],
@@ -3062,7 +3215,7 @@ mod tests {
         assert_eq!(
             driver.current_url().await?,
             before,
-            "linking an account happens in place, with no page in between",
+            "adding an account happens in place, with no page in between",
         );
 
         // Finish the ceremony the cluster raised. The Hub is never
@@ -3071,6 +3224,7 @@ mod tests {
         type_into_register_dialog(&driver, "hub-one-step@example.com").await?;
         await_register_action(&driver, "create a passkey").await?;
         click_register_action(&driver).await?;
+        type_into_settled_row(&driver, "display name", "Hub Owner").await?;
         await_settled_row(&driver, "passkey").await?;
         await_narrator_containing(&driver, "confirmation link").await?;
 
@@ -3093,7 +3247,7 @@ mod tests {
                 )
                 .await?;
             let label = state.json()["label"].as_str().unwrap_or("").to_owned();
-            if !label.is_empty() && label != "link an account" {
+            if !label.is_empty() && label != "add an account" {
                 assert_eq!(
                     state.json()["haspopup"].as_str(),
                     Some("menu"),
@@ -3347,8 +3501,7 @@ mod tests {
 
     /// A passkey login from a fresh browser finishes only once the account's
     /// portable name is available, then returns straight to the complete Hub.
-    /// The ceremony is anchored under the Hub bar, so its terminal action must
-    /// name that destination instead of claiming there is a space behind it.
+    /// Login leaves the ceremony automatically, without a return-action click.
     #[cfg(feature = "integration-tests")]
     #[dialog_common::test]
     async fn it_returns_a_new_browser_login_to_the_synced_hub(env: TestEnvironment) -> Result<()> {
@@ -3376,30 +3529,25 @@ mod tests {
         type_into_register_dialog(&second, EMAIL).await?;
         await_register_action(&second, "log in with your passkey").await?;
         click_register_action(&second).await?;
-        await_settled_row(&second, "passkey").await?;
-
-        // Login success is the boundary: the account branch must already be
-        // hydrated, rather than exposing the fresh profile's petname until a
-        // later background sweep happens to catch up.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        while second.find(By::Css("#tonk-register")).await.is_ok() {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "login left the registration ceremony standing"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_service_worker(&second).await?;
+        await_url_path(&second, "/").await?;
+        anyhow::ensure!(
+            second.find(By::Css("#tonk-register")).await.is_err(),
+            "login must leave the registration ceremony automatically"
+        );
         let summary = get_json(&second, "/api/account/summary").await?;
         assert_eq!(
             successful_body("read the newly linked account", &summary)["displayName"],
             NAME
         );
-        await_register_action(&second, "return to hub").await?;
-
-        enter_hub(&second).await?;
-        wait_for_text(&second, "[data-account-label]", NAME).await?;
-        second.enter_default_frame().await?;
-        click_register_action(&second).await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while second.find(By::Css("#tonk-register")).await.is_ok() {
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "return to hub left the registration ceremony standing"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
 
         enter_hub(&second).await?;
         assert!(
@@ -4929,7 +5077,7 @@ mod tests {
         // account has synced, so it is not what proves the link.
         let signed_in = async {
             enter_hub(&claimer).await?;
-            wait_for_text_without(&claimer, "[data-account-trigger]", "link an account").await?;
+            wait_for_text_without(&claimer, "[data-account-trigger]", "add an account").await?;
             claimer.enter_default_frame().await?;
             Ok::<(), anyhow::Error>(())
         };
@@ -5045,14 +5193,14 @@ mod tests {
         use_passkey_consent(&driver).await?;
 
         // The purge retires this profile and rotates onto a fresh one;
-        // the top page leaves for the Hub, which offers to link an
+        // the top page leaves for the Hub, which offers to add an
         // account again.
         if let Err(error) = await_url_path(&driver, "/").await {
             let consent = custody_consent_diagnostic(&driver).await;
             return Err(error).context(format!("deletion consent={consent}"));
         }
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "add an account").await?;
         driver.enter_default_frame().await?;
 
         // The profile is unlinked: the deletion plan is no longer
@@ -5114,7 +5262,7 @@ mod tests {
             .as_array()
             .context("profile roster is not an array")?
             .len();
-        let (first_profile, first_label) = active_profile_and_label(profiles_before_add)?;
+        let (first_profile, _) = active_profile_and_label(profiles_before_add)?;
 
         // The real Hub frame renders the first account's space.
         goto(&driver, env.tonk_web.as_str()).await?;
@@ -5154,9 +5302,6 @@ mod tests {
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
             "a fresh account must not see the other account's spaces"
         );
-        let profiles = get_json(&driver, "/api/profiles").await?;
-        let (_, second_label) =
-            active_profile_and_label(successful_body("list second profile", &profiles))?;
         let summary = get_json(&driver, "/api/account/summary").await?;
         let passkey_created_on =
             successful_body("read second account summary", &summary)["passkey"]["createdOn"]
@@ -5165,10 +5310,13 @@ mod tests {
                 .to_string();
 
         // The second account's sealed Hub has its own empty roster.
+        // Signup chose this name. The profile roster can still contain its
+        // generated name until account-state convergence projects the choice.
+        // Do not save that transient label as the Hub's expected account name.
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         if let Err(error) =
-            wait_for_text_containing(&driver, "[data-account-trigger]", &second_label).await
+            wait_for_text_containing(&driver, "[data-account-trigger]", "Tab Owner").await
         {
             let diagnostic = driver
                 .execute(
@@ -5273,7 +5421,7 @@ mod tests {
             .clone();
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_text_containing(&driver, "[data-account-menu]", &first_label).await?;
+        wait_for_text_containing(&driver, "[data-account-menu]", "Tab Owner").await?;
         let selector = format!("button[data-profile=\"{first_profile}\"]");
         click(&driver, &selector).await?;
         driver.enter_default_frame().await?;

@@ -241,6 +241,27 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
 }
 
 #[test]
+fn it_hides_space_absence_slots_before_display_initialization() {
+    let chrome = PROFILE_LIBRARY
+        .split("<tonk-display with={id} entity={id} model=tonk:repository view=title>")
+        .nth(1)
+        .and_then(|source| source.split("</tonk-display>").next())
+        .expect("space chrome must contain its repository title display");
+    for slot in ["no-model", "no-entity", "no-view"] {
+        let marker = format!("slot=\"{slot}\"");
+        let attributes = chrome
+            .split(&marker)
+            .nth(1)
+            .and_then(|source| source.split('>').next())
+            .expect("space fallback slot must exist");
+        assert!(
+            attributes.split_whitespace().any(|attr| attr == "hidden"),
+            "{slot} must start hidden: light-DOM slots can paint before the display initializes"
+        );
+    }
+}
+
+#[test]
 fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     let absent = PROFILE_LIBRARY
         .split("/* The absent-space state")

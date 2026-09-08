@@ -59,7 +59,7 @@ this plan exists to avoid.
   meta branch stays local-only and carries no shared fact.
 - `tonk space new` creates local-only when signed out (no roster yet), and
   hosted account-owned when signed in (founder row written at creation).
-  Linking an account never scans, provisions, or enrolls existing spaces.
+  Adding an account never scans, provisions, or enrolls existing spaces.
 - The only ownership transition is local → the signed-in account, one space
   at a time, via `tonk space link`. The already-owned refusal reads the
   roster, not the registry. Linking is non-destructive, every step idempotent
