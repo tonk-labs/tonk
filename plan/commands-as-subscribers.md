@@ -150,24 +150,47 @@ effect!:
   assert!: invite
   when:
     - assert: invite-request
-      where: { for: ?role, ... }
-    - assert: role-holder        # roster: who holds ?role
-      where: { role: ?role, member: ?me }
-    - assert: self               # device-local ground atom (see below)
-      where: { this: ?me }
+      where: { for: ?here, ... }
+    - assert: db/origin           # injected: THIS replica
+      where: { this: ?here }
 ```
 
-Rules just filter out messages that aren't for them. What this requires
-instead of rule vocabulary is exactly one ground primitive: **a
-device-local `self` fact to join against** — query evaluation today is
-deliberately site-independent (same branch state → same results
-everywhere), so "who am I" must enter as a fact. The session overlay is
-the right home: overlay facts never replicate and die with the worker,
-and the sync path already stamps self-identity overlays
-(`publish_self_identity`, `router/sync.rs:130`). Role resolution is
-then plain joins over roster/custody facts — which also gets the
-rotation-safety of roles over raw DIDs for free, since the roster is
-what the founder-migration keeps current.
+Rules just filter out messages that aren't for them. And the ground
+atom this requires **already exists**: every session evaluates with
+injected identity facts — `db/session` (profile, operator, active
+branches), `db/origin` (repository subject × device profile: *the
+replica*, documented in `core.yaml` as usable "to assert/query device
+specific information"), and `db/branch` (unique per origin, precisely
+because replicas hold same-named branches at different revisions).
+Dialog auto-materializes the `dialog.session/*` facts into every
+transaction view (`dialog-repository/.../transaction/query.rs:463`);
+the concepts are first-class in `dialog-repository/src/schema.rs`.
+Nothing to invent, not even an overlay stamp.
+
+This also sharpens the address space beyond "device": the injected
+facts form an identity **hierarchy** — profile, operator, replica
+(`db/origin`: this device's copy of this repository), branch — and a
+rule can resolve "who am I" at whichever level fits, matching `for:`
+against it with a direct join. The level chooses the execution
+multiplicity: a profile-addressed message matches *every* replica of
+that profile (a broadcast to one's own devices — right for device-local
+maintenance, where once-per-device is the point), while a
+replica-addressed message matches exactly one. Effects with global
+outcomes (minting) address a replica — or a role that resolves to one.
+Since the identity derives deterministically from device key + repo DID
++ branch name, a replica address is stable across worker restarts and
+computable by any peer that knows the target's device profile (from
+roster/custody/device facts).
+
+Role addressing then composes *on top* as derivation rather than being
+a second mechanism: resolving `for: host` to a concrete replica is a
+deterministic monotone rule over roster facts (class 1 below — safe to
+evaluate everywhere), whose conclusion is a replica-addressed message.
+Prefer role addressing for durable requests all the same: an exact
+replica address in replicated state is precise but brittle — a lost or
+rotated device leaves messages addressed to a dead replica unconsumed
+forever, so replica-exact messages want an expiry or a re-resolution
+rule, while role-addressed ones survive re-hosting by re-resolving.
 
 Design consequences:
 
@@ -192,7 +215,9 @@ Design consequences:
   the guard as an install-time check in the same slot as the V1 trigger
   validation: a rule whose head mints a fresh entity (the only
   nondeterminism a declarative head has) must carry an audience-filter
-  premise reaching the `self` fact.
+  premise reaching one of the injected identity facts, at a level that
+  yields the intended multiplicity (replica or role→replica for
+  exactly-once).
 - **Which rules need addressing** — the taxonomy that bounds the
   feature:
   1. *Deterministic, monotone derivations* (head a pure function of the
@@ -217,8 +242,10 @@ audience's rule negates its own trigger — an outcome fact plus
 declarative twin of the imperative side's outcome-gated dedup,
 expressible in the existing rule vocabulary.
 
-Until the `self` ground atom and the install-time lint land, effects
-trigger on transient or overlay facts only.
+The identity facts already exist, so what gates lifting the V1
+restriction is only the install-time lint and the consumption
+discipline; until those land, effects trigger on transient or overlay
+facts only.
 
 ## Rename dissolves into a fact
 
