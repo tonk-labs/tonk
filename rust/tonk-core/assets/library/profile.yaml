@@ -269,6 +269,20 @@ view!:
             <input type="hidden" name="name" value="Untitled">
             <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
+          <!-- Joining by pasted link: the ONLY browser affordance for a
+               link rooted on another deployment. Opening such a link
+               lands on ITS host; pasting it here hands the URL to THIS
+               worker, which redeems it regardless of the link's host
+               (the chain and endpoint ride in the URL). `required` plus
+               the extractor's blank-field omission keep an empty submit
+               from committing a url-less transient. On success the
+               worker navigates this page into the joined space; the
+               /join route remains the rich-status path for opened links. -->
+          <form class="sjoin-form" on:space-join=tonk/join>
+            <input class="sjoin-url chrome" name="url" type="url" required
+              placeholder="join with an invite link" aria-label="invite link">
+            <button class="sjoin chrome" type="submit">join</button>
+          </form>
         </div>
 
         </main>
@@ -387,6 +401,19 @@ event!: &on/join
   type: "mount"
   where:
     url: ".detail.href"
+
+# The same command, fired from the Hub's paste form instead of a /join
+# visit. A link opened directly lands on the SPACE'S host (the invite
+# base derives from its access endpoint), which is right when that host
+# is yours — but a member of a different deployment redeems a foreign
+# link by handing the URL to their OWN worker, and pasting is the only
+# way to do that in a browser. The worker parses the pasted string; the
+# link's host never matters to redemption.
+event!: &on/space-join
+  type: "submit"
+  prevent-default: true
+  where:
+    url: ".currentTarget.elements.url.value"
 
 command!: &tonk/join
   this: tonk:join

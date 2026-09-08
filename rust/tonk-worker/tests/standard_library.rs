@@ -429,6 +429,37 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
     }
 }
 
+/// The Hub's paste form is the one browser affordance for redeeming a
+/// link rooted on ANOTHER deployment: opening such a link lands on its
+/// own host, so a member of a different deployment joins by handing the
+/// URL to their own worker. Removing this form (as the /join paste page
+/// removal did) silently removes cross-host joining — the exact
+/// regression this test exists to catch.
+#[test]
+fn it_offers_joining_by_pasted_link_from_the_hub() {
+    assert!(
+        PROFILE_LIBRARY.contains("on:space-join=tonk/join"),
+        "the Hub paste form must dispatch the same join command the /join route redeems"
+    );
+    assert!(
+        PROFILE_LIBRARY
+            .contains(r#"<input class="sjoin-url chrome" name="url" type="url" required"#),
+        "the paste form reads the link from a required `url` field (the event \
+         extractor omits blank fields, so an empty submit commits nothing)"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("event!: &on/space-join")
+            && PROFILE_LIBRARY.contains(r#"url: ".currentTarget.elements.url.value""#),
+        "the submit event must fill the command's `url` from the pasted field"
+    );
+    // The 16px floor keeps mobile Safari from zooming the focused field —
+    // the same guard the removed /join paste form carried.
+    assert!(
+        HUB_STYLES.contains(".sjoin-url { font-size:16px; }"),
+        "the paste field must hold a 16px mobile font"
+    );
+}
+
 #[test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
@@ -667,7 +698,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".hubbar, .hcell { height:44px; min-height:44px; }",
-        ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
+        ".account-menu__row, .sempty, .srow, .snew, .sjoin, .sjoin-url { min-height:44px; }",
     ] {
         assert!(
             HUB_STYLES.contains(contract),
