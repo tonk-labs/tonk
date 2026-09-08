@@ -262,6 +262,18 @@ schema-level constraints as sufficient, or use a guard-rule pattern (a
 requested-name fact from which a rule derives the canonical
 `RepositoryName`), which is itself a propagator.
 
+**Not "vice versa" as a standing rule.** A standing propagation in
+each direction on a cardinality-one register does not converge:
+overwrite registers are not lattices, so two live rules ping-pong
+whenever the records differ (diff-guards stop the loop, not the
+arbitrary winner). The shape that works: **one standing propagation,
+space → profile** (the mirror always follows), and a profile-side
+rename is an *action* that writes the space's record (plus optionally
+the mirror, for same-turn UI). Editing the label from the Hub works by
+writing the source of truth, not via a reverse rule. Symmetric standing
+sync would require LWW metadata on the name so the merge becomes a
+join — possible, unneeded.
+
 Containment consequence: the space vocabulary from PR #911 shrinks —
 `RenameRepository` drops out of it entirely.
 
@@ -325,17 +337,54 @@ monotone, classes 2–3 need placement *because* they are not.
    outcome-gated dedup exists. Everything else can move to overlay
    commands with near-zero semantic change.
 
-## Sequencing
+## Once-only and no history: the button-click case
 
-The reconcile pilot (`plan/reconcile-via-subscription.md`, phase 1)
-exercises the self-subscriber substrate — pumps, establishment
-semantics, drain-to-quiescence on both targets — with no delivery-
-semantics risk. Command migration reuses that substrate:
+An event-triggered command (`Increment` on a + click) keeps both of
+its current guarantees in the unified model — neither is threatened by
+dropping transience, because durability is a **per-command tier**, not
+a consequence of unification:
 
-1. Reconcile pilot lands (name flow).
-2. Overlay-command leg: verify overlay deltas, move one UI command from
-   transient dispatch to an overlay-triggered subscriber, delete its
-   dispatch path.
-3. Durable-command leg: command ids + `executor` + outcome-gated
-   consumption, pilot on `InviteRequest`-to-host.
-4. Retire the transient apparatus once no command depends on it.
+- **No click history.** Three storage tiers: *transient* (today's one
+  commit cycle), *overlay* (session-lived, in-memory, never replicated,
+  never in durable history — where clicks go), *durable* (only requests
+  needing delivery guarantees; retracted on consumption, so no
+  unbounded log either). An overlay-tier `Increment` has zero storage
+  overhead; the counter state persists, the clicks never do.
+- **Fires once.** Two mechanisms stack. Everything is edge-triggered:
+  subscribers consume deltas and induction runs over a commit's
+  stimulus / the induce watermark — a fact asserting is one edge, one
+  firing; nothing re-evaluates level state per pass. And consumption:
+  the handler retracts the overlay command when it processes it, so
+  even the one replaying case (snapshot on a fresh subscription within
+  the same session) cannot redeliver. Ten rapid clicks = ten asserts =
+  ten deltas = ten increments; a crash between click and handling loses
+  the click, exactly as transients do today. The once-only hazard lives
+  only in the durable tier (boot deliberately replays unconsumed
+  commands), which is why outcome-gating is mandatory there and clicks
+  do not belong in it.
+
+## The plan
+
+Build order, each phase the test bed for the next. Phases 1–4 are
+imperative Rust on the existing engine; the declarative notation comes
+last, once its semantics are proven.
+
+1. **Substrate + name flow** (`plan/reconcile-via-subscription.md`
+   phase 1): worker self-subscriptions, pump, establishment snapshot,
+   drain-to-quiescence on both targets. The name propagator ships here,
+   imperatively — "space name updates profile label" exists from day
+   one; only its notation is deferred.
+2. **Migrate remaining sweeps** (account-name projection, founder
+   repair, mounts); delete `converge_account_state`.
+3. **Overlay-command leg**: verify overlay asserts surface in
+   subscriber deltas; move UI commands from transient dispatch to
+   overlay-triggered subscribers; retire the transient capture
+   apparatus.
+4. **Durable-command leg**: command entities + `for:` audience +
+   outcome-gated consumption; pilot on `InviteRequest`-to-host.
+5. **Declarative lift**: `effect!:` rules take over proven patterns —
+   same-branch rules first (with the identity-join filter and the
+   install-time lint). Cross-branch edges (the name mirror) stay
+   imperative longest: inductive rules are single-branch, so their
+   cross-branch story is the addressed-message pivot, and nothing in
+   phases 1–4 blocks on it.
