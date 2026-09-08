@@ -827,10 +827,21 @@ fn apply_account_linking(this: &HtmlElement, linking: bool) {
 
 /// A live account name arrived: the profile is linked. Paint the name and
 /// give the trigger its menu affordance back.
+///
+/// A link still in flight outranks the name, exactly as it outranks the
+/// roster's answer: the name subscription and the roster fetch both race
+/// the linking fact, and on a slow network either can land first. Without
+/// this guard a name (or the profile petname the roster falls back to)
+/// replaced "downloading account" while the pull was still running, so the
+/// cell named an account whose spaces had not arrived. The label is
+/// repainted when the link settles, which is what drops the marker.
 fn apply_account_name(this: &HtmlElement, name: &str) {
-    set_text(this, "[data-account-label]", name);
     let _ = this.set_attribute("data-active-provider", "true");
     set_trigger_mode(this, false);
+    if this.has_attribute("data-account-linking") {
+        return;
+    }
+    set_text(this, "[data-account-label]", name);
 }
 
 /// Begin (or re-show) the linking ceremony: activate the account tab and

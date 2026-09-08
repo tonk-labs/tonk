@@ -1322,9 +1322,14 @@ concept!: &account/linking
 view!:
   this: tonk:account/linking
   show:
-    ui: |
+    # DIRECTORY, not `ui`: the stack mounts this with no `entity`, so the
+    # display is a directory over however many linking facts exist (zero
+    # or one) and asks for the `directory` facet. A `ui` facet here left
+    # it with no match, and the default rendered the concept's raw fields
+    # — the entity DID and `linking: true` — into the stack.
+    directory: |
       <div class="sempty slinking">
-        <span>spaces are on the way</span>
+        <span>downloading your spaces</span>
         <span class="tonk-pulse" aria-hidden="true"></span>
       </div>
 

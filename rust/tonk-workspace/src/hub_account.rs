@@ -26,13 +26,19 @@ pub(crate) fn trigger_label(active_provider: Option<&str>) -> &'static str {
     }
 }
 
-/// What the trigger reads while this device is linking the account.
+/// What the trigger reads while this device is pulling the account down.
 ///
 /// A separate word from both other states: the person is past the door
 /// (so not "link an account") and the account is not here yet (so not its
 /// name). Login finishes when custody is recovered, which makes this
 /// window real rather than theoretical.
-pub(crate) const LINKING_LABEL: &str = "linking account";
+///
+/// It names the DOWNLOAD, not the handshake. Custody is already recovered
+/// by the time this shows; what the person is waiting on is bytes
+/// arriving over the network, and on a slow one that wait is the whole
+/// experience. "linking account" described a step that had already
+/// finished and left the waiting unexplained.
+pub(crate) const LINKING_LABEL: &str = "downloading account";
 
 #[cfg(test)]
 mod tests {
@@ -45,7 +51,7 @@ mod tests {
     /// account's name.
     #[test]
     fn it_names_linking_apart_from_the_offer_and_the_account() {
-        assert_eq!(super::LINKING_LABEL, "linking account");
+        assert_eq!(super::LINKING_LABEL, "downloading account");
         assert_ne!(
             super::LINKING_LABEL,
             super::trigger_label(Some("false")),
