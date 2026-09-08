@@ -857,6 +857,125 @@ impl crate::reactor::Decode for EnableSyncRequest {
     }
 }
 
+/// Mint an account-scoped handoff for the originating space.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AgentHandoff> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::AgentHandoff) {
+        if let Err(error) = run_agent_handoff(self).await {
+            log!("agent handoff failed: {error}");
+        }
+    }
+}
+
+async fn publish_agent_handoff(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    account: &Did,
+    status: String,
+    link: String,
+) -> Result<(), TonkWorkerError> {
+    use tonk_schema::prelude::DidExt as _;
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(tonk_schema::command::AgentHandoffState {
+            this: subject.this(),
+            status: status.into(),
+            link: link.into(),
+            account: account.this().into(),
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to publish handoff: {error}"))
+        })?;
+    Ok(())
+}
+
+async fn run_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
+    let repo = &env.origin().repo;
+    let subject = {
+        let tonk = env.state().read().await;
+        let repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        let subject = repository.did();
+        require_real_space(&tonk, &subject).await?;
+        if super::account::provider(&tonk).await.is_none() {
+            return publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                "Create an account or sign in to connect an agent. Open share and choose ‘log in to share’ to get started, then return here to copy your prompt.".into(),
+                String::new(),
+            )
+            .await;
+        }
+        publish_agent_handoff(
+            &tonk,
+            repo,
+            &subject,
+            &tonk.profile.did(),
+            "Generating account-scoped handoff…".into(),
+            String::new(),
+        )
+        .await?;
+        subject
+    };
+    let origin = crate::axum::RequestOrigin::parse(
+        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+    )
+    .map_err(|error| TonkWorkerError::Internal(format!("invalid handoff origin: {error:?}")))?;
+    let minted =
+        super::create_invite::create_agent_handoff(env.state().clone(), repo.clone(), origin).await;
+    let tonk = env.state().read().await;
+    match minted {
+        Ok((response, expected)) => {
+            let current = super::identity::local_root(&tonk).await?;
+            if current.root_did != expected.root_did || current.bytes != expected.bytes {
+                return publish_agent_handoff(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &current.root_did,
+                    "Account changed; generate a new handoff.".into(),
+                    String::new(),
+                )
+                .await;
+            }
+            publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "ready".into(),
+                response.url().to_string(),
+            )
+            .await
+        }
+        Err(error) => {
+            publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                format!("Could not create an agent handoff: {error}"),
+                String::new(),
+            )
+            .await
+        }
+    }
+}
+
 impl dialog_capability::Command for EnableSyncRequest {
     type Input = Self;
     type Output = ();
@@ -3061,7 +3180,7 @@ pub(crate) async fn provision_space_consumer(
 /// party whose provisioning refusal is authoritative for it. A foreign
 /// remote (self-hosted, a test server) is attached and shared without
 /// asking our service's opinion.
-fn remote_is_own_service(remote: &str) -> bool {
+pub(super) fn remote_is_own_service(remote: &str) -> bool {
     let Ok(own) = super::customer::service_origin() else {
         return false;
     };
@@ -6574,14 +6693,14 @@ block/insert!:
         );
     }
 
-    /// The empty-state canvas keeps the pending label only while the invite
+    /// The empty-state canvas keeps the pending label only while the handoff
     /// request is unanswered. A refusal resolves the nested model and renders
     /// the explicit local-only notice instead of spinning forever.
     #[dialog_common::test]
     fn it_routes_refused_agent_links_to_the_local_only_notice() {
         assert!(
-            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:share/blocked"),
-            "agent-link fallback should query the share refusal",
+            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:agent-handoff-state"),
+            "agent-link fallback should query its independent handoff status",
         );
         assert!(
             !CORE.contains("agent link &middot; paste into your agent"),
@@ -6591,14 +6710,10 @@ block/insert!:
             CORE.contains("tonk-display > [slot][hidden]"),
             "inactive pending and refusal slots should not survive a ready result",
         );
-        assert!(CORE.contains("sharing unavailable"));
+        assert!(CORE.contains("<p data-agent-handoff-status>{status}</p>"));
         assert!(
             !CORE.contains("Use connect in the condition banner"),
             "the refusal must not prescribe a repair that is absent or inappropriate"
-        );
-        assert!(
-            CORE.contains("<p>{detail}</p>"),
-            "the worker-owned complete sentence is the only refusal body"
         );
     }
 

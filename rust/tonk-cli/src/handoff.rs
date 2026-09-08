@@ -22,6 +22,129 @@ pub fn approval_page(explicit: Option<&str>) -> anyhow::Result<String> {
     Ok(page.to_string())
 }
 
+/// A validated account-scoped agent invitation.
+#[derive(Debug, Clone)]
+pub struct ConnectInvite {
+    /// Resolved bearer URL, retained only for the current claim.
+    pub url: String,
+    /// Locally persisted identity; contains no bearer capability.
+    pub metadata: HandoffMetadata,
+    /// Exact invitation used for local claim matching.
+    pub invitation: tonk_schema::Invitation,
+}
+
+/// Local-only identity required for URL-free connection retries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffMetadata {
+    version: u8,
+    /// Repository DID named by the scoped grant.
+    pub subject: dialog_varsig::Did,
+    /// Exact invitation entity identifier.
+    pub invitation: String,
+    /// Account allowed to claim and resume this handoff.
+    pub expected_root: dialog_varsig::Did,
+}
+
+/// Validate account scope before any local mutation or browser ceremony.
+pub async fn preflight_connect(url: &str) -> anyhow::Result<ConnectInvite> {
+    let invite = crate::invite::preflight(url).await?;
+    let expected_root = invite.expected_root.ok_or_else(|| anyhow::anyhow!(
+        "this is an older open invitation; copy a new account-scoped agent handoff from Tonk (refresh the space's standard library if needed). Ordinary `tonk join` still accepts this invitation"
+    ))?;
+    Ok(ConnectInvite {
+        metadata: HandoffMetadata {
+            version: 1,
+            subject: invite.invitation.subject.0.to_string().parse()?,
+            invitation: invite.invitation.this.to_string(),
+            expected_root,
+        },
+        url: invite.url,
+        invitation: invite.invitation,
+    })
+}
+
+/// Whether account approval is needed; mismatches require exact explicit consent.
+pub fn check_account(
+    current: Option<&str>,
+    expected: &dialog_varsig::Did,
+    consent: Option<&str>,
+) -> anyhow::Result<bool> {
+    if consent.is_some_and(|consent| consent != expected.as_str()) {
+        anyhow::bail!("--switch-account must name the handoff account {expected}");
+    }
+    if let Some(current) = current {
+        if current == expected.as_str() {
+            return Ok(false);
+        }
+        if consent.is_none() {
+            anyhow::bail!(
+                "CLI account: {current}\nHandoff account: {expected}\nAsk the user before switching accounts. After consent, rerun this command with --switch-account {expected}; browser approval is still required."
+            );
+        }
+    }
+    Ok(true)
+}
+
+impl HandoffMetadata {
+    /// Read a local handoff without opening or mutating its replica.
+    pub fn read(root: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context as _;
+        let bytes = std::fs::read(root.join("agent-handoff.json"))
+            .context("this replica has no usable account-scoped handoff metadata; provide a new scoped handoff URL")?;
+        let metadata: Self =
+            serde_json::from_slice(&bytes).context("local agent handoff metadata is malformed")?;
+        anyhow::ensure!(
+            metadata.version == 1,
+            "unsupported local agent handoff version"
+        );
+        let _: dialog_artifacts::Entity = metadata
+            .invitation
+            .parse()
+            .context("invalid handoff invitation identity")?;
+        Ok(metadata)
+    }
+
+    /// Verify the existing local authority, without re-rooting the replica.
+    pub async fn validate_replica(&self, site: &TonkSite) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        anyhow::ensure!(
+            site.repository.did() == self.subject,
+            "handoff metadata belongs to another repository"
+        );
+        let claimed =
+            std::fs::read_to_string(site.root.join(crate::invite::CLAIMED_INVITATION_FILE))
+                .context("replica has no local invitation claim; provide a fresh handoff URL")?;
+        anyhow::ensure!(
+            claimed == self.invitation,
+            "handoff metadata does not match this replica's invitation claim"
+        );
+        let bytes: Vec<u8> = site.profile.credential()
+            .site(tonk_account::prefix::space_root_site(&self.subject, &self.expected_root))
+            .load().perform(&site.operator).await
+            .context("this replica has no installed authority for the handoff account; reclaim the URL with a fresh --name")?;
+        let prefix = tonk_account::prefix::validate_prefix(&bytes, &self.expected_root).await
+            .context("saved authority does not match the handoff account; reclaim the URL with a fresh --name")?;
+        anyhow::ensure!(
+            prefix.subject == self.subject,
+            "saved authority belongs to another repository"
+        );
+        Ok(())
+    }
+
+    /// Persist identity before publishing a receipt; never persist the bearer URL.
+    pub fn save(&self, root: &std::path::Path) -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let file = root.join("agent-handoff.json");
+        let temporary = tempfile::NamedTempFile::new_in(root)?;
+        temporary.as_file().write_all(&serde_json::to_vec(self)?)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&file)?;
+        std::fs::File::open(root)?.sync_all()?;
+        Ok(())
+    }
+}
+
 /// Record a successful pull. The caller must push before reporting completion.
 /// This is a durable acknowledgement, not a heartbeat or online-status claim.
 pub async fn record_connection(site: &TonkSite) -> Result<eval::Outcome, eval::EvalError> {
@@ -158,6 +281,18 @@ pub async fn matching_invitation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_mismatch_requires_explicit_target() {
+        let expected: dialog_varsig::Did =
+            "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX"
+                .parse()
+                .unwrap();
+        assert!(check_account(Some("did:key:other"), &expected, None).is_err());
+        assert!(check_account(Some("did:key:other"), &expected, Some(expected.as_str())).unwrap());
+        assert!(!check_account(Some(expected.as_str()), &expected, None).unwrap());
+        assert!(check_account(None, &expected, Some("did:key:wrong")).is_err());
+    }
 
     #[test]
     fn approval_uses_the_builtin_production_page_by_default() {

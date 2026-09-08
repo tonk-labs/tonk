@@ -2,6 +2,59 @@
 mod common;
 
 #[dialog_common::test]
+async fn pending_handoff_does_not_resolve_as_a_copyable_prompt() -> anyhow::Result<()> {
+    let test = common::TestSite::new().await?;
+    test.eval_inline(
+        r#"tonk/repository!:
+  this: id:test:pending-handoff
+  name: "Untitled"
+tonk/agent-handoff-state!:
+  this: id:test:pending-handoff
+  status: "Create an account to connect an agent."
+  link: ""
+  account: did:key:device-placeholder
+"#,
+    )
+    .await?;
+    let query = "tonk/agent-invite:\n  this: id:test:pending-handoff\n  link: ?link\n";
+    let pending = test.eval_inline(query).await?;
+    assert!(
+        pending.response.matches_after[0].results.is_empty(),
+        "a pending response must not bypass the ready rule"
+    );
+    // Inline notation adds claims; replace the previous response explicitly
+    // to model the worker overlay's cardinality-one supersession.
+    test.eval_inline("tonk/agent-handoff-state!:\n  this: id:test:pending-handoff\n  ..: _\n")
+        .await?;
+    test.eval_inline(
+        r#"tonk/agent-handoff-state!:
+  this: id:test:pending-handoff
+  status: "ready"
+  link: "https://example.test/join#test"
+  account: did:key:expected-account
+"#,
+    )
+    .await?;
+    let ready = test.eval_inline(query).await?;
+    assert_eq!(ready.response.matches_after[0].results.len(), 1);
+    assert!(ready.stdout.contains("https://example.test/join#test"));
+    test.eval_inline("tonk/agent-handoff-state!:\n  this: id:test:pending-handoff\n  ..: _\n")
+        .await?;
+    test.eval_inline(
+        r#"tonk/agent-handoff-state!:
+  this: id:test:pending-handoff
+  status: "Account changed; generate a new handoff."
+  link: ""
+  account: did:key:device-placeholder
+"#,
+    )
+    .await?;
+    let invalidated = test.eval_inline(query).await?;
+    assert!(invalidated.response.matches_after[0].results.is_empty());
+    Ok(())
+}
+
+#[dialog_common::test]
 async fn connection_receipt_is_visible_only_in_the_connected_space() -> anyhow::Result<()> {
     let connected = common::TestSite::new().await?;
     let other = common::TestSite::new().await?;
@@ -30,9 +83,7 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
   this: id:test:prompt
   name: "Test space"
   link: "https://example.test/join?access=proof#secret"
-  access: "proof"
-  remote: ""
-  code: "secret"
+  account: did:key:expected-account
 "#,
     )
     .await?;
@@ -271,5 +322,153 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
         displayed.stdout.contains("Test Garden"),
         "choosing a local alias must not rename the synced space"
     );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let invite =
+        tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
+    let home = tempfile::tempdir()?;
+    let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
+    let output = std::process::Command::new(binary)
+        .args(["connect", &invite.url, "--no-open"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("TONK_SPACES_STATE", home.path().join("spaces"))
+        .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
+        .env("TONK_UPDATE_STATE", home.path().join("update"))
+        .env("TONK_NO_UPDATE_CHECK", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env_remove("TONK_SPACE")
+        .output()?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
+    assert!(
+        !home.path().join("spaces").exists(),
+        "legacy open invite must fail before local account/space writes"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "integration-tests")]
+#[dialog_common::test]
+async fn resume_metadata_requires_the_exact_local_claim_and_account_authority() -> anyhow::Result<()>
+{
+    use tonk_cli::handoff::{HandoffMetadata, preflight_connect};
+
+    let issuer = common::TestSite::new().await?;
+    let recipient = common::AccountFixture::new().await?;
+    let invite =
+        tonk_cli::invite::mint_targeted(&issuer.site, None, None, recipient.link.issuer().as_str())
+            .await?;
+    let checked = preflight_connect(&invite.url).await?;
+    let root = recipient.tmp.path().join("handoff-replica");
+    tonk_cli::invite::claim(&root, &invite.url, recipient.config.clone()).await?;
+    let replica = tonk_cli::site::TonkSite::open_with(&root, recipient.config.clone()).await?;
+    checked.metadata.validate_replica(&replica).await?;
+    checked.metadata.save(&root)?;
+    assert_eq!(HandoffMetadata::read(&root)?, checked.metadata);
+    let saved = std::fs::read_to_string(root.join("agent-handoff.json"))?;
+    assert!(!saved.contains(&invite.url));
+    let fields: serde_json::Value = serde_json::from_str(&saved)?;
+    assert_eq!(fields.as_object().unwrap().len(), 4);
+
+    let mut wrong_subject = checked.metadata.clone();
+    wrong_subject.subject = recipient.profile.did();
+    assert!(
+        wrong_subject
+            .validate_replica(&replica)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("another repository")
+    );
+    let mut wrong_account = checked.metadata.clone();
+    wrong_account.expected_root = issuer.site.profile.did();
+    assert!(
+        wrong_account
+            .validate_replica(&replica)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("fresh --name")
+    );
+    std::fs::write(root.join("claimed-invitation"), "another invitation")?;
+    assert!(
+        checked
+            .metadata
+            .validate_replica(&replica)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invitation claim")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("agent-handoff.json"))?,
+        saved
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn explicit_library_evaluation_refreshes_a_frozen_blank_canvas() -> anyhow::Result<()> {
+    let test = common::TestSite::new().await?;
+    test.eval_inline("view!:\n  this: tonk:blank\n  show:\n    ui: '<p>Frozen old canvas</p>'\n")
+        .await?;
+    let replica = tonk_schema::Replica::new(test.site.profile.did(), test.site.repository.did());
+    test.site
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(replica.clone())
+        .commit()
+        .perform(&test.site.operator)
+        .await?;
+    let route = tonk_cli::render::RenderRoute::parse(&format!("{}@tonk:blank", replica.this()))?;
+    assert!(
+        tonk_cli::render::render(&test.site, &route)
+            .await?
+            .contains("Frozen old canvas")
+    );
+    test.eval_inline(include_str!("../../tonk-core/assets/library/core.yaml"))
+        .await?;
+    let refreshed = tonk_cli::render::render(&test.site, &route).await?;
+    assert!(!refreshed.contains("Frozen old canvas"));
+    assert!(refreshed.contains("tonk:agent-handoff"), "{refreshed}");
+    Ok(())
+}
+
+#[cfg(feature = "integration-tests")]
+#[dialog_common::test]
+async fn self_account_handoff_retains_a_reusable_prefix() -> anyhow::Result<()> {
+    let account = common::AccountFixture::new().await?;
+    let owned = tonk_cli::site::TonkSite::init_at_with(
+        &account.tmp.path().join("owned"),
+        account.config.clone(),
+    )
+    .await?;
+    let minted =
+        tonk_cli::invite::mint_targeted(&owned, None, None, account.link.issuer().as_str()).await?;
+    let checked = tonk_cli::handoff::preflight_connect(&minted.url).await?;
+    account
+        .profile
+        .credential()
+        .site(tonk_account::prefix::space_root_site(
+            &owned.repository.did(),
+            account.link.issuer(),
+        ))
+        .save(Vec::<u8>::new())
+        .perform(&owned.operator)
+        .await?;
+    let root = account.tmp.path().join("self-handoff");
+    tonk_cli::invite::claim(&root, &minted.url, account.config.clone()).await?;
+    let replica = tonk_cli::site::TonkSite::open_with(&root, account.config.clone()).await?;
+    checked.metadata.validate_replica(&replica).await?;
     Ok(())
 }

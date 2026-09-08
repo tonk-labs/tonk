@@ -59,6 +59,8 @@ pub struct AuthorizeDevice {
     pub callback: crate::domain::command::authorize_device::Callback,
     /// The name the waiting process gave itself.
     pub name: crate::domain::command::authorize_device::Name,
+    /// Optional account constraint supplied by the waiting CLI.
+    pub expected_account: Option<crate::domain::command::authorize_device::ExpectedAccount>,
 }
 
 impl Command for AuthorizeDevice {
@@ -830,4 +832,31 @@ mod enable_sync {
             "dom.event/time-stamp"
         );
     }
+}
+
+/// Request an account-matched agent invitation independently of ordinary sharing.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AgentHandoff {
+    /// Command entity.
+    pub this: Entity,
+    /// Request time.
+    pub time: crate::domain::agent_handoff::Time,
+}
+
+impl Command for AgentHandoff {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Session-only agent handoff state, keyed by the repository subject.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentHandoffState {
+    /// Repository subject.
+    pub this: Entity,
+    /// Ready marker or pending/failure message.
+    pub status: crate::domain::agent_handoff::Status,
+    /// Scoped URL when ready; empty otherwise.
+    pub link: crate::domain::agent_handoff::Link,
+    /// Required account; device placeholder until a signed-in account resolves.
+    pub account: crate::domain::agent_handoff::Account,
 }

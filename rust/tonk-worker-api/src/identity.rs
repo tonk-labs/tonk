@@ -134,6 +134,9 @@ pub struct DeviceAuthorization {
     pub callback: String,
     /// The name the waiting process gave itself.
     pub name: String,
+    /// Account constraint from a scoped handoff, not proof of authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_account: Option<String>,
 }
 
 impl Default for CustodyIntent {

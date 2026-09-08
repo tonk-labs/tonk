@@ -14,7 +14,7 @@ use crate::space::SpaceStore;
 
 /// Credential site containing the sole native remote-account authority state.
 pub const ACCOUNT_SESSION_SITE: &str = "tonk-account-session-v1";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const LOCK_FILE: &str = "account-session.lock";
 const STATE_FILE_PREFIX: &str = ACCOUNT_SESSION_SITE;
 
@@ -27,12 +27,20 @@ pub struct AccountSessionState {
     pub active: Option<ActiveAccount>,
     /// Crash-recoverable activation or a legacy browser handoff.
     pub pending_login: Option<PendingLogin>,
+    /// Recoverable replacement, independent of signed-out login.
+    #[serde(default)]
+    pub replacement: Option<AccountReplacement>,
+    /// Account that owns the pre-replacement profile main branch.
+    #[serde(default)]
+    pub legacy_repository_root: Option<String>,
 }
 
 impl Default for AccountSessionState {
     fn default() -> Self {
         Self {
             version: VERSION,
+            replacement: None,
+            legacy_repository_root: None,
             active: None,
             pending_login: None,
         }
@@ -40,7 +48,7 @@ impl Default for AccountSessionState {
 }
 
 fn validate_state(state: &AccountSessionState) -> Result<()> {
-    if state.version != VERSION {
+    if state.version != VERSION && state.version != 1 {
         anyhow::bail!(
             "unsupported account-session state version {}",
             state.version
@@ -49,7 +57,28 @@ fn validate_state(state: &AccountSessionState) -> Result<()> {
     if state.active.is_some() && state.pending_login.is_some() {
         anyhow::bail!("account-session state cannot be active and pending simultaneously");
     }
+    if let Some(journal) = &state.replacement {
+        if state.version != VERSION
+            || state.pending_login.is_some()
+            || journal.operation_id.is_empty()
+            || (state.active.as_ref() != Some(&journal.previous)
+                && state.active.as_ref() != Some(&journal.replacement))
+        {
+            anyhow::bail!("invalid account replacement journal");
+        }
+    }
     Ok(())
+}
+
+/// Exact generations retained until compatibility projections converge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountReplacement {
+    /// Unique identifier for this operation.
+    pub operation_id: String,
+    /// Attachment that remains authorized until canonical commit.
+    pub previous: ActiveAccount,
+    /// Independently validated replacement attachment.
+    pub replacement: ActiveAccount,
 }
 
 /// Provider sign-in phase visible without opening a Dialog profile.
@@ -97,6 +126,26 @@ pub fn inspect_local(store: &SpaceStore) -> Result<LocalPhase> {
         });
     }
     Ok(LocalPhase::SignedOut)
+}
+
+/// Canonical account for registry readers that have not opened a profile.
+/// Absence of a canonical file leaves legacy registry migration unchanged.
+pub(crate) fn registry_account(store: &SpaceStore) -> Result<Option<Option<ActiveAccount>>> {
+    if !store.account_dir().exists() {
+        return Ok(None);
+    }
+    let _guard = shared_remote_guard(store)?;
+    for entry in std::fs::read_dir(store.account_dir())? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(STATE_FILE_PREFIX) && name.ends_with(".json") {
+            let state: AccountSessionState = serde_json::from_slice(&std::fs::read(entry.path())?)?;
+            validate_state(&state)?;
+            return Ok(Some(state.active));
+        }
+    }
+    Ok(None)
 }
 
 /// Durable login recovery phase.
@@ -325,14 +374,112 @@ pub async fn ensure_initialized(
     operator: &Operator<NativeSpace>,
     guard: &AccountSessionWriteGuard,
 ) -> Result<()> {
-    if load_raw(profile, operator, &guard.store).await?.is_some() {
+    if let Some(mut state) = load_raw(profile, operator, &guard.store).await? {
+        let mut needs_save = state.replacement.is_some() || state.version != VERSION;
+        if state.legacy_repository_root.is_none() {
+            state.legacy_repository_root = match state.active.as_ref() {
+                Some(active) => Some(active.root_did.clone()),
+                None => crate::identity::local_root_with_operator(profile, operator)
+                    .await?
+                    .map(|root| root.root_did),
+            };
+            needs_save |= state.legacy_repository_root.is_some();
+        }
+        if state.replacement.is_some() {
+            let account = state
+                .active
+                .as_ref()
+                .context("replacement has no active account")?;
+            crate::account::project_staged_account(profile, operator, account).await?;
+            if state
+                .replacement
+                .as_ref()
+                .is_some_and(|journal| account == &journal.replacement)
+            {
+                let mut record = crate::space::AccountRecord::new(account.root_did.clone());
+                record.access_remote = account.remote.clone();
+                guard.store.set_account(Some(record))?;
+            }
+            state.replacement = None;
+        }
+        if state.version != VERSION {
+            state.version = VERSION;
+        }
+        if needs_save {
+            save_raw(profile, operator, &guard.store, &state).await?;
+        }
         return Ok(());
     }
     let state = AccountSessionState {
         active: projected_active(profile, operator).await?,
+        legacy_repository_root: crate::identity::local_root_with_operator(profile, operator)
+            .await?
+            .map(|root| root.root_did),
         ..Default::default()
     };
     save_raw(profile, operator, &guard.store, &state).await
+}
+
+/// Read one canonical generation after finishing interrupted projections.
+pub async fn snapshot(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpaceStore,
+) -> Result<AccountSessionState> {
+    let guard = exclusive_transition_guard(store)?;
+    ensure_initialized(profile, operator, &guard).await?;
+    load_raw(profile, operator, store)
+        .await?
+        .context("account session is missing")
+}
+
+/// Replace an exact active generation while retaining recovery material.
+pub(crate) async fn replace_with_checkpoint(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    store: &SpaceStore,
+    previous: &ActiveAccount,
+    replacement: &ActiveAccount,
+    mut checkpoint: impl FnMut(usize) -> Result<()>,
+) -> Result<()> {
+    let guard = exclusive_transition_guard(store)?;
+    ensure_initialized(profile, operator, &guard).await?;
+    let mut state = load_raw(profile, operator, store)
+        .await?
+        .unwrap_or_default();
+    if state.active.as_ref() != Some(previous) || state.pending_login.is_some() {
+        anyhow::bail!("account changed while awaiting approval; request a new handoff");
+    }
+    if state.legacy_repository_root.is_none() {
+        state.legacy_repository_root = Some(previous.root_did.clone());
+    }
+    state.replacement = Some(AccountReplacement {
+        operation_id: format!("{:032x}", rand::random::<u128>()),
+        previous: previous.clone(),
+        replacement: replacement.clone(),
+    });
+    save_raw(profile, operator, store, &state).await?;
+    crate::account::project_account_with_checkpoint(
+        profile,
+        operator,
+        replacement,
+        &mut checkpoint,
+    )
+    .await?;
+    checkpoint(3)?;
+    state.active = Some(replacement.clone());
+    if let Err(error) = save_raw(profile, operator, store, &state).await {
+        // Rename may have succeeded even if the directory fsync failed.
+        let committed = load_raw(profile, operator, store)
+            .await?
+            .is_some_and(|actual| actual.active.as_ref() == Some(replacement));
+        if !committed {
+            return Err(error)
+                .context("replacement did not commit; previous account remains active");
+        }
+    }
+    checkpoint(4)?;
+    ensure_initialized(profile, operator, &guard).await
 }
 
 /// Persist the exact post-callback account generation before compatibility
@@ -388,6 +535,9 @@ pub async fn finalize_activation(
         anyhow::bail!("staged account activation changed before finalization");
     }
     state.active = Some(account.clone());
+    state
+        .legacy_repository_root
+        .get_or_insert_with(|| account.root_did.clone());
     state.pending_login = None;
     save_raw(profile, operator, store, &state).await
 }
@@ -508,6 +658,24 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn migration_preserves_the_v1_active_generation() {
+        let (_temp, store, profile, operator) = isolated_session().await;
+        let account = active_account("legacy-generation");
+        let legacy = AccountSessionState {
+            version: 1,
+            active: Some(account.clone()),
+            ..Default::default()
+        };
+        save_raw(&profile, &operator, &store, &legacy)
+            .await
+            .unwrap();
+        let migrated = snapshot(&profile, &operator, &store).await.unwrap();
+        assert_eq!(migrated.version, VERSION);
+        assert_eq!(migrated.active, Some(account));
+        assert!(migrated.replacement.is_none());
+    }
+
+    #[dialog_common::test]
     fn activating_decodes_the_legacy_duplicate_fields_but_does_not_reemit_them() {
         let account = active_account("legacy-generation");
         let legacy = serde_json::json!({
@@ -615,6 +783,8 @@ mod tests {
             load_raw(&profile, &operator, &store).await.unwrap(),
             Some(AccountSessionState {
                 version: VERSION,
+                replacement: None,
+                legacy_repository_root: None,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
             })
@@ -651,6 +821,8 @@ mod tests {
             load_raw(&profile, &operator, &store).await.unwrap(),
             Some(AccountSessionState {
                 version: VERSION,
+                replacement: None,
+                legacy_repository_root: None,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
             })
@@ -675,6 +847,8 @@ mod tests {
             load_raw(&profile, &operator, &store).await.unwrap(),
             Some(AccountSessionState {
                 version: VERSION,
+                replacement: None,
+                legacy_repository_root: None,
                 active: None,
                 pending_login: Some(PendingLogin::Activating {
                     account: account.clone(),
@@ -692,6 +866,8 @@ mod tests {
             load_raw(&profile, &operator, &store).await.unwrap(),
             Some(AccountSessionState {
                 version: VERSION,
+                replacement: None,
+                legacy_repository_root: Some(account.root_did.clone()),
                 active: Some(account),
                 pending_login: None,
             })
@@ -723,6 +899,8 @@ mod tests {
             load_raw(&profile, &operator, &store).await.unwrap(),
             Some(AccountSessionState {
                 version: VERSION,
+                replacement: None,
+                legacy_repository_root: None,
                 active: None,
                 pending_login: Some(PendingLogin::Activating { account }),
             })

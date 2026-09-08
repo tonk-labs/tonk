@@ -70,7 +70,7 @@ async fn it_reads_owner_and_role_from_each_space_s_own_roster() -> Result<()> {
     let (store, config) = fixture(tmp.path())?;
     store.set_account(Some(AccountRecord::new(ACCOUNT_A)))?;
 
-    add_space(&store, &config, "scratch", &[]).await?;
+    let scratch = add_space(&store, &config, "scratch", &[]).await?;
     add_space(
         &store,
         &config,
@@ -101,6 +101,7 @@ async fn it_reads_owner_and_role_from_each_space_s_own_roster() -> Result<()> {
     )
     .await?;
 
+    common::set_display_account(&scratch, ACCOUNT_A)?;
     let report = list_local(&store, &config).await?;
     let rows: Vec<_> = report
         .rows
@@ -187,6 +188,7 @@ async fn it_reports_a_malformed_row_without_losing_the_rest_of_the_roster() -> R
         .await?;
     drop(session);
 
+    common::set_display_account(&site, ACCOUNT_A)?;
     let report = list_local(&store, &config).await?;
 
     assert_eq!(report.rows[0].role, SpaceRole::Owner);

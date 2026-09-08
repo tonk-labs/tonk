@@ -222,18 +222,6 @@ pub struct LinkOutcome {
     pub warning: Option<String>,
 }
 
-async fn decode_provider(
-    _root_did: &dialog_varsig::Did,
-    bytes: Result<Vec<u8>, dialog_effects::credential::CredentialError>,
-) -> Result<Option<AccountProviderRecord>> {
-    let bytes = match bytes {
-        Ok(bytes) => bytes,
-        Err(error) if crate::account_state::credential_is_missing(&error) => return Ok(None),
-        Err(error) => return Err(error).context("failed to load the account provider"),
-    };
-    AccountProviderRecord::decode(&bytes).context("stored account provider is unusable")
-}
-
 /// Load the provider attachment through an already-mounted site operator and
 /// caller-supplied profile store.
 pub(crate) async fn stored_provider_in(
@@ -249,28 +237,20 @@ async fn stored_provider_for_store(
     operator: &dialog_operator::Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
-    {
-        let guard = crate::account_session::exclusive_transition_guard(store)?;
-        crate::account_session::ensure_initialized(profile, operator, &guard).await?;
-    }
-    let guard = crate::account_session::shared_remote_guard(store)?;
-    if crate::account_session::active_guarded(profile, operator, &guard)
+    let Some(active) = crate::account_session::snapshot(profile, operator, store)
         .await?
-        .is_none()
-    {
-        return Ok(None);
-    }
-    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
+        .active
+    else {
         return Ok(None);
     };
-    let root_did = parse_root_did(&root.root_did)?;
-    let bytes = profile
-        .credential()
-        .site(ACCOUNT_LINK_SITE)
-        .load::<Vec<u8>>()
-        .perform(operator)
-        .await;
-    decode_provider(&root_did, bytes).await
+    active
+        .remote
+        .as_deref()
+        .map(|remote| {
+            AccountProviderRecord::attach(remote, active.attached_at)
+                .context("stored account provider is unusable")
+        })
+        .transpose()
 }
 
 /// What to tell a device that has no account when it asks for durable
@@ -341,10 +321,6 @@ async fn logout_with_operator_in_observed(
     Ok(())
 }
 
-fn parse_root_did(root_did: &str) -> Result<dialog_varsig::Did> {
-    root_did.parse().context("stored local root DID is invalid")
-}
-
 /// Read the current profile's local account status.
 ///
 /// Reads only durable local state. Reporting status must not depend on the
@@ -363,24 +339,25 @@ pub async fn status_in(
     store: &crate::space::SpaceStore,
 ) -> Result<AccountStatus> {
     let device_did = profile.did().to_string();
-    let Some(root) = crate::identity::local_root_in(profile, store).await? else {
-        return Ok(AccountStatus::MissingRoot { device_did });
-    };
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    match stored_provider_in(profile, &operator, store).await? {
-        None => Ok(AccountStatus::Unregistered {
+    let state = crate::account_session::snapshot(profile, &operator, store).await?;
+    if let Some(active) = state.active {
+        let subject = active.root_did.parse()?;
+        let account_state =
+            crate::account_state::status_for_subject(profile, &operator, &subject).await?;
+        return Ok(AccountStatus::Registered {
+            root_did: active.root_did,
+            device_did,
+            provider: active.remote.context("active account has no provider")?,
+            account_state,
+        });
+    }
+    match crate::identity::local_root_in(profile, store).await? {
+        Some(root) => Ok(AccountStatus::Unregistered {
             root_did: root.root_did,
             device_did,
         }),
-        Some(provider) => {
-            let account_state = crate::account_state::status_in(profile, store).await?;
-            Ok(AccountStatus::Registered {
-                root_did: root.root_did,
-                device_did,
-                provider: provider.address().to_owned(),
-                account_state,
-            })
-        }
+        None => Ok(AccountStatus::MissingRoot { device_did }),
     }
 }
 
@@ -455,6 +432,22 @@ async fn account_from_callback(
     })
 }
 
+async fn account_from_expected_callback(
+    profile: &Profile,
+    authorization: CallbackAuthorization,
+    expected: &Did,
+) -> Result<ActiveAccount> {
+    let account = account_from_callback(profile, authorization).await?;
+    if account.root_did != expected.as_str() {
+        bail!(
+            "browser approved account {}, but this handoff requires {}; the CLI account was not changed",
+            account.root_did,
+            expected
+        );
+    }
+    Ok(account)
+}
+
 async fn recorded_account_grant(
     profile: &Profile,
     account: &crate::account_session::ActiveAccount,
@@ -472,10 +465,19 @@ async fn recorded_account_grant(
 
 /// Validate and project one exact staged generation into the compatibility
 /// credential records. Replaying the same values is idempotent.
-async fn project_staged_account(
+pub(crate) async fn project_staged_account(
     profile: &Profile,
     operator: &dialog_operator::Operator<NativeSpace>,
     account: &crate::account_session::ActiveAccount,
+) -> Result<()> {
+    project_account_with_checkpoint(profile, operator, account, &mut |_| Ok(())).await
+}
+
+pub(crate) async fn project_account_with_checkpoint(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    account: &crate::account_session::ActiveAccount,
+    checkpoint: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<()> {
     if account.attachment_id.trim().is_empty() {
         bail!("staged account activation has no service attachment generation");
@@ -489,12 +491,14 @@ async fn project_staged_account(
     let provider = AccountProviderRecord::attach(remote, account.attached_at)
         .context("staged account provider is unusable")?;
 
+    checkpoint(0)?;
     profile
         .access()
         .save(UcanDelegation(chain))
         .perform(operator)
         .await
         .context("failed to install the account grant")?;
+    checkpoint(1)?;
     crate::identity::save_local_root_with_operator(
         profile,
         operator,
@@ -502,6 +506,7 @@ async fn project_staged_account(
         account.delegation_hex.clone(),
     )
     .await?;
+    checkpoint(2)?;
     profile
         .credential()
         .site(ACCOUNT_LINK_SITE)
@@ -510,6 +515,58 @@ async fn project_staged_account(
         .await
         .context("failed to persist the account link")?;
     Ok(())
+}
+
+pub use crate::account_session::ActiveAccount;
+
+/// Read the exact active generation for a conditional account transition.
+pub async fn active_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<ActiveAccount>> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    Ok(crate::account_session::snapshot(profile, &operator, store)
+        .await?
+        .active)
+}
+
+/// Activate a validated replacement without logging the previous account out.
+pub async fn replace_account_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    expected_previous: &crate::account_session::ActiveAccount,
+    replacement: &crate::account_session::ActiveAccount,
+) -> Result<()> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    replace_account_with_checkpoint(
+        profile,
+        &operator,
+        store,
+        expected_previous,
+        replacement,
+        |_| Ok(()),
+    )
+    .await
+}
+
+async fn replace_account_with_checkpoint(
+    profile: &Profile,
+    operator: &dialog_operator::Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    previous: &crate::account_session::ActiveAccount,
+    replacement: &crate::account_session::ActiveAccount,
+    checkpoint: impl FnMut(usize) -> Result<()>,
+) -> Result<()> {
+    recorded_account_grant(profile, replacement).await?;
+    crate::account_session::replace_with_checkpoint(
+        profile,
+        operator,
+        store,
+        previous,
+        replacement,
+        checkpoint,
+    )
+    .await
 }
 
 /// Resume or complete one exact staged generation. The activation guard keeps
@@ -572,16 +629,21 @@ async fn link_via_callback(
     options: &LinkOptions,
     page: &str,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
+    expected: Option<(&Did, Option<&ActiveAccount>)>,
 ) -> Result<LinkOutcome> {
     observer.checkpoint(Stage::CallbackBind);
     let callback = crate::callback::Callback::bind().await?;
-    let url = login_url(
+    let mut url = login_url(
         page,
         profile.did().as_ref(),
         callback.url(),
         &options.device_name,
     );
 
+    if let Some((root, _)) = expected {
+        url.push_str("&expectedAccount=");
+        url.push_str(&urlencoding::encode(root.as_str()));
+    }
     println!("Open this URL to approve the device:\n{url}");
     observer.checkpoint(Stage::BrowserOpen);
     if options.open_browser && webbrowser::open(&url).is_err() {
@@ -619,9 +681,25 @@ async fn link_via_callback(
     observer.checkpoint(Stage::DelegationValidate);
     let authorization: CallbackAuthorization =
         serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
-    let account = account_from_callback(profile, authorization).await?;
+    let account = match expected {
+        Some((root, _)) => account_from_expected_callback(profile, authorization, root).await?,
+        None => account_from_callback(profile, authorization).await?,
+    };
     observer.checkpoint(Stage::ActivationStage);
-    complete_staged_account(profile, operator, store, &account).await?;
+    match expected.and_then(|(_, previous)| previous) {
+        Some(previous) => {
+            replace_account_with_checkpoint(
+                profile,
+                operator,
+                store,
+                previous,
+                &account,
+                |_| Ok(()),
+            )
+            .await?
+        }
+        None => complete_staged_account(profile, operator, store, &account).await?,
+    }
     hydrate_activated_account(profile, operator, store, &account, url, observer).await
 }
 
@@ -737,9 +815,70 @@ pub async fn link_with_operator_observed(
         }
         None => {
             let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
-            link_via_callback(profile, operator, &store, options, page, observer).await
+            link_via_callback(profile, operator, &store, options, page, observer, None).await
         }
     }
+}
+
+/// Authorize exactly the account requested by a scoped handoff.
+/// The previous generation remains active throughout browser approval.
+pub async fn link_expected_in(
+    profile: &Profile,
+    store: &crate::space::SpaceStore,
+    options: &LinkOptions,
+    expected_root: &Did,
+    expected_previous: Option<&ActiveAccount>,
+) -> Result<LinkOutcome> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    let state = crate::account_session::snapshot(profile, &operator, store).await?;
+    let mut observer = crate::account_observability::NoopAccountObserver;
+    if let Some(active) = state.active.as_ref()
+        && active.root_did == expected_root.as_str()
+    {
+        recorded_account_grant(profile, active).await?;
+        return hydrate_activated_account(
+            profile,
+            &operator,
+            store,
+            active,
+            String::new(),
+            &mut observer,
+        )
+        .await;
+    }
+    if state.active.as_ref() != expected_previous {
+        bail!("CLI account changed; request consent for the current account before retrying");
+    }
+    if let Some(pending) = state.pending_login {
+        match pending {
+            crate::account_session::PendingLogin::Activating { account }
+                if account.root_did == expected_root.as_str() =>
+            {
+                complete_staged_account(profile, &operator, store, &account).await?;
+                return hydrate_activated_account(
+                    profile,
+                    &operator,
+                    store,
+                    &account,
+                    String::new(),
+                    &mut observer,
+                )
+                .await;
+            }
+            _ => bail!("another account login is pending; finish it before using this handoff"),
+        }
+    }
+    let page = options.via.as_deref().unwrap_or(DEFAULT_LINK_PAGE);
+    link_via_callback(
+        profile,
+        &operator,
+        store,
+        options,
+        page,
+        &mut observer,
+        Some((expected_root, expected_previous)),
+    )
+    .await
 }
 
 /// One device row, from the account space's own facts.
@@ -759,20 +898,6 @@ pub(crate) struct AccountConnection {
     pub(crate) link: DelegationChain,
 }
 
-async fn connection_from_provider(
-    profile: &Profile,
-    store: &crate::space::SpaceStore,
-) -> Result<AccountConnection> {
-    let root = crate::identity::local_root_in(profile, store)
-        .await?
-        .context("the provider attachment has no local root")?;
-    let bytes = hex::decode(root.delegation_hex).context("stored local-root hex is invalid")?;
-    let link = DelegationChain::try_from(bytes.as_slice())
-        .context("stored local-root delegation is invalid")?;
-    let root_did = link.issuer().clone();
-    Ok(AccountConnection { root_did, link })
-}
-
 pub(crate) async fn optional_connection_in(
     profile: &Profile,
     store: &crate::space::SpaceStore,
@@ -790,13 +915,17 @@ pub(crate) async fn optional_connection_in(
         }));
     }
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
-    if stored_provider_in(profile, &operator, store)
+    let Some(active) = crate::account_session::snapshot(profile, &operator, store)
         .await?
-        .is_none()
-    {
+        .active
+    else {
         return Ok(None);
-    }
-    Ok(Some(connection_from_provider(profile, store).await?))
+    };
+    let (_, link) = recorded_account_grant(profile, &active).await?;
+    Ok(Some(AccountConnection {
+        root_did: link.issuer().clone(),
+        link,
+    }))
 }
 
 #[cfg(feature = "integration-tests")]
@@ -865,7 +994,9 @@ pub async fn attach_for_integration_test(
         .perform(operator)
         .await?;
     let session = crate::account_session::AccountSessionState {
-        version: 1,
+        version: 2,
+        replacement: None,
+        legacy_repository_root: None,
         active: Some(crate::account_session::ActiveAccount {
             credential_id: credential_id.to_string(),
             root_did: root_did.to_string(),
@@ -1793,6 +1924,306 @@ mod tests {
                     | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
             ),
             "recovery must not announce a new browser handoff"
+        );
+    }
+
+    async fn replacement_for(profile: &Profile) -> crate::account_session::ActiveAccount {
+        let signer = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let authorized = tonk_identity::ceremony::authorize_device(
+            signer,
+            profile.did(),
+            "http://127.0.0.1:9/ucan/",
+        )
+        .await
+        .unwrap();
+        let bytes = hex::decode(&authorized.delegation_hex).unwrap();
+        let chain = validate_account_grant(&profile, &bytes).await.unwrap();
+        crate::account_session::ActiveAccount {
+            root_did: chain.issuer().to_string(),
+            credential_id: authorized.root_did,
+            delegation_cid: chain.proof_cids()[0].to_string(),
+            delegation_hex: authorized.delegation_hex,
+            attachment_id: "replacement-generation".to_owned(),
+            remote: Some("http://127.0.0.1:9/ucan/".to_owned()),
+            attached_at: 8,
+        }
+    }
+
+    #[dialog_common::test]
+    async fn expected_account_denial_and_malformed_callback_preserve_a() {
+        use base64::Engine as _;
+        for (field, body) in [
+            ("deny", "user declined".to_owned()),
+            (
+                "authorize",
+                base64::engine::general_purpose::STANDARD.encode(b"not JSON"),
+            ),
+        ] {
+            let (fixture, profile, operator) = RecoveryFixture::new().await;
+            complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+                .await
+                .unwrap();
+            let expected = replacement_for(&profile).await.root_did.parse().unwrap();
+            let before = crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                .await
+                .unwrap();
+            let registry = fixture.store.load().unwrap();
+            let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+            let options = fixture.options(Some(announce));
+            let mut observer = crate::account_observability::NoopAccountObserver;
+            let link = link_via_callback(
+                &profile,
+                &operator,
+                &fixture.store,
+                &options,
+                options.via.as_deref().unwrap(),
+                &mut observer,
+                Some((&expected, Some(&fixture.account))),
+            );
+            let respond = async {
+                let url = Url::parse(&announced.recv().await.unwrap()).unwrap();
+                let params = url
+                    .query_pairs()
+                    .collect::<std::collections::HashMap<_, _>>();
+                assert_eq!(params.get("expectedAccount").unwrap(), expected.as_str());
+                assert_eq!(
+                    crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                        .await
+                        .unwrap(),
+                    before
+                );
+                reqwest::Client::new()
+                    .post(params.get("callback").unwrap().as_ref())
+                    .form(&[(field, body)])
+                    .send()
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = tokio::join!(link, respond);
+            result.unwrap_err();
+            assert_eq!(
+                crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                    .await
+                    .unwrap(),
+                before
+            );
+            assert_eq!(fixture.store.load().unwrap(), registry);
+        }
+    }
+
+    #[dialog_common::test]
+    async fn expected_account_callback_rejects_other_root_without_writes() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+        let other = replacement_for(&profile).await;
+        let before = crate::account_session::snapshot(&profile, &operator, &fixture.store)
+            .await
+            .unwrap();
+        let callback = CallbackAuthorization {
+            credential_id: other.credential_id,
+            delegation_hex: other.delegation_hex,
+            remote: other.remote.unwrap(),
+            attachment_id: other.attachment_id,
+        };
+        account_from_expected_callback(
+            &profile,
+            callback,
+            &fixture.account.root_did.parse().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                .await
+                .unwrap(),
+            before
+        );
+    }
+
+    #[dialog_common::test]
+    async fn replacement_failure_preserves_previous_account() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+        let replacement = replacement_for(&profile).await;
+        for boundary in 0..4 {
+            replace_account_with_checkpoint(
+                &profile,
+                &operator,
+                &fixture.store,
+                &fixture.account,
+                &replacement,
+                |step| {
+                    if step == boundary {
+                        bail!("injected replacement interruption");
+                    }
+                    Ok(())
+                },
+            )
+            .await
+            .expect_err("each pre-commit interruption must fail");
+            let (fresh_profile, fresh_operator) = fixture.reopen().await;
+            let active =
+                crate::account_session::snapshot(&fresh_profile, &fresh_operator, &fixture.store)
+                    .await
+                    .unwrap()
+                    .active;
+            assert_eq!(active, Some(fixture.account.clone()));
+            assert_eq!(
+                crate::identity::local_root_with_operator(&fresh_profile, &fresh_operator)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .delegation_cid,
+                fixture.account.delegation_cid,
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn replacement_restart_recovers_each_commit_boundary() {
+        for boundary in 0..=4 {
+            let (fixture, profile, operator) = RecoveryFixture::new().await;
+            complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+                .await
+                .unwrap();
+            let replacement = replacement_for(&profile).await;
+            let mut registry = fixture.store.load().unwrap();
+            registry.spaces.insert(
+                "retained".to_owned(),
+                crate::space::SpaceEntry {
+                    site: fixture.store.canonical_site("retained"),
+                },
+            );
+            fixture.store.save(&registry).unwrap();
+            replace_account_with_checkpoint(
+                &profile,
+                &operator,
+                &fixture.store,
+                &fixture.account,
+                &replacement,
+                |step| {
+                    if step == boundary {
+                        bail!("interrupted")
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .await
+            .unwrap_err();
+            drop(operator);
+            drop(profile);
+            let (profile, operator) = fixture.reopen().await;
+            let expected = if boundary == 4 {
+                &replacement
+            } else {
+                &fixture.account
+            };
+            let root = crate::identity::local_root_for_store(&profile, &operator, &fixture.store)
+                .await
+                .unwrap()
+                .unwrap();
+            let provider = stored_provider_in(&profile, &operator, &fixture.store)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(root.root_did, expected.root_did);
+            assert_eq!(root.delegation_hex, expected.delegation_hex);
+            assert_eq!(Some(provider.address()), expected.remote.as_deref());
+            assert_eq!(fixture.store.load().unwrap().spaces, registry.spaces);
+            assert_eq!(
+                crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                    .await
+                    .unwrap()
+                    .active
+                    .as_ref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn replacement_rejects_stale_previous_generation() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+        let replacement = replacement_for(&profile).await;
+        let mut stale = fixture.account.clone();
+        stale.attachment_id = "same-root-stale-generation".to_owned();
+        replace_account_with_checkpoint(
+            &profile,
+            &operator,
+            &fixture.store,
+            &stale,
+            &replacement,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                .await
+                .unwrap()
+                .active,
+            Some(fixture.account.clone())
+        );
+        crate::account_session::logout_transition_for_store(&profile, &operator, &fixture.store)
+            .await
+            .unwrap();
+        replace_account_with_checkpoint(
+            &profile,
+            &operator,
+            &fixture.store,
+            &fixture.account,
+            &replacement,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                .await
+                .unwrap()
+                .active
+                .is_none()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn replacement_hydration_failure_keeps_the_activated_account() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        complete_staged_account(&profile, &operator, &fixture.store, &fixture.account)
+            .await
+            .unwrap();
+        let replacement = replacement_for(&profile).await;
+        replace_account_with_checkpoint(
+            &profile,
+            &operator,
+            &fixture.store,
+            &fixture.account,
+            &replacement,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        let (announce, mut announced) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = link_with_operator(&profile, &operator, &fixture.options(Some(announce)))
+            .await
+            .unwrap();
+        assert!(outcome.warning.is_some());
+        assert_eq!(outcome.root_did, replacement.root_did);
+        assert_no_browser_announcement(&mut announced);
+        assert_eq!(
+            crate::account_session::snapshot(&profile, &operator, &fixture.store)
+                .await
+                .unwrap()
+                .active,
+            Some(replacement)
         );
     }
 

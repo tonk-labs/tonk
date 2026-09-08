@@ -115,6 +115,8 @@ pub struct InvitePreflight {
     pub url: String,
     /// Stable identity of this exact minted invitation.
     pub invitation: Invitation,
+    /// Validated audience of a scoped invitation, absent for open invitations.
+    pub expected_root: Option<Did>,
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -417,34 +419,37 @@ pub async fn claim(
     // device's account is the ONBOARDING account — a real account
     // custodied locally — so the join is durable to the same identity
     // creates delegate to, and the sign-in rotation carries it forward.
-    let member = match crate::identity::local_root_with_operator(&profile, &operator)
-        .await
-        .map_err(|e| InviteError::Io(e.to_string()))?
-    {
-        Some(root) => root
-            .root_did
-            .parse()
-            .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
-        None => {
-            use dialog_varsig::Principal as _;
-            let store_operator = crate::account_state::store_operator_with_config(
-                &profile,
-                &config.account_store,
-                &config.profile_name,
-                config.profile_directory.clone(),
-            )
+    let member =
+        match crate::identity::local_root_for_store(&profile, &operator, &config.account_store)
             .await
-            .map_err(|e| InviteError::Io(format!("{e:#}")))?;
-            let secret = crate::onboarding::account(&profile, &store_operator)
+            .map_err(|e| InviteError::Io(e.to_string()))?
+        {
+            Some(root) => root
+                .root_did
+                .parse()
+                .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
+            None => {
+                use dialog_varsig::Principal as _;
+                let store_operator = crate::account_state::store_operator_with_config(
+                    &profile,
+                    &config.account_store,
+                    &config.profile_name,
+                    config.profile_directory.clone(),
+                )
                 .await
                 .map_err(|e| InviteError::Io(format!("{e:#}")))?;
-            secret
-                .signer()
-                .await
-                .map_err(|e| InviteError::Io(format!("the onboarding signer did not derive: {e}")))?
-                .did()
-        }
-    };
+                let secret = crate::onboarding::account(&profile, &store_operator)
+                    .await
+                    .map_err(|e| InviteError::Io(format!("{e:#}")))?;
+                secret
+                    .signer()
+                    .await
+                    .map_err(|e| {
+                        InviteError::Io(format!("the onboarding signer did not derive: {e}"))
+                    })?
+                    .did()
+            }
+        };
     let space_name = invite.space_name.clone();
     let claimed = invite
         .claim(&member)
@@ -752,6 +757,10 @@ pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError>
     Ok(InvitePreflight {
         url: invite_url,
         invitation,
+        expected_root: match invite.audience {
+            InviteAudience::Scoped => Some(invite.chain.audience().clone()),
+            InviteAudience::Open { .. } => None,
+        },
     })
 }
 

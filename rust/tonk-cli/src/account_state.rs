@@ -87,6 +87,7 @@ fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
 }
 
 /// The account this profile is linked to, absent when unlinked.
+#[cfg(test)]
 async fn linked_account(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
@@ -101,27 +102,16 @@ async fn linked_account_in(
     operator: &Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_varsig::Did>> {
-    if crate::account::stored_provider_in(profile, operator, store)
+    crate::account_session::snapshot(profile, operator, store)
         .await?
-        .is_none()
-    {
-        return Ok(None);
-    }
-    let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
-        return Ok(None);
-    };
-    Ok(Some(root.root_did.parse()?))
-}
-
-/// Where the linked account syncs, when the link named it.
-async fn account_remote_in(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
-    store: &crate::space::SpaceStore,
-) -> Result<Option<String>> {
-    Ok(crate::account::stored_provider_in(profile, operator, store)
-        .await?
-        .map(|provider| provider.address().to_owned()))
+        .active
+        .map(|account| {
+            account
+                .root_did
+                .parse()
+                .context("stored account root DID is invalid")
+        })
+        .transpose()
 }
 
 /// Read durable native account-state status without contacting the remote.
@@ -148,7 +138,15 @@ pub(crate) async fn status_with_operator_in(
     let Some(subject) = linked_account_in(profile, operator, store).await? else {
         return Ok(AccountStateStatus::Unconfigured);
     };
-    if marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
+    status_for_subject(profile, operator, &subject).await
+}
+
+pub(crate) async fn status_for_subject(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+    subject: &dialog_varsig::Did,
+) -> Result<AccountStateStatus> {
+    if marker_matches(marker(profile, operator).await?.as_deref(), subject) {
         Ok(AccountStateStatus::Ready)
     } else {
         Ok(AccountStateStatus::Unhydrated)
@@ -178,9 +176,16 @@ pub async fn adopt_account_access_in(
     operator: &Operator<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<bool> {
-    let Some(subject) = linked_account_in(profile, operator, store).await? else {
+    let Some(active) = crate::account_session::snapshot(profile, operator, store)
+        .await?
+        .active
+    else {
         return Ok(false);
     };
+    let subject = active.root_did.parse()?;
+    let remote = active
+        .remote
+        .context("the linked account names no remote")?;
     if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(false);
     }
@@ -195,30 +200,25 @@ pub async fn adopt_account_access_in(
     // A remote resolved against the ACCOUNT's DID. A local upstream would
     // resolve against this profile's own subject and could only name a
     // sibling branch, never the account's.
-    let Some(remote) = account_remote_in(profile, operator, store).await? else {
-        return Ok(false);
-    };
     let address = SiteAddress::from(UcanAddress::new(remote.as_str()));
+    let remote_name = format!(
+        "{ACCOUNT_ACCESS_REMOTE}-{}",
+        blake3::hash(subject.as_str().as_bytes()).to_hex()
+    );
+    let bound =
+        crate::account_authority::wrap(operator.clone(), profile.clone(), store.clone(), true)
+            .await?;
     let remote = match repository
-        .remote(ACCOUNT_ACCESS_REMOTE)
+        .remote(&remote_name)
         .load()
         .perform(operator)
         .await
     {
         Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
         // Stale cell from an earlier link; see `repoint_remote`.
-        Ok(_) => {
-            repoint_remote(
-                &repository,
-                ACCOUNT_ACCESS_REMOTE,
-                &address,
-                &subject,
-                operator,
-            )
-            .await?
-        }
+        Ok(_) => repoint_remote(&repository, &remote_name, &address, &subject, operator).await?,
         Err(_) => repository
-            .remote(ACCOUNT_ACCESS_REMOTE)
+            .remote(&remote_name)
             .create(address)
             .subject(subject)
             .perform(operator)
@@ -228,11 +228,15 @@ pub async fn adopt_account_access_in(
     let upstream = remote
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
-        .perform(operator)
+        .perform(&bound)
         .await
         .context("failed to open the account access branch")?;
 
-    tonk_account::delegations::adopt_account_upstream(&access, upstream, operator)
+    if !matches!(access.upstream(), Some(Upstream::Remote { remote, .. }) if remote == remote_name)
+    {
+        access.set_upstream(&upstream).perform(operator).await?;
+    }
+    tonk_account::delegations::adopt_account_upstream(&access, upstream, &bound)
         .await
         .context("failed to adopt the account as the access upstream")?;
     Ok(true)
@@ -263,23 +267,21 @@ pub async fn open_account_branch_in(
     store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_repository::Branch>> {
     trace("open: start");
-    let Some(subject) = linked_account_in(profile, operator, store).await? else {
+    let Some(active) = crate::account_session::snapshot(profile, operator, store)
+        .await?
+        .active
+    else {
         return Ok(None);
     };
+    let subject = active.root_did.parse()?;
+    let remote = active
+        .remote
+        .context("the linked account names no remote")?;
     if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(None);
     }
     trace("open: marker matches, mounting");
-    let remote = account_remote_in(profile, operator, store)
-        .await?
-        .context("the linked account names no remote")?;
-    let repository = mount(profile, operator, &subject, &remote).await?;
-    let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account main branch")?;
+    let (_, branch, _) = mount(profile, operator, store, &subject, &remote).await?;
     trace("open: done");
     Ok(Some(branch))
 }
@@ -416,33 +418,25 @@ pub async fn migrate_delegations(
     // Without a hydrated account there is nowhere to retain, which is an
     // ordinary state rather than a failure: the certificate migration above
     // still stands on its own.
-    let Some(subject) = linked_account(profile, operator).await? else {
+    let Some(active) = crate::account_session::snapshot(profile, operator, store)
+        .await?
+        .active
+    else {
         return Ok(outcome);
     };
+    let subject: dialog_varsig::Did = active.root_did.parse()?;
     if !marker_matches(marker(profile, operator).await?.as_deref(), &subject) {
         return Ok(outcome);
     }
-    let account_root = match crate::identity::local_root_with_operator(profile, operator).await? {
-        Some(root) => root
-            .root_did
-            .parse::<dialog_varsig::Did>()
-            .context("stored root DID is invalid")?,
-        None => return Ok(outcome),
-    };
+    let account_root = subject.clone();
     if account_repository_readability(store, &subject) == tonk_account::Readability::Legacy {
         outcome.account_legacy = true;
         return Ok(outcome);
     }
-    let remote = account_remote_in(profile, operator, store)
-        .await?
+    let remote = active
+        .remote
         .context("the linked account names no remote")?;
-    let repository = mount(profile, operator, &subject, &remote).await?;
-    let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
-        .await
-        .context("failed to open account main branch")?;
+    let (_, branch, _) = mount(profile, operator, store, &subject, &remote).await?;
 
     for entry in store.load()?.spaces.values() {
         let Ok(site) = crate::site::TonkSite::open(&entry.site).await else {
@@ -616,22 +610,45 @@ async fn repoint_remote(
     Ok(RemoteRepository::new(cell.retain(target), reference))
 }
 
-/// Point profile main at the account: the account is the upstream
-/// remote of the profile repository's main branch, exactly as the
-/// worker configures it — no separate repository, no extra storage.
+/// Mount the selected account in its own local branch and remote record.
+/// The original account retains profile main; replacements cannot inherit
+/// its hydrated facts or repoint a handle retained by an earlier operation.
 async fn mount(
     profile: &Profile,
     operator: &Operator<NativeSpace>,
+    store: &crate::space::SpaceStore,
     subject: &dialog_varsig::Did,
     remote: &str,
-) -> Result<Repository<dialog_credentials::SignerCredential>> {
+) -> Result<(
+    Repository<dialog_credentials::SignerCredential>,
+    dialog_repository::Branch,
+    String,
+)> {
+    let state = crate::account_session::snapshot(profile, operator, store).await?;
+    let legacy = state
+        .legacy_repository_root
+        .as_deref()
+        .is_none_or(|root| root == subject.as_str());
+    let local_branch = if legacy {
+        tonk_account::MAIN_BRANCH.to_owned()
+    } else {
+        format!(
+            "account-{}",
+            blake3::hash(subject.as_str().as_bytes()).to_hex()
+        )
+    };
+    let remote_name = if legacy {
+        tonk_account::ORIGIN_REMOTE.to_owned()
+    } else {
+        format!("{local_branch}-origin")
+    };
     let subject = subject.clone();
     let repository = Repository::from(profile);
 
     trace("mount: loading remote record");
     let address = SiteAddress::from(UcanAddress::new(remote));
     let remote = match repository
-        .remote(tonk_account::ORIGIN_REMOTE)
+        .remote(&remote_name)
         .load()
         .perform(operator)
         .await
@@ -642,18 +659,9 @@ async fn mount(
         // ports every restart) or an account this profile has since
         // left. The descriptor is the current link, so repoint the
         // address cell to it rather than refusing to mount forever.
-        Ok(_) => {
-            repoint_remote(
-                &repository,
-                tonk_account::ORIGIN_REMOTE,
-                &address,
-                &subject,
-                operator,
-            )
-            .await?
-        }
+        Ok(_) => repoint_remote(&repository, &remote_name, &address, &subject, operator).await?,
         Err(_) => repository
-            .remote(tonk_account::ORIGIN_REMOTE)
+            .remote(&remote_name)
             .create(address.clone())
             .subject(subject.clone())
             .perform(operator)
@@ -661,17 +669,17 @@ async fn mount(
             .context("failed to configure account remote")?,
     };
 
-    trace("mount: remote record loaded, opening profile main");
+    trace("mount: remote record loaded, opening account branch");
     let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&local_branch)
         .open()
         .perform(operator)
         .await
-        .context("failed to open profile main branch")?;
-    trace("mount: profile main open");
+        .context("failed to open local account branch")?;
+    trace("mount: account branch open");
     match branch.upstream() {
         Some(Upstream::Remote { remote, branch, .. })
-            if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
+            if remote == remote_name && branch == tonk_account::MAIN_BRANCH => {}
         // A pointer left by an earlier account scheme (or an older link)
         // is repointed, like the remote cell above: with a linked
         // account, the account IS profile main's upstream by
@@ -683,10 +691,17 @@ async fn mount(
         // every local read runs one — must not wait on the network for
         // a value only repointing consumes.
         _ => {
+            let bound = crate::account_authority::wrap(
+                operator.clone(),
+                profile.clone(),
+                store.clone(),
+                true,
+            )
+            .await?;
             let remote_branch = remote
                 .branch(tonk_account::MAIN_BRANCH)
                 .open()
-                .perform(operator)
+                .perform(&bound)
                 .await
                 .context("failed to open account remote main")?;
             branch
@@ -709,16 +724,17 @@ async fn mount(
         .context("failed to stamp account replica kind")?;
     trace("mount: done");
 
-    Ok(repository)
+    Ok((repository, branch, remote_name))
 }
 
 async fn hydrate(
     repository: &Repository<dialog_credentials::SignerCredential>,
     branch: &dialog_repository::Branch,
     operator: &crate::account_authority::AccountBoundOperator,
+    remote_name: &str,
 ) -> Result<()> {
     let remote = repository
-        .remote(tonk_account::ORIGIN_REMOTE)
+        .remote(remote_name)
         .load()
         .perform(operator)
         .await?
@@ -765,8 +781,9 @@ async fn converge_account_union(
     operator: &Operator<NativeSpace>,
     subject: &dialog_varsig::Did,
     branch: &dialog_repository::Branch,
+    store: &crate::space::SpaceStore,
 ) -> Result<bool> {
-    let local_root = crate::identity::local_root_with_operator(profile, operator)
+    let local_root = crate::identity::local_root_for_store(profile, operator, store)
         .await?
         .context("account link has no local root")?;
     let root_did: dialog_varsig::Did = local_root
@@ -906,30 +923,28 @@ pub async fn ensure_with_operator_and_store(
 ) -> Result<EnsureOutcome> {
     trace("ensure: start");
     progress(format_args!("Reading the linked account…"));
-    let Some(subject) = linked_account_in(profile, &operator, &store).await? else {
-        progress(format_args!("No account is linked; nothing to sync."));
+    let Some(active) = crate::account_session::snapshot(profile, &operator, &store)
+        .await?
+        .active
+    else {
         return Ok(EnsureOutcome {
             status: AccountStateStatus::Unconfigured,
             warning: None,
         });
     };
-    trace("ensure: descriptor read");
-    let remote = account_remote_in(profile, &operator, &store)
-        .await?
+    let subject = active.root_did.parse()?;
+    let remote = active
+        .remote
         .context("the linked account names no remote")?;
     progress(format_args!("Account {subject} syncs with {remote}"));
     progress(format_args!("Connecting to the remote…"));
-    let repository = mount(profile, &operator, &subject, &remote).await?;
+    let (repository, branch, remote_name) =
+        mount(profile, &operator, &store, &subject, &remote).await?;
     trace("ensure: mounted");
     let operator =
         crate::account_authority::wrap(operator, profile.clone(), store.clone(), true).await?;
     trace("ensure: operator wrapped");
-    let branch = repository
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(&operator)
-        .await
-        .context("failed to open account main branch")?;
+
     let already_ready = marker_matches(
         marker(profile, operator.local()).await?.as_deref(),
         &subject,
@@ -957,7 +972,7 @@ pub async fn ensure_with_operator_and_store(
         progress(format_args!(
             "First sync on this device: downloading the account…"
         ));
-        match hydrate(&repository, &branch, &operator).await {
+        match hydrate(&repository, &branch, &operator, &remote_name).await {
             Ok(()) => {
                 trace("ensure: first hydration finished");
                 save_marker(profile, operator.local(), &subject).await?;
@@ -983,7 +998,9 @@ pub async fn ensure_with_operator_and_store(
     }
     trace("ensure: account-access adoption finished");
 
-    if let Err(error) = converge_account_union(profile, operator.local(), &subject, &branch).await {
+    if let Err(error) =
+        converge_account_union(profile, operator.local(), &subject, &branch, &store).await
+    {
         warnings.push(format!("account authority convergence failed: {error:#}"));
     }
 

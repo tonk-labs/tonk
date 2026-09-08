@@ -179,8 +179,20 @@ impl Callback {
         });
 
         match tokio::time::timeout(DEADLINE, async {
-            let served = server.await;
-            (served, receiver.await)
+            let serving = async { server.await };
+            tokio::pin!(serving);
+            let mut receiver = receiver;
+            tokio::select! {
+                outcome = &mut receiver => {
+                    // A browser can leave another connection with unfinished
+                    // headers. Its graceful drain must not hold an already
+                    // delivered grant hostage. Give the response time to flush,
+                    // then release this listener and continue activation.
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut serving).await;
+                    (Ok(()), outcome)
+                }
+                served = &mut serving => (served, receiver.await),
+            }
         })
         .await
         {
@@ -507,6 +519,36 @@ async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delivered_authorization_does_not_wait_for_an_idle_browser_connection() {
+        use tokio::io::AsyncWriteExt as _;
+        let callback = Callback::bind().await.unwrap();
+        let url = callback.url().to_owned();
+        let waiting = tokio::spawn(callback.receive(None));
+        let mut idle = tokio::net::TcpStream::connect(url.trim_start_matches("http://"))
+            .await
+            .unwrap();
+        idle.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"delivered");
+        let response = reqwest::Client::new()
+            .post(&url)
+            .form(&[("authorize", encoded)])
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let _body = response.text().await.unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("delivered authorization must not wait for other browser connections")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(outcome, Authorization::Granted(bytes) if bytes == b"delivered"));
+        drop(idle);
+    }
 
     #[test]
     fn confirmation_matches_the_account_ceremony_shell() {

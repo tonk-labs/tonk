@@ -512,7 +512,14 @@ mod native {
             let deployment_root = workspace.directory("deployments")?;
             let browser_profile_root = workspace.directory("browser-profiles")?;
             let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
-            let web_host = if safari { "localhost" } else { "tonk.network" };
+            // Local CLI/browser runs need a shared DNS name without editing
+            // /etc/hosts. CI keeps its production-shaped host mapping.
+            let loopback = std::env::var("TONK_TEST_WEB_HOST").as_deref() == Ok("localhost");
+            let web_host = if safari || loopback {
+                "localhost"
+            } else {
+                "tonk.network"
+            };
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
             // access service's own port.

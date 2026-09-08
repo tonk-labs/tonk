@@ -198,7 +198,7 @@ view!:
           }
         </style>
         <section class="blank-canvas__deeplink">
-          <tonk-page on:invite=tonk:invite></tonk-page>
+          <tonk-page on:invite=tonk:agent-handoff></tonk-page>
           <tonk-origin>
             <tonk-display
               entity={subject}
@@ -208,7 +208,7 @@ view!:
               <tonk-display
                 slot="no-entity"
                 entity={subject}
-                model=tonk:share/blocked>
+                model=tonk:agent-handoff-state>
                 <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
               </tonk-display>
             </tonk-display>
@@ -421,15 +421,46 @@ view!:
         </wa-input>
       </div>
 
-# The agent-invite concept: the live `tonk:invitation` joined with the
-# repository's display `name`, both keyed by the repo subject. The rule
-# below derives it so the agent-prompt view can template the repo name and
-# the invite URL from one model. It resolves only once the invitation's
-# both halves (durable authorization + overlay credential) exist, so the
-# canvas shows "Generating link…" until the mint lands or a refusal replaces it.
+# Agent handoffs have separate command and overlay attributes from ordinary sharing.
+concept!:
+  this: tonk:agent-handoff
+  description: Request an agent invitation scoped to the current browser account.
+  with:
+    time:
+      description: The time this handoff was requested.
+      the: xyz.tonk.agent-handoff/time
+      as: float
+      cardinality: one
+
+concept!: &tonk/agent-handoff-state
+  this: tonk:agent-handoff-state
+  description: Session-only account-scoped handoff response, independent of ordinary sharing.
+  with:
+    status:
+      description: Ready marker or a pending or failure explanation.
+      the: xyz.tonk.agent-handoff/status
+      as: text
+      cardinality: one
+    link:
+      description: Scoped invitation URL when ready, otherwise empty.
+      the: xyz.tonk.agent-handoff/link
+      as: text
+      cardinality: one
+    account:
+      description: Required account when ready; a device placeholder while unavailable.
+      the: xyz.tonk.agent-handoff/account
+      as: entity
+      cardinality: one
+
+view!:
+  this: tonk:agent-handoff-state
+  show:
+    ui: |
+      <p data-agent-handoff-status>{status}</p>
+
 concept!: &tonk/agent-invite
   this: tonk:agent-invite
-  description: A live invite joined with the repo's display name, for the agent prompt.
+  description: An account-scoped handoff joined with the repository name for the agent prompt.
   with:
     name:
       description: The repository's display name.
@@ -437,28 +468,15 @@ concept!: &tonk/agent-invite
       cardinality: one
       as: text
     link:
-      description: The complete invite URL — what the prompt embeds.
-      the: xyz.tonk.credential/link
+      description: The complete account-scoped handoff URL.
+      the: xyz.tonk.agent-invite/link
       cardinality: one
       as: text
-    access:
-      description: base58 delegation chain — the `?access=` part of the invite URL.
-      the: xyz.tonk.authorization/proof
+    account:
+      description: The browser account the agent must connect as.
+      the: xyz.tonk.agent-invite/account
       cardinality: one
-      as: text
-    remote:
-      description: >
-        Legacy sync-endpoint URL suffix. Empty for invites minted since
-        the endpoint moved into the delegation chain's signed
-        `home.address` meta.
-      the: xyz.tonk.authorization/remote
-      cardinality: one
-      as: text
-    code:
-      description: base58 keypair seed — the `#` fragment of the invite URL.
-      the: xyz.tonk.credential/seed
-      cardinality: one
-      as: text
+      as: entity
 
 # A refused invite mint, asserted into the session overlay by the worker.
 # The empty-canvas and empty-sheet agent-link panels use it as the fallback
@@ -535,25 +553,23 @@ view!:
         <p>{detail}</p>
       </div>
 
-# Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
-# and its live `tonk:invitation` on the same subject (`?this`). `?this`
-# becomes the derived entity; the same-named vars fill the conclusion's
-# fields.
+# Only a ready account-scoped response can produce an agent prompt. Its
+# derived attributes must differ from the response attributes, or a pending
+# response with an empty link satisfies the prompt concept directly.
 rule!:
-  description: Joins the repo name with the live invitation for the agent prompt
-  assert!: tonk/agent-invite
+  description: Joins the repository name with its ready account-scoped agent handoff.
+  assert: tonk/agent-invite
   when:
     - assert: tonk/repository
       where:
         this: ?this
         name: ?name
-    - assert: invitation
+    - assert: tonk/agent-handoff-state
       where:
         this: ?this
+        status: "ready"
         link: ?link
-        access: ?access
-        remote: ?remote
-        code: ?code
+        account: ?account
 
 # Human-facing invitation; the machine instructions live only in the copy value.
 view!:
@@ -624,7 +640,7 @@ view!:
 
         npx --yes @tonk/cli connect '{link}'
 
-      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. The command uses the currently linked CLI account or opens browser approval to link one. Tell me to approve in my Tonk browser if needed. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
+      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. This handoff requires account {account}. If the CLI reports a different account, explain the mismatch and ask me before switching. Only after I consent, rerun the same command with `--switch-account {account}`. Browser passkey approval is still required; tell me to approve the requested account in my Tonk browser. Do not log out first. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
 
       Then run `npx --yes @tonk/cli status` and `npx --yes @tonk/cli help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
             <span slot="copy-icon" aria-hidden="true">copy prompt</span>

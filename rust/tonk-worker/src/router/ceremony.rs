@@ -129,27 +129,66 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
     }
 }
 
+/// Decode optional account constraints without accepting malformed constraints.
+pub(crate) struct AuthorizeDeviceRequest(tonk_worker_api::DeviceAuthorization);
+impl crate::reactor::Decode for AuthorizeDeviceRequest {
+    fn trigger_attributes() -> Vec<String> {
+        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::trigger_attributes()
+    }
+    fn decode(
+        _entity: dialog_artifacts::Entity,
+        facts: &crate::reactor::EntityFacts,
+    ) -> Option<Self> {
+        decode_authorization(facts).map(Self)
+    }
+}
+impl dialog_capability::Command for AuthorizeDeviceRequest {
+    type Input = Self;
+    type Output = ();
+}
+
+fn decode_authorization(
+    facts: &crate::reactor::EntityFacts,
+) -> Option<tonk_worker_api::DeviceAuthorization> {
+    use crate::reactor::Decode as _;
+    let entity = facts.first()?.of.clone();
+    // An absent optional field is unbound in the transient decoder. Decode
+    // the original login shape only when no constraint was supplied; an
+    // invalid supplied constraint must never fall back to unrestricted login.
+    let command = if facts
+        .iter()
+        .any(|artifact| artifact.the.to_string() == "xyz.tonk.authorize-device/expected-account")
+    {
+        tonk_schema::command::AuthorizeDevice::decode(entity, facts)?
+    } else {
+        let legacy = tonk_schema::command::legacy::AuthorizeDevice::decode(entity, facts)?;
+        tonk_schema::command::AuthorizeDevice {
+            this: legacy.this,
+            audience: legacy.audience,
+            callback: legacy.callback,
+            name: legacy.name,
+            expected_account: None,
+        }
+    };
+    let callback = bs58::decode(&command.callback.0).into_vec().ok()?;
+    Some(tonk_worker_api::DeviceAuthorization {
+        audience: command.audience.0.to_string(),
+        callback: String::from_utf8(callback).ok()?,
+        name: command.name.0,
+        expected_account: command
+            .expected_account
+            .map(|account| account.0.to_string()),
+    })
+}
+
 /// Run `tonk:authorize-device`: delegate the account to a waiting
 /// process. Unparseable audience/callback/name skip with a log; an
 /// undeliverable callback is refused before anyone touches a passkey.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<tonk_schema::command::AuthorizeDevice>
-    for crate::router::CommandEnv
-{
-    async fn execute(&self, command: tonk_schema::command::AuthorizeDevice) {
-        let authorization = (|| {
-            let callback = bs58::decode(&command.callback.0).into_vec().ok()?;
-            Some(tonk_worker_api::DeviceAuthorization {
-                audience: command.audience.0.to_string(),
-                callback: String::from_utf8(callback).ok()?,
-                name: command.name.0,
-            })
-        })();
-        let Some(authorization) = authorization else {
-            log!("authorize-device: no/unparseable audience, callback, or name; skipping");
-            return;
-        };
+impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::CommandEnv {
+    async fn execute(&self, command: AuthorizeDeviceRequest) {
+        let authorization = command.0;
         // Refuse a callback the grant could never be delivered to
         // before asking anyone to touch a passkey.
         if let Err(error) = tonk_worker_api::callback::delivery_url(&authorization.callback, &[]) {
@@ -241,6 +280,14 @@ async fn authorize_device_inner(
     if root.did() != linked {
         return Err("this passkey belongs to a different account".into());
     }
+    if let Some(expected) = &authorization.expected_account
+        && root.did().as_str() != expected
+    {
+        return Err(format!(
+            "this handoff requires account {expected}; the unlocked passkey belongs to {}",
+            root.did()
+        ));
+    }
     let audience: dialog_varsig::Did = authorization
         .audience
         .parse()
@@ -298,4 +345,54 @@ async fn authorize_device_inner(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],
     )
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::decode_authorization;
+    use dialog_artifacts::{Artifact, Value};
+
+    #[dialog_common::test]
+    fn agent_handoff_authorization_preserves_optional_constraint() {
+        let did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let mut facts = vec![
+            ("audience", Value::Entity(did.parse().unwrap())),
+            (
+                "callback",
+                Value::String(bs58::encode("http://127.0.0.1:1234").into_string()),
+            ),
+            ("name", Value::String("terminal".into())),
+        ]
+        .into_iter()
+        .map(|(field, value)| Artifact {
+            the: format!("xyz.tonk.authorize-device/{field}")
+                .parse()
+                .unwrap(),
+            of: "urn:test:approval".parse().unwrap(),
+            is: value,
+            cause: None,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(decode_authorization(&facts).unwrap().expected_account, None);
+        facts.push(Artifact {
+            the: "xyz.tonk.authorize-device/expected-account"
+                .parse()
+                .unwrap(),
+            of: "urn:test:approval".parse().unwrap(),
+            is: Value::Entity(did.parse().unwrap()),
+            cause: None,
+        });
+        assert_eq!(
+            decode_authorization(&facts)
+                .unwrap()
+                .expected_account
+                .as_deref(),
+            Some(did)
+        );
+        facts.last_mut().unwrap().is = Value::String("invalid account".into());
+        assert!(
+            decode_authorization(&facts).is_none(),
+            "a malformed constraint must not fall back to ordinary login"
+        );
+    }
 }

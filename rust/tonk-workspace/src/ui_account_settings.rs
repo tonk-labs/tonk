@@ -283,6 +283,14 @@ pub(crate) fn refresh(this: &HtmlElement) {
         Some(request) => {
             set_text(this, "[data-link-name]", &request.name);
             set_text(this, "[data-link-did]", &request.audience);
+            set_text(
+                this,
+                "[data-link-account]",
+                request
+                    .expected_account
+                    .as_deref()
+                    .unwrap_or("your signed-in account"),
+            );
             set_pane(this, "link");
         }
         None => {
@@ -353,6 +361,7 @@ fn page_location() -> PageLocation {
 
 /// What a waiting terminal asked for, when this is its approval page.
 struct LinkRequest {
+    expected_account: Option<String>,
     audience: String,
     callback: String,
     name: String,
@@ -371,6 +380,7 @@ fn link_request() -> Option<LinkRequest> {
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "terminal".to_string());
     Some(LinkRequest {
+        expected_account: params.get("expectedAccount"),
         audience,
         callback,
         name,
@@ -690,20 +700,26 @@ fn approve_link(this: &HtmlElement) {
         return;
     };
     show_status(this, "Waiting for your passkey\u{2026}");
+    let mut fields = serde_json::json!({
+        "audience": request.audience,
+        "callback": bs58::encode(request.callback.as_bytes()).into_string(),
+        "name": request.name,
+    });
+    let mut attributes = serde_json::json!({
+        "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
+        "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
+        "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
+    });
+    if let Some(expected) = request.expected_account {
+        attributes["expectedAccount"] = serde_json::json!({ "the": "xyz.tonk.authorize-device/expected-account", "as": "Entity" });
+        fields["expectedAccount"] = expected.into();
+    }
     transact(
         this,
         &claim(
             "Delegate the account to a waiting terminal.",
-            serde_json::json!({
-                "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
-                "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
-                "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
-            }),
-            serde_json::json!({
-                "audience": request.audience,
-                "callback": bs58::encode(request.callback.as_bytes()).into_string(),
-                "name": request.name,
-            }),
+            attributes,
+            fields,
         ),
     );
 }

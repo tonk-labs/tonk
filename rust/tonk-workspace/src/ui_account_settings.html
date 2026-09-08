@@ -33,22 +33,23 @@
       <span>delete all data associated with this account</span>
       <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
     </div>
-    <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
   </div>
   <div class="pane" data-pane="link" hidden data-link-approval>
     <div class="sect">a terminal is asking for access</div>
     <div class="srowd"><span>name</span><b data-link-name></b></div>
+    <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
     <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
     <p class="expl">
       approving gives that terminal the same access to your account as this
       browser: every space, on every device. decline if you did not just run
-      <code>tonk account login</code> yourself.
+      <code>tonk account login</code> or <code>tonk connect</code> yourself.
     </p>
     <div class="link-foot">
       <button class="m-cancel" type="button" data-link-decline>decline</button>
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
+  <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
 </div>
 <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
   <div class="confirm-body">
