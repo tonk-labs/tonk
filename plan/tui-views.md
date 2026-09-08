@@ -836,6 +836,21 @@ and the reason §5.2 needs an answer before §6 gets interesting.
   `Source` reader (§5.3) plus focus state, not a descriptor-resolution
   problem. **Note the README of `tonk-tui-poc` calls activation "M2";
   M2 here is live subscriptions and M3 is activation.**
+
+  **Built in `tonk-tui-poc`** (`activate.rs`, `focus.rs`, `session.rs`,
+  `terminal.rs`): the source reader, focusability decided from the
+  compiled bindings, tab and `nav=`-scoped arrow traversal, `focused-*`
+  promotion, the generated keybar, and a crossterm loop. The prediction
+  held — the reader is one `match` over `Source`, and everything else
+  is host bookkeeping. Two things the estimate did not name and that
+  cost more than the reader did: **which conclusion a focusable belongs
+  to** (answered by the `with=` stamp `tonk_render` already puts on
+  every repeat clone, which is why the focus walk runs on the resolved
+  node tree and not the lowered layout tree), and **the difference
+  between `focus` and `focused`** — the author's standing claim that an
+  element is reachable versus the host's claim that it is reached this
+  frame. Still open in M3's own scope: the transact half (the poc
+  prints transients, having no branch), and mouse.
 - **M4 — color and motion.** The capability ladder (§6.5, §6.8), the
   `terminal` theme, the clock (§6.9), spinner and progress.
 - **M5 — input and composition.** `<input>`, `<textarea>`, `<checkbox>`,
