@@ -98,7 +98,6 @@ fn profile_label(profile: &ProfileRosterEntry) -> Option<&str> {
                 .as_deref()
                 .filter(|email| !email.trim().is_empty())
         })
-        .or(Some(&profile.profile_name))
 }
 
 fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
