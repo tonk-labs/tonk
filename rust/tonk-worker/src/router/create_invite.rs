@@ -326,9 +326,19 @@ pub(super) async fn retain_invite_authority(
     Ok(())
 }
 
-/// Shorten a minted invite URL via the shortcut service on its own
+/// Shorten a minted invite URL via the shortcut service on the link's
 /// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
 /// seed fragment re-attached (the fragment never goes on the wire).
+///
+/// The answer is verified twice before the short link replaces the long
+/// one: the returned hash must be the target's own content address
+/// (`short_url` checks), and a probe `GET` of the stored shortcut must
+/// actually redirect back to the target (`probe_shortcut`). A
+/// content-addressed blob store passes the first — it stores the bytes
+/// and answers with the same blake3 a shortener would — and only the
+/// probe exposes that it serves bytes instead of a redirect. Either
+/// failure means the host does not provide shortening; the caller falls
+/// back to the fully functional long URL.
 ///
 /// Shared with the `tonk:invite` command handler in [`super::repository`],
 /// the other mint path, so both shorten identically.
@@ -336,9 +346,78 @@ pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
     let request = ShortcutRequest::new(url)
         .map_err(|e| TonkWorkerError::Internal(format!("failed to derive shortcut: {e}")))?;
     let hash = put_shortcut(request.endpoint.as_str(), request.target.clone()).await?;
-    request
+    let short = request
         .short_url(&hash)
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble short URL: {e}")))
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble short URL: {e}")))?;
+    probe_shortcut(&request, &hash).await?;
+    Ok(short)
+}
+
+/// Probe the stored shortcut: `GET {origin}/@/{hash}` must redirect
+/// back to the stored target. The browser fetch follows the redirect;
+/// `redirected` plus the landing URL is the proof.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::Response;
+
+    let probe = request
+        .probe_url(hash)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_str(&probe))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe GET: {e:?}")))?;
+    if !response.redirected() {
+        return Err(TonkWorkerError::Internal(format!(
+            "the shortcut host answered the probe without redirecting (HTTP {})",
+            response.status()
+        )));
+    }
+    request
+        .verify_resolved(&response.url())
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe: {e}")))
+}
+
+/// Probe the stored shortcut without following the redirect: a
+/// conforming service answers 3xx with a `Location` that resolves back
+/// to the stored target.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), TonkWorkerError> {
+    let probe = request
+        .probe_url(hash)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe client: {e}")))?;
+    let response = client
+        .get(&probe)
+        .send()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe GET: {e}")))?;
+    if !response.status().is_redirection() {
+        return Err(TonkWorkerError::Internal(format!(
+            "the shortcut host answered the probe without redirecting (HTTP {})",
+            response.status()
+        )));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            TonkWorkerError::Internal("the shortcut probe redirect carries no Location".to_owned())
+        })?;
+    let resolved = tonk_invite::shortcut::resolve_location(&probe, location)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe: {e}")))?;
+    request
+        .verify_resolved(&resolved)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe: {e}")))
 }
 
 /// PUT a shortcut target, returning the hash the service responds with.

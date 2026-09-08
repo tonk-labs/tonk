@@ -97,6 +97,11 @@ pub struct ClaimOutcome {
     /// when the pull failed (e.g. the endpoint was unreachable) —
     /// join still succeeds, and the user can retry with `tonk pull`.
     pub synced: bool,
+    /// The space's display name the invite carried, if any. Advisory
+    /// mint-time metadata — possibly stale, superseded by the space's
+    /// own record once content syncs — useful as a default label for
+    /// the joined space.
+    pub space_name: Option<String>,
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -268,7 +273,11 @@ async fn mint_for(
     let invite = Invite::new(chain, invite_audience, parsed_remote)
         .await
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
-        .with_revocation_url(relay);
+        .with_revocation_url(relay)
+        // The space's display name at mint time, so the claimer's
+        // directory row is labeled before content syncs. Advisory —
+        // the space's own record supersedes it after the first pull.
+        .with_space_name(crate::account_spaces::repository_name(site).await);
 
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
@@ -310,39 +319,18 @@ async fn mint_for(
     })
 }
 
-/// Derive the invite base URL from a remote's endpoint.
-///
-/// The invite has to live on the remote's own origin. That origin is
-/// the deployment actually serving the repo, and — because the
-/// shortcut service is same-origin by construction — the only one
-/// whose `PUT /@` can answer. This is the CLI's stand-in for the
-/// worker's `location.origin`, which the browser mint path reads
-/// straight off its own scope.
-///
-/// Any userinfo on the endpoint is stripped. A registered remote URL
-/// carrying credentials would otherwise ride them into a link printed
-/// to stdout and pasted to whoever is being invited.
+/// Derive the invite base URL from a remote's endpoint — the CLI's
+/// stand-in for the worker's `location.origin`. The one shared
+/// definition lives in [`tonk_invite::base_url_for_remote`] (the native
+/// worker mint derives its base the same way); this wrapper only maps
+/// the error into the CLI's failure type.
 ///
 /// # Errors
 ///
 /// Returns an error if `endpoint` doesn't parse, or has no origin to
 /// hang `/join` off (a `data:` or `mailto:` URL, say).
 pub fn base_url_for_remote(endpoint: &str) -> Result<String, InviteError> {
-    let mut parsed = Url::parse(endpoint).map_err(|e| {
-        InviteError::Io(format!(
-            "remote endpoint '{endpoint}' is not a valid URL: {e}"
-        ))
-    })?;
-    // Both setters fail only on a URL that cannot have credentials
-    // (`data:`, `mailto:`) — which has no usable origin either, so the
-    // join below reports it. Nothing to add here.
-    let _ = parsed.set_username("");
-    let _ = parsed.set_password(None);
-    parsed.join("/join").map(String::from).map_err(|e| {
-        InviteError::Io(format!(
-            "remote endpoint '{endpoint}' has no usable origin: {e}"
-        ))
-    })
+    tonk_invite::base_url_for_remote(endpoint).map_err(|e| InviteError::Io(format!("{e:#}")))
 }
 
 /// Claim an invite, bootstrapping a fresh site at `root` (the
@@ -449,6 +437,7 @@ pub async fn claim(
                 .did()
         }
     };
+    let space_name = invite.space_name.clone();
     let claimed = invite
         .claim(&member)
         .await
@@ -524,6 +513,7 @@ pub async fn claim(
         remote_url,
         auto_configured_remote,
         synced,
+        space_name,
     })
 }
 
@@ -635,9 +625,17 @@ async fn record_claim_roster(
     Ok(())
 }
 
-/// Shorten a minted invite URL via the shortcut service on its own
+/// Shorten a minted invite URL via the shortcut service on the link's
 /// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
 /// seed fragment re-attached (the fragment never goes on the wire).
+///
+/// The answer is verified before the short link is trusted: the hash
+/// must be the target's own content address (`short_url` checks), and a
+/// probe `GET` must actually redirect back to the target — a
+/// content-addressed blob store passes the hash check but serves bytes
+/// instead of a redirect, and a short link built on one would never
+/// redeem. Either failure is an error the caller degrades on, falling
+/// back to the fully functional long URL.
 pub async fn shorten(url: &str) -> Result<String, InviteError> {
     let request = ShortcutRequest::new(url)
         .map_err(|e| InviteError::Io(format!("failed to derive shortcut: {e}")))?;
@@ -658,9 +656,41 @@ pub async fn shorten(url: &str) -> Result<String, InviteError> {
         .text()
         .await
         .map_err(|e| InviteError::Io(format!("shortcut response: {e}")))?;
-    request
+    let short = request
         .short_url(&hash)
-        .map_err(|e| InviteError::Io(format!("failed to assemble short URL: {e}")))
+        .map_err(|e| InviteError::Io(format!("failed to assemble short URL: {e}")))?;
+
+    let probe = request
+        .probe_url(&hash)
+        .map_err(|e| InviteError::Io(format!("shortcut probe URL: {e}")))?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| InviteError::Io(format!("shortcut probe client: {e}")))?;
+    let response = client
+        .get(&probe)
+        .send()
+        .await
+        .map_err(|e| InviteError::Io(format!("shortcut probe GET: {e}")))?;
+    if !response.status().is_redirection() {
+        return Err(InviteError::Io(format!(
+            "the shortcut host answered the probe without redirecting (HTTP {})",
+            response.status()
+        )));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            InviteError::Io("the shortcut probe redirect carries no Location".to_owned())
+        })?;
+    let resolved = resolve_location(&probe, location)
+        .map_err(|e| InviteError::Io(format!("shortcut probe: {e}")))?;
+    request
+        .verify_resolved(&resolved)
+        .map_err(|e| InviteError::Io(format!("shortcut probe: {e}")))?;
+    Ok(short)
 }
 
 /// Resolve a short link to the long invite URL it redirects to,

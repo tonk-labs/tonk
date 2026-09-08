@@ -1208,7 +1208,15 @@ async fn run_invite(
     // template can't make. The display name rides along so the recipient
     // can label the space before its content syncs.
     let space_name = repository_display_name(&tonk, &repository, repo_name).await;
-    let link = invite_url(&proof, &remote, &seed, repo_name, space_name.as_deref()).await;
+    let link = invite_url(
+        &proof,
+        &remote,
+        &seed,
+        repo_name,
+        space_name.as_deref(),
+        &remote_execution.access_url,
+    )
+    .await;
 
     let authorization = Authorization {
         this: subject_entity.clone(),
@@ -1402,24 +1410,30 @@ async fn invite_url(
     seed: &str,
     space_key: &str,
     space_name: Option<&str>,
+    access_url: &Url,
 ) -> String {
-    let origin = worker_origin();
-    let long = long_invite_url(
-        origin.as_deref(),
-        proof,
-        remote,
-        seed,
-        space_key,
-        space_name,
-    );
-
-    // No worker scope means the URL fell back to the hardcoded default
-    // base, which is never PUT to — the same rule as the HTTP mint path,
-    // keeping tests and offline mints network-free. Only a real origin
-    // has a shortcut service of its own to shorten against.
-    if origin.is_none() {
+    // The link lives on the host serving the SPACE — the origin derived
+    // from its access endpoint (the same derivation the CLI uses) — not
+    // on whatever surface happened to mint it. That host is where the
+    // space's members already sync, and it is the origin whose
+    // same-origin shortcut store can answer the short link's relative
+    // redirect. Only when the endpoint yields no origin does the
+    // hardcoded default base remain — and that base is never PUT to,
+    // keeping offline mints and tests network-free.
+    let base = match tonk_invite::base_url_for_remote(access_url.as_str()) {
+        Ok(base) => Some(base),
+        Err(error) => {
+            log!("invite: no base from the space's remote: {error:#}");
+            None
+        }
+    };
+    let long = long_invite_url(base.as_deref(), proof, remote, seed, space_key, space_name);
+    if base.is_none() {
         return long;
     }
+    // Shortening is a convenience against the same host: a host that
+    // does not provide it (or answers wrongly — `short_url` verifies
+    // the content address) degrades to the fully functional long URL.
     match super::create_invite::shorten(&long).await {
         Ok(short) => short,
         Err(e) => {
@@ -1431,9 +1445,10 @@ async fn invite_url(
 
 /// The service worker's own origin, or `None` outside a worker scope.
 ///
-/// Split out so [`long_invite_url`] stays pure and testable: the browser
-/// test harness runs in a *window*, never a `ServiceWorkerGlobalScope`, so
-/// a test driving `invite_url` could only ever reach the no-origin branch.
+/// No longer part of the invite base — a minted link lives on the host
+/// serving the space, not the surface that minted it (see [`invite_url`])
+/// — but still what worker-relative endpoints (`/api/…` calls the worker
+/// makes to its own deployment) resolve against.
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -1458,10 +1473,11 @@ pub(super) fn worker_origin() -> Option<String> {
 
 /// Assemble the long (un-shortened) invite URL.
 ///
-/// With an origin, the capability URL is built there; without one there is no
-/// worker scope to read (and so no service to shorten against either), so it
-/// falls back to the same base the HTTP mint path defaults to. Both forms then
-/// receive an organic channel and hashed space token before being returned.
+/// `base` is the resolved `…/join` base — the worker's own origin or the
+/// origin serving the space (see [`invite_url`]); with neither, it falls
+/// back to the same hardcoded base the HTTP mint path defaults to. Both
+/// forms then receive an organic channel and hashed space token before
+/// being returned.
 ///
 /// `remote` is already a ready-to-append `&remote=…` suffix and is empty for a
 /// modern delegation whose signed metadata names the shareable remote (see
@@ -1474,7 +1490,7 @@ pub(super) fn worker_origin() -> Option<String> {
 /// absent name appends nothing — the recipient's "Untitled" fallback beats
 /// seeding an empty label.
 fn long_invite_url(
-    origin: Option<&str>,
+    base: Option<&str>,
     proof: &str,
     remote: &str,
     seed: &str,
@@ -1490,10 +1506,10 @@ fn long_invite_url(
             format!("&{encoded}")
         })
         .unwrap_or_default();
-    let base = match origin {
-        Some(origin) => format!("{origin}/join?access={proof}{remote}{name}#{seed}"),
+    let base = match base {
+        Some(base) => format!("{base}?access={proof}{remote}{name}#{seed}"),
         None => {
-            log!("invite: no worker origin; using the default base");
+            log!("invite: no origin and no remote to derive one from; using the default base");
             format!(
                 "{}?access={proof}{remote}{name}#{seed}",
                 tonk_invite::DEFAULT_BASE_URL
@@ -5391,13 +5407,56 @@ mod invite_chain_tests {
                 .await
                 .expect("credential query");
             assert_eq!(credentials.len(), 1, "the mint records one credential");
-            let minted = tonk_invite::Invite::parse_url(&credentials[0].link.0)
+            // The link lives on the host actually serving the space —
+            // the origin derived from its access endpoint — never on the
+            // minting surface or the hardcoded production base.
+            let link = credentials[0].link.0.clone();
+            let serving = url::Url::parse(&remote).expect("the fixture remote is a URL");
+            assert_eq!(
+                url::Url::parse(&link).expect("the link is a URL").origin(),
+                serving.origin(),
+                "the minted link is rooted on the space's serving host"
+            );
+            // The fixture host provides conforming shortening (content
+            // hash + redirect), so the mint shortened; resolve the way a
+            // claimer does before parsing. A long link (a host without
+            // shortening) parses as-is — both arms are live behavior.
+            let resolved = if tonk_invite::shortcut::is_shortcut(&link) {
+                let client = reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("probe client builds");
+                let response = client
+                    .get(&link)
+                    .send()
+                    .await
+                    .expect("the short link answers");
+                assert!(
+                    response.status().is_redirection(),
+                    "a short link redirects (got HTTP {})",
+                    response.status()
+                );
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .expect("the redirect carries a Location");
+                tonk_invite::shortcut::resolve_location(&link, location)
+                    .expect("the redirect resolves")
+            } else {
+                link
+            };
+            let minted = tonk_invite::Invite::parse_url(&resolved)
                 .await
-                .expect("the minted link parses as an invite");
+                .unwrap_or_else(|e| panic!("link {resolved} did not parse: {e}"));
             assert_eq!(
                 minted.space_name.as_deref(),
                 Some("Invite Chain"),
                 "the minted link names the space it invites into"
+            );
+            assert!(
+                matches!(minted.audience, tonk_invite::InviteAudience::Open { .. }),
+                "the seed fragment survives shortening and resolution"
             );
         }
 
@@ -7926,21 +7985,20 @@ block/insert!:
     }
 
     /// The invite URL puts the seed in the fragment and the delegation in
-    /// the query, on the worker's own origin.
+    /// the query, on the resolved base — the host serving the space.
     ///
     /// Driven through [`long_invite_url`] directly rather than through the
-    /// mint: the test harness's worker scope reports no `location.origin`,
-    /// so a mint always takes the no-origin fallback and the branch that
-    /// actually runs in production would never be exercised.
+    /// mint, which exercises the base resolution separately (the native
+    /// chain test pins the link's origin to the space's remote).
     ///
     /// The fragment split is the load-bearing part. The seed must never
     /// reach a server, and shortening PUTs only the path + query — so a
     /// seed that slipped into the query would be uploaded to the shortcut
     /// service in plaintext.
     #[dialog_common::test]
-    async fn it_builds_the_invite_url_on_the_worker_origin() {
+    async fn it_builds_the_invite_url_on_the_resolved_base() {
         let url = super::long_invite_url(
-            Some("https://tonk.example"),
+            Some("https://tonk.example/join"),
             "PROOF",
             "&remote=https%3A%2F%2Fhub%2Fucan%2F",
             "SEED",
@@ -7998,7 +8056,7 @@ block/insert!:
     #[dialog_common::test]
     async fn it_omits_the_remote_for_a_local_only_repo() {
         let url = super::long_invite_url(
-            Some("https://tonk.example"),
+            Some("https://tonk.example/join"),
             "PROOF",
             "",
             "SEED",

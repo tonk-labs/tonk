@@ -106,6 +106,37 @@ pub fn home_address_meta(address: &Url) -> BTreeMap<String, Ipld> {
     BTreeMap::from([(HOME_ADDRESS.to_owned(), Ipld::String(address.to_string()))])
 }
 
+/// Derive the invite base URL from a remote's endpoint.
+///
+/// The invite has to live on the remote's own origin. That origin is the
+/// deployment actually serving the repo, and — because the shortcut service
+/// is same-origin by construction — the only one whose `PUT /@` can answer.
+/// This is the stand-in for the browser worker's `location.origin` on every
+/// surface that has no origin of its own (the CLI, a native worker): the
+/// host you're on IS the host serving the space.
+///
+/// Any userinfo on the endpoint is stripped. A registered remote URL
+/// carrying credentials would otherwise ride them into a link printed to
+/// stdout or pasted to whoever is being invited.
+///
+/// # Errors
+///
+/// Returns an error if `endpoint` doesn't parse, or has no origin to hang
+/// `/join` off (a `data:` or `mailto:` URL, say).
+pub fn base_url_for_remote(endpoint: &str) -> Result<String> {
+    let mut parsed = Url::parse(endpoint)
+        .with_context(|| format!("remote endpoint '{endpoint}' is not a valid URL"))?;
+    // Both setters fail only on a URL that cannot have credentials
+    // (`data:`, `mailto:`) — which has no usable origin either, so the
+    // join below reports it. Nothing to add here.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed
+        .join("/join")
+        .map(String::from)
+        .with_context(|| format!("remote endpoint '{endpoint}' has no usable origin"))
+}
+
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
 const SEED_LEN: usize = 32;

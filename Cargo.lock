@@ -5067,6 +5067,7 @@ name = "tonk-invite"
 version = "0.6.13"
 dependencies = [
  "anyhow",
+ "blake3",
  "bs58",
  "dialog-capability",
  "dialog-common",

@@ -1823,12 +1823,13 @@ pub mod tests {
     /// This one joins through `link` verbatim, closing that gap: it is the
     /// only test that fails if the mint hands the user a broken link.
     ///
-    /// It also pins the shortening fallback. The harness's worker scope
-    /// reports no `location.origin` and there is no shortcut service, so the
-    /// mint takes the no-origin path and shortening never happens — and that
-    /// fallback must still yield a *working* invite, not a degraded one. The
-    /// origin branch is covered by `it_builds_the_invite_url_on_the_worker_origin`
-    /// in `repository.rs`, which drives the URL builder directly.
+    /// It also pins the shortening fallback: the fixture space's remote is
+    /// not a live shortcut service, so shortening fails (or its answer
+    /// fails the content-address check) and the mint degrades to the long
+    /// URL — which must still be a *working* invite, not a broken one. The
+    /// base composition is covered by
+    /// `it_builds_the_invite_url_on_the_resolved_base` in `repository.rs`,
+    /// which drives the URL builder directly.
     #[dialog_common::test]
     async fn it_joins_through_the_minted_link() {
         let state = test_state().await;
