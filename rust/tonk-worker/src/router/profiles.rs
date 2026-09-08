@@ -668,21 +668,34 @@ mod tests {
             active.root_did.is_some(),
             "an attached profile names its account root"
         );
-        assert!(active.display_name.is_some());
+        // No name until the ACCOUNT carries one: a fresh profile has not
+        // replicated an account name, and the roster no longer invents a
+        // petname to fill the gap.
+        assert!(
+            active.display_name.is_none(),
+            "an unnamed account reports no name rather than a generated one"
+        );
     }
 
     #[dialog_common::test]
     async fn it_reads_an_inactive_profiles_current_display_name_and_account_state() {
-        use tonk_schema::{ProfileName, prelude::DidExt as _};
+        use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
         let state = Arc::new(RwLock::new(test_state().await));
         let first = {
             let tonk = state.read().await;
+            // Keyed on the ACCOUNT root, which is the entity
+            // `account_display_name` queries — not the profile DID. The
+            // roster reports the account's name; the per-device profile
+            // override is a different thing and must not stand in for it.
+            let account = crate::router::identity::root_did(&tonk)
+                .await
+                .expect("the test profile has a root");
             tonk.reactor
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .assert(ProfileName::new(tonk.profile.did().this(), "jack".into()))
+                .assert(AccountDisplayName::new(account.this(), "jack".into()))
                 .commit()
                 .perform(&tonk.operator)
                 .await
