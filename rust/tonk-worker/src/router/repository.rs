@@ -4416,12 +4416,6 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
         })?;
     log!("Profile branch bootstrapped");
 
-    // Stamp a durable display name (the deterministic petname) when none is
-    // stored yet, so the FAB's sealed profile-branch `<tonk-display
-    // model="tonk:profile/name">` resolves a name for a never-renamed member.
-    // Rename-safe: a no-op once any `ProfileName` override exists.
-    crate::router::profile_name::ensure_display_name(tonk).await?;
-
     // Seed the standard library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
     // the library's concepts and views — the `space` model and its

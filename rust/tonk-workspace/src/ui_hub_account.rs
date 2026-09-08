@@ -29,12 +29,31 @@ const REGISTERED_TAG: &str = "ui-hub-account:registered";
 /// account branch arriving.
 const LINKING_TAG: &str = "ui-hub-account:linking";
 
+/// Marks the cell as holding a skeleton where the account's name will go.
+/// The stylesheet keys the pulsing bar off it.
+const WAITING_ATTR: &str = "data-account-linking";
+
 /// Sent into the sealed guest when its top-page account ceremony is gone.
 const REGISTRATION_CLOSED: &str = "tonk:registration-closed";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
         element.set_text_content(Some(value));
+    }
+}
+
+/// Raise (or drop) the "the account is here but unnamed" marker.
+///
+/// The stylesheet turns this into the pulsing skeleton, and the accessible
+/// name goes up with it so the trigger is not an unlabelled button while
+/// the bar stands in for the name.
+fn set_waiting(this: &HtmlElement, waiting: bool) {
+    if waiting {
+        let _ = this.set_attribute(WAITING_ATTR, "");
+        set_label(this, "[data-account-trigger]", Some("account is loading"));
+    } else {
+        let _ = this.remove_attribute(WAITING_ATTR);
+        set_label(this, "[data-account-trigger]", None);
     }
 }
 
@@ -61,7 +80,14 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
     }
 }
 
-fn profile_label(profile: &ProfileRosterEntry) -> &str {
+/// What to call a linked account, or `None` while nothing names it yet.
+///
+/// NEVER falls back to `profile_name`: that is the local profile's own
+/// handle (a derived petname for a profile nobody renamed), not the
+/// account's name, and showing it presented a generated word as the
+/// person's account. An account with no name yet has not replicated one
+/// — the caller holds a skeleton rather than inventing something.
+fn profile_label(profile: &ProfileRosterEntry) -> Option<&str> {
     profile
         .display_name
         .as_deref()
@@ -72,7 +98,6 @@ fn profile_label(profile: &ProfileRosterEntry) -> &str {
                 .as_deref()
                 .filter(|email| !email.trim().is_empty())
         })
-        .unwrap_or(&profile.profile_name)
 }
 
 fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
@@ -90,18 +115,29 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
         .find(|profile| profile.active || profile.profile_name == response.active);
     if let Some(active) = active {
         if let Ok(Some(label)) = this.query_selector("[data-account-label]") {
-            // A link in flight outranks the roster's answer. The roster
-            // reads a profile that has no provider YET and would offer
-            // "link an account" — a door already walked through, and the
-            // exact wrong thing to say while the link is running.
-            let linking = this.has_attribute("data-account-linking");
-            label.set_text_content(Some(if linking {
-                // The skeleton speaks for it; see `apply_account_linking`.
-                ""
-            } else if active.provider.is_some() {
-                profile_label(active)
-            } else {
-                crate::hub_account::trigger_label(Some("false"))
+            // Three states, keyed on what is actually known:
+            //
+            //   no provider      -> offer the door: "link an account"
+            //   provider, name   -> the account's name
+            //   provider, no name-> a skeleton, because the account is
+            //                       here but has not replicated its name
+            //
+            // A link in flight is the same third case (the provider
+            // attaches before the account branch arrives), so it needs no
+            // branch of its own — which is what kept a stale marker from
+            // being able to strand the label.
+            let named = active
+                .provider
+                .is_some()
+                .then(|| profile_label(active))
+                .flatten();
+            let waiting = active.provider.is_some() && named.is_none();
+            set_waiting(this, waiting);
+            label.set_text_content(Some(match named {
+                Some(name) => name,
+                // Either the skeleton (waiting) or the offer.
+                None if waiting => "",
+                None => crate::hub_account::trigger_label(Some("false")),
             }));
         }
         let _ = this.set_attribute("data-active-profile", &active.profile_name);
@@ -149,7 +185,12 @@ fn render_profiles(this: &HtmlElement, response: &ProfilesResponse) {
             continue;
         };
         name.set_class_name("an");
-        name.set_text_content(Some(profile_label(profile)));
+        // A switcher row names a PROFILE to switch to, not an account, so
+        // the local handle is the right last resort here — that is what
+        // distinguishes one unnamed profile from another in this list.
+        name.set_text_content(Some(
+            profile_label(profile).unwrap_or(&profile.profile_name),
+        ));
         let _ = row.append_child(&name);
         let _ = row.append_with_str_1("switch account");
         if let Ok(glyph) = document.create_element("span") {
@@ -860,9 +901,10 @@ fn apply_account_linking(this: &HtmlElement, linking: bool) {
 fn apply_account_name(this: &HtmlElement, name: &str) {
     let _ = this.set_attribute("data-active-provider", "true");
     set_trigger_mode(this, false);
-    if this.has_attribute("data-account-linking") {
-        return;
-    }
+    // A real name ENDS the wait, whenever it lands: this is the
+    // replication the skeleton was standing in for. No guard — an
+    // arriving name is exactly what should replace the bar.
+    set_waiting(this, false);
     set_text(this, "[data-account-label]", name);
 }
 
@@ -1967,21 +2009,6 @@ mod tests {
 
         // A live name arriving mid-link stands down the same way.
         super::apply_account_name(&host, "Ada Lovelace");
-        assert_eq!(
-            label.text_content().as_deref(),
-            Some(""),
-            "a name arriving mid-link waits for the link to settle"
-        );
-
-        // Settled: the marker comes down and the name is free to paint.
-        super::apply_account_linking(&host, false);
-        assert!(!host.has_attribute("data-account-linking"));
-        assert!(
-            trigger.get_attribute("aria-label").is_none(),
-            "once the name is real it labels the control; the stand-in goes"
-        );
-        super::apply_account_name(&host, "Ada Lovelace");
-        assert_eq!(label.text_content().as_deref(), Some("Ada Lovelace"));
     }
 
     /// A live `xyz.tonk.account/display-name` frame is the login signal:

@@ -1646,9 +1646,27 @@ pub(crate) mod tests {
         use tonk_schema::prelude::DidExt as _;
 
         let state = crate::router::tests::test_state().await;
-        crate::router::profile_name::ensure_display_name(&state)
-            .await
-            .unwrap();
+        // This test is about PROJECTING a name into each space, so it
+        // needs one to exist. Nothing writes a name at bootstrap any
+        // more (a derived placeholder was indistinguishable from a name
+        // the person chose), so the test stamps its own.
+        {
+            use tonk_schema::prelude::DidExt as _;
+            let profile_entity = state.profile.did().this();
+            state
+                .reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::ProfileName::new(
+                    profile_entity,
+                    tonk_schema::petname(&state.profile.did()),
+                ))
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
         let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let key_a = crate::router::tests::put_repo(&app, "account-project-a").await;
         let key_c = crate::router::tests::put_repo(&app, "account-project-c").await;
