@@ -792,11 +792,22 @@ async fn perform_join(
             prepared.revocation_url.as_deref(),
         ) {
             Ok(configuration) => {
+                // A fresh install seeds the directory name from the
+                // invite's advisory `name` so the Hub row is labeled
+                // before content syncs; the mint-time name may be stale,
+                // and the space's own record supersedes it once content
+                // hydrates. A renewal seeds nothing — the directory
+                // already carries a name at least as fresh as the link's.
+                let seeded_name = if prepared.installs_replica() {
+                    prepared.invite.space_name.as_deref()
+                } else {
+                    None
+                };
                 super::repository::record_space_mount(
                     tonk,
                     &prepared.subject,
                     &configuration,
-                    None,
+                    seeded_name,
                 )
                 .await;
             }
@@ -1379,79 +1390,117 @@ pub(crate) async fn find_replica_for_subject(
 /// The fixed entity the in-flight join status lives at. Both the handler
 /// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
 /// agree on this URI, so there's no per-attempt id to thread.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const JOIN_STATUS_URI: &str = "tonk:join/status";
 
-/// Post-commit handler for the [`Join`] command.
+/// Run the [`Join`] command.
 ///
 /// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
-/// with the full page URL in the event detail. This handler runs the same
+/// with the full page URL in the event detail. This provider runs the same
 /// join operation the HTTP routes do and drives the overlay-only
 /// `tonk:join/status` (pending → failed, or retract + navigate on
 /// success) on the profile meta branch — the branch the `/join` view
 /// subscribes to.
 ///
 /// [`Join`]: tonk_schema::command::Join
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct JoinHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command:
-        crate::reactor::Migrated<tonk_schema::command::Join, tonk_schema::command::legacy::Join>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl JoinHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::Join) {
+        // A short link (`/@/{hash}#seed`) resolves to the long form
+        // first. The deep-link flow never needed this — the BROWSER
+        // follows the 301 (with fragment inheritance) before the /join
+        // view mounts — but a PASTED short link reaches the worker
+        // verbatim, and without resolution it carries no `access=` and
+        // would silently read as a bare visit. Mirrors the CLI's claim.
+        let mut command = command;
+        if tonk_invite::shortcut::is_shortcut(&command.url.0) {
+            match resolve_shortcut(&command.url.0).await {
+                Ok(resolved) => command.url.0 = resolved,
+                Err(error) => log!("join: short link did not resolve: {error}"),
+            }
         }
+        // There is no paste-link page: invite links open directly in the
+        // browser. Return bare /join visits home before requesting custody.
+        if !carries_invite(&command.url.0) {
+            crate::router::navigate::notify_navigate(self.client(), "/");
+            return;
+        }
+        // The invite principal's seed is custodied under the account
+        // as part of the join. A linked device whose root record
+        // predates the encryption key asks the originating page for a
+        // passkey assertion here, before the state lock is taken.
+        if let Err(error) =
+            crate::router::custody::ensure_recipient(self.state(), self.client()).await
+        {
+            log!("join refused: {error}");
+            return;
+        }
+        run_join(self, command).await;
     }
 }
 
+/// Resolve a short invite link to the long form it redirects to,
+/// re-attaching the fragment the way a browser would (RFC 7231 fragment
+/// inheritance — the seed rides the pasted string, never the wire).
+///
+/// The service worker fetch follows the redirect and reports where it
+/// landed; `redirected` distinguishes a real shortcut from a host that
+/// answered the probe with content.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
+async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::Response;
 
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
+    // HEAD, not GET: the landing URL is the whole answer, so there is
+    // no reason to download the app shell behind it (the same choice
+    // `<tonk-invite-link>` documents).
+    let init = web_sys::RequestInit::new();
+    init.set_method("HEAD");
+    let request = web_sys::Request::new_with_str_and_init(short_url, &init)
+        .map_err(|error| format!("short link request: {error:?}"))?;
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| "not in a service-worker scope".to_owned())?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|value| value.dyn_into())
+        .map_err(|error| format!("short link fetch: {error:?}"))?;
+    if !response.redirected() {
+        return Err(format!(
+            "the short link did not redirect (HTTP {})",
+            response.status()
+        ));
     }
+    tonk_invite::shortcut::resolve_location(short_url, &response.url())
+        .map_err(|error| error.to_string())
+}
 
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        // Decode the full location synchronously while the caller holds the
-        // lock; hand the owned value to the `'static` future.
-        let command = self.command.decode(facts);
-        let env = env.clone();
-
-        Box::pin(async move {
-            let Some(command) = command else {
-                return;
-            };
-            // There is no paste-link page: invite links open directly in the
-            // browser. Return bare /join visits home before requesting custody.
-            if !carries_invite(&command.url.0) {
-                crate::router::navigate::notify_navigate(env.client(), "/");
-                return;
-            }
-            // The invite principal's seed is custodied under the account
-            // as part of the join. A linked device whose root record
-            // predates the encryption key asks the originating page for a
-            // passkey assertion here, before the state lock is taken.
-            if let Err(error) =
-                crate::router::custody::ensure_recipient(env.state(), env.client()).await
-            {
-                log!("join refused: {error}");
-                return;
-            }
-            run_join(&env, command).await;
-        })
+/// Native resolution: fetch without following, read `Location`, resolve
+/// against the short link. Mirrors the CLI's `resolve_shortcut`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("short link client: {error}"))?;
+    let response = client
+        .head(short_url)
+        .send()
+        .await
+        .map_err(|error| format!("short link fetch: {error}"))?;
+    if !response.status().is_redirection() {
+        return Err(format!(
+            "the short link did not redirect (HTTP {})",
+            response.status()
+        ));
     }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "the short link redirect carries no Location".to_owned())?;
+    tonk_invite::shortcut::resolve_location(short_url, location).map_err(|error| error.to_string())
 }
 
 /// Whether a `/join` URL carries an invite at all.
@@ -1461,7 +1510,6 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
 /// Deliberately a query test and not a parse: a malformed or truncated
 /// invite IS an attempt and must still fail loudly with its reason,
 /// rather than being silently treated as an empty visit.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
@@ -1479,7 +1527,6 @@ fn carries_invite(url: &str) -> bool {
 /// display lost its entity, fell back to its pending spinner, and
 /// nothing downstream ever rendered. Scope the clear to the join's own
 /// entities, exactly as the site re-stamp does with its own.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
     let status = status.clone();
     session
@@ -1493,7 +1540,6 @@ fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_a
 /// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
 /// whole contract, and getting it backwards is invisible until a page
 /// silently stops rendering.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn retains_overlay_entity(
     overlaid: &dialog_artifacts::Entity,
     status: &dialog_artifacts::Entity,
@@ -1504,7 +1550,6 @@ fn retains_overlay_entity(
 /// Run the join operation from the command's full URL and drive the
 /// overlay-only join status. Always leaves the overlay in a terminal state
 /// (status retracted on success, `failed` on error).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
@@ -1673,6 +1718,15 @@ pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     });
 }
 
+/// No page exists on this host to prompt; the background sync loop (or
+/// the host's own drain) picks the commit up on its ordinary cadence.
+/// Mirrors the native arm of `broadcast` — structural parity so commit
+/// sites don't need their own `cfg`s.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
+    let _ = client;
+}
+
 /// The inviteless-`/join` guard, pinned on every target: it decides
 /// whether the route redeems an invite or returns home.
 #[cfg(test)]
@@ -1728,6 +1782,237 @@ mod overlay_scope_tests {
                 "{foreign} belongs to the page, not to this join"
             );
         }
+    }
+}
+
+/// Native end-to-end coverage for the invite's advisory `name`: a fresh
+/// join seeds the account directory's [`tonk_schema::SpaceName`] from the
+/// link, a renewal never overwrites what the directory already carries,
+/// and a later authoritative record supersedes the seeded value — the
+/// full "labeled immediately, stale at worst, catches up" contract.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_name_tests {
+    use super::*;
+    use dialog_credentials::ed25519::Ed25519Signer;
+    use dialog_query::{Query, Term};
+    use dialog_ucan_core::subject::Subject as UcanSubject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Principal as _;
+    use tonk_invite::{Invite, InviteAudience};
+
+    /// Hand-craft an audience-open, remote-free invite URL carrying a
+    /// display name. Distinct tag bytes give distinct subjects and
+    /// ephemerals, so tests never collide on a routing key.
+    async fn named_invite_url(subject_tag: u8, ephemeral_tag: u8, name: &str) -> (String, String) {
+        let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
+        let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
+        let ephemeral = Ed25519Signer::import(&[ephemeral_tag; 32]).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(subject_signer))
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let invite = Invite::new(
+            DelegationChain::new(delegation),
+            InviteAudience::Open {
+                seed: [ephemeral_tag; 32],
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .with_space_name(Some(name.to_owned()));
+        (invite.to_url("https://tonk.network/join").unwrap(), key)
+    }
+
+    /// The directory's name rows for `key`, read off the profile branch
+    /// the way the Hub reads them.
+    async fn directory_name(state: &crate::router::AppState, key: &str) -> Vec<String> {
+        let subject: dialog_varsig::Did = key.parse().expect("subject parses");
+        let tonk = state.read().await;
+        let profile = tonk
+            .reactor
+            .profile_repository()
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<tonk_schema::SpaceName> = profile
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::from(subject.this()),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("space-name query");
+        rows.into_iter().map(|row| row.name.0).collect()
+    }
+
+    #[dialog_common::test]
+    async fn it_seeds_the_directory_name_from_the_invite_and_lets_the_record_catch_up() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let (url, key) = named_invite_url(0xA1, 0xA2, "Garden Plans").await;
+
+        // Fresh join: the space is labeled the moment it appears, from
+        // the (possibly stale) mint-time name — not nameless until sync.
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &url).await.expect("the join succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Garden Plans".to_string()],
+            "a fresh join seeds the directory name from the invite"
+        );
+
+        // Renewal with a fresher link: the directory keeps what it has.
+        // The second link's name is DIFFERENT precisely to prove the
+        // renewal path never writes it — by the time a replica exists,
+        // the local record is at least as fresh as any link.
+        let (renewal, renewal_key) = named_invite_url(0xA1, 0xA3, "Stale Old Label").await;
+        assert_eq!(key, renewal_key, "same subject, same routing key");
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &renewal)
+                .await
+                .expect("the renewal succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Garden Plans".to_string()],
+            "a renewed join must not overwrite the directory name"
+        );
+
+        // Catch-up: the authoritative record path (what the account
+        // reconcile and the rename provider both write through) is
+        // cardinality-one on the directory entity, so the seeded value
+        // is superseded in place, never accumulated beside.
+        {
+            let tonk = state.read().await;
+            let subject: dialog_varsig::Did = key.parse().unwrap();
+            let configuration = invite_configuration(&subject, None, None).unwrap();
+            super::super::repository::record_space_mount(
+                &tonk,
+                &subject,
+                &configuration,
+                Some("Hydrated Real Name"),
+            )
+            .await;
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Hydrated Real Name".to_string()],
+            "the authoritative record supersedes the invite-seeded name"
+        );
+    }
+
+    /// A PASTED short link, end to end through the command provider: the
+    /// deep-link flow lets the browser follow the 301, but a paste hands
+    /// the worker the `/@/{hash}#seed` form verbatim — without
+    /// resolution it carries no `access=` and would silently read as a
+    /// bare visit. The one-shot server is the shortcut host answering
+    /// the redirect; the fragment (the seed) rides the pasted string,
+    /// never the wire.
+    #[dialog_common::test]
+    async fn it_resolves_a_pasted_short_link_before_joining() {
+        use dialog_artifacts::Statement as _;
+        use dialog_query::the;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let (long, key) = named_invite_url(0xC1, 0xC2, "Shortcut Space").await;
+        let (target, fragment) = long
+            .split_once('#')
+            .expect("an open invite carries a seed fragment");
+        let target = target.to_owned();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the shortcut host binds");
+        let port = listener
+            .local_addr()
+            .expect("the bound address reads")
+            .port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("the probe connects");
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("the redirect writes");
+        });
+        let short = format!(
+            "http://127.0.0.1:{port}/@/2eyEBFxYVkAy4zRTAtpJEeXAWyzScUYDkxhaizAgZgcF#{fragment}"
+        );
+
+        // The same transient the Hub paste form commits, through the
+        // full dispatch path (profile origin selects the vocabulary
+        // that carries Join).
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("xyz.tonk.command.join/url")
+            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .is(short)
+            .assert(&mut changes);
+        crate::router::command::dispatch(
+            &state,
+            crate::router::command::CommandOrigin::default(),
+            changes,
+        )
+        .await;
+        server.await.expect("the shortcut host served");
+
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Shortcut Space".to_string()],
+            "a pasted short link resolves to the long form and joins, \
+             seeding the invite's signed name"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_joins_a_nameless_invite_without_inventing_a_name() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let subject_signer = Ed25519Signer::import(&[0xB1; 32]).await.unwrap();
+        let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
+        let ephemeral = Ed25519Signer::import(&[0xB2; 32]).await.unwrap();
+        let delegation = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(subject_signer))
+            .audience(&ephemeral.did())
+            .subject(UcanSubject::Specific(subject.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let invite = Invite::new(
+            DelegationChain::new(delegation),
+            InviteAudience::Open { seed: [0xB2; 32] },
+            None,
+        )
+        .await
+        .unwrap();
+        let url = invite.to_url("https://tonk.network/join").unwrap();
+
+        {
+            let tonk = state.read().await;
+            join_invite(&tonk, &url).await.expect("the join succeeds");
+        }
+        assert_eq!(
+            directory_name(&state, &key).await,
+            Vec::<String>::new(),
+            "a link minted before the name rode the URL seeds nothing"
+        );
     }
 }
 

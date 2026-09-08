@@ -2,9 +2,11 @@
 //! principal whose seed one of those messages carries.
 
 use dialog_artifacts::Entity;
+use dialog_common::ConditionalSend;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
+use std::future::Future;
 
 use crate::domain::custody::{Kind, Message, Seed, Sender, To};
 use crate::prelude::*;
@@ -358,19 +360,31 @@ pub enum RotateError {
 /// Best-effort per seed: a seed that fails to open, verify, or reissue
 /// is recorded in [`Rotation::failures`] and left sealed to the old
 /// recipient, so a later pass resumes exactly where this one stopped.
-pub async fn rotate<Env>(
-    branch: &dialog_repository::Branch,
-    old: tonk_identity::sealed::AccountSecretKey<'_>,
+pub async fn rotate<'a, Env, Fut>(
+    branch: &'a dialog_repository::Branch,
+    old: tonk_identity::sealed::AccountSecretKey<'a>,
     new: impl Into<tonk_identity::sealed::AccountSeal>,
-    env: &Env,
-    mut reissue: impl AsyncFnMut(
+    env: &'a Env,
+    // NOT an `AsyncFnMut`, deliberately, and the row is passed BY
+    // VALUE, deliberately. `AsyncFnMut` gives the returned future no
+    // expressible `Send` bound, so `rotate`'s own future can never be
+    // proven `Send` and every native caller up the chain fails with
+    // rustc's "implementation of `Send` is not general enough"
+    // (#100013 / #96865). The split closure/`Fut` pair states the
+    // future's conditional `Send`-ness explicitly — a caller writes
+    // `|kind, signer, row, replacement| async move { … }` — and owned
+    // arguments keep the closure bound lifetime-free so no
+    // higher-ranked obligation forms; the callers all consumed the row
+    // immediately anyway.
+    mut reissue: impl FnMut(
         SeedKind,
         dialog_credentials::Ed25519Signer,
-        &SecretMessage,
+        SecretMessage,
         Replacement,
-    ) -> Result<(), String>,
+    ) -> Fut,
 ) -> Result<Rotation, RotateError>
 where
+    Fut: Future<Output = Result<(), String>> + ConditionalSend,
     Env: dialog_capability::Provider<dialog_effects::archive::Get>
         + dialog_capability::Provider<dialog_effects::archive::Put>
         + dialog_capability::Provider<dialog_effects::archive::Import>
@@ -455,19 +469,22 @@ pub struct Replacement {
     pub principal: SecretPrincipal,
 }
 
-async fn rotate_seed(
-    old: tonk_identity::sealed::AccountSecretKey<'_>,
+async fn rotate_seed<'a, Fut>(
+    old: tonk_identity::sealed::AccountSecretKey<'a>,
     new: tonk_identity::sealed::AccountSeal,
-    reissue: &mut impl AsyncFnMut(
+    reissue: &mut impl FnMut(
         SeedKind,
         dialog_credentials::Ed25519Signer,
-        &SecretMessage,
+        SecretMessage,
         Replacement,
-    ) -> Result<(), String>,
-    subject: &Did,
-    principal: &SecretPrincipal,
-    message: &SecretMessage,
-) -> Result<(), String> {
+    ) -> Fut,
+    subject: &'a Did,
+    principal: &'a SecretPrincipal,
+    message: &'a SecretMessage,
+) -> Result<(), String>
+where
+    Fut: Future<Output = Result<(), String>> + ConditionalSend,
+{
     use dialog_varsig::Principal as _;
 
     let kind = SeedKind::parse(&principal.kind.0.to_string())
@@ -492,5 +509,5 @@ async fn rotate_seed(
         principal: SecretPrincipal::new(subject, kind, replacement_message.this()),
         message: replacement_message,
     };
-    reissue(kind, signer, message, replacement).await
+    reissue(kind, signer, message.clone(), replacement).await
 }

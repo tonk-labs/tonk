@@ -7,16 +7,12 @@
 //! the account it opens from them. Progress goes on the profile overlay
 //! as a [`CeremonyStatus`] row the page subscribes to.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::worker::TonkState;
 
 /// Write where `ceremony` got to, replacing the last report.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail: &str) {
     let Ok(this) = CeremonyStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
         return;
@@ -36,8 +32,9 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
     }
 }
 
-/// Ask the page for the passkey, reporting the ask and its failure.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Ask the page for the passkey, reporting the ask and its failure. On
+/// a host with no page the ask fails and the failure is reported — the
+/// ceremony refuses visibly rather than silently not existing.
 pub(crate) async fn ask_for_passkey(
     env: &crate::router::CommandEnv,
     ceremony: &str,
@@ -82,157 +79,87 @@ pub(crate) async fn ask_for_passkey(
     }
 }
 
-/// `tonk:add-passkey`: seal the account under a second passkey.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct AddPasskeyHandler {
-    /// Decodes the current shape, and the deprecated one a
-    /// branch seeded before the migration still asserts.
-    command: crate::reactor::Migrated<
-        tonk_schema::command::AddPasskey,
-        tonk_schema::command::legacy::AddPasskey,
-    >,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl AddPasskeyHandler {
-    pub(crate) fn new() -> Self {
-        Self {
-            command: crate::reactor::Migrated::new(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for AddPasskeyHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        self.command.trigger_attributes()
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        self.command.matches(facts)
-    }
-
-    fn run(
-        &self,
-        _facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let env = env.clone();
-        Box::pin(async move {
-            let addition = {
-                let tonk = env.state().read().await;
-                let Ok(root) = super::identity::local_root(&tonk).await else {
-                    report(
-                        &tonk,
-                        ceremony::ADD_PASSKEY,
-                        ceremony_state::REFUSED,
-                        "no account is signed in on this profile",
-                    )
-                    .await;
-                    return;
-                };
-                let Ok(origin) = super::customer::service_origin() else {
-                    report(
-                        &tonk,
-                        ceremony::ADD_PASSKEY,
-                        ceremony_state::REFUSED,
-                        "the sync service is unknown",
-                    )
-                    .await;
-                    return;
-                };
-                tonk_worker_api::PasskeyAddition {
-                    account_did: root.root_did.to_string(),
-                    endpoint: format!("{}ucan/", origin),
-                }
-            };
-            ask_for_passkey(
-                &env,
-                ceremony::ADD_PASSKEY,
-                tonk_worker_api::CustodyIntent::AddPasskey(addition),
-            )
-            .await;
-        })
-    }
-}
-
-/// `tonk:authorize-device`: delegate the account to a waiting process.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct AuthorizeDeviceHandler {
-    attributes: Vec<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl AuthorizeDeviceHandler {
-    pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
-        Self {
-            attributes: tonk_schema::command::AuthorizeDevice::trigger_attributes(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_authorization(
-    facts: &crate::reactor::EntityFacts,
-) -> Option<tonk_worker_api::DeviceAuthorization> {
-    use crate::reactor::Decode as _;
-    let command = facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::AuthorizeDevice::decode(entity, facts))?;
-    let callback = bs58::decode(&command.callback.0).into_vec().ok()?;
-    Some(tonk_worker_api::DeviceAuthorization {
-        audience: command.audience.0.to_string(),
-        callback: String::from_utf8(callback).ok()?,
-        name: command.name.0,
-    })
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for AuthorizeDeviceHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_authorization(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
-        let authorization = decode_authorization(facts);
-        let env = env.clone();
-        Box::pin(async move {
-            let Some(authorization) = authorization else {
-                log!("authorize-device: no/unparseable audience, callback, or name; skipping");
-                return;
-            };
-            // Refuse a callback the grant could never be delivered to
-            // before asking anyone to touch a passkey.
-            if let Err(error) =
-                tonk_worker_api::callback::delivery_url(&authorization.callback, &[])
-            {
-                let tonk = env.state().read().await;
+/// Run `tonk:add-passkey`: seal the account under a second passkey.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::AddPasskey) {
+        let addition = {
+            let tonk = self.state().read().await;
+            let Ok(root) = super::identity::local_root(&tonk).await else {
                 report(
                     &tonk,
-                    ceremony::AUTHORIZE_DEVICE,
+                    ceremony::ADD_PASSKEY,
                     ceremony_state::REFUSED,
-                    &error,
+                    "no account is signed in on this profile",
                 )
                 .await;
                 return;
+            };
+            let Ok(origin) = super::customer::service_origin() else {
+                report(
+                    &tonk,
+                    ceremony::ADD_PASSKEY,
+                    ceremony_state::REFUSED,
+                    "the sync service is unknown",
+                )
+                .await;
+                return;
+            };
+            tonk_worker_api::PasskeyAddition {
+                account_did: root.root_did.to_string(),
+                endpoint: format!("{}ucan/", origin),
             }
-            ask_for_passkey(
-                &env,
+        };
+        ask_for_passkey(
+            self,
+            ceremony::ADD_PASSKEY,
+            tonk_worker_api::CustodyIntent::AddPasskey(addition),
+        )
+        .await;
+    }
+}
+
+/// Run `tonk:authorize-device`: delegate the account to a waiting
+/// process. Unparseable audience/callback/name skip with a log; an
+/// undeliverable callback is refused before anyone touches a passkey.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AuthorizeDevice>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::AuthorizeDevice) {
+        let authorization = (|| {
+            let callback = bs58::decode(&command.callback.0).into_vec().ok()?;
+            Some(tonk_worker_api::DeviceAuthorization {
+                audience: command.audience.0.to_string(),
+                callback: String::from_utf8(callback).ok()?,
+                name: command.name.0,
+            })
+        })();
+        let Some(authorization) = authorization else {
+            log!("authorize-device: no/unparseable audience, callback, or name; skipping");
+            return;
+        };
+        // Refuse a callback the grant could never be delivered to
+        // before asking anyone to touch a passkey.
+        if let Err(error) = tonk_worker_api::callback::delivery_url(&authorization.callback, &[]) {
+            let tonk = self.state().read().await;
+            report(
+                &tonk,
                 ceremony::AUTHORIZE_DEVICE,
-                tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization),
+                ceremony_state::REFUSED,
+                &error,
             )
             .await;
-        })
+            return;
+        }
+        ask_for_passkey(
+            self,
+            ceremony::AUTHORIZE_DEVICE,
+            tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization),
+        )
+        .await;
     }
 }
 

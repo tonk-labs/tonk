@@ -5067,6 +5067,7 @@ name = "tonk-invite"
 version = "0.6.14"
 dependencies = [
  "anyhow",
+ "blake3",
  "bs58",
  "dialog-capability",
  "dialog-common",
@@ -5384,6 +5385,7 @@ dependencies = [
  "tonk-evaluator",
  "tonk-fab",
  "tonk-identity",
+ "tonk-inspector",
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",
