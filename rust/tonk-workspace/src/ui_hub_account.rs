@@ -2011,6 +2011,80 @@ mod tests {
         super::apply_account_name(&host, "Ada Lovelace");
     }
 
+    /// The roster alone decides the cell, with no marker raised first.
+    ///
+    /// The bug this pins is the one that shipped three times: a signed-in
+    /// account whose name had not replicated was called "gentle-mole" /
+    /// "brave-raven" / "spry-yak". Nothing had raised a linking marker —
+    /// this is an ordinary settled roster read — so a test that stamps
+    /// the marker itself before rendering cannot catch it.
+    ///
+    /// `profile_name` is the LOCAL profile handle, never the account's
+    /// name. If it ever reaches this label again, this fails.
+    #[wasm_bindgen_test]
+    fn it_never_paints_the_profile_handle_as_the_account_name() {
+        let host = account_element();
+        let label = host
+            .query_selector("[data-account-label]")
+            .unwrap()
+            .unwrap();
+
+        // Signed in (a provider is attached), name not replicated yet.
+        // The roster carries no display name and no email — exactly the
+        // `/api/profiles` shape that produced the reported bug.
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "spry-yak".into(),
+                profiles: vec![profile("spry-yak", None, None, Some("tonk"), true)],
+            },
+        );
+        let painted = label.text_content().unwrap_or_default();
+        assert_ne!(
+            painted, "spry-yak",
+            "the profile handle must never be shown as the account's name"
+        );
+        assert_eq!(
+            painted, "",
+            "an account with no name yet holds a skeleton instead"
+        );
+        assert!(
+            host.has_attribute("data-account-linking"),
+            "the roster alone raises the skeleton; no marker had to be set first"
+        );
+
+        // The account's own name is what fills it.
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "spry-yak".into(),
+                profiles: vec![profile(
+                    "spry-yak",
+                    Some("Ada Lovelace"),
+                    None,
+                    Some("tonk"),
+                    true,
+                )],
+            },
+        );
+        assert_eq!(label.text_content().as_deref(), Some("Ada Lovelace"));
+        assert!(
+            !host.has_attribute("data-account-linking"),
+            "a real name replaces the skeleton"
+        );
+
+        // Signed OUT is the third state, and it is a word, not a shape.
+        super::render_profiles(
+            &host,
+            &ProfilesResponse {
+                active: "spry-yak".into(),
+                profiles: vec![profile("spry-yak", None, None, None, true)],
+            },
+        );
+        assert_eq!(label.text_content().as_deref(), Some("link an account"));
+        assert!(!host.has_attribute("data-account-linking"));
+    }
+
     /// A live `xyz.tonk.account/display-name` frame is the login signal:
     /// it must flip the unlinked trigger to the member's name — and give
     /// it its menu affordance back — without any reload.
