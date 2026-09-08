@@ -10,7 +10,7 @@ use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, KeyboardEvent, window};
+use web_sys::{Element, Event, HtmlElement, KeyboardEvent, ResizeObserver, window};
 
 type EventClosure = Closure<dyn FnMut(Event)>;
 type KeyClosure = Closure<dyn FnMut(KeyboardEvent)>;
@@ -140,6 +140,8 @@ struct UiHubAccount {
     click: Option<EventClosure>,
     keydown: Option<KeyClosure>,
     position_change: Option<EventClosure>,
+    position_observer: Option<ResizeObserver>,
+    position_observer_callback: Option<FrameClosure>,
     generation: Rc<Cell<u64>>,
     action_pending: Rc<Cell<bool>>,
     subscriptions: Rc<RefCell<Vec<Subscription>>>,
@@ -259,6 +261,23 @@ impl CustomElement for UiHubAccount {
             }
         }
         self.position_change = Some(position_change);
+
+        // A replacement Hub can connect while its ancestor is still hidden.
+        // Scroll/resize alone will never repair that first zero measurement:
+        // observe the bar so revealing it publishes its laid-out rectangle.
+        if let Ok(Some(bar)) = this.query_selector(".hubbar") {
+            let host = this.clone();
+            let callback: FrameClosure = Closure::wrap(Box::new(move |_, _| {
+                if host.has_attribute("data-linking") {
+                    request_linking_position(&host);
+                }
+            }));
+            if let Ok(observer) = ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+                observer.observe(&bar);
+                self.position_observer = Some(observer);
+                self.position_observer_callback = Some(callback);
+            }
+        }
 
         // The /settings route mounts this element with `view="settings"`:
         // the same chrome, arriving with the settings page open. On that
@@ -498,6 +517,10 @@ impl CustomElement for UiHubAccount {
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        if let Some(observer) = self.position_observer.take() {
+            observer.disconnect();
+        }
+        self.position_observer_callback.take();
         self.generation.set(self.generation.get().wrapping_add(1));
         self.action_pending.set(false);
         set_action_pending(this, false);
@@ -791,7 +814,17 @@ fn request_linking_position_for(this: &HtmlElement, reason: &str) {
         .query_selector(".hubbar")
         .ok()
         .flatten()
-        .map(|bar| bar.get_bounding_client_rect());
+        .filter(|bar| bar.is_connected())
+        .map(|bar| bar.get_bounding_client_rect())
+        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+    // Keep the standing ceremony's last valid seat until the replacement
+    // bar has layout. The observer will retry when it becomes visible.
+    // A profile transition is also a reload command: it must still reach
+    // the top page if the async profile switch already detached its opener.
+    // In that case omit the unusable anchor instead of dropping the command.
+    if anchor.is_none() && reason != "profile-transition" {
+        return;
+    }
     let payload = match anchor {
         Some(rect) => serde_json::json!({
             "reason": reason,
@@ -1233,6 +1266,79 @@ mod tests {
         let request: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(request["reason"], "needs-account");
         assert!(request["anchor"]["bottom"].is_number());
+    }
+
+    /// A replacement Hub can connect before its container is shown. Its
+    /// zero rectangle must not replace the standing dialog's valid anchor,
+    /// and revealing it must publish its real geometry without a window resize.
+    #[wasm_bindgen_test]
+    async fn it_reanchors_the_linking_ceremony_after_a_hidden_remount() {
+        clear_registration_recorder();
+        let calls = record_registration_requests();
+        let host = account_element();
+        super::enter_linking(&host);
+        let document = host.owner_document().unwrap();
+        let wrapper: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        wrapper
+            .set_attribute("style", "display: none; width: 432px; margin-left: 80px")
+            .unwrap();
+        document.body().unwrap().append_child(&wrapper).unwrap();
+        host.remove();
+        let replacement = document.create_element("ui-hub-account").unwrap();
+        wrapper.append_child(&replacement).unwrap();
+        let hidden_calls = calls.length();
+
+        wrapper.style().remove_property("display").unwrap();
+        let rect = replacement
+            .query_selector(".hubbar")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        // Poll the observable relay result; the browser chooses when layout
+        // observers run. No synthetic scroll/resize may rescue the transition.
+        for _ in 0..100 {
+            if calls.length() > hidden_calls {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(10).await;
+        }
+        let visible_payload = calls.get(hidden_calls).as_string();
+        wrapper.remove();
+        clear_registration_recorder();
+
+        assert_eq!(
+            hidden_calls, 0,
+            "a hidden remount must not collapse the dialog to a zero anchor"
+        );
+        let payload = visible_payload.expect("showing the replacement bar must refresh the anchor");
+        let request: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(rect.width() > 0.0);
+        assert_eq!(request["anchor"]["width"], rect.width());
+        assert_eq!(request["anchor"]["left"], rect.left());
+        assert_eq!(request["anchor"]["bottom"], rect.bottom());
+    }
+
+    #[wasm_bindgen_test]
+    fn it_preserves_the_profile_transition_when_the_opener_is_detached() {
+        clear_registration_recorder();
+        let calls = record_registration_requests();
+        let host = account_element();
+        host.remove();
+        super::request_linking_position_for(&host, "profile-transition");
+        clear_registration_recorder();
+
+        assert_eq!(
+            calls.length(),
+            1,
+            "the client-binding reload must still happen"
+        );
+        let request: serde_json::Value =
+            serde_json::from_str(&calls.get(0).as_string().unwrap()).unwrap();
+        assert_eq!(request["reason"], "profile-transition");
+        assert!(
+            request.get("anchor").is_none(),
+            "never stash a zero anchor across the reload"
+        );
     }
 
     #[wasm_bindgen_test]
