@@ -53,7 +53,6 @@ mod account;
 mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod email_status;
 
 pub(crate) mod account_state;
@@ -66,7 +65,6 @@ pub(crate) mod adopt;
 pub(crate) mod custody;
 /// Accreditation: rotate the onboarding account's custody to the passkey
 /// account, then retire it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) mod rotation;
 
 mod join;
@@ -80,7 +78,6 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod members;
 
 pub mod inspect;
@@ -152,7 +149,7 @@ mod migration;
 mod navigate;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, command_registry, dispatch};
+pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
 #[cfg(test)]
 mod route_table;
@@ -671,7 +668,7 @@ pub mod tests {
             view_bindings: Default::default(),
             bridges: Default::default(),
             sync_queue: Default::default(),
-            commands: super::command_registry(),
+            commands: super::command_providers(),
             clients: Default::default(),
             account_keys: Default::default(),
             registry,
@@ -1826,12 +1823,13 @@ pub mod tests {
     /// This one joins through `link` verbatim, closing that gap: it is the
     /// only test that fails if the mint hands the user a broken link.
     ///
-    /// It also pins the shortening fallback. The harness's worker scope
-    /// reports no `location.origin` and there is no shortcut service, so the
-    /// mint takes the no-origin path and shortening never happens — and that
-    /// fallback must still yield a *working* invite, not a degraded one. The
-    /// origin branch is covered by `it_builds_the_invite_url_on_the_worker_origin`
-    /// in `repository.rs`, which drives the URL builder directly.
+    /// It also pins the shortening fallback: the fixture space's remote is
+    /// not a live shortcut service, so shortening fails (or its answer
+    /// fails the content-address check) and the mint degrades to the long
+    /// URL — which must still be a *working* invite, not a broken one. The
+    /// base composition is covered by
+    /// `it_builds_the_invite_url_on_the_resolved_base` in `repository.rs`,
+    /// which drives the URL builder directly.
     #[dialog_common::test]
     async fn it_joins_through_the_minted_link() {
         let state = test_state().await;

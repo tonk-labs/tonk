@@ -10,15 +10,11 @@
 //! before continuing. Nothing is replayed: the operation that needed the
 //! key simply resumes once it is there.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::TonkWorkerError;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::router::{AppState, ClientId};
 use dialog_varsig::Did;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     /// Operations waiting for the page to record an encryption key.
     static WAITERS: std::cell::RefCell<Vec<tokio::sync::oneshot::Sender<Did>>> =
@@ -27,20 +23,16 @@ thread_local! {
 
 /// How long an operation waits for the page's assertion before giving
 /// up. Generous: the user has to touch a passkey.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ASSERTION_TIMEOUT: web_time::Duration = web_time::Duration::from_secs(120);
 
 /// Wake every operation waiting for the key. Called by the root save
 /// whenever a record carrying a recipient lands.
 pub(crate) fn notify_encryption_key(recipient: &Did) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     WAITERS.with(|waiters| {
         for waiter in waiters.borrow_mut().drain(..) {
             let _ = waiter.send(recipient.clone());
         }
     });
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let _ = recipient;
 }
 
 /// Make sure a custody recipient is obtainable before an operation that
@@ -51,7 +43,6 @@ pub(crate) fn notify_encryption_key(recipient: &Did) {
 /// key. Otherwise asks `client` for a passkey assertion and waits for the
 /// key to be saved. Must be called WITHOUT the state lock held: the page
 /// answers through `/api/identity/root`, which needs it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn ensure_recipient(
     state: &AppState,
     client: Option<&ClientId>,
@@ -86,7 +77,6 @@ pub(crate) async fn ensure_recipient(
     request_and_wait(client).await
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn request_and_wait(client: &ClientId) -> Result<(), TonkWorkerError> {
     // Registered before the request goes out, so an answer that arrives
     // faster than this task resumes is not missed.
@@ -96,7 +86,6 @@ async fn request_and_wait(client: &ClientId) -> Result<(), TonkWorkerError> {
 }
 
 /// Register for the next recorded encryption key.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn wait_for_key() -> tokio::sync::oneshot::Receiver<Did> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     WAITERS.with(|waiters| waiters.borrow_mut().push(sender));
@@ -104,7 +93,6 @@ fn wait_for_key() -> tokio::sync::oneshot::Receiver<Did> {
 }
 
 /// Wait for a registered key, giving up after `timeout`.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn await_key(
     receiver: tokio::sync::oneshot::Receiver<Did>,
     timeout: web_time::Duration,
@@ -133,7 +121,6 @@ async fn await_key(
 /// byte arrays, and this enrollment travels with the request so the
 /// handoff knows what it is for. The receiver imports worker-owned
 /// derivation handles before doing custody work.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn request_mediation(client: &ClientId, email: Option<String>) {
     let enrollment = tonk_worker_api::Enrollment { email };
     if let Err(error) = super::navigate::request_webauthn_with(

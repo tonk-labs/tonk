@@ -102,3 +102,11 @@ test("an anchored account ceremony cannot scroll away from its hub bar", () => {
     "the account page must neither scroll nor chain wheel input to the page behind it",
   );
 });
+
+test("an anchored account ceremony obscures the hub account menu beneath it", () => {
+  assert.match(
+    appStyles,
+    /#tonk-register\[data-anchored\] \.ocol\s*\{[\s\S]*?background:\s*var\(--page\);/,
+    "the opaque column backing must cover the gaps between ceremony rows",
+  );
+});

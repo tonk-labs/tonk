@@ -1,15 +1,15 @@
 # Bug triage
 
-A consolidated list of likely defects and behavioral contradictions raised by
-the storybook audit. Each entry is pinned to current source or an existing test;
-none has yet been confirmed in a fresh running-product pass. The list exists so
+A consolidated list of defects and behavioral contradictions raised by
+source audits and running-product checks. Each entry identifies its evidence;
+`B-07` is confirmed in the running local product. The list exists so
 the product team can decide whether to fix, document as intended, or replace a
 stale design contract before implementation work begins.
 
 ## Summary
 
 Four findings remain after merging related observations: two high and two
-medium; `B-02` is fixed and kept for its history. `B-06` is gone with the
+medium; `B-02` and `B-07` are fixed and kept for their history. `B-06` is gone with the
 account service it described. The high findings share one theme: a
 user-visible account transition can cross an irreversible authority or
 durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
@@ -23,6 +23,7 @@ behavior remain in the verification backlog rather than this file.
 | `B-04` | Busy account pages leave navigation links operational | high | Browser account lifecycle | fix or require restart reconciliation | — |
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
+| `B-07` | Renamed account retains an old founder membership in a space | medium | Account and space membership | fixed | — |
 
 ## High
 
@@ -204,6 +205,58 @@ behavior remain in the verification backlog rather than this file.
 - **Raised by:** [browser runtime](ui/routing-and-runtime.md#edge-cases),
   [journey `ACCT-B04`](journey-catalog.md#accounts-browser-lifecycle).
 - **Status:** Not run. Source-audit finding at `a3f8670b1`.
+
+### B-07: Renamed account retains an old founder membership in a space
+
+- **Where the user meets it:** FABB → Share → members, after changing their
+  display name to `jack`.
+- **What happens / what was expected:** The roster still shows `tidy-badger`
+  as owner. It should resolve the user's membership to the current account
+  and show the saved name without creating a duplicate or losing their role.
+- **Observed evidence:** Read-only queries against the user's local running
+  product on 2026-09-07 returned HTTP 200 and showed:
+  - Profile display-name: `jack`.
+  - Account display-name: `jack`.
+  - Space membership/name records: both `jack` and `tidy-badger`.
+  - The complete membership/name + member + role query returned only
+    `tidy-badger`, with role `tonk:founder`. Its member DID did not equal
+    the active account display-name record's subject.
+  The rename persisted; the new name and the old founder roster entry are
+  attached to different membership records. These reads did not change data.
+- **Fresh reproduction:** In the service-worker test runtime, create a space
+  without a passkey root, persist the root, rotate onboarding custody, and
+  project the saved name. Before the fix, the complete founder membership
+  still named the onboarding account while `jack` was attached to a separate
+  root-keyed name row. `it_rotates_the_created_space_founder_roster` failed at
+  `founder must name the current account`.
+- **Root cause:**
+  [`rotation.rs`](../../rust/tonk-worker/src/router/rotation.rs) migrated the
+  full membership/name/role/provenance bundle for joined spaces, but omitted
+  that step for created spaces. Authority and custody rotated successfully,
+  then the onboarding secret was retired with the founder roster untouched.
+  [`profile_name.rs`](../../rust/tonk-worker/src/router/profile_name.rs) could
+  only write the account name and clean up a device-keyed name; the old member
+  was an onboarding account, not the device.
+- **Severity:** `medium`. Saved account names and the visible owner identity
+  disagree. No loss of access or incorrect permission grant was demonstrated.
+- **Resolution:** Created-space rotation now migrates the complete roster
+  before resealing custody and retiring onboarding. Normal account-name
+  projection also repairs already-rotated founder bundles using the retained
+  old account-to-device grant and the current direct space-to-account grant.
+  It preserves existing account stamps, unrelated members and authority, and
+  commits through the reactor so the roster updates and the space queues for
+  sync. A current name does not bypass membership repair; repeated repair is
+  a no-op. Missing identity evidence leaves the old row untouched.
+- **Raised by:** [Share-menu presentation](spaces/lifecycle-and-collaboration.md#share-menu-presentation-decision),
+  `COLLAB-05`.
+- **Status:** Fixed in source based on `8c9ff1de2` plus this working-tree
+  change. Fresh-transition and retired-key fixtures failed before the fix and
+  pass in the service-worker runtime. The retired-key test uses the FABB's
+  actual full roster query and checks live delivery, repeat no-op, unrelated
+  member preservation, and a local replica-branch pull. Local branch replication
+  is not a hosted two-device check. Reopening the user's original affected
+  popup on a rebuilt worker and hosted peer convergence remain unrun; the
+  user's existing browser storage has not been modified by this investigation.
 
 ## Not triaged as defects yet
 

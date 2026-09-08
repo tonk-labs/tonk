@@ -14,7 +14,6 @@ use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
@@ -133,95 +132,54 @@ pub async fn delete_space(
     }))
 }
 
-/// `tonk:delete-account`: check the reviewed plan's address, then ask the page
-/// for the passkey. The purge itself runs in [`purge`] once the
-/// handles arrive.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) struct DeleteAccountHandler {
-    attributes: Vec<String>,
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl DeleteAccountHandler {
-    pub(crate) fn new() -> Self {
-        use crate::reactor::Decode as _;
-        Self {
-            attributes: tonk_schema::command::DeleteAccount::trigger_attributes(),
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn decode_deletion(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use crate::reactor::Decode as _;
-    facts
-        .first()
-        .map(|artifact| artifact.of.clone())
-        .and_then(|entity| tonk_schema::command::DeleteAccount::decode(entity, facts))
-        .map(|command| command.email.0)
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler<crate::router::CommandEnv> for DeleteAccountHandler {
-    fn trigger_attributes(&self) -> &[String] {
-        &self.attributes
-    }
-
-    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
-        decode_deletion(facts).is_some()
-    }
-
-    fn run(
-        &self,
-        facts: &crate::reactor::EntityFacts,
-        env: &crate::router::CommandEnv,
-    ) -> crate::reactor::RunFuture {
+/// Run `tonk:delete-account`: check the reviewed plan's address, then
+/// ask the page for the passkey. The purge itself runs in [`purge`] once
+/// the handles arrive.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::DeleteAccount) {
         use tonk_schema::{ceremony, ceremony_state};
 
-        let email = decode_deletion(facts);
-        let env = env.clone();
-        Box::pin(async move {
-            let Some(email) = email else {
-                log!("delete-account: the transient carried no address; skipping");
-                return;
-            };
-            log!(
-                "delete-account: asked from client {:?}",
-                env.client().map(|c| c.0.clone())
-            );
-            {
-                let tonk = env.state().read().await;
-                let plan = match load_plan(&tonk).await {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        super::ceremony::report(
-                            &tonk,
-                            ceremony::DELETE_ACCOUNT,
-                            ceremony_state::REFUSED,
-                            &error.to_string(),
-                        )
-                        .await;
-                        return;
-                    }
-                };
-                if email.trim() != plan.email {
+        let email = command.email.0;
+        log!(
+            "delete-account: asked from client {:?}",
+            self.client().map(|c| c.0.clone())
+        );
+        {
+            let tonk = self.state().read().await;
+            let plan = match load_plan(&tonk).await {
+                Ok(plan) => plan,
+                Err(error) => {
                     super::ceremony::report(
                         &tonk,
                         ceremony::DELETE_ACCOUNT,
                         ceremony_state::REFUSED,
-                        "the reviewed email does not match this account",
+                        &error.to_string(),
                     )
                     .await;
                     return;
                 }
+            };
+            if email.trim() != plan.email {
+                super::ceremony::report(
+                    &tonk,
+                    ceremony::DELETE_ACCOUNT,
+                    ceremony_state::REFUSED,
+                    "the reviewed email does not match this account",
+                )
+                .await;
+                return;
             }
-            super::ceremony::ask_for_passkey(
-                &env,
-                ceremony::DELETE_ACCOUNT,
-                tonk_worker_api::CustodyIntent::PurgeAccount(Default::default()),
-            )
-            .await;
-        })
+        }
+        super::ceremony::ask_for_passkey(
+            self,
+            ceremony::DELETE_ACCOUNT,
+            tonk_worker_api::CustodyIntent::PurgeAccount(Default::default()),
+        )
+        .await;
     }
 }
 

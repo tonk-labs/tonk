@@ -25,6 +25,7 @@ use tonk_evaluator::evaluate::CommitSummary;
 use tonk_schema::claim::{Claim, TransactRequest};
 
 use super::AppState;
+use super::sync::now_millis;
 use crate::TonkWorkerError;
 use crate::broadcast::{LOCAL_COMMIT_CHANNEL, Notification, broadcast};
 use crate::reactor::{BranchReference, ReactorError};
@@ -187,19 +188,6 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
                 revision: revision.clone(),
             },
         );
-    }
-}
-
-/// A millisecond wall-clock stamp for sync-queue activity priority. `Date.now()`
-/// in the SW event context; native (tests) has no clock dependency, so 0.
-fn now_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        js_sys::Date::now()
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        0.0
     }
 }
 

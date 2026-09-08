@@ -418,7 +418,10 @@ pub async fn pull(
     })
 }
 
-async fn repository_name(site: &TonkSite) -> Option<String> {
+/// The repository-authored display name on `site`'s content branch, if
+/// one has landed. Shared with the invite mint, which carries it on the
+/// link so the claimer can label the space before content syncs.
+pub(crate) async fn repository_name(site: &TonkSite) -> Option<String> {
     let branch = site.branch().await.ok()?;
     branch
         .handle()

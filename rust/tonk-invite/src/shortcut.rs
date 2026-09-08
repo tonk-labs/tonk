@@ -63,25 +63,78 @@ impl ShortcutRequest {
         })
     }
 
+    /// The hash a conforming shortcut service must answer with: the
+    /// store is content-addressed (`base58(blake3(target))`), so the
+    /// client knows the only correct answer before asking.
+    pub fn expected_hash(&self) -> String {
+        bs58::encode(blake3::hash(self.target.as_bytes()).as_bytes()).into_string()
+    }
+
+    /// The fragment-free probe URL for a stored shortcut: `GET`ting it
+    /// against a conforming service answers with a redirect whose
+    /// resolved location [`Self::verify_resolved`] accepts. A host that
+    /// merely stored the `PUT /@` bytes (a content-addressed blob store
+    /// answers with the same blake3 hash a shortener does) serves the
+    /// bytes back instead of redirecting, and the probe is what tells
+    /// the two apart — such a host "does not provide shortening" and
+    /// the caller falls back to the full URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the origin and hash fail to join into a URL.
+    pub fn probe_url(&self, hash: &str) -> Result<String> {
+        self.origin
+            .join(&format!("@/{}", hash.trim()))
+            .map(String::from)
+            .context("failed to assemble the shortcut probe URL")
+    }
+
+    /// Whether `resolved` — the URL a probe's redirect landed on — is
+    /// this shortcut's own target on its own origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `resolved` doesn't parse, is on a different
+    /// origin, or names a different path + query than the stored target.
+    pub fn verify_resolved(&self, resolved: &str) -> Result<()> {
+        let parsed = Url::parse(resolved).context("the resolved shortcut is not a valid URL")?;
+        anyhow::ensure!(
+            parsed.origin() == self.origin.origin(),
+            "the shortcut redirected off-origin, to '{resolved}'"
+        );
+        let landed = match parsed.query() {
+            Some(query) => format!("{}?{}", parsed.path(), query),
+            None => parsed.path().to_string(),
+        };
+        anyhow::ensure!(
+            landed == self.target,
+            "the shortcut redirected to '{landed}', not the stored target"
+        );
+        Ok(())
+    }
+
     /// Assemble the short link from the hash the service returned,
     /// re-attaching the source URL's fragment.
     ///
     /// # Errors
     ///
-    /// Returns an error if `hash` is not base58 of 32 bytes — the
-    /// response is validated rather than trusted blindly.
+    /// Returns an error unless `hash` is exactly [`Self::expected_hash`]
+    /// — the store is content-addressed, so any other answer means the
+    /// host is not a shortcut service (a storage backend happily
+    /// 200-ing a `PUT /@` it never understood, say) and a link built
+    /// from its reply would never redirect. Callers treat this like any
+    /// other shortening failure and fall back to the full URL.
     pub fn short_url(&self, hash: &str) -> Result<String> {
-        let bytes = bs58::decode(hash.trim())
-            .into_vec()
-            .context("shortcut service returned a non-base58 hash")?;
+        let hash = hash.trim();
         anyhow::ensure!(
-            bytes.len() == 32,
-            "shortcut service returned a {}-byte hash, expected 32",
-            bytes.len()
+            hash == self.expected_hash(),
+            "shortcut service answered '{hash}' where the content address \
+             of the stored target is '{}' — not a conforming shortener",
+            self.expected_hash(),
         );
         let mut url = self
             .origin
-            .join(&format!("@/{}", hash.trim()))
+            .join(&format!("@/{hash}"))
             .context("failed to assemble the short URL")?;
         url.set_fragment(self.fragment.as_deref());
         Ok(url.into())
@@ -134,22 +187,29 @@ mod tests {
         assert_eq!(request.endpoint.as_str(), "https://tonk.network/@");
         assert_eq!(request.target, "/join?access=abc&remote=r");
 
-        let short = request.short_url(HASH).unwrap();
-        assert_eq!(short, format!("https://tonk.network/@/{HASH}#seed123"));
+        // The store is content-addressed: only the target's own blake3
+        // hash assembles a link, exactly as a conforming service answers.
+        let hash = request.expected_hash();
+        let short = request.short_url(&hash).unwrap();
+        assert_eq!(short, format!("https://tonk.network/@/{hash}#seed123"));
     }
 
     #[dialog_common::test]
     fn it_keeps_fragmentless_urls_fragmentless() {
         let request = ShortcutRequest::new("https://tonk.network/join?access=abc").unwrap();
-        let short = request.short_url(HASH).unwrap();
+        let short = request.short_url(&request.expected_hash()).unwrap();
         assert!(!short.contains('#'), "{short}");
     }
 
     #[dialog_common::test]
-    fn it_rejects_hashes_that_are_not_base58_of_32_bytes() {
+    fn it_rejects_any_answer_but_the_targets_content_address() {
         let request = ShortcutRequest::new("https://tonk.network/join?access=abc").unwrap();
+        // Not base58, wrong length, and — the case that bites in the
+        // field — a well-formed 32-byte hash of something else, which is
+        // what a storage backend blindly 200-ing a `PUT /@` produces.
         assert!(request.short_url("!!!").is_err());
         assert!(request.short_url("3vQB7B6MdGQZcSvtzcXAyC").is_err());
+        assert!(request.short_url(HASH).is_err());
     }
 
     #[dialog_common::test]

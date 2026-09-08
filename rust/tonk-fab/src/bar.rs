@@ -197,6 +197,9 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
                 open_panel(&host, &shared, Panel::Overflow, Cell::More, None);
                 return;
             }
+            if row.has_attribute("data-share-link") {
+                return;
+            }
             let has_sub = matches!(
                 row.query_selector(":scope > tonk-menu[slot=sub]"),
                 Ok(Some(_))

@@ -420,6 +420,57 @@ mod when_minting_an_invite_that_embeds_a_relay_less_remote {
     }
 }
 
+/// The mint carries the space's display name as the advisory `name`
+/// parameter, so the claimer can label the space before content syncs.
+/// Offline: the name is read from the local content branch.
+mod when_minting_an_invite_for_a_named_space {
+    use anyhow::Result;
+    use tonk_cli::invite;
+    use tonk_schema::prelude::DidExt as _;
+
+    use crate::common;
+
+    #[dialog_common::test]
+    async fn it_carries_the_display_name_on_the_link() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+        // Name the space the way `tonk space new` does.
+        {
+            let session = inviter.site.branch().await?;
+            session
+                .handle()
+                .transaction()
+                .assert(tonk_schema::RepositoryName {
+                    this: inviter.site.repository.did().this(),
+                    name: tonk_schema::domain::repo::Name("Garden Plans".to_owned()),
+                })
+                .commit()
+                .perform(&inviter.site.operator)
+                .await?;
+        }
+
+        let outcome = invite::mint(&inviter.site, None, None).await?;
+        let parsed = tonk_invite::Invite::parse_url(&outcome.url).await?;
+        assert_eq!(
+            parsed.space_name.as_deref(),
+            Some("Garden Plans"),
+            "the minted link names the space it invites into"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_omits_the_name_for_an_unnamed_space() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+        let outcome = invite::mint(&inviter.site, None, None).await?;
+        assert!(
+            !outcome.url.contains("name="),
+            "an unnamed space appends no name parameter: {}",
+            outcome.url
+        );
+        Ok(())
+    }
+}
+
 mod when_claiming_an_invite_with_a_remote {
     use anyhow::Result;
     use tonk_cli::invite;

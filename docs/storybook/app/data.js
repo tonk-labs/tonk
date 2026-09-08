@@ -35,6 +35,13 @@ window.STORYBOOK_DATA = {
       "id": "B-05",
       "severity": "medium",
       "title": "Activation accepts concurrent duplicate submissions"
+    },
+    {
+      "area": "Account and space membership",
+      "decision": "fixed",
+      "id": "B-07",
+      "severity": "medium",
+      "title": "Renamed account retains an old founder membership in a space"
     }
   ],
   "coverage": [
@@ -2026,7 +2033,7 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "The share stack remains aligned and contained for a long member roster (Share-menu presentation decision).",
+      "claim": "Share shows copy link and member count; members opens a scrollable popup (Share-menu presentation decision).",
       "device": "browser + touch",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-05",
