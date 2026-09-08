@@ -3127,6 +3127,7 @@ tonk-notebook-index {
        top-page ceremony replaces it. Paint the column's gaps as well as its
        blocks so menu labels cannot show through between ceremony rows. */
     background: var(--page);
+    box-shadow: 0 0 0 1px var(--page);
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
