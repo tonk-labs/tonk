@@ -112,6 +112,31 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for CommandE
     }
 }
 
+/// Pull a space this account has but this device does not.
+///
+/// The work is [`ensure_space_mounted`]'s — the same routine the lazy
+/// first-use path runs, so an explicit request and an implicit one take
+/// exactly one code path and report the same state. What the command
+/// adds is the ability to ASK, rather than tripping replication as a
+/// side effect of some unrelated query.
+///
+/// [`ensure_space_mounted`]: super::adopt::ensure_space_mounted
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[async_trait::async_trait(?Send)]
+impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace> for CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ReplicateSpace) {
+        let key = command.space.0.to_string();
+        let tonk = self.state().read().await;
+        match super::adopt::ensure_space_mounted(&tonk, &key).await {
+            Ok(true) => log!("ReplicateSpace '{key}': mounted"),
+            // Not an error: the directory has no mount record for it, so
+            // there is nothing this device could pull.
+            Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
+            Err(error) => log!("ReplicateSpace '{key}': {error}"),
+        }
+    }
+}
+
 /// Build the registry of supported command *types*. Registration is just
 /// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
@@ -176,7 +201,9 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
         // Registered by TYPE: the behaviour is `Provider<CheckUpdate> for
         // CommandEnv`, so the capability is checked at compile time rather
         // than by a hand-rolled handler matching on shape.
-        registry.command::<tonk_schema::command::CheckUpdate>()
+        registry
+            .command::<tonk_schema::command::CheckUpdate>()
+            .command::<tonk_schema::command::ReplicateSpace>()
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

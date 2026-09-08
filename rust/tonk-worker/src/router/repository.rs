@@ -343,6 +343,38 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// The `space/create` transient's optional `open` flag.
+///
+/// Absent (or false) means create only — the space appears in the Hub and
+/// the person stays where they are. Present and true means create and
+/// navigate, which is what the Hub's own create form asks for.
+///
+/// Read from the raw facts rather than declared on [`CreateSpace`] for
+/// the same reason the remote is: the command is matched name-only, so a
+/// declared field would make every create that omits it fail to decode.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
+
+/// Whether the create should navigate the caller into the new space.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
+        .map(|artifact| match &artifact.is {
+            Value::Boolean(open) => *open,
+            // A form field arrives as text; treat anything but an
+            // explicit falsehood as asking to open, since carrying the
+            // field at all is the request.
+            Value::String(text) => !matches!(text.trim(), "" | "false" | "0"),
+            Value::Entity(uri) => uri.to_string() != "case:false",
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
 /// The `tonk:enable-sync` transient's target space, read from the raw facts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
@@ -562,6 +594,11 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
         // The optional remote is read from the facts directly (tolerating
         // the URL's `Value::Entity` representation), not via a concept.
         let remote = remote_from_facts(facts);
+        // Whether to navigate once it exists. Creating and opening are
+        // separate wants: the Hub's form asks for both, but a script or
+        // an agent creating a space in the background must not have the
+        // page yanked out from under the person using it.
+        let open = open_from_facts(facts);
         let env = env.clone();
 
         Box::pin(async move {
@@ -609,13 +646,15 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             );
 
             // 2. The space is created and seeded — drop the creator into
-            //    it. Same page-capability channel as the join redirect: a
-            //    `{ type: "navigate", href }` posted to the originating
-            //    client. Fired before the remote attach so the navigation
-            //    doesn't wait on the network; the attach continues in the
-            //    worker regardless.
-            let href = format!("/space/{key}");
-            crate::router::navigate::notify_navigate(env.client(), &href);
+            //    it, if that is what was asked. Same page-capability
+            //    channel as the join redirect: a `{ type: "navigate",
+            //    href }` posted to the originating client. Fired before
+            //    the remote attach so the navigation doesn't wait on the
+            //    network; the attach continues in the worker regardless.
+            if open {
+                let href = format!("/space/{key}");
+                crate::router::navigate::notify_navigate(env.client(), &href);
+            }
 
             // 3. If the form carried a remote, attach it best-effort to
             //    the identity just created. A failure here just leaves it
@@ -5620,6 +5659,60 @@ mod remote_from_facts_tests {
             .of(of.clone())
             .is("test".to_string())
             .assert(changes);
+    }
+
+    /// A create that says nothing about opening does NOT navigate.
+    ///
+    /// The default matters more than the flag: every caller that is not
+    /// the Hub's own form — a script, an agent, a future affordance —
+    /// gets a space in the Hub without the page being yanked out from
+    /// under whoever is using it.
+    #[test]
+    fn it_does_not_open_a_space_by_default() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(
+            !super::open_from_facts(&artifacts(changes)),
+            "a create carrying no `open` field creates only"
+        );
+    }
+
+    /// The Hub's form passes `open` as a hidden input, so it arrives as
+    /// text rather than a boolean.
+    #[test]
+    fn it_opens_a_space_when_the_form_asks() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        the!("xyz.tonk.command.create-space/open")
+            .of(of)
+            .is("true".to_string())
+            .assert(&mut changes);
+        assert!(
+            super::open_from_facts(&artifacts(changes)),
+            "the Hub's hidden `open=true` input navigates"
+        );
+    }
+
+    /// An explicit falsehood is honoured rather than read as "present,
+    /// therefore yes" — a form that binds the field but leaves it off
+    /// must not navigate.
+    #[test]
+    fn it_honours_an_explicit_refusal_to_open() {
+        for text in ["false", "0", "", "  "] {
+            let of: Entity = "did:key:zCreate".parse().expect("entity");
+            let mut changes = Changes::new();
+            name_fact(&mut changes, &of);
+            the!("xyz.tonk.command.create-space/open")
+                .of(of)
+                .is(text.to_string())
+                .assert(&mut changes);
+            assert!(
+                !super::open_from_facts(&artifacts(changes)),
+                "`open={text:?}` must not navigate"
+            );
+        }
     }
 
     #[test]

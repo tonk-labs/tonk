@@ -82,6 +82,15 @@ pub mod space {
     #[cardinality(one)]
     pub struct Local(pub bool);
 
+    /// Whether a replication for this space is in flight on this device.
+    /// Overlay-only, like [`Local`]: the fact's PRESENCE is the state,
+    /// so it is retracted when the pull settles rather than set false,
+    /// and a worker that dies mid-pull leaves nothing to clear.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Replicating(pub bool);
+
     /// The account providing this space with the access service. Its
     /// PRESENCE is the record that the space is provisioned; the sync
     /// engine retracts it when the service answers that the subject is
@@ -1224,6 +1233,18 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.add-passkey")]
             pub struct Account(pub Entity);
+        }
+
+        /// `space/replicate` — pull a space the account has but this
+        /// device does not.
+        pub mod replicate_space {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The space to pull, as its subject DID.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.replicate-space")]
+            pub struct Space(pub Entity);
         }
 
         /// `tonk/check-update` — ask whether a newer seed is waiting.

@@ -40,18 +40,16 @@ concept!: &space
   maybe:
     presence:
       description: >
-        Where this space stands ON THIS DEVICE: case:seeding while its
-        content branch is still being seeded, case:replicated once it is
-        held here. ABSENT means remote — no replica on this device — so
-        a row without presence renders as a hollow space that
-        replicates on first visit.
+        Where this space stands ON THIS DEVICE: case:remote when no
+        replica is held here, case:seeding while its content branch is
+        still being seeded, case:replicated once it is. A remote row
+        renders as a hollow space that replicates on first visit.
 
         Derived by the rules below from this device's replica rather
-        than stored, so it cannot drift from it. The remote case is the
-        absence of a replica row, which a negated premise cannot express
-        (it may not introduce bindings, and the replica entity is
-        derived from the profile and subject). The Hub card reflects
-        this via [data-presence].
+        than stored, so it cannot drift from it. The remote case is a
+        negated premise (`unless: space/replica`) rather than an absent
+        fact, so every row carries a presence and a view can select on
+        it. The Hub card reflects this via [data-presence].
       the: xyz.tonk.space/presence
       cardinality: one
       as: entity
@@ -119,6 +117,7 @@ event!: &on/space-create
   prevent-default: true
   where:
     name: ".currentTarget.elements.name.value"
+    open: ".currentTarget.elements.open.value"
 
 command!: &space/create
   description: A request to create a new space.
@@ -134,6 +133,36 @@ command!: &space/create
         transient would never trigger the handler.
       the: xyz.tonk.command.create-space/name
       as: text
+    open:
+      description: >
+        Whether to navigate into the space once it exists. Absent means
+        create only — the space appears in the Hub and the person stays
+        where they are; the Hub's own form passes `true` because that IS
+        what clicking "create new space" asks for. Creating and opening
+        are separate wants: an agent or script creating a space in the
+        background must not yank the page out from under whoever is
+        using it.
+      the: xyz.tonk.command.create-space/open
+      as: text
+
+# Pull a space the account has but this device does not. The Hub's
+# remote rows are hollow — the directory names them but no replica is
+# held here — and replication used to be implicit: the first data-plane
+# request naming an unmounted repo tripped the mount as a side effect.
+# This makes it something you can ASK for. The worker's provider runs
+# the SAME routine the lazy path does, so both report identical state.
+#
+# Carries its target `space` rather than firing on the dispatch origin:
+# the affordance is a Hub card on the profile branch, naming precisely
+# the space this device has no replica of.
+command!: &space/replicate
+  this: tonk:space/replicate
+  description: Pull a space this device holds no replica of.
+  with:
+    space:
+      description: The space to pull, as its subject DID.
+      the: xyz.tonk.command.replicate-space/space
+      as: entity
 
 # The device-local Remove Space command. A joined-space leave or local-only
 # delete submits this transient; the worker's `RemoveSpaceHandler` retracts
@@ -267,6 +296,7 @@ view!:
                registers stays local until it is shared. -->
           <form class="snew-form" on:space-create=space/create>
             <input type="hidden" name="name" value="Untitled">
+            <input type="hidden" name="open" value="true">
             <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
         </div>
@@ -1509,18 +1539,41 @@ concept!: &space/replica-status
       cardinality: one
       as: entity
 
+# A pull IN FLIGHT on this device, overlay-only. Asserted before the
+# mount starts and retracted when it settles, so its PRESENCE is the
+# state — which is why it is overlay rather than durable: a worker
+# killed mid-pull leaves nothing to clear, and the row falls back to
+# remote ready to retry. A durable marker would strand it forever.
+concept!: &space/replicating
+  this: tonk:space/replicating
+  description: A replication in flight on this device, keyed on the replica.
+  with:
+    subject:
+      description: >
+        The space being pulled. Carried so a rule can join this marker
+        to the directory row: during the pull that CREATES the replica
+        there is no replica record to join through yet.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    replicating:
+      description: Always true while a pull runs; retracted when it settles.
+      the: xyz.tonk.space/replicating
+      cardinality: one
+      as: boolean
+
 concept!: &space/presence
   this: tonk:space/presence
   description: Where a space stands on this device.
   with:
     presence:
-      description: '`case:remote`, `case:seeding`, or `case:replicated`.'
+      description: '`case:remote`, `case:replicating`, `case:seeding`, or `case:replicated`.'
       the: xyz.tonk.space/presence
       cardinality: one
       as: entity
 
 rule!:
-  description: A space this device holds no replica of is remote
+  description: A space this device holds no replica of and is not pulling is remote
   assert: space/presence
   when:
     - assert: space
@@ -1539,6 +1592,33 @@ rule!:
       where:
         subject: ?subject
         profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+
+# A pull in flight, whether an explicit `space/replicate` asked for it or
+# the lazy first-use path tripped it. Distinct from `case:seeding`: that
+# is the CREATING device writing its own first content, this is pulling
+# content someone else authored. They fail differently and mean different
+# things to the person watching the row.
+rule!:
+  description: A space being pulled onto this device is replicating
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicating
 
 rule!:
   description: A replica still seeding its content branch

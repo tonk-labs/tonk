@@ -77,12 +77,20 @@ pub(crate) async fn ensure_space_mounted(
         return Ok(false);
     };
     log!("space adoption: mounting '{subject}' from the account directory");
-    super::join::mount_replica_with_configuration(tonk, &subject, configuration).await?;
-    super::repository::record_initialized_replica_in_profile(tonk, &subject)
-        .await
-        .map_err(|error| {
-            crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
-        })?;
+
+    // Announce the pull BEFORE it starts, so the state is observable
+    // however the mount was triggered — the lazy first-use path included,
+    // not just an explicit `space/replicate`. Without this a large pull
+    // leaves the row looking remote until it abruptly becomes local.
+    stamp_space_replicating(tonk, &subject, true).await;
+
+    let mounted = mount_and_record(tonk, &subject, configuration).await;
+
+    // Settled either way: on failure the marker must go too, or the row
+    // stays "replicating" with no pull behind it.
+    stamp_space_replicating(tonk, &subject, false).await;
+    mounted?;
+
     stamp_space_locality(tonk, &subject).await;
     // The mount wires the upstream but the content arrives over a pull;
     // mark the repo dirty so the next drain (the page's own follow-up
@@ -92,6 +100,24 @@ pub(crate) async fn ensure_space_mounted(
     tonk.sync_queue
         .mark_dirty(subject.as_str(), js_sys::Date::now());
     Ok(true)
+}
+
+/// Mount the replica and record it, as one fallible step.
+///
+/// Split out so the in-flight marker above can be retracted on the way
+/// out whichever way this goes — a `?` in the caller would skip the
+/// retraction and strand the row.
+async fn mount_and_record(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+    configuration: crate::router::repository::RepositoryConfiguration,
+) -> Result<(), crate::TonkWorkerError> {
+    super::join::mount_replica_with_configuration(tonk, subject, configuration).await?;
+    super::repository::record_initialized_replica_in_profile(tonk, subject)
+        .await
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
+        })
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
@@ -301,6 +327,70 @@ mod tests {
 
     use super::*;
 
+    /// The in-flight marker is retracted even when the pull fails.
+    ///
+    /// The hazard this pins: the marker is asserted before the mount and
+    /// the mount can fail, so a `?` on the way out would leave the row
+    /// reading `case:replicating` with no pull behind it — stuck, and
+    /// with nothing to clear it, since the marker outlives the attempt
+    /// that wrote it. Only a worker restart would drop it.
+    #[dialog_common::test]
+    async fn it_clears_the_in_flight_marker_when_a_pull_fails() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+
+        // Directory facts naming a remote that cannot answer, so the
+        // mount is attempted and fails rather than being skipped.
+        let foreign = Ed25519Signer::generate().await.unwrap();
+        let subject: dialog_varsig::Did = foreign.did();
+        let address = dialog_repository::SiteAddress::from(
+            dialog_remote_ucan_s3::UcanAddress::new("https://unreachable.invalid/ucan/"),
+        );
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+
+        // Whether this attempt succeeds or fails is not the point; that
+        // no marker survives it is.
+        let _ = ensure_space_mounted(&tonk, subject.as_str()).await;
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main acquires");
+        let in_flight: Vec<tonk_schema::SpaceReplicating> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceReplicating> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                replicating: Term::var("replicating"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the in-flight query runs");
+        assert!(
+            in_flight.is_empty(),
+            "a settled pull leaves no in-flight marker: {in_flight:?}"
+        );
+    }
+
     /// The cross-device flow's device-B half, pinned: another device
     /// recorded a space's directory facts (mount records included);
     /// this device — which has never seen the space — must mount it on
@@ -465,6 +555,48 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
     };
     main.state
         .assert_overlay(tonk_schema::SpaceLocal::new(subject, true));
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Assert or retract the in-flight replication marker for `subject`.
+///
+/// Overlay on profile main, beside the locality stamp: device-local and
+/// never replicated, because a pull running HERE says nothing about any
+/// other device. The fact's presence is the state, so settling retracts
+/// it rather than writing false.
+pub(crate) async fn stamp_space_replicating(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+    replicating: bool,
+) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("replicating stamp: open profile main: {error}");
+            return;
+        }
+    };
+    let fact = tonk_schema::SpaceReplicating::new(tonk.profile.did(), subject.clone());
+    if replicating {
+        main.state.assert_overlay(fact);
+    } else {
+        // Cleared by DROPPING the entity's overlay facts, not by
+        // retracting: an overlay retract records a tombstone beside the
+        // assertion rather than removing it, so the fact would still
+        // read back. The marker owns its entity (the replica), so
+        // dropping the entity takes nothing else with it.
+        let entity = fact.this.clone();
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &entity);
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;

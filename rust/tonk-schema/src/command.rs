@@ -418,6 +418,31 @@ impl Command for CheckUpdate {
     type Output = ();
 }
 
+/// Pull a space this account has but this device does not.
+///
+/// Replication was only ever implicit: the first data-plane request
+/// naming an unmounted repo tripped `ensure_space_mounted` as a side
+/// effect. That works, but nothing can ASK for it, and a pull large
+/// enough to notice had no state anyone could render — the row sat
+/// looking remote until it abruptly became local.
+///
+/// Carries its target `space` rather than firing on the dispatch
+/// origin, for the same reason [`PauseSync`] does: the affordance is a
+/// Hub card on the PROFILE branch, and the space it names is precisely
+/// the one this device has no replica of.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ReplicateSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to pull, as its subject DID.
+    pub space: crate::domain::command::current::replicate_space::Space,
+}
+
+impl Command for ReplicateSpace {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {

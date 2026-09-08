@@ -2889,6 +2889,7 @@ pub(crate) mod tests {
                     name: tonk_schema::domain::repo::Name("Untitled".to_string()),
                 })
                 .commit()
+                .publish()
                 .perform(&tonk.operator)
                 .await
                 .expect("the repository name commits");
