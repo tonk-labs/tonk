@@ -5062,6 +5062,112 @@ mod notebook_creation_tests {
 }
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod rename_repository_tests {
+    use super::*;
+    use crate::router::command::{CommandOrigin, dispatch};
+    use dialog_artifacts::Statement;
+    use dialog_query::the;
+
+    /// Every name-bearing record for `key`, read back the way its
+    /// consumers read them: the space's own [`RepositoryName`] on its
+    /// content branch (what the space renders), and the profile
+    /// branch's [`tonk_schema::SpaceName`] directory mirror (what a
+    /// device that never replicated the space labels it by).
+    async fn names(state: &crate::router::AppState, key: &str) -> (Vec<String>, Vec<String>) {
+        let tonk = state.read().await;
+        let content = tonk
+            .reactor
+            .repository(key)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        let space: Vec<RepositoryName> = content
+            .handle()
+            .query()
+            .select(Query::<RepositoryName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("repository-name query");
+        let profile_branch = tonk
+            .reactor
+            .profile_repository()
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let mirror: Vec<tonk_schema::SpaceName> = profile_branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("space-name mirror query");
+        (
+            space.into_iter().map(|row| row.name.0).collect(),
+            mirror.into_iter().map(|row| row.name.0).collect(),
+        )
+    }
+
+    /// A space renaming ITSELF — the one space-side command with a
+    /// write outside its own branch. Dispatched with the space as
+    /// origin (the vocabulary split keeps `RenameRepository` in the
+    /// space registry for exactly this), the provider must land the
+    /// name in BOTH records: the space's own `RepositoryName` and the
+    /// profile's `SpaceName` directory mirror. A regression that
+    /// updates only one desynchronizes what the space shows from what
+    /// the Hub of a non-replicated device shows.
+    #[dialog_common::test]
+    async fn it_updates_both_records_when_a_space_renames_itself() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(&state, "Before Rename")
+            .await
+            .expect("the space creates");
+
+        let mut changes = dialog_artifacts::Changes::new();
+        let command: dialog_artifacts::Entity = "cmd:rename".parse().unwrap();
+        the!("xyz.tonk.command.rename-repository/name")
+            .of(command.clone())
+            .is("After Rename".to_string())
+            .assert(&mut changes);
+        the!("xyz.tonk.rename-repository/space")
+            .of(command)
+            .is(key.parse::<dialog_artifacts::Entity>().unwrap())
+            .assert(&mut changes);
+        dispatch(
+            &state,
+            CommandOrigin {
+                repo: key.clone(),
+                branch: CONTENT_BRANCH.to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        let (space, mirror) = names(&state, &key).await;
+        assert_eq!(
+            space,
+            vec!["After Rename".to_string()],
+            "the space's own RepositoryName record carries the new name"
+        );
+        assert_eq!(
+            mirror,
+            vec!["After Rename".to_string()],
+            "the profile's SpaceName directory mirror carries the new name"
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod invite_chain_tests {
     use super::*;
 

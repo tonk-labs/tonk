@@ -18,10 +18,14 @@ Two registries, selected per dispatch by `CommandOrigin`:
 - **Space (content) branch**: only what a space may run on itself —
   - `Load`: its target IS the origin branch (route stamping).
   - `RenameRepository`: names its space, refused cross-space by
-    `may_target_space`; kept space-side so a space can rename itself
-    (the provider should eventually update both the profile record and
-    the space record from a space dispatch — today it updates the
-    profile's replica label).
+    `may_target_space`; kept space-side so a space can rename itself.
+    The provider updates BOTH records regardless of dispatch origin:
+    the space's own `RepositoryName` on its content branch (the
+    editable source of truth) and the profile branch's `SpaceName`
+    directory mirror (what labels the space on a device that never
+    replicated it). The `Replica` row carries no name by design.
+    Pinned by `it_updates_both_records_when_a_space_renames_itself`
+    (`router/repository.rs`), which dispatches from a space origin.
   - `ExpelMember`: target is the origin space (the command carries only
     the member DID). Interim — "a space could REQUEST to expel, but it's
     really a profile's job"; moving it profile-side needs the command to
