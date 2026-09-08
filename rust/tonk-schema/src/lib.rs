@@ -74,6 +74,11 @@ pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
 pub mod device_link;
 pub mod replica;
+
+/// Concepts backing the `/console` introspection page — live reactor state
+/// published as overlay facts.
+pub mod console;
+pub use console::{ConsoleGroup, ConsoleSubscription, ConsoleSubscriptionUpdate, ConsoleUpdate};
 pub use device_link::*;
 pub use replica::*;
 

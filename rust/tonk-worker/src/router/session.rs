@@ -358,6 +358,22 @@ async fn stamp_site_on(
         );
         return;
     };
+    // Install the on-demand library claiming this path, if one does and it is
+    // not on the branch yet, BEFORE matching.
+    //
+    // Deliberately not driven by a match failure. `profile.yaml` ends in a
+    // catch-all `/{*rest}` route, so on that branch `match_route` never
+    // misses — an uninstalled `/console` matches the 404 page and renders it.
+    // Waiting for a `None` that cannot arrive would leave the install dead
+    // code, so the claim is consulted first and its specific route then wins
+    // over the catch-all on specificity.
+    //
+    // `ensure_library_installed` is a no-op for a path nothing claims (the
+    // overwhelmingly common case, costing one string comparison) and for one
+    // whose routes are already on the branch, so the ordinary navigation is
+    // unaffected.
+    ensure_library_installed(tonk, &state, repo, branch_name, profile, rest).await;
+
     let Some(matched) = match_route(tonk, &state, rest).await else {
         tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
         return;
@@ -453,6 +469,18 @@ async fn stamp_site_on(
                 .insert(site.to_owned());
         }
         tonk_common::log!("[stamp] {site} WROTE path={path}");
+    }
+
+    // The console reads live reactor state, which nothing else publishes.
+    // Refreshed here, AFTER the stamp: the stamp is what brings the page's
+    // display up, and publishing first would write rows nothing is watching
+    // yet, leaving the page empty until some later poll happened by.
+    //
+    // Keyed off the resolved path rather than the matched concept so this
+    // stays a plain "is this the console page" test with no dependency on
+    // how the route lowered.
+    if library_claiming(rest) == Some(CONSOLE_LIBRARY_URL) {
+        super::console::publish_subscriptions(tonk).await;
     }
 }
 
@@ -653,6 +681,142 @@ async fn origin_entity(
         .unwrap_or_default();
 
     replicas.into_iter().next().map(|replica| replica.this)
+}
+
+/// Libraries that are installed on demand rather than seeded at bootstrap,
+/// as `(path prefix, served URL)`.
+///
+/// A library in this table is NOT part of any branch's initial seed. The
+/// first time a tab routes to a path it claims, [`install_library_for`]
+/// fetches and evaluates it onto that branch, and its `route!` entries
+/// become durable facts there — so the install happens once per branch and
+/// every later navigation matches on the first try.
+///
+/// The point is that `profile.yaml` stays lean. A page that most sessions
+/// never open costs those sessions nothing: no parse, no analyze, no facts.
+///
+/// A prefix matches the whole path or a `/`-delimited segment boundary, so
+/// `/console` claims `/console` and `/console/subscriptions` but never
+/// `/consoles`.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+const ON_DEMAND_LIBRARIES: &[(&str, &str)] = &[("/console", CONSOLE_LIBRARY_URL)];
+
+/// The console library's served URL. Named so the console page can be
+/// recognised by the library that defines it rather than by a bare string
+/// repeated at the call site.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+const CONSOLE_LIBRARY_URL: &str = "/library/console.yaml";
+
+/// The served URL of the on-demand library claiming `rest`, if any.
+///
+/// A prefix claims the path itself and anything below it, but only on a
+/// `/` boundary: `/console` claims `/console` and `/console/subscriptions`
+/// and never `/consoles`. Split out from [`ensure_library_installed`] so the
+/// claim rule is testable without a service-worker scope to fetch from.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn library_claiming(rest: &str) -> Option<&'static str> {
+    ON_DEMAND_LIBRARIES
+        .iter()
+        .find(|(prefix, _)| {
+            rest == *prefix
+                || rest
+                    .strip_prefix(*prefix)
+                    .is_some_and(|tail| tail.starts_with('/'))
+        })
+        .map(|(_, url)| *url)
+}
+
+/// Ensure the on-demand library claiming `rest` is present on the branch,
+/// fetching and evaluating it if it is not.
+///
+/// Three ways this does nothing, in increasing cost:
+///
+/// 1. No manifest entry claims `rest` — one string comparison, the case
+///    every ordinary navigation takes.
+/// 2. An entry claims it and the branch already carries a route for it —
+///    one route-table query, the case every visit after the first takes.
+/// 3. Otherwise: fetch, analyze, commit. Once per branch.
+///
+/// Step 2 is what keeps this off the hot path. Evaluating an already-present
+/// document is *semantically* harmless (asserting identical claims
+/// de-duplicates, which is what lets `seed_profile_library` run on every
+/// boot), but it would still parse and analyze a library and take the
+/// branch's transactor lock on every single navigation to the page.
+///
+/// Best-effort, like every other seed path: a failed fetch (an offline
+/// worker, a harness serving no library) leaves the route uninstalled and
+/// the caller falls through to whatever else matches, rather than failing
+/// the navigation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn ensure_library_installed(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    repo: &str,
+    branch: &str,
+    profile: bool,
+    rest: &str,
+) {
+    let Some(url) = library_claiming(rest) else {
+        return;
+    };
+
+    // Already installed? A route whose pattern claims this path means the
+    // library's `route!:` entries are on the branch. Checked against the
+    // route table rather than a "have I installed this" flag in memory
+    // because the branch is the durable truth: a restarted worker, or a
+    // second tab, must not re-evaluate what is already committed.
+    if route_is_installed(tonk, state, rest).await {
+        return;
+    }
+
+    tonk_common::log!("[stamp] installing {url} for {rest:?}");
+
+    let library = match super::repository::fetch_library(url).await {
+        Ok(library) => library,
+        Err(error) => {
+            tonk_common::log!("ensure_library_installed: fetch {url} failed: {error}");
+            return;
+        }
+    };
+
+    // The profile lives outside the named-repo namespace, so it evaluates
+    // through its own entry point — the same split `stamp_site_on` makes when
+    // it acquires the branch.
+    let evaluated = if profile {
+        super::evaluate::evaluate_profile_body(tonk, branch, library, true).await
+    } else {
+        super::evaluate::evaluate_body(tonk, repo, branch, library, true).await
+    };
+
+    if let Err(error) = evaluated {
+        tonk_common::log!("ensure_library_installed: evaluating {url} failed: {error}");
+    }
+}
+
+/// Whether the branch already carries a route matching `rest`, ignoring any
+/// catch-all.
+///
+/// A catch-all (`/{*rest}`, the profile's 404 page) matches every path, so a
+/// plain "did anything match" check would report every library as installed
+/// and nothing would ever be fetched. What matters is whether a route claims
+/// this path *specifically*, which is exactly a match whose captured params
+/// do not come from a wildcard span standing in for the whole path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn route_is_installed(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> bool {
+    match match_route(tonk, state, rest).await {
+        // The catch-all captures the entire path (minus its leading `/`) into
+        // a single span. A real route for `/console` captures nothing, or
+        // captures genuine parameters — never the whole path back.
+        Some(matched) => !matched
+            .params
+            .iter()
+            .any(|(_, value)| value == rest.trim_start_matches('/')),
+        None => false,
+    }
 }
 
 /// A matched route: the route-table entry, the model the shell mounts, and the
@@ -990,6 +1154,52 @@ mod tests {
             with.starts_with("main@profile:") && with.len() > "main@profile:".len(),
             "the notebook view's `with` ({with:?}) must address the profile endpoint \
              with a named profile, not a repository"
+        );
+    }
+}
+
+/// The on-demand library claim rule. Native — it is pure string matching,
+/// with no branch to evaluate onto and no scope to fetch from.
+#[cfg(test)]
+mod library_claim_tests {
+    use super::library_claiming;
+
+    #[dialog_common::test]
+    async fn it_claims_the_path_a_library_registers() {
+        assert_eq!(
+            library_claiming("/console"),
+            Some("/library/console.yaml"),
+            "the console library must claim its own route, or a first visit \
+             never installs it"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_claims_paths_below_a_registered_prefix() {
+        assert_eq!(
+            library_claiming("/console/subscriptions"),
+            Some("/library/console.yaml"),
+            "a sub-path must install the same library — landing directly on \
+             a console sub-page has to work the same as landing on its root"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_claims_nothing_for_an_unregistered_path() {
+        assert_eq!(
+            library_claiming("/nonesuch"),
+            None,
+            "an unclaimed path must install nothing, so a mistyped URL still \
+             falls through to the catch-all route"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_matches_a_prefix_only_on_a_segment_boundary() {
+        assert_eq!(
+            library_claiming("/consoles"),
+            None,
+            "a prefix must not claim a longer word that merely starts with it"
         );
     }
 }

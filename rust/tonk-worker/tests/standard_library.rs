@@ -39,6 +39,13 @@ const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/note
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 
+/// The console library. Unlike the others it is never seeded at
+/// bootstrap — a `/console` route miss fetches and evaluates it onto the
+/// profile branch on first visit — but it lowers through the very same
+/// pipeline, so a broken console.yaml must fail here rather than at the
+/// moment somebody opens the page.
+const CONSOLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/console.yaml");
+
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
@@ -91,6 +98,11 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+#[test]
+fn it_lowers_the_console_library() {
+    assert_library_lowers("console library (console.yaml)", CONSOLE_LIBRARY);
 }
 
 /// Form controls expose their submitted value at `.value` (a

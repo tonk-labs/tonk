@@ -6,7 +6,7 @@ mod state;
 mod subscriber;
 
 pub use reference::{SubscriptionPoll, SubscriptionReference};
-pub use state::QueryHash;
+pub use state::{QueryHash, UPDATE_LOG_LIMIT, UpdateRecord};
 pub use subscriber::Subscriber;
 
 // Crate-internal: the slot type and `Subscription` struct that

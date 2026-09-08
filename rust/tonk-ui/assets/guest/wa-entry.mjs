@@ -24,3 +24,11 @@ import "../webawesome/components/tab/tab.js";
 import "../webawesome/components/tab-panel/tab-panel.js";
 import "../webawesome/components/comparison/comparison.js";
 import "../webawesome/components/badge/badge.js";
+// Added for the /console page: subscription rows show when each was opened,
+// and `<wa-relative-time sync>` counts that up on its own. `<wa-details>`
+// groups them by (repository, branch) — a collapsible section rather than a
+// `<wa-tree>`, because a tree assigns its children through a slot and only
+// sees DIRECT children, while the rows arrive wrapped in the
+// `tonk-display`/`tonk-view` layers every nested view renders through.
+import "../webawesome/components/relative-time/relative-time.js";
+import "../webawesome/components/details/details.js";

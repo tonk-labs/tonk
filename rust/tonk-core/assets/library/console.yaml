@@ -1,0 +1,511 @@
+# ===========================================================================
+# console — the `/console` introspection page.
+# ===========================================================================
+# A read-only window onto what this device's reactor is actually doing:
+# which queries are subscribed on which branch, what transactions have come
+# in, and where each replica's sync stands.
+#
+# This document is NOT seeded at profile bootstrap. It is fetched and
+# evaluated onto the profile branch the FIRST TIME a tab asks for
+# `/console` — the route miss in the service worker's `stamp_site_on` is
+# the trigger. Once evaluated the routes below are durable facts on the
+# branch, so the miss path never runs again for this profile.
+#
+# Everything the console shows is an OVERLAY fact: the worker publishes the
+# reactor's live state into the profile branch's session overlay (the same
+# mechanism the sync chip uses), so nothing here is ever committed and
+# nothing replicates to another device. A console row describes THIS
+# device's worker and no other.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Subscriptions
+# ---------------------------------------------------------------------------
+
+# One live subscription in the reactor — a `(branch, query)` pair with the
+# set of subscribers attached to it. The reactor holds these in a map keyed
+# by query hash; the publisher mints one entity per entry so a subscription
+# that comes and goes appears and disappears as a row.
+concept!: &console/subscription
+  description: A live query subscription held by this device's reactor.
+  with:
+    space:
+      description: >
+        The repository the subscription is registered against — the
+        grouping key. A location token rather than a DID so the row reads
+        the way the address bar does; the profile's own subscriptions
+        carry the `profile:<name>` token.
+      the: xyz.tonk.console.subscription/space
+      cardinality: one
+      as: text
+    branch:
+      description: The branch within that repository the query runs against.
+      the: xyz.tonk.console.subscription/branch
+      cardinality: one
+      as: text
+    query:
+      description: >
+        The subscribed query, rendered as dialog-yaml notation — the same
+        language the inspector shows and the editor edits, so a query reads
+        here the way it reads everywhere else. Handed to `<tonk-notation>`,
+        which tokenizes and highlights it. This is the thing you came to the
+        console to read.
+      the: xyz.tonk.console.subscription/query
+      cardinality: one
+      as: text
+    opened-at:
+      description: >
+        When the subscription was opened, ISO-8601. Rendered by
+        `<wa-relative-time sync>`, which counts up on its own — so the age
+        of a subscription stays true between refreshes.
+      the: xyz.tonk.console.subscription/opened-at
+      cardinality: one
+      as: text
+    subscribers:
+      description: >
+        How many open channels are attached to this subscription. Several
+        tabs asking the same question of the same branch share one entry,
+        so this is where that sharing shows up.
+      the: xyz.tonk.console.subscription/subscribers
+      cardinality: one
+      as: unsigned-integer
+    update:
+      description: >
+        The updates delivered to this subscription — one fact per entry, so
+        the expanded row iterates them into its log. Cardinality MANY, and
+        explicitly so: an omitted cardinality defaults to `one`, which marks
+        the field scalar and would render a single entry instead of the feed.
+      the: xyz.tonk.console.subscription/update
+      cardinality: many
+      as: entity
+    concept-name:
+      description: >
+        The concept this subscription watches, as a readable name
+        (`tonk:site`) — the collapsed row's label, the thing a
+        `<tonk-display model=…>` was pointed at. Derived from the query's
+        attribute namespace, because a display resolves its model to a query
+        before subscribing and only the query crosses the bridge.
+      the: xyz.tonk.console.subscription/concept-name
+      cardinality: one
+      as: text
+    updates:
+      description: >
+        How many updates this subscription has pushed since it opened —
+        deltas that carried a real change, not the initial snapshot each
+        subscriber gets on attach. A poll that finds nothing changed pushes
+        no frame and is not counted, so this is the number of times the
+        answer to this query actually moved.
+      the: xyz.tonk.console.subscription/updates
+      cardinality: one
+      as: unsigned-integer
+    group:
+      description: >
+        The `(repository, branch)` group this row nests under. The group's
+        view iterates its members through the reverse of this link.
+      the: xyz.tonk.console.subscription/group
+      cardinality: one
+      as: entity
+  maybe:
+    hash:
+      description: >
+        The subscription's query hash — its identity within the branch,
+        shown so a row can be correlated with a worker log line.
+      the: xyz.tonk.console.subscription/hash
+      cardinality: one
+      as: text
+    pending:
+      description: >
+        How many of those subscribers have not yet received their first
+        snapshot. A row that sits with pending subscribers is one whose
+        poll is not landing.
+      the: xyz.tonk.console.subscription/pending
+      cardinality: one
+      as: unsigned-integer
+    last-update:
+      description: >
+        When this subscription last pushed an update, ISO-8601. Optional by
+        design: a query that has not changed since it opened has none, and
+        that absence is the useful signal — a required field would instead
+        make every never-updated row fail to resolve and vanish.
+      the: xyz.tonk.console.subscription/last-update
+      cardinality: one
+      as: text
+
+# One `(repository, branch)` pair, with the subscriptions live on it. The
+# console renders these as the tree's top level, so a repository and branch
+# are named once and their queries hang beneath — rather than every row
+# repeating both.
+concept!: &console/group
+  description: A repository+branch the console groups subscriptions under.
+  with:
+    space:
+      description: The repository this group covers.
+      the: xyz.tonk.console.group/space
+      cardinality: one
+      as: text
+    branch:
+      description: The branch within it.
+      the: xyz.tonk.console.group/branch
+      cardinality: one
+      as: text
+    subscriptions:
+      description: How many subscriptions are live on this branch.
+      the: xyz.tonk.console.group/subscriptions
+      cardinality: one
+      as: unsigned-integer
+    subscription:
+      description: >
+        The subscriptions in this group — one fact per member, so the view
+        iterates them into nested tree items. Cardinality MANY, and
+        explicitly so: an omitted cardinality defaults to `one`, which marks
+        the field scalar and would render a single child instead of the list.
+      the: xyz.tonk.console.group/subscription
+      cardinality: many
+      as: entity
+
+# One delivered update in a subscription's log — when it went out and how
+# large it was. The expanded row renders these as a feed, newest first, the
+# way a network panel lists requests.
+concept!: &console/update
+  description: One update delivered to a subscription.
+  with:
+    subscription:
+      description: The subscription this update was pushed to.
+      the: xyz.tonk.console.update/subscription
+      cardinality: one
+      as: entity
+    at:
+      description: When it was pushed, ISO-8601.
+      the: xyz.tonk.console.update/at
+      cardinality: one
+      as: text
+    bytes:
+      description: Serialized size of the delta frame, in bytes.
+      the: xyz.tonk.console.update/bytes
+      cardinality: one
+      as: unsigned-integer
+    position:
+      description: >
+        Position in the log, newest first (0 is the most recent). Carried as
+        a field because the rendered order must be the log's order and a
+        query returns rows in no guaranteed order.
+      the: xyz.tonk.console.update/position
+      cardinality: one
+      as: unsigned-integer
+
+# ---------------------------------------------------------------------------
+# The route
+# ---------------------------------------------------------------------------
+
+# The route table concept, mirroring the declaration in `core.yaml` and
+# `profile.yaml`. Re-declared rather than assumed because lowering runs
+# `analyze_local` — no running system — so every name a document uses has to
+# resolve within that document, whatever the target branch already carries.
+# `route` is not one of the built-in concepts (`concept`, `command`, `event`,
+# `view`, `rule`, …), so nothing supplies it for free.
+#
+# This is the one place the console pins `this:` rather than letting the
+# anchor derive an entity, and the pin is load-bearing: an unpinned
+# declaration is content-addressed to `concept:6kT88mB4…`, a DIFFERENT
+# concept from the `tonk:route` the service worker's `match_route` reads the
+# table through. The routes below would then lower into a table nothing
+# routes against, and `/console` would 404 with every fact present and
+# correct. Re-asserting the identical pinned declaration onto a branch that
+# already carries it de-duplicates, which is what makes the install
+# idempotent.
+concept!: &route
+  this: tonk:route
+  description: A route — maps a path pattern to the model the SW mounts.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when this path matches.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+route!: &route/console
+  path: "/console"
+  concept: console/route
+
+# The console page model. Same three site fields every profile route model
+# picks up: the console renders the whole branch rather than one entity, so
+# `repo`/`branch` are what it needs to address the endpoint its nested
+# displays read from.
+concept!: &console/route
+  description: The /console page — a window onto this device's reactor.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: console/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <style>
+          .console {
+            padding: var(--wa-space-l);
+            font-family: var(--wa-font-family-body);
+            color: var(--wa-color-text-normal);
+          }
+          /* Plain heading. `<h1>` inherits a boxed/inverted treatment from
+             the surrounding chrome otherwise, which reads as a button. */
+          .console__head {
+            margin: 0 0 var(--wa-space-2xs);
+            padding: 0;
+            background: none;
+            font-size: var(--wa-font-size-l);
+            font-weight: var(--wa-font-weight-semibold);
+            color: var(--wa-color-text-normal);
+          }
+          .console__note {
+            margin: 0 0 var(--wa-space-l);
+            font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-quiet);
+          }
+          .console__section {
+            margin-bottom: var(--wa-space-l);
+          }
+          .console__label {
+            margin: 0 0 var(--wa-space-xs);
+            font-size: var(--wa-font-size-xs);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--wa-color-text-quiet);
+          }
+        </style>
+        <tonk-title text="Console — Tonk"></tonk-title>
+        <div class="console">
+          <h1 class="console__head">Console</h1>
+          <p class="console__note">
+            Live state from this device's worker. Nothing here is stored or
+            shared — it describes this browser only.
+          </p>
+          <section class="console__section">
+            <p class="console__label">Subscriptions</p>
+            <tonk-display model="console/group"></tonk-display>
+          </section>
+        </div>
+      </div>
+
+# The grouping level: one collapsible `<wa-details>` per (repository,
+# branch), with its subscriptions inside.
+#
+# `<wa-details>` rather than `<wa-tree>`, which was the obvious choice and
+# does not work here. A tree assigns children through a SLOT, and slot
+# assignment only ever sees an element's DIRECT children — but every nested
+# view arrives wrapped in the `tonk-display`/`tonk-view` layers the renderer
+# mounts it through, so the child `<wa-tree-item>`s land two levels too deep,
+# are never assigned, and the group renders with no children and no expand
+# toggle. `display: contents` cannot rescue that: it changes layout, not
+# slotting. `<wa-details>` has a plain default slot that takes whatever it is
+# given, wrappers included.
+view!:
+  this: console/group
+  show:
+    directory: |
+      <div class="console-groups">
+        <style>
+          .console-groups > tonk-display,
+          .console-groups > tonk-display > tonk-view {
+            display: block;
+          }
+          .console-group {
+            margin-bottom: var(--wa-space-xs);
+            /* Pull the body in against its summary so the rows read as
+               children of the group rather than as a detached block. */
+            --spacing: var(--wa-space-xs);
+          }
+          /* The rows, indented under the summary with a rule down the left —
+             the tree line the grouping is meant to convey. */
+          .console-group__rows {
+            margin-left: var(--wa-space-xs);
+            padding-left: var(--wa-space-m);
+            border-left: 1px solid var(--wa-color-surface-border);
+          }
+          .console-group__label {
+            display: inline-flex;
+            align-items: baseline;
+            gap: var(--wa-space-xs);
+          }
+          .console-group__space {
+            font-weight: var(--wa-font-weight-semibold);
+          }
+          .console-group__branch {
+            font-family: var(--wa-font-family-code);
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+          }
+          /* The subscription rows inside a group: the display wrappers are
+             pure rendering layers, so make them transparent and let each
+             row be a block in the group's flow. */
+          .console-group tonk-display,
+          .console-group tonk-display > tonk-view {
+            display: block;
+          }
+        </style>
+        <wa-details class="console-group" open>
+          <span slot="summary" class="console-group__label">
+            <span class="console-group__space">{space}</span>
+            <span class="console-group__branch">{branch}</span>
+            <wa-badge variant="neutral">{subscriptions}</wa-badge>
+          </span>
+          <div class="console-group__rows">
+            <tonk-display entity={subscription} model="console/subscription"></tonk-display>
+          </div>
+        </wa-details>
+      </div>
+
+# One subscription, as a network-panel row.
+#
+# Collapsed it is a single line: the concept name, how many updates it has
+# pushed, and when the last one arrived — enough to scan a list and see what
+# is busy. Expanded it reveals the query in notation and the log of updates
+# actually delivered.
+#
+# `<wa-details>` again rather than a tree item, for the same slotting reason
+# the group uses it: the nested update rows arrive wrapped in
+# `tonk-display`/`tonk-view` layers, which a slot-assigning component would
+# not see.
+view!:
+  this: console/subscription
+  show:
+    ui: |
+      <wa-details class="sub" appearance="plain">
+        <style>
+          .sub {
+            --spacing: var(--wa-space-xs);
+            border-bottom: 1px solid var(--wa-color-surface-border);
+          }
+          .sub__summary {
+            display: flex;
+            align-items: baseline;
+            gap: var(--wa-space-xs);
+            width: 100%;
+            font-size: var(--wa-font-size-s);
+          }
+          .sub__concept {
+            font-family: var(--wa-font-family-code);
+            font-weight: var(--wa-font-weight-semibold);
+          }
+          /* Counts and timings sit right, like a network panel's size and
+             time columns, so the concept names stay scannable down the
+             left edge. */
+          .sub__stats {
+            display: flex;
+            align-items: baseline;
+            gap: var(--wa-space-s);
+            margin-left: auto;
+            color: var(--wa-color-text-quiet);
+            font-size: var(--wa-font-size-xs);
+            font-variant-numeric: tabular-nums;
+          }
+          .sub__body {
+            padding-top: var(--wa-space-2xs);
+          }
+          /* The notation render. styles.css styles `tonk-notation
+             .tonk-cm-*` on the element itself, so the tokens pick up the
+             same palette as the editor with no wrapper class needed. */
+          .sub__query {
+            min-width: 0;
+            overflow-x: auto;
+          }
+          .sub__query .tonk-notation-pre {
+            margin: 0;
+            font-size: var(--wa-font-size-xs);
+          }
+          .sub__log-label {
+            margin: var(--wa-space-xs) 0 var(--wa-space-3xs);
+            font-size: var(--wa-font-size-2xs);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--wa-color-text-quiet);
+          }
+          .sub__hash {
+            font-family: var(--wa-font-family-code);
+            opacity: 0.6;
+          }
+          .sub__updates-list tonk-display,
+          .sub__updates-list tonk-display > tonk-view {
+            display: block;
+          }
+        </style>
+        <span slot="summary" class="sub__summary">
+          <span class="sub__concept">{concept-name}</span>
+          <span class="sub__stats">
+            <span title="subscribers">&#9679; {subscribers}</span>
+            <span title="updates pushed">&#8635; {updates}</span>
+            <!-- A subscription whose query has never changed carries no
+                 `last-update` fact, so this simply does not render for it —
+                 which reads as "nothing yet", the thing worth knowing. -->
+            <wa-relative-time date={last-update} sync></wa-relative-time>
+          </span>
+        </span>
+        <div class="sub__body">
+          <!-- `text=` rather than a `<script type="text/tonk-notation">`
+               child: the template scanner treats `<script>` and `<style>`
+               bodies as raw text and skips them, so a `{query}` written
+               inside one renders literally instead of interpolating. The
+               attribute is substituted normally. -->
+          <div class="sub__query">
+            <tonk-notation text={query}></tonk-notation>
+          </div>
+          <p class="sub__log-label">
+            Updates
+            <span class="sub__hash">{hash}</span>
+          </p>
+          <div class="sub__updates-list">
+            <tonk-display entity={update} model="console/update"></tonk-display>
+          </div>
+        </div>
+      </wa-details>
+
+# The update feed inside an expanded subscription: one line per delivered
+# update, newest first.
+# `ui`, not `directory`: the feed mounts as
+# `<tonk-display entity={update} model=console/update>`, and a display given
+# an ENTITY renders that instance's `ui` facet. `directory` is what a display
+# with no entity resolves when it enumerates a model — the group list and the
+# subscription list use it; a single instance never does.
+view!:
+  this: console/update
+  show:
+    ui: |
+      <div class="update-row">
+        <style>
+          .update {
+            display: flex;
+            align-items: baseline;
+            gap: var(--wa-space-s);
+            padding: 2px 0;
+            color: var(--wa-color-text-quiet);
+            font-size: var(--wa-font-size-xs);
+            font-variant-numeric: tabular-nums;
+          }
+          .update__bytes {
+            margin-left: auto;
+          }
+        </style>
+        <div class="update">
+          <wa-relative-time date={at} sync></wa-relative-time>
+          <span class="update__bytes">{bytes} B</span>
+        </div>
+      </div>

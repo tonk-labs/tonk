@@ -167,7 +167,11 @@ impl BranchState {
         client: Option<String>,
         sender: mpsc::UnboundedSender<Bytes>,
     ) {
-        let hash = QueryHash::from(&query);
+        // Project to the wire form once: it is both the subscription's
+        // identity (hashed below) and the description the console reads back,
+        // so building it twice would be pure waste.
+        let wire = crate::Query::from(&query);
+        let hash = QueryHash::of_wire(&wire);
 
         let terms = query.terms.clone();
 
@@ -183,6 +187,11 @@ impl BranchState {
         let subscription = entry.or_insert_with(|| Subscription {
             engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
             terms,
+            query: wire,
+            opened_at_ms: crate::now_ms(),
+            updates: 0,
+            last_update_ms: None,
+            update_log: std::collections::VecDeque::new(),
             subscribers: Vec::new(),
         });
         subscription.subscribers.push(SubscriberSession {

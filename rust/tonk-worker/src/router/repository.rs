@@ -2898,11 +2898,9 @@ async fn seed_and_initialize(
         // The scaffold and the repository's name go in as ONE body, so the
         // rule engine saturates over the whole document in a single commit
         // per branch (the name flash fix).
-        let scaffold = fetch_standard_library(STANDARD_LIBRARY_URL)
-            .await
-            .map_err(|e| {
-                RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
-            })?;
+        let scaffold = fetch_library(STANDARD_LIBRARY_URL).await.map_err(|e| {
+            RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
+        })?;
 
         let name_body = repository_name_body(subject, display_name)?;
         let tonk = state.read().await;
@@ -2950,17 +2948,22 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
-/// Fetch the standard-library notation document from the served
-/// asset, sidestepping the HTTP cache so an edited library is seen
-/// the moment it's re-copied into the dist (rather than a stale
-/// cached copy). The fetch is issued from the service-worker scope,
-/// so it bypasses the SW's own `onfetch` handler per spec.
+/// Fetch a library notation document from the served asset,
+/// sidestepping the HTTP cache so an edited library is seen the moment
+/// it's re-copied into the dist (rather than a stale cached copy). The
+/// fetch is issued from the service-worker scope, so it bypasses the
+/// SW's own `onfetch` handler per spec.
+///
+/// Used both for the libraries seeded at creation (core, profile) and
+/// for the on-demand ones a route miss installs (see
+/// `install_library_for`).
 ///
 /// A missing or unreadable library is a deployment fault, not a
 /// client fault: surfaced as an internal error so repository
-/// creation fails loudly rather than seeding an empty repo.
+/// creation fails loudly rather than seeding an empty repo. The
+/// on-demand caller treats it as best-effort instead.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(crate) async fn fetch_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
@@ -3994,7 +3997,7 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
 /// branch. SW-only — the fetch needs a service-worker scope.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
-    let library = fetch_standard_library(PROFILE_LIBRARY_URL)
+    let library = fetch_library(PROFILE_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
     super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library, true)
@@ -4917,7 +4920,7 @@ pub async fn attach_remote(
 /// through [`evaluate_body`] — the same `parse → analyze → commit`
 /// path the worker runs at creation, minus the served-asset fetch
 /// (unavailable in the wasm test scope, which is why
-/// [`fetch_standard_library`] is bypassed here).
+/// [`fetch_library`] is bypassed here).
 ///
 /// The pure remote-shape builder shared by the create and attach paths.
 /// Native — no browser/service-worker scope needed.

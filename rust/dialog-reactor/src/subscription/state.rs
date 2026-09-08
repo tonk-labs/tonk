@@ -68,10 +68,25 @@ impl From<&ConceptQuery> for QueryHash {
     /// `NamedAttributes` both emit keys in `BTreeMap` order via
     /// their custom serializers.
     fn from(query: &ConceptQuery) -> Self {
-        let wire = Query::from(query);
-        let bytes = serde_json::to_vec(&wire)
+        Self::of_wire(&Query::from(query))
+    }
+}
+
+impl QueryHash {
+    /// Hash an already-projected wire [`Query`]. The registration path
+    /// builds that projection anyway (it is retained on the
+    /// [`Subscription`] for introspection), so hashing from it avoids
+    /// projecting the same query twice.
+    pub(crate) fn of_wire(wire: &Query) -> Self {
+        let bytes = serde_json::to_vec(wire)
             .expect("wire Query is serializable for any valid ConceptQuery");
         Self(Blake3Hash::hash(&bytes))
+    }
+
+    /// The hash as a hex string — the identity a console row shows so it
+    /// can be lined up with a worker log line.
+    pub fn to_hex(&self) -> String {
+        self.0.to_string()
     }
 }
 
@@ -108,6 +123,17 @@ pub struct SubscriberSession {
     pub client: Option<String>,
 }
 
+impl SubscriberSession {
+    /// Whether this subscriber is still waiting for its first snapshot.
+    ///
+    /// Exposed as a predicate rather than by publishing [`Status`] itself:
+    /// the delivery states are the poll path's business, and introspection
+    /// only ever wants to know whether a subscriber has been served.
+    pub fn is_pending(&self) -> bool {
+        matches!(self.status, Status::Pending)
+    }
+}
+
 /// One subscription, shared by every subscriber that opened the
 /// same query against the same branch.
 ///
@@ -129,8 +155,70 @@ pub struct Subscription {
     /// — the delta / snapshot rows are `ConceptConclusion`s that
     /// project to the wire `Conclusion` through these terms.
     pub terms: Parameters,
+    /// When this subscription was opened, as milliseconds since the Unix
+    /// epoch.
+    ///
+    /// Wall-clock rather than a monotonic `Instant` because the value is
+    /// shown to a person: an `Instant` cannot be turned into a date, and the
+    /// console's question is "since when has this been open", not "how long
+    /// has the process been running". Recorded once, when the first
+    /// subscriber creates the subscription — later subscribers join an
+    /// existing one, so this is the age of the *query* on this branch, not
+    /// of any one listener.
+    pub opened_at_ms: u64,
+    /// The subscribed query in its wire form, retained so the
+    /// subscription can describe *what* it is watching.
+    ///
+    /// The engine consumes a [`QueryPlan`](tonk_schema::concept::QueryPlan),
+    /// which is a plan rather than a question: once built, nothing can
+    /// recover the `ConceptQuery` it came from. Introspection (the
+    /// `/console` page) needs the question itself, and this projection is
+    /// already computed on the registration path to derive
+    /// [`QueryHash`] — so retaining it costs a clone of a value that was
+    /// built regardless, not a second serialization.
+    pub query: Query,
     /// Open downstream channels with their delivery status.
     pub subscribers: Vec<SubscriberSession>,
+    /// How many UPDATES this subscription has pushed — deltas carrying
+    /// actual changes, not the initial snapshot each subscriber gets on
+    /// attach.
+    ///
+    /// A poll that finds nothing changed pushes no frame and is not counted,
+    /// so this is the number of times the answer to this query actually
+    /// moved. That is the useful figure when reading the console: a query
+    /// updating constantly is doing work, one stuck at zero is idle.
+    pub updates: u64,
+    /// When the last update was pushed, in milliseconds since the Unix
+    /// epoch. `None` until the first one, which is the honest rendering of
+    /// "this has never changed since it was opened".
+    pub last_update_ms: Option<u64>,
+    /// The most recent updates, newest first — the log the console shows
+    /// when a subscription row is expanded.
+    ///
+    /// Bounded to [`UPDATE_LOG_LIMIT`]: this is a live debugging view of a
+    /// process that may run for hours, so an unbounded log would be a slow
+    /// memory leak in every session whether or not anyone opens the console.
+    /// The oldest entry is dropped once the cap is reached.
+    pub update_log: std::collections::VecDeque<UpdateRecord>,
+}
+
+/// How many updates one subscription retains for the console's log.
+///
+/// Enough to see a pattern (a burst, a repeat, a stuck query), small enough
+/// that thousands of subscriptions cost little. Older entries are dropped;
+/// `updates` still counts every one, so the total stays honest even though
+/// the log is a window.
+pub const UPDATE_LOG_LIMIT: usize = 20;
+
+/// One delivered update: when it went out, and how much changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRecord {
+    /// When this update was pushed, epoch milliseconds.
+    pub at_ms: u64,
+    /// Serialized size of the delta frame, in bytes. A cheap stand-in for
+    /// "how big was this update" that needs no re-parsing of the payload —
+    /// the same figure a network panel shows per response.
+    pub bytes: usize,
 }
 
 impl Subscription {
@@ -154,6 +242,21 @@ impl Subscription {
     /// Pending subscriber is actually present. A subscriber whose channel
     /// has closed is dropped.
     pub fn deliver(&mut self, snapshot_conclusions: &[Conclusion], delta_bytes: Option<&Bytes>) {
+        // Count the update before fanning out, and only for a real delta: a
+        // `None` here is a poll that found no change, and the snapshot path
+        // is a new subscriber being caught up rather than the query moving.
+        if let Some(delta) = delta_bytes {
+            let at_ms = crate::now_ms();
+            self.updates = self.updates.saturating_add(1);
+            self.last_update_ms = Some(at_ms);
+            if self.update_log.len() >= UPDATE_LOG_LIMIT {
+                self.update_log.pop_back();
+            }
+            self.update_log.push_front(UpdateRecord {
+                at_ms,
+                bytes: delta.len(),
+            });
+        }
         fan_out(&mut self.subscribers, snapshot_conclusions, delta_bytes);
     }
 }

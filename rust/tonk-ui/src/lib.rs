@@ -62,3 +62,7 @@ mod identity;
 /// Real-browser service-worker load-time upgrade tests.
 #[cfg(test)]
 mod service_worker_upgrade;
+
+/// Real-browser test for the on-demand `/console` library install.
+#[cfg(test)]
+mod console_route;

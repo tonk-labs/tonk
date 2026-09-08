@@ -130,6 +130,13 @@ pub use query::QueryPath;
 // the SW's routing/containment code reads it locally.
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
+/// Publishing live reactor state as overlay facts for the `/console` page.
+///
+/// Compiled on every target even though publishing itself is
+/// service-worker-only (it reads the running reactor's caches): the
+/// notation rendering is pure and is unit-tested natively.
+pub(crate) mod console;
+
 mod session;
 pub use session::{ClientRegistry, ClientState, SiteResponse};
 
@@ -3983,6 +3990,96 @@ employee:
             .get("conclusions")
             .cloned()
             .expect("snapshot frame carries a conclusions array")
+    }
+
+    /// The reactor's introspection snapshot reports a live subscription:
+    /// which branch it runs against, the query it watches, and who is
+    /// attached.
+    ///
+    /// This is the data behind `/console`. The query in particular is the
+    /// part worth guarding: the engine consumes a `QueryPlan`, from which
+    /// the original question cannot be recovered, so it is retained on the
+    /// subscription solely for this. A regression that dropped it would
+    /// leave the console rendering rows that name a branch and a count but
+    /// never say what is being watched.
+    #[dialog_common::test]
+    async fn it_snapshots_live_subscriptions_for_introspection() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = "test-console-snapshot";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Nothing is subscribed yet, so this branch contributes no rows.
+        {
+            let tonk = state.read().await;
+            let before = tonk.reactor.subscription_snapshot();
+            assert!(
+                !before.iter().any(|s| s.repository == repo),
+                "no subscription should be reported before one is opened, got {before:?}"
+            );
+        }
+
+        // Hold the stream open: dropping it would close the channel and the
+        // subscription would be pruned before it could be observed.
+        let _body = open_subscription(&app, repo, "main").await;
+
+        let tonk = state.read().await;
+        let snapshot = tonk.reactor.subscription_snapshot();
+        let row = snapshot
+            .iter()
+            .find(|s| s.repository == repo)
+            .unwrap_or_else(|| panic!("the open subscription must be reported, got {snapshot:?}"));
+
+        assert_eq!(row.branch, "main");
+        assert_eq!(
+            row.subscribers, 1,
+            "the one open stream must be counted as a subscriber"
+        );
+        assert!(
+            !row.hash.is_empty(),
+            "the row must carry the subscription's identity"
+        );
+        // The retained query has to be the one that was actually subscribed.
+        let rendered = serde_json::to_value(&row.query).expect("the wire query serializes");
+        assert_eq!(
+            rendered,
+            named_concept_wire_query(),
+            "the reported query must be the query that was subscribed"
+        );
+    }
+
+    /// Several subscribers asking the SAME question of the same branch share
+    /// one subscription, and the snapshot reports them as one row with a
+    /// subscriber count — not as duplicate rows.
+    ///
+    /// That sharing is the reactor's design (one engine per `(branch, query)`),
+    /// and it is precisely what makes the console worth reading: a count of 12
+    /// on one row is the signal that twelve displays are watching one query.
+    #[dialog_common::test]
+    async fn it_reports_shared_subscribers_as_one_subscription() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = "test-console-shared";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let _first = open_subscription(&app, repo, "main").await;
+        let _second = open_subscription(&app, repo, "main").await;
+
+        let tonk = state.read().await;
+        let snapshot = tonk.reactor.subscription_snapshot();
+        let rows: Vec<_> = snapshot.iter().filter(|s| s.repository == repo).collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "one query on one branch is one subscription however many \
+             subscribers attach, got {rows:?}"
+        );
+        assert_eq!(
+            rows[0].subscribers, 2,
+            "both open streams must be counted on the shared subscription"
+        );
     }
 
     /// One-shot `/query` returns the current matches as a JSON

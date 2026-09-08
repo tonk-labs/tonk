@@ -29,6 +29,7 @@ mod error;
 mod export;
 mod formula;
 mod import;
+mod introspect;
 mod overlay;
 mod pull;
 mod push;
@@ -53,13 +54,16 @@ pub use error::ReactorError;
 pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
+pub use introspect::{PROFILE_REPOSITORY, SubscriptionSnapshot};
 pub use overlay::{OverlayBuilder, OverlayWrite};
 pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;
 pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
-pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
+pub use subscription::{
+    QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference, UPDATE_LOG_LIMIT, UpdateRecord,
+};
 /// On-the-wire `Conclusion` and `Query` — re-exported from
 /// [`tonk_schema`] so consumers (browser clients, the consumer
 /// elements) can deserialize without depending on this crate.
@@ -498,4 +502,19 @@ mod lifecycle_tests {
         drained_rx.recv().unwrap();
         assert_eq!(lifecycle.register(|| "late"), None);
     }
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+///
+/// `web_time` resolves to `std::time` natively and to the browser's clock on
+/// wasm, so one call works on both targets. Used for the timestamps the
+/// console reports (when a subscription opened, when it last pushed an
+/// update), which are read by a person and so need a real date rather than a
+/// monotonic instant. A clock before the epoch is not worth propagating as an
+/// error through a subscription registration, so it reports as 0.
+pub(crate) fn now_ms() -> u64 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

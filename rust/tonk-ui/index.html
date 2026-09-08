@@ -940,6 +940,15 @@
             href="../tonk-core/assets/library/notebook.yaml"
             data-target-path="library"
         />
+        <!-- The console library. Served but never seeded at bootstrap: the
+       service worker fetches and evaluates it onto the profile branch the
+       first time a tab asks for `/console` (see `install_library_for`). -->
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../tonk-core/assets/library/console.yaml"
+            data-target-path="library"
+        />
         <link data-trunk rel="copy-dir" href="./assets/fonts" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />

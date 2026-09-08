@@ -493,6 +493,16 @@ async fn handle_subscribe(
         }
     };
 
+    // A new subscription changes what the console shows, so refresh its rows.
+    // Self-limiting: it only publishes when console rows are already on the
+    // branch (i.e. somebody has the page open), and republishing an unchanged
+    // reactor writes identical values that push no frame — so an ordinary
+    // session, with no console open, pays one map lookup per subscribe.
+    {
+        let tonk = state.read().await;
+        super::console::refresh_if_open(&tonk).await;
+    }
+
     let mut receiver = subscriber.receiver;
     let pump_state = state.clone();
     let pump_client = client.clone();

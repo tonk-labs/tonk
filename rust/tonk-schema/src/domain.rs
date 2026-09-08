@@ -1736,3 +1736,180 @@ pub mod remote_execution {
     #[domain("xyz.tonk.remote-execution")]
     pub struct RevocationUrl(pub String);
 }
+
+/// Attributes for the `tonk:console/subscription` concept — one live query
+/// subscription held by this device's reactor.
+///
+/// Overlay-only, and per-device by nature: a subscription lives in one
+/// worker's memory, so these facts are published into the profile branch's
+/// session overlay and never committed or replicated. See
+/// `tonk-core/assets/library/console.yaml` for the declaration these
+/// implement.
+pub mod console_subscription {
+    use super::{Attribute, Entity};
+
+    /// The repository the subscription's branch belongs to — the grouping
+    /// key the console lists rows under.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Space(pub String);
+
+    /// The branch within that repository the query runs against.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Branch(pub String);
+
+    /// The subscribed query, rendered as JSON. The reason the console
+    /// exists: everything else about a subscription is a number.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Query(pub String);
+
+    /// How many subscriber channels share this subscription.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Subscribers(pub u64);
+
+    /// How many of those have yet to receive their first snapshot.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Pending(pub u64);
+
+    /// The subscription's query hash, hex-encoded — the identity that lines
+    /// a row up with a worker log line.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Hash(pub String);
+
+    /// The group this subscription belongs to — the `(repository, branch)`
+    /// entity. Lets the console render a tree (repository → branch →
+    /// queries) rather than a flat list: the group row iterates its members
+    /// through this back-reference.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Group(pub Entity);
+
+    /// An update delivered to this subscription. Cardinality MANY — the
+    /// field the expanded row iterates to render its log.
+    ///
+    /// A back-link, mirroring how a group lists its subscriptions: a
+    /// `<tonk-display model=…>` with no `entity` enumerates every instance
+    /// of that model on the branch, so nesting the feed by model alone would
+    /// show every subscription's updates under each row.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    pub struct Update(pub Entity);
+
+    /// The concept the subscription watches, as a readable name
+    /// (`tonk:site`). This is the collapsed row's label — the thing a
+    /// `<tonk-display model=…>` was pointed at — with the full query kept
+    /// for the expanded view.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct ConceptName(pub String);
+
+    /// How many updates this subscription has pushed since it opened.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct Updates(pub u64);
+
+    /// When the subscription last pushed an update, ISO-8601. Absent while
+    /// the query has never changed — which is itself worth seeing, so the
+    /// field is optional rather than defaulted to the open time.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct LastUpdate(pub String);
+
+    /// When the subscription was opened, as an ISO-8601 timestamp.
+    ///
+    /// Text rather than a number because its consumer is
+    /// `<wa-relative-time date=…>`, which parses what `new Date(…)` parses.
+    /// Handing the component an ISO string keeps the formatting — and the
+    /// self-updating "3 minutes ago" — entirely in the view.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.subscription")]
+    #[cardinality(one)]
+    pub struct OpenedAt(pub String);
+}
+
+/// Attributes for the `tonk:console/group` concept — one `(repository,
+/// branch)` pair the console groups its subscription rows under.
+///
+/// A group exists so the page can render a tree: the group row names the
+/// repository and branch once, and its `subscription` field iterates the
+/// queries beneath it. Without it every row would repeat its own space and
+/// branch, which is the flat list the tree replaces.
+pub mod console_group {
+    use super::{Attribute, Entity};
+
+    /// The repository this group covers.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.group")]
+    #[cardinality(one)]
+    pub struct Space(pub String);
+
+    /// The branch within it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.group")]
+    #[cardinality(one)]
+    pub struct Branch(pub String);
+
+    /// How many subscriptions are live on this branch.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.group")]
+    #[cardinality(one)]
+    pub struct Subscriptions(pub u64);
+
+    /// A subscription belonging to this group. Cardinality MANY — this is
+    /// the field the group's view iterates to nest its children, so one
+    /// fact per member.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.group")]
+    pub struct Subscription(pub Entity);
+}
+
+/// Attributes for the `tonk:console/update` concept — one delivered update
+/// in a subscription's log.
+///
+/// The console's expanded row shows these as a feed: when the update went
+/// out and how large it was, newest first. Overlay-only and bounded, like
+/// every other console fact.
+pub mod console_update {
+    use super::{Attribute, Entity};
+
+    /// The subscription this update belongs to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Subscription(pub Entity);
+
+    /// When it was pushed, ISO-8601.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct At(pub String);
+
+    /// Serialized size of the delta frame, in bytes.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Bytes(pub u64);
+
+    /// Position in the log, newest first (0 is the most recent). Carried as
+    /// a field because the rendered order must be the log's order, and a
+    /// query returns rows in no guaranteed order.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.console.update")]
+    #[cardinality(one)]
+    pub struct Position(pub u64);
+}

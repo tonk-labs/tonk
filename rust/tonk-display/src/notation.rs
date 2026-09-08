@@ -34,6 +34,10 @@ use crate::notation_tokens::{Decoration, Mark, collect_marks};
 /// distinguishes our notation from any other carrier.
 const SOURCE_MIME: &str = "text/tonk-notation";
 
+/// Attribute carrying the notation source directly, for callers that cannot
+/// write a `<script>` child — see [`source_text`].
+const TEXT_ATTRIBUTE: &str = "text";
+
 /// Class on the rendered `<pre>` we mount as a sibling of the
 /// source `<script>`. Tagged so we can find and remove it on
 /// re-render without disturbing other children the author might
@@ -74,7 +78,7 @@ impl CustomElement for TonkNotation {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        &[TEXT_ATTRIBUTE]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -163,11 +167,19 @@ impl CustomElement for TonkNotation {
 
     fn attribute_changed_callback(
         &mut self,
-        _this: &HtmlElement,
-        _name: String,
-        _old: Option<String>,
-        _new: Option<String>,
+        this: &HtmlElement,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
     ) {
+        // A `text=` source can change in place — a template re-render writes
+        // the new value onto the same element — so repaint when it does.
+        // Guarded on an actual change: the custom-elements shim reports the
+        // initial set here too, and `connected_callback` already paints that.
+        if name == TEXT_ATTRIBUTE && old != new && this.is_connected() {
+            render(&this.clone().into());
+        }
+        let (_this, _name, _old, _new) = (this, name, old, new);
     }
 }
 
@@ -294,9 +306,25 @@ fn source_script(host: &Element) -> Option<Element> {
         .flatten()
 }
 
-/// Read the contents of the source `<script type="text/tonk-notation">`.
-/// Returns `None` if no such script is present.
+/// The notation to render: the `text` attribute if present, otherwise the
+/// source `<script type="text/tonk-notation">`.
+///
+/// The attribute exists for TEMPLATE-DRIVEN callers. A view interpolating
+/// `{field}` cannot fill the script child: `<script>` and `<style>` bodies
+/// are raw text that the template scanner skips wholesale (see
+/// `tonk-template`'s `scan.rs`), so a `{field}` written inside one renders
+/// literally. An attribute is substituted normally, which is what lets a
+/// view built entirely in notation — the `/console` page — show highlighted
+/// notation at all.
+///
+/// The script child stays the form for hand-authored notation, where the
+/// text is multi-line and quoting it into an attribute would be miserable.
+/// The attribute wins when both are present, since a caller that set it
+/// meant it.
 fn source_text(host: &Element) -> Option<String> {
+    if let Some(text) = host.get_attribute(TEXT_ATTRIBUTE) {
+        return Some(text);
+    }
     let script = host
         .query_selector(&format!("script[type=\"{}\"]", SOURCE_MIME))
         .ok()
@@ -460,6 +488,65 @@ mod tests {
         let text = pre.text_content().unwrap_or_default();
         assert!(text.contains("greeting"), "no greeting in: {text}");
         assert!(text.contains("did:key:zX"), "no entity in: {text}");
+    }
+
+    /// Mount a `<tonk-notation text="…">` — the template-driven form, where
+    /// the notation arrives as an attribute because a view cannot fill a
+    /// `<script>` child.
+    fn mount_with_text(source: &str) -> Element {
+        register();
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document
+            .create_element("tonk-notation")
+            .expect("create tonk-notation");
+        let _ = host.set_attribute(TEXT_ATTRIBUTE, source);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    /// The `text` attribute renders and highlights exactly like a source
+    /// script. This is the path the `/console` page depends on: its rows are
+    /// produced by a template, and a template's `{field}` inside a `<script>`
+    /// body is skipped by the scanner and would render literally.
+    #[dialog_common::test]
+    fn it_renders_notation_supplied_as_a_text_attribute() {
+        let host = mount_with_text("tonk:site!:\n  this: site:abc\n  path: ?path\n");
+        let pre = host
+            .query_selector(&format!(".{}", PRE_CLASS))
+            .expect("query pre")
+            .expect("a text attribute must render a pre block");
+        let text = pre.text_content().unwrap_or_default();
+        assert!(text.contains("tonk:site"), "no head in: {text}");
+        assert!(text.contains("?path"), "no variable in: {text}");
+        assert!(
+            pre.query_selector(".tonk-cm-variable").unwrap().is_some(),
+            "the render must be decorated, not plain text"
+        );
+    }
+
+    /// The attribute wins over a script child. A caller that set `text=`
+    /// meant it, and silently preferring stale child content would be a
+    /// confusing way to lose an update.
+    #[dialog_common::test]
+    fn it_prefers_the_text_attribute_over_a_source_script() {
+        let host = mount("from-script!:\n  this: did:key:zX\n");
+        let _ = host.set_attribute(TEXT_ATTRIBUTE, "from-attribute!:\n  this: did:key:zY\n");
+        render(&host);
+        let text = host
+            .query_selector(&format!(".{}", PRE_CLASS))
+            .unwrap()
+            .expect("pre mounted")
+            .text_content()
+            .unwrap_or_default();
+        assert!(text.contains("from-attribute"), "attribute ignored: {text}");
+        assert!(
+            !text.contains("from-script"),
+            "script still rendered: {text}"
+        );
     }
 
     #[dialog_common::test]
