@@ -102,6 +102,10 @@ struct Inner {
     /// a reload. Each model frame (re)starts the downstream view +
     /// entity flow via `handle_model_frame`.
     model_sub: Option<HostSubscription>,
+    /// Watch a named model's bookmark, including the mutable space-home alias.
+    name_sub: Option<HostSubscription>,
+    /// Referent used by the current model subscription (or unresolved name).
+    name_target: Option<String>,
     /// Bumped every time a model frame (re)starts the downstream flow.
     /// A downstream async chain captures this at spawn and bails if a
     /// newer model frame has superseded it, mirroring `generation` but
@@ -242,6 +246,8 @@ impl Inner {
             disposed: false,
             generation: 0,
             model_sub: None,
+            name_sub: None,
+            name_target: None,
             downstream_generation: 0,
             resolved_model: None,
             view_sub: None,
@@ -271,6 +277,8 @@ impl Inner {
     fn abort_all(&mut self) {
         // Dropping the subscriptions cancels via the host and
         // dispatches `tonk-unsubscribe`.
+        self.name_sub.take();
+        self.name_target = None;
         self.model_sub.take();
         self.view_sub.take();
         self.entity_sub.take();
@@ -491,6 +499,7 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
             .insert(tag.clone(), conclusions.clone());
     }
     match tag.as_deref() {
+        Some("name") => handle_name_frame(host, state, conclusions),
         Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
         Some("entity") => handle_entity_frame(host, state, conclusions, reconnect),
@@ -540,6 +549,7 @@ fn on_update(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts:
     };
 
     match tag.as_str() {
+        "name" => handle_name_frame(host, state, merged),
         "model" => handle_model_frame(host, state, merged),
         "view" => handle_view_frame(host, state, merged),
         "entity" => handle_entity_frame(host, state, merged, false),
@@ -907,14 +917,16 @@ async fn run(
             )
         })?;
 
-    // Resolve the model name to its concept URI (one-shot — a bookmark
-    // name rarely lands late; an attribute change restarts the flow),
-    // then *subscribe* to its phase-1 concept query so a concept seeded
-    // after mount pushes a frame. The empty frame is `no-model`, not a
-    // hard error — `handle_model_frame` keeps the subscription and
-    // starts the downstream flow once the concept lands.
-    let model_q = resolve_model_query(host, &model).await?;
+    // Bootstrap the concept lookup, then watch the bookmark as well as the
+    // concept. `tonk home` (including first-view auto-surfacing) changes the
+    // bookmark's referent, not the old concept's descriptor.
+    let parsed = parse_source(&model);
+    let resolved = resolve_model_source(host, &model).await?;
     check_generation(&state, generation)?;
+    if !parsed.is_uri() {
+        state.borrow_mut().name_target = Some(resolved.name_or_uri.clone());
+    }
+    let model_q = phase1_query(&resolved);
     let model_body = to_body(&model_q)?;
     let model_tag = JsValue::from_str("model");
     let model_sub = host_consumer::subscribe_claimed(host, &model_body, Some(&model_tag)).await?;
@@ -924,6 +936,15 @@ async fn run(
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
         s.model_sub = Some(model_sub);
+    }
+    if !parsed.is_uri() {
+        let body = to_body(&name_query(&parsed.name_or_uri))?;
+        let subscription =
+            host_consumer::subscribe_claimed(host, &body, Some(&"name".into())).await?;
+        // Its initial snapshot may already have restarted the flow if the
+        // bookmark changed between the bootstrap query and this subscribe.
+        check_generation(&state, generation)?;
+        state.borrow_mut().name_sub = Some(subscription);
     }
     Ok(())
 }
@@ -942,6 +963,8 @@ async fn start_downstream(
     descriptor_json: String,
     downstream_generation: u64,
 ) -> Result<(), ErrorDetail> {
+    check_downstream(&state, downstream_generation)?;
+
     // Refuse to render a model inside ITSELF.
     //
     // Not a depth limit and not a ban on nesting: a model nested inside a
@@ -1141,6 +1164,11 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
 /// caller decides whether to run it once or open a subscription on it —
 /// the model link subscribes so a late-seeded concept recovers.
 async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, ErrorDetail> {
+    Ok(phase1_query(&resolve_model_source(host, source).await?))
+}
+
+/// Resolve a bookmark once; the mounted model flow also watches its Name row.
+async fn resolve_model_source(host: &Element, source: &str) -> Result<ParsedSource, ErrorDetail> {
     let parsed: ParsedSource = parse_source(source);
     let parsed = if parsed.is_uri() {
         parsed
@@ -1158,7 +1186,32 @@ async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, Erro
             None => parsed,
         }
     };
-    Ok(phase1_query(&parsed))
+    Ok(parsed)
+}
+
+/// A name is a live indirection: replacing its referent replaces the whole
+/// model/view/entity chain, just as changing the model attribute does.
+fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+    let source = parse_source(&host.get_attribute("model").unwrap_or_default());
+    let target = conclusions
+        .first()
+        .and_then(|row| ipld_str(row.fields.get("entity")))
+        .unwrap_or(&source.name_or_uri);
+    {
+        let mut s = state.borrow_mut();
+        if s.disposed || s.name_target.as_deref() == Some(target) {
+            return;
+        }
+        s.abort_all();
+        // Invalidate any old descriptor's asynchronous downstream setup now,
+        // before the new concept frame has arrived to increment this counter.
+        s.downstream_generation = s.downstream_generation.wrapping_add(1);
+        s.last_frame.clear();
+        s.retained.clear();
+        clear_host(host, &mut s);
+    }
+    state::set(host, State::Loading);
+    start_flows(host, state.clone());
 }
 
 /// Route a `"model"` subscription frame. The model resolve is a live
@@ -3994,6 +4047,7 @@ mod tests {
             subs: BTreeMap<String, Element>,
             /// Tags of every subscription opened.
             subscribe_tags: Vec<String>,
+            model_queries: Vec<serde_json::Value>,
             /// The phase-1 model concept frame, auto-pushed the moment
             /// the `"model"` subscription opens — the model resolve is a
             /// live subscription now, not a one-shot. `None` makes the
@@ -4021,6 +4075,7 @@ mod tests {
                     answered: 0,
                     subs: BTreeMap::new(),
                     subscribe_tags: Vec::new(),
+                    model_queries: Vec::new(),
                     model_frame,
                 }));
                 let mut listeners = Vec::new();
@@ -4070,6 +4125,9 @@ mod tests {
                                 // the downstream flow starts the way a live
                                 // host would on the first revision.
                                 if tag == "model" {
+                                    let query = Reflect::get(&detail, &"query".into()).unwrap();
+                                    s.model_queries
+                                        .push(serde_wasm_bindgen::from_value(query).unwrap());
                                     s.model_frame.clone()
                                 } else {
                                     None
@@ -4214,6 +4272,71 @@ mod tests {
         }
 
         #[dialog_common::test]
+        async fn it_follows_the_space_home_alias_without_a_reload() {
+            crate::view::register();
+            let host = FakeHost::install_with_model(
+                vec![name_row("tonk:blank"), name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "tonk/space", "id:replica");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p>Blank canvas</p>"));
+            host.push_frame("entity", &rows(&[("id:replica", &[("count", "0")])]));
+            assert!(await_selector(&display, "tonk-view").await.is_some());
+            assert_eq!(
+                host.state.borrow().model_queries[0],
+                serde_json::to_value(phase1_query(&parse_source("tonk:blank"))).unwrap()
+            );
+            host.push_frame("name", &name_row("tonk:blank"));
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_some(),
+                "the initial unchanged name snapshot must preserve the rendered view"
+            );
+
+            // `tonk home` supersedes id:tonk/space's referent. The existing
+            // display must resolve the new target without being remounted.
+            let delta = Object::new();
+            Reflect::set(&delta, &"retracted".into(), &name_row("tonk:blank")).unwrap();
+            Reflect::set(&delta, &"asserted".into(), &name_row("did:key:zModel")).unwrap();
+            host.push_update("name", &delta.into());
+            for _ in 0..200 {
+                if host
+                    .subscribe_tags()
+                    .iter()
+                    .filter(|t| *t == "entity")
+                    .count()
+                    == 2
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                host.subscribe_tags()
+                    .iter()
+                    .filter(|t| *t == "model")
+                    .count(),
+                2,
+                "changing the home alias must replace the old model subscription",
+            );
+            assert_eq!(
+                host.state.borrow().model_queries[1],
+                serde_json::to_value(phase1_query(&parse_source("did:key:zModel"))).unwrap()
+            );
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
+            host.push_frame("entity", &rows(&[("id:replica", &[("count", "7")])]));
+            let view = await_selector(&display, "tonk-view").await.unwrap();
+            assert!(view.text_content().unwrap().contains('7'));
+            host.push_frame("entity", &rows(&[("id:replica", &[("count", "8")])]));
+            assert!(view.text_content().unwrap().contains('8'));
+        }
+
+        #[dialog_common::test]
         async fn it_mounts_a_portal_for_a_text_html_view_frame() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
@@ -4222,7 +4345,7 @@ mod tests {
             // Wait for the flow to open its subscriptions (model, then
             // view + entity once the model frame resolves).
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4266,7 +4389,10 @@ mod tests {
             // no-ops against the portal (a `<tonk-portal>` exposes no
             // `draw`).
             assert_eq!(
-                host.subscribe_tags(),
+                host.subscribe_tags()
+                    .into_iter()
+                    .filter(|tag| tag != "name")
+                    .collect::<Vec<_>>(),
                 vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
             );
         }
@@ -4285,7 +4411,7 @@ mod tests {
             let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4333,7 +4459,7 @@ mod tests {
             let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4365,7 +4491,7 @@ mod tests {
             let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4384,8 +4510,13 @@ mod tests {
             tags.sort();
             assert_eq!(
                 tags,
-                vec!["entity".to_owned(), "model".to_owned(), "view".to_owned()],
-                "inline mode opens the model, view, and entity subscriptions",
+                vec![
+                    "entity".to_owned(),
+                    "model".to_owned(),
+                    "name".to_owned(),
+                    "view".to_owned()
+                ],
+                "inline mode watches the name, model, view, and entity",
             );
         }
 
@@ -4657,7 +4788,7 @@ mod tests {
             let display = mount_display(&host, "", "counter", "id:demo-counter");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4747,7 +4878,7 @@ mod tests {
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4788,7 +4919,7 @@ mod tests {
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4830,7 +4961,7 @@ mod tests {
             );
             let display = mount_directory(&host, "item");
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4892,7 +5023,7 @@ mod tests {
             );
             let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4957,7 +5088,7 @@ mod tests {
             );
             let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -4997,7 +5128,7 @@ mod tests {
             );
             let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -5038,7 +5169,7 @@ mod tests {
             );
             let display = mount_display(&host, "", "counter", "id:demo-counter");
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -5132,7 +5263,7 @@ mod tests {
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -5172,7 +5303,7 @@ mod tests {
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -5213,7 +5344,7 @@ mod tests {
                 .unwrap();
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
@@ -5251,7 +5382,7 @@ mod tests {
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 3 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
                     break;
                 }
                 sleep(5).await;
