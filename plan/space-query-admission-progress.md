@@ -76,3 +76,16 @@ phase timings, outliers and limits, and [raw samples](space-query-admission-brow
 
 No generic reactor policy, sync locking, schema storage, dependencies or
 lockfiles changed.
+
+## PR #917 lint follow-up
+
+CI run `34260573705` rejected two dead-code warnings in native Clippy:
+`reconcile_mounted_space_from_directory` and `Observations::counts` have
+Wasm-only callers. Their compile guards now match those callers rather than
+suppressing warnings. The remotely rebased admission patch at `950290935`
+was verified equivalent before applying this fix.
+
+- `nix develop -c cargo clippy --locked -p tonk-worker --all-targets --all-features -- -D warnings`: passed natively.
+- `nix develop -c cargo test --locked --target wasm32-unknown-unknown -p tonk-worker router::adopt::tests`: 15 passed.
+- `nix develop -c cargo fmt --all -- --check` and `git diff --check`: passed.
+- The complete Linux Nix lint job awaits CI on the follow-up commit.

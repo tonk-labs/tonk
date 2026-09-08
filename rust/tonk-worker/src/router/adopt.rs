@@ -147,6 +147,7 @@ fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
 
 /// Apply the account directory's latest mount facts to one replica that is
 /// already present locally. Returns whether a mount record existed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn reconcile_mounted_space_from_directory(
     tonk: &TonkState,
     key: &str,
