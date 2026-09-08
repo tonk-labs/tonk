@@ -15,8 +15,8 @@ async fn connection_receipt_is_visible_only_in_the_connected_space() -> anyhow::
     let route =
         tonk_cli::render::RenderRoute::parse("id:tonk:agent-connection@tonk:agent-connection")?;
     let html = tonk_cli::render::render(&connected.site, &route).await?;
-    assert!(html.contains("Agent connection confirmed"));
-    assert!(html.contains("sent a reply"));
+    assert!(html.contains("Your agent connected"));
+    assert!(html.contains("Dismiss agent connection notification"));
     let untouched = other.eval_inline(query).await?;
     assert!(untouched.response.matches_after[0].results.is_empty());
     Ok(())

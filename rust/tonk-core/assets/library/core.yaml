@@ -145,7 +145,7 @@ event!: &on/toggle
 
 # The blank canvas: what a lean (no-template) repo renders. It is the
 # default target of the `tonk/space` alias (below). Mirrors the mock's
-# "Build this space with an agent" frame: a connect-an-agent prompt
+# connect-an-agent frame: a prompt
 # (the same `tonk:invite` mint the share path uses, rendered via the
 # `tonk:agent-invite` prompt view).
 concept!: &blank
@@ -184,16 +184,6 @@ view!:
             text-transform: uppercase;
             color: var(--wa-color-text-quiet);
           }
-          .blank-canvas__title {
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            color: var(--wa-color-text-normal);
-            font-family: var(--wa-font-family-body);
-            font-size: var(--wa-font-size-2xl);
-            font-weight: var(--wa-font-weight-normal);
-            letter-spacing: -0.02em;
-          }
           .blank-canvas__deeplink {
             display: flex;
             flex-direction: column;
@@ -207,8 +197,6 @@ view!:
             display: none !important;
           }
         </style>
-        <span class="blank-canvas__label">Your space</span>
-        <h1 class="blank-canvas__title">Build this space with an agent</h1>
         <section class="blank-canvas__deeplink">
           <tonk-page on:invite=tonk:invite></tonk-page>
           <tonk-origin>
@@ -578,6 +566,7 @@ view!:
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
           .agent-prompt__action { display: flex; gap: var(--wa-space-s); align-items: center; }
           .agent-prompt__copy::part(button) { min-width: 40px; min-height: 40px; border-radius: var(--wa-border-radius-m); }
+          .agent-prompt__copy::part(tooltip__base) { display: none; }
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
         <p>Copy the prompt and give it to an agent of your choice. Then tell it what you want to build.</p>
@@ -614,10 +603,72 @@ view!:
   this: tonk:agent-connection
   show:
     ui: |
-      <div role="status" class="agent-connection" style="padding: var(--wa-space-s) var(--wa-space-m); color: var(--wa-color-text-normal); font-size: var(--wa-font-size-s);">
-        <strong>{status}</strong>
-        <span style="color: var(--wa-color-text-quiet);">Your agent received this space and sent a reply.</span>
-      </div>
+      <details open class="agent-connection">
+        <summary aria-label="Dismiss agent connection notification">×</summary>
+        <span role="status">Your agent connected</span>
+        <style>
+          .agent-connection {
+            position: fixed;
+            left: 50%;
+            bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
+            z-index: 12;
+            box-sizing: border-box;
+            width: min(432px, calc(100vw - 48px));
+            min-height: 44px;
+            padding: 12px 52px 12px 24px;
+            background: rgb(253 252 252 / 72%);
+            color: #38182a;
+            box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
+            -webkit-backdrop-filter: blur(12px) saturate(1.5);
+            backdrop-filter: blur(12px) saturate(1.5);
+            font: 400 13px/1.45 var(--wa-font-family-body);
+            text-align: center;
+            transform: translateX(-50%);
+            animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
+              agent-connection-exit .4s ease-out 120s forwards;
+          }
+          .agent-connection:not([open]) { display: none; }
+          .agent-connection > summary {
+            position: absolute;
+            top: 0;
+            right: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 100%;
+            min-height: 44px;
+            list-style: none;
+            cursor: pointer;
+            font-size: 20px;
+          }
+          .agent-connection > summary::-webkit-details-marker { display: none; }
+          .agent-connection > summary:hover { background: rgb(56 24 42 / 6%); }
+          .agent-connection > summary:focus-visible {
+            outline: 2px solid currentColor;
+            outline-offset: -3px;
+          }
+          @keyframes agent-connection-enter {
+            from { opacity: 0; transform: translateX(-50%) translateY(70px); }
+            to { opacity: 1; transform: translateX(-50%); }
+          }
+          @keyframes agent-connection-exit {
+            from { opacity: 1; transform: translateX(-50%); }
+            to { opacity: 0; transform: translateX(-50%) translateY(12px); visibility: hidden; }
+          }
+          @media (prefers-color-scheme: dark) {
+            .agent-connection > summary:hover { background: rgb(226 223 221 / 9%); }
+            .agent-connection {
+              background: rgb(29 24 25 / 72%);
+              color: #e2dfdd;
+              box-shadow: 0 0 0 1px rgb(226 223 221 / 55%);
+            }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .agent-connection { animation-duration: 0s; }
+          }
+        </style>
+      </details>
 
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
