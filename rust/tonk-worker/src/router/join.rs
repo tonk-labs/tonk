@@ -1406,6 +1406,19 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Join) {
+        // A short link (`/@/{hash}#seed`) resolves to the long form
+        // first. The deep-link flow never needed this — the BROWSER
+        // follows the 301 (with fragment inheritance) before the /join
+        // view mounts — but a PASTED short link reaches the worker
+        // verbatim, and without resolution it carries no `access=` and
+        // would silently read as a bare visit. Mirrors the CLI's claim.
+        let mut command = command;
+        if tonk_invite::shortcut::is_shortcut(&command.url.0) {
+            match resolve_shortcut(&command.url.0).await {
+                Ok(resolved) => command.url.0 = resolved,
+                Err(error) => log!("join: short link did not resolve: {error}"),
+            }
+        }
         // There is no paste-link page: invite links open directly in the
         // browser. Return bare /join visits home before requesting custody.
         if !carries_invite(&command.url.0) {
@@ -1424,6 +1437,63 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         }
         run_join(self, command).await;
     }
+}
+
+/// Resolve a short invite link to the long form it redirects to,
+/// re-attaching the fragment the way a browser would (RFC 7231 fragment
+/// inheritance — the seed rides the pasted string, never the wire).
+///
+/// The service worker fetch follows the redirect and reports where it
+/// landed; `redirected` distinguishes a real shortcut from a host that
+/// answered the probe with content.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::Response;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| "not in a service-worker scope".to_owned())?;
+    let response: Response = JsFuture::from(global.fetch_with_str(short_url))
+        .await
+        .and_then(|value| value.dyn_into())
+        .map_err(|error| format!("short link fetch: {error:?}"))?;
+    if !response.redirected() {
+        return Err(format!(
+            "the short link did not redirect (HTTP {})",
+            response.status()
+        ));
+    }
+    tonk_invite::shortcut::resolve_location(short_url, &response.url())
+        .map_err(|error| error.to_string())
+}
+
+/// Native resolution: fetch without following, read `Location`, resolve
+/// against the short link. Mirrors the CLI's `resolve_shortcut`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("short link client: {error}"))?;
+    let response = client
+        .get(short_url)
+        .send()
+        .await
+        .map_err(|error| format!("short link fetch: {error}"))?;
+    if !response.status().is_redirection() {
+        return Err(format!(
+            "the short link did not redirect (HTTP {})",
+            response.status()
+        ));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "the short link redirect carries no Location".to_owned())?;
+    tonk_invite::shortcut::resolve_location(short_url, location).map_err(|error| error.to_string())
 }
 
 /// Whether a `/join` URL carries an invite at all.
@@ -1833,6 +1903,73 @@ mod invite_name_tests {
             directory_name(&state, &key).await,
             vec!["Hydrated Real Name".to_string()],
             "the authoritative record supersedes the invite-seeded name"
+        );
+    }
+
+    /// A PASTED short link, end to end through the command provider: the
+    /// deep-link flow lets the browser follow the 301, but a paste hands
+    /// the worker the `/@/{hash}#seed` form verbatim — without
+    /// resolution it carries no `access=` and would silently read as a
+    /// bare visit. The one-shot server is the shortcut host answering
+    /// the redirect; the fragment (the seed) rides the pasted string,
+    /// never the wire.
+    #[dialog_common::test]
+    async fn it_resolves_a_pasted_short_link_before_joining() {
+        use dialog_artifacts::Statement as _;
+        use dialog_query::the;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let (long, key) = named_invite_url(0xC1, 0xC2, "Shortcut Space").await;
+        let (target, fragment) = long
+            .split_once('#')
+            .expect("an open invite carries a seed fragment");
+        let target = target.to_owned();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the shortcut host binds");
+        let port = listener
+            .local_addr()
+            .expect("the bound address reads")
+            .port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("the probe connects");
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("the redirect writes");
+        });
+        let short = format!(
+            "http://127.0.0.1:{port}/@/2eyEBFxYVkAy4zRTAtpJEeXAWyzScUYDkxhaizAgZgcF#{fragment}"
+        );
+
+        // The same transient the Hub paste form commits, through the
+        // full dispatch path (profile origin selects the vocabulary
+        // that carries Join).
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("xyz.tonk.command.join/url")
+            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .is(short)
+            .assert(&mut changes);
+        crate::router::command::dispatch(
+            &state,
+            crate::router::command::CommandOrigin::default(),
+            changes,
+        )
+        .await;
+        server.await.expect("the shortcut host served");
+
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Shortcut Space".to_string()],
+            "a pasted short link resolves to the long form and joins, \
+             seeding the invite's signed name"
         );
     }
 
