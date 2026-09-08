@@ -544,7 +544,7 @@
       "gaps": "Restart at each retention/push stage, duplicate claims, different-root account attempt.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-05",
-      "title": "Claim while accountless, later link an account, recover on another device.",
+      "title": "Claim while accountless, later add an account, recover on another device.",
       "variants": "Provider-free root; customer activation states; second device."
     },
     {

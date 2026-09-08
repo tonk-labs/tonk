@@ -180,7 +180,7 @@ impl CustomElement for UiHubAccount {
         load_profiles(this.clone(), self.generation.clone(), token);
 
         // Live account subscriptions: the trigger label must flip from
-        // "link an account" to the member's name the moment a registration
+        // "add an account" to the member's name the moment a registration
         // ceremony lands, and follow later renames — without a reload. Two
         // facts on the profile branch carry those signals, and neither
         // covers the other:
@@ -1080,7 +1080,7 @@ fn close_menu(this: &HtmlElement, restore_focus: bool) {
         == Some("true");
     if let Some(trigger) = account_trigger(this) {
         // Only a trigger that IS a menu button carries `aria-expanded`; in
-        // the link-an-account mode `set_trigger_mode` stripped it, and this
+        // the add-an-account mode `set_trigger_mode` stripped it, and this
         // must not stamp it back.
         if trigger.has_attribute("aria-haspopup") {
             let _ = trigger.set_attribute("aria-expanded", "false");
@@ -1765,12 +1765,12 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("link an account"),
+            Some("add an account"),
             "an unattached first-run profile must not present its storage name as an account"
         );
         assert!(
             account.get_attribute("aria-haspopup").is_none(),
-            "the link-an-account trigger is a plain action, not a menu button"
+            "the add-an-account trigger is a plain action, not a menu button"
         );
         assert!(account.get_attribute("aria-expanded").is_none());
         assert!(account.get_attribute("aria-controls").is_none());
@@ -1798,7 +1798,7 @@ mod tests {
         assert_eq!(
             window().unwrap().location().href().unwrap(),
             original_url,
-            "linking an account must not navigate the Hub anywhere"
+            "adding an account must not navigate the Hub anywhere"
         );
         window()
             .unwrap()

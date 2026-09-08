@@ -228,7 +228,7 @@ impl WebAuthnKind {
     }
 }
 
-/// Ask the page to link an account so a share can proceed.
+/// Ask the page to add an account so a share can proceed.
 ///
 /// Sent by the invite handler when a space cannot be shared because
 /// nothing is registered. The page raises the registration UI; the

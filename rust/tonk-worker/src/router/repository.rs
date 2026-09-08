@@ -1066,7 +1066,7 @@ async fn run_invite(
                 && let Some(client) = env.client()
                 && let Err(error) = super::navigate::request_account_link(client, &subject).await
             {
-                log!("Invite: could not ask the page to link an account: {error}");
+                log!("Invite: could not ask the page to add an account: {error}");
             }
 
             // `not-synced` is not a refusal either: the account has a

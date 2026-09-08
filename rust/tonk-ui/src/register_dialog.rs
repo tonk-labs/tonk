@@ -433,7 +433,7 @@ fn commit_on_enter(host: &Element) {
 ///
 /// The ceremony moved into the cluster, but the account panel under it
 /// still renders from a status it read when it was connected — so
-/// `/settings` went on offering to link an account that now exists, and
+/// `/settings` went on offering to add an account that now exists, and
 /// `/settings/link` went on refusing the approval it was told to
 /// register for. The panel is not the one that learns this any more, so
 /// it is told: the cluster and the panel share a document, which makes a
@@ -2350,7 +2350,7 @@ pub struct Request {
     #[serde(default)]
     pub space: String,
     /// Where to seat the cluster, in viewport coordinates. The Hub's
-    /// "link an account" tab sends its bar's rect so the ceremony rows
+    /// "add an account" tab sends its bar's rect so the ceremony rows
     /// render IN the column right under it — the tab activates and the
     /// email and instruction rows are simply what its page shows. Absent
     /// (a share-blocked request over a space), the cluster floats

@@ -181,7 +181,7 @@ sequenceDiagram
         FAB->>U: copied
     else no account
         SW-->>FAB: invite:requested
-        SW->>SP: link an account
+        SW->>SP: add an account
         SP->>U: registration + passkey
         SP->>SW: account created
         Note over SW: AccountCustomer lands,<br/>the share continues

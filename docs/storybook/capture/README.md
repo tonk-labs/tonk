@@ -40,7 +40,7 @@ repository root and open `capture/fixture.html?screen=WEB-11` (or another
 supported ID: `WEB-10` through `WEB-15`). The fixture fetches
 `rust/tonk-workspace/src/ui_account_settings.html`, `rust/tonk-ui/src/activate.html`,
 and `account.css` directly; it does not keep copied product markup. Sign-up,
-log-in, and link-an-account are the registration cluster the hub raises and
+log-in, and add-an-account are the registration cluster the hub raises and
 are captured from the running product.
 
 ## CLI capture

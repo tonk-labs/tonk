@@ -20,7 +20,7 @@ A fresh browser starts with a device-local onboarding identity so it can create
 and revisit local spaces before the person links an account. Browser or worker
 restart must reopen that same identity on every supported browser, including
 Safari; it must not replace the identity and orphan the local spaces or invites
-that already depend on it. Linking an account transfers that local authority
+that already depend on it. Adding an account transfers that local authority
 before the temporary onboarding custodian is retired.
 
 A person opens `/settings` in a fresh browser, chooses Create, enters an email,
@@ -143,7 +143,7 @@ previously sent people into a creation ceremony that failed at the end — and n
 action is offered for a state that is not a fact about the address.
 
 > Technical note: the account panel reaches the same dialog. Its old up-front
-> Create / Log in fork is gone -- one "link an account" button raises the
+> Create / Log in fork is gone -- one "add an account" button raises the
 > dialog, because the lookup answers on its own the question that fork asked.
 
 ### Cross a boundary
@@ -194,7 +194,7 @@ links are usually opened.
 While confirmation is pending, the account remains an account on every
 surface. Settings says it is waiting for email confirmation, Hub keeps the
 account entry, and an open space shows the confirmation banner and “confirm
-your email to share.” None of those surfaces may offer Create, Log in, or “link
+your email to share.” None of those surfaces may offer Create, Log in, or “add
 an account” for that profile. Local space work remains available; only sync and
 sharing are waiting on confirmation.
 

@@ -3098,7 +3098,7 @@ tonk-notebook-index {
      the [open] rule so it wins their specificity tie. */
   #tonk-register[data-suspended] { display: none; }
   #tonk-register::backdrop { background: var(--dim); }
-  /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
+  /* Anchored — the Hub's add-an-account tab raised it: the ceremony rows
      ARE that tab's page, seated in the column one gap under the bar, so
      there is no veil and no head row (the tab is the head). */
   #tonk-register[data-anchored]::backdrop { background: transparent; }

@@ -533,7 +533,7 @@ mod tests {
     async fn raise_cluster_from_hub(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
         goto(driver, env.tonk_web.as_str()).await?;
         enter_hub(driver).await?;
-        wait_for_text_containing(driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(driver, "[data-account-trigger]", "add an account").await?;
         click(driver, "[data-account-trigger]").await?;
         driver.enter_default_frame().await?;
         await_register_dialog(driver).await?;
@@ -1834,7 +1834,7 @@ mod tests {
         // address is on the settings page.
         let signed_in = async {
             enter_hub(&driver).await?;
-            wait_for_text_without(&driver, "[data-account-trigger]", "link an account").await?;
+            wait_for_text_without(&driver, "[data-account-trigger]", "add an account").await?;
             driver.enter_default_frame().await?;
             open_hub_settings(&driver, &env).await?;
             wait_for_text_containing(&driver, "[data-settings-email]", EMAIL).await?;
@@ -3122,11 +3122,11 @@ mod tests {
         Ok(())
     }
 
-    /// The Hub offers to link an account, and does it in one step.
+    /// The Hub offers to add an account, and does it in one step.
     ///
     /// It used to read "log in" and navigate to `/settings`, which put
     /// two surfaces between the label and the ceremony — press it, land
-    /// on a panel, press "link an account" there, meet the cluster only
+    /// on a panel, press "add an account" there, meet the cluster only
     /// then. It also named the wrong act: the address decides whether it
     /// creates a passkey or signs you in, so half of "log in"'s readers
     /// were told something untrue before they had typed anything.
@@ -3134,7 +3134,7 @@ mod tests {
     /// Both halves are asserted from the page, because both are what a
     /// person sees: the word on the control, and what one press does.
     #[dialog_common::test]
-    async fn it_links_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
+    async fn it_adds_an_account_from_the_hub_in_one_step(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
 
@@ -3142,7 +3142,7 @@ mod tests {
         // action, so it must not dress up as a dropdown: no caret ever
         // (the cell is a tab of the hub bar), no menu-button ARIA.
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "add an account").await?;
         let affordance = driver
             .execute(
                 r##"
@@ -3158,7 +3158,7 @@ mod tests {
         assert_eq!(
             affordance.json()["haspopup"],
             serde_json::Value::Null,
-            "the link-an-account trigger is not a menu button",
+            "the add-an-account trigger is not a menu button",
         );
         assert_eq!(
             affordance.json()["caret"],
@@ -3177,7 +3177,7 @@ mod tests {
         assert_eq!(
             driver.current_url().await?,
             before,
-            "linking an account happens in place, with no page in between",
+            "adding an account happens in place, with no page in between",
         );
 
         // Finish the ceremony the cluster raised. The Hub is never
@@ -3208,7 +3208,7 @@ mod tests {
                 )
                 .await?;
             let label = state.json()["label"].as_str().unwrap_or("").to_owned();
-            if !label.is_empty() && label != "link an account" {
+            if !label.is_empty() && label != "add an account" {
                 assert_eq!(
                     state.json()["haspopup"].as_str(),
                     Some("menu"),
@@ -5038,7 +5038,7 @@ mod tests {
         // account has synced, so it is not what proves the link.
         let signed_in = async {
             enter_hub(&claimer).await?;
-            wait_for_text_without(&claimer, "[data-account-trigger]", "link an account").await?;
+            wait_for_text_without(&claimer, "[data-account-trigger]", "add an account").await?;
             claimer.enter_default_frame().await?;
             Ok::<(), anyhow::Error>(())
         };
@@ -5154,14 +5154,14 @@ mod tests {
         use_passkey_consent(&driver).await?;
 
         // The purge retires this profile and rotates onto a fresh one;
-        // the top page leaves for the Hub, which offers to link an
+        // the top page leaves for the Hub, which offers to add an
         // account again.
         if let Err(error) = await_url_path(&driver, "/").await {
             let consent = custody_consent_diagnostic(&driver).await;
             return Err(error).context(format!("deletion consent={consent}"));
         }
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, "[data-account-trigger]", "link an account").await?;
+        wait_for_text_containing(&driver, "[data-account-trigger]", "add an account").await?;
         driver.enter_default_frame().await?;
 
         // The profile is unlinked: the deletion plan is no longer
