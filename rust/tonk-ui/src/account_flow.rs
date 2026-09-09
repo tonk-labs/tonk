@@ -18,6 +18,71 @@ mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
+    #[dialog_common::test]
+    async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        driver.set_window_rect(0, 0, 1200, 900).await?;
+        enter_space_view(&driver).await?;
+        let welcome = wait_for_displayed(&driver, ".wp-outer").await?;
+        anyhow::ensure!(
+            welcome.text().await?.contains("makes your small software"),
+            "the seeded welcome page must render"
+        );
+        driver.enter_default_frame().await?;
+        anyhow::ensure!(driver.current_url().await?.path().starts_with("/space/"));
+
+        let space_path = driver.current_url().await?.path().to_owned();
+        let repo = space_path.strip_prefix("/space/").expect("space route");
+        enter_space_view(&driver).await?;
+        driver
+            .find(By::XPath("//*[text()='Agent playground']"))
+            .await?
+            .click()
+            .await?;
+        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]").await?;
+        driver.enter_default_frame().await?;
+        // Supply a prompt fixture to test the page's actual copy value.
+        // Account authorization and CLI confirmation have their own full-flow tests.
+        let body = format!(
+            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"https://example.test/playground-invite\"\n  account: {repo}\n"
+        );
+        let reply = post_yaml(
+            &driver,
+            &format!("/api/repository/{repo}/branch/main/evaluate?transact=true"),
+            &body,
+        )
+        .await?;
+        successful_body("seed playground prompt", &reply);
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".playground-agent .agent-prompt__copy").await?;
+        watch_clipboard(&driver).await?;
+        click(&driver, ".playground-agent .agent-prompt__copy").await?;
+        let prompt = copied_text(&driver).await?;
+        anyhow::ensure!(
+            prompt.contains("npx --yes @tonk/cli connect 'https://example.test/playground-invite'"),
+            "rendered playground prompt: {prompt}"
+        );
+        anyhow::ensure!(prompt.contains("--switch-account"));
+        anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
+        anyhow::ensure!(!prompt.contains("@tonk/cli space home"));
+        anyhow::ensure!(
+            driver
+                .find_all(By::Css(".pg-onboard__pre"))
+                .await?
+                .is_empty()
+        );
+        driver.enter_default_frame().await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, ".hub-page").await?;
+        driver.enter_default_frame().await?;
+        anyhow::ensure!(driver.current_url().await?.path() == "/");
+        driver.quit().await?;
+        Ok(())
+    }
+
     const EMAIL: &str = "person@example.com";
 
     async fn install_account_capture_fixture(driver: &WebDriver) -> Result<()> {
@@ -2935,15 +3000,19 @@ mod tests {
 
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        let row = wait_for_displayed(&driver, ".srow-wrap").await?;
+        let remove = format!("ui-space-remove[data-space-subject='{key}']");
+        let opener_selector = format!("{remove} [data-space-remove-open]");
+        let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
+        let submit_selector = format!("{dialog_selector} .m-go");
+        let row = wait_for_displayed(&driver, &format!(".srow-wrap:has({remove})")).await?;
         driver
             .action_chain()
             .move_to_element_center(&row)
             .perform()
             .await?;
-        let opener = wait_for_displayed(&driver, "[data-space-remove-open]").await?;
+        let opener = wait_for_displayed(&driver, &opener_selector).await?;
         opener.click().await?;
-        wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
+        wait_for_displayed(&driver, &dialog_selector).await?;
 
         for _ in 0..8 {
             driver.action_chain().send_keys(Key::Tab).perform().await?;
@@ -2963,13 +3032,13 @@ mod tests {
             enter_hub(&driver).await?;
             let guest = driver
                 .execute(
-                    r#"const dialog = document.querySelector('tonk-dialog[data-space-remove-dialog]');
+                    r#"const dialog = document.querySelector(arguments[0]);
                        const active = document.activeElement;
                        return {
                          open: dialog?.open || false,
                          inside: !!dialog && (active === dialog || dialog.contains(active))
                        };"#,
-                    Vec::new(),
+                    vec![serde_json::json!(dialog_selector)],
                 )
                 .await?;
             assert_eq!(guest.json()["open"], true);
@@ -2989,10 +3058,10 @@ mod tests {
         let restored = driver
             .execute(
                 r#"return {
-                     open: document.querySelector('tonk-dialog[data-space-remove-dialog]')?.open || false,
+                     open: document.querySelector(arguments[0])?.open || false,
                      opener: document.activeElement?.matches('[data-space-remove-open]') || false
                    };"#,
-                Vec::new(),
+                vec![serde_json::json!(dialog_selector)],
             )
             .await?;
         assert_eq!(restored.json()["open"], false);
@@ -3002,18 +3071,18 @@ mod tests {
             "Escape must restore the remove opener"
         );
 
-        click(&driver, "[data-space-remove-open]").await?;
-        wait_for_displayed(&driver, "tonk-dialog[data-space-remove-dialog]").await?;
+        click(&driver, &opener_selector).await?;
+        wait_for_displayed(&driver, &dialog_selector).await?;
         let association = driver
             .execute(
-                r#"const button = document.querySelector('tonk-dialog[data-space-remove-dialog] .m-go');
-                   const form = document.querySelector('form[data-remove]');
+                r#"const button = document.querySelector(arguments[0]).querySelector('.m-go');
+                   const form = document.querySelector(arguments[0]).querySelector('form[data-remove]');
                    return {
                      attribute: button?.getAttribute('form') || null,
                      associated: button?.form?.id || null,
                      expected: form?.id || null
                    };"#,
-                Vec::new(),
+                vec![serde_json::json!(dialog_selector)],
             )
             .await?;
         let expected_form = association.json()["expected"]
@@ -3025,7 +3094,7 @@ mod tests {
             "the rendered remove button must submit its row's form: {}",
             association.json()
         );
-        click(&driver, "tonk-dialog[data-space-remove-dialog] .m-go").await?;
+        click(&driver, &submit_selector).await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -3040,7 +3109,12 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        wait_for_absent(&driver, ".srow-wrap").await?;
+        wait_for_absent(&driver, &remove).await?;
+        let mut remaining = space_keys(&driver).await?;
+        let mut expected = before;
+        remaining.sort();
+        expected.sort();
+        assert_eq!(remaining, expected, "removal preserves the other spaces");
 
         driver.quit().await?;
         Ok(())
@@ -3066,12 +3140,12 @@ mod tests {
     async fn it_signs_up_to_share_and_hands_over_the_link(env: TestEnvironment) -> Result<()> {
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
 
-        // 1–2. The Hub, with nothing in it.
+        // 1–2. The Hub, with the seeded Welcome space.
         driver.goto(env.tonk_web.as_str()).await?;
         let spaces = space_keys(&driver).await?;
         assert!(
-            spaces.is_empty(),
-            "a fresh profile has no spaces, got {spaces:?}"
+            spaces.len() == 1,
+            "a fresh profile has one Welcome space, got {spaces:?}"
         );
 
         // 3–4. Create one, and land in it.
@@ -5163,20 +5237,29 @@ mod tests {
         .await?;
         successful_body("push synced space", &pushed);
 
-        let plan = get_json(&driver, "/api/account/deletion/plan").await?;
-        let plan = successful_body("review the deletion plan", &plan);
-        assert_eq!(plan["email"], email, "plan reveals the verified email");
-        assert_eq!(
-            plan["spaces"].as_array().map(Vec::len),
-            Some(1),
-            "one owned hosted space: {plan}"
-        );
+        // The pre-account Welcome space is provisioned by activation's pending
+        // work replay. Wait for its provider record before reviewing deletion.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let reply = get_json(&driver, "/api/account/deletion/plan").await?;
+            let plan = successful_body("review the deletion plan", &reply);
+            assert_eq!(plan["email"], email, "plan reveals the verified email");
+            if plan["spaces"].as_array().map(Vec::len) == Some(2) {
+                assert_eq!(plan["joinedSpaces"], 0);
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the Welcome space and Doomed Garden must both be hosted before deletion: {plan}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
         // Creating a space navigates the page into it, so go back to
         // where the deletion controls live.
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-delete-account-open]").await?;
-        wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
+        wait_for_text_containing(&driver, "[data-delete-scope]", "2 owned hosted spaces").await?;
 
         // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
         // verb off, and nothing is asked of the worker.
