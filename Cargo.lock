@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1048,7 +1048,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1076,7 +1076,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1102,7 +1102,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1140,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1155,7 +1155,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1185,7 +1185,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1238,7 +1238,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1298,7 +1298,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1315,7 +1315,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1335,6 +1335,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "md5",
+ "parking_lot",
  "rand 0.8.7",
  "reqwest 0.12.28",
  "s3s",
@@ -1354,7 +1355,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1391,7 +1392,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1430,7 +1431,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1460,7 +1461,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1507,7 +1508,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "async-trait",
  "base58",
@@ -1528,7 +1529,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1554,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Ftransaction-batch#276463f4f4a289151ef62b4c1af478b8bc94b002"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=main#abe90803c8291c51fbade90814bded2bc973576f"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -4565,6 +4566,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -5127,6 +5129,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-perf"
+version = "0.6.14"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]

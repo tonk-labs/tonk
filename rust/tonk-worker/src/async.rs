@@ -47,3 +47,31 @@ pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsE
     tokio::time::sleep(duration).await;
     Ok(())
 }
+
+/// Run `work` without waiting for it, so a caller that only needs it
+/// STARTED can return.
+///
+/// One signature on both targets, per the target-agnostic rule: the
+/// browser hands the future to the microtask queue, and native drives it
+/// on the Tokio runtime. Neither returns a handle -- detached work is
+/// work whose completion nothing observes, and a caller that needs the
+/// outcome should await it instead.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn detach<F>(work: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    wasm_bindgen_futures::spawn_local(work);
+}
+
+/// Run `work` without waiting for it (non-wasm).
+///
+/// Requires `Send` because Tokio's scheduler may move the future between
+/// worker threads; the wasm arm is single-threaded and does not.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn detach<F>(work: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::task::spawn(work);
+}

@@ -685,30 +685,26 @@ pub async fn pull(
         }));
     }
 
-    // Authorization-bearing branches (the account, and through it the
-    // profile's access branch) must never be left partial: the session
-    // open at the next boot walks them with no network reach, and a
-    // head adopted by reference with blocks still remote bricks that
-    // boot with "Blob not found". Content spaces stay lazy.
+    // Every branch pulls the same way: adopt the head, materialize
+    // nothing. `.download()` here walked every block the revision
+    // references, and history records live in the same tree as the
+    // data, so an account pull dragged the branch's whole lineage down
+    // before anything could render.
+    //
+    // What the account actually needs local is the handful of blocks
+    // the next boot's authorization walk reads, and those arrive by
+    // being READ: `NetworkedIndex` hydrates a read-miss from the remote
+    // and writes it into the local archive on the way through. So the
+    // account claims its capability chains by proving them instead,
+    // started detached below.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    let pulled = if hydrate {
-        tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull()
-            .download()
-            .perform(&tonk_state.operator)
-            .await
-    } else {
-        tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull()
-            .perform(&tonk_state.operator)
-            .await
-    };
+    let pulled = tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .pull()
+        .perform(&tonk_state.operator)
+        .await;
     match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
@@ -1050,26 +1046,22 @@ pub async fn sync(
     // Pull with bounded refresh-and-retry on a head that moved under us.
     let mut after_pull = None;
     let mut pull_error: Option<TonkWorkerError> = None;
-    // See the pull handler: authorization-bearing branches hydrate.
+    // See the pull handler: authorization-bearing branches materialize
+    // their operational regions.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
+        let pull = tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull();
         let pulled = if hydrate {
-            tonk_state
-                .reactor
-                .repository(&params.repo)
-                .branch(&params.branch)
-                .pull()
-                .download()
+            pull.download()
+                .operational()
                 .perform(&tonk_state.operator)
                 .await
         } else {
-            tonk_state
-                .reactor
-                .repository(&params.repo)
-                .branch(&params.branch)
-                .pull()
-                .perform(&tonk_state.operator)
-                .await
+            pull.perform(&tonk_state.operator).await
         };
         match pulled {
             Ok(after) => {

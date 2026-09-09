@@ -3274,7 +3274,7 @@ pub(crate) async fn seed_routes(
         return Ok(std::collections::HashSet::new());
     };
 
-    let history = session.handle().history(&tonk.operator);
+    let history = session.handle().history(&tonk.operator).await;
     let records = history.select(version);
     tokio::pin!(records);
 
@@ -3313,7 +3313,7 @@ async fn prior_seed_retractions(
         )));
     };
 
-    let history = session.handle().history(&tonk.operator);
+    let history = session.handle().history(&tonk.operator).await;
     let records = history.select(version);
     tokio::pin!(records);
 
