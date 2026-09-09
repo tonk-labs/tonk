@@ -64,3 +64,24 @@ behavior changed. The export adapter remains idempotent and diff checks pass.
 The presence row now aligns its text on the baseline and removes the dot's
 old relative vertical offset. Verified the generated view in isolated Chrome;
 `git diff --check` passes.
+
+CI follow-up for PR #919: shard 1/3 retained three pre-onboarding assumptions.
+Sharing expected no spaces; deletion expected only its explicitly created hosted
+space; removal selected the first Hub row and expected the whole list to empty.
+Updated sharing to expect the Welcome space, scoped every removal control and
+DOM check to the created space, and asserted that the prior spaces survive.
+Deletion now waits for activation's deferred provisioning to record both hosted
+spaces before reviewing the two-space scope. A fresh-build run exposed the
+provider-record timing difference (one hosted space and one remaining local
+space); the readiness wait preserves the strict two-space deletion assertion.
+
+Validation on the PR's merged head `7ae1b089f` plus these test changes:
+`NO_COLOR=true trunk build` passed. The three affected account-flow tests plus
+`it_opens_the_welcome_space_once_then_the_hub` passed together (4/4), followed by
+another passing deletion run. Used `cargo test -p tonk-ui --features
+integration-tests --lib -- <test names> --test-threads=1`, `TONK_TEST_WEB_HOST=localhost`,
+the local rebuilt `rust/tonk-ui/dist` artifact, and an existing Nix Caddy test
+server via `TONK_UI_TEST_SERVER`. Browser/server execution required sandbox
+escalation after the restricted run could not allocate a local port. Formatting
+and diff checks passed. Full Linux CI, the remaining E2E suite, and Safari were
+not rerun locally.
