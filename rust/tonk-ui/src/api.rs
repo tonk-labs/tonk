@@ -271,45 +271,11 @@ pub async fn await_custody() -> bool {
     .await
 }
 
-/// Poll until the account's own name has replicated.
-///
-/// Best-effort: an account nobody has named never answers, and the Hub
-/// holds a skeleton in that case rather than the ceremony waiting out
-/// the whole bound. Returns whether a name arrived.
-pub async fn await_account_name() -> bool {
-    poll_until(NAME_ATTEMPTS, || async {
-        account_summary()
-            .await
-            .ok()
-            .and_then(|summary| summary.display_name)
-            .is_some_and(|name| !name.trim().is_empty())
-    })
-    .await
-}
-
-/// Poll until the profile reports the spaces the Hub list renders.
-///
-/// An account with no spaces answers immediately (the list is genuinely
-/// empty), so this waits for the profile to be READABLE, not for it to
-/// be non-empty.
-pub async fn await_spaces() -> bool {
-    poll_until(SPACES_ATTEMPTS, || async {
-        reqwest::Client::new()
-            .get(format!("{}/api/profile", origin()))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success())
-    })
-    .await
-}
-
-/// How long each phase waits before the ceremony stops narrating it.
-/// Generous, because the point is to describe a slow network rather than
-/// to time it out — but bounded, because a phase that never answers must
-/// not strand the screen.
+/// How long custody recovery waits before the ceremony stops narrating
+/// it. Generous, because the point is to describe a slow network rather
+/// than to time it out — but bounded, because a phase that never answers
+/// must not strand the screen.
 const RECOVERY_ATTEMPTS: usize = 120;
-const NAME_ATTEMPTS: usize = 60;
-const SPACES_ATTEMPTS: usize = 60;
 
 /// The beat between polls. Long enough not to hammer the worker, short
 /// enough that a phase which resolves quickly reads as immediate.

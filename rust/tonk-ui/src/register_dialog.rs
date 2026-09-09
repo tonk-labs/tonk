@@ -2005,14 +2005,14 @@ fn hand_over_to_the_hub(host: &Element) {
         }
         set_action(DEVICE_LINKED, false);
 
-        // The account name fills the Hub's account cell; the spaces
-        // query is what its list renders. Neither is allowed to strand
-        // the screen, so both are best-effort with a bound.
-        let _ = crate::api::await_account_name().await;
-        let _ = crate::api::await_spaces().await;
-
-        // Nothing left to narrate: leave, rather than asking the person
-        // to press a button to go where they were already headed.
+        // Custody was the last step with anything to narrate. The Hub
+        // fills itself: its account cell subscribes to
+        // `xyz.tonk.account/display-name` on this same branch and holds
+        // a skeleton until a frame arrives, and its stack subscribes to
+        // the space rows. Waiting here for either would be this dialog
+        // polling a route to watch facts another element is already
+        // subscribed to -- and an account nobody has named never
+        // answers, so the wait could only ever end in a timeout.
         let _ = host;
         return_to_previous();
     });
