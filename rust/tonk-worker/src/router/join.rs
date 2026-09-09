@@ -3048,6 +3048,85 @@ pub(crate) mod tests {
         );
     }
 
+    /// Rebuild all worker state from durable storage after an onboarding
+    /// join. This fixture has no remote: it verifies local content and the
+    /// real storage proof, while network replication needs a served fixture.
+    #[dialog_common::test]
+    async fn it_reopens_an_onboarding_membership_with_a_disposable_session() {
+        let (name, registry, profile_did, operator_did, account, key, before, revision) = {
+            let fixture = test_state_without_root().await;
+            let initial = crate::worker::boot_state(
+                fixture.storage.clone(),
+                fixture.profile_name.clone(),
+                fixture.profile.clone(),
+                fixture.registry.clone(),
+            )
+            .await
+            .unwrap();
+            drop(fixture);
+            let (app, state, _lsp) = api_router_with_state(initial);
+            let (url, key) = handcrafted_invite_url(86, 87).await;
+            assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+            let before = snapshot(&state, &key).await;
+            let subject = key.parse().unwrap();
+            assert_eq!(
+                proof_window(&state, &subject).await,
+                Some(state.read().await.session_expires_at)
+            );
+            let tonk = state.read().await;
+            let account = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+            let branch = dialog_repository::Repository::from(tonk.profile.signer().clone())
+                .branch(dialog_repository::ACCESS_BRANCH)
+                .open()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            (
+                tonk.profile_name.clone(),
+                tonk.registry.clone(),
+                tonk.profile.did(),
+                tonk.operator.did(),
+                account,
+                key,
+                before,
+                branch.revision(),
+            )
+        };
+        let storage =
+            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
+        let profile = dialog_operator::Profile::open(&name)
+            .perform(&storage)
+            .await
+            .unwrap();
+        assert_eq!(profile.did(), profile_did);
+        // Isolate session construction from boot's legitimate meta work.
+        let session = crate::session::open(&profile, &storage).await.unwrap();
+        let branch = dialog_repository::Repository::from(profile.signer().clone())
+            .branch(dialog_repository::ACCESS_BRANCH)
+            .open()
+            .perform(&session.operator)
+            .await
+            .unwrap();
+        assert_eq!(branch.revision(), revision);
+        drop(branch);
+        drop(session);
+        let rebuilt = crate::worker::boot_state(storage, name, profile, registry)
+            .await
+            .unwrap();
+        assert_ne!(rebuilt.operator.did(), operator_did);
+        assert_eq!(
+            crate::onboarding::did(&rebuilt).await.unwrap(),
+            Some(account)
+        );
+        let (_app, state, _lsp) = api_router_with_state(rebuilt);
+        assert_eq!(snapshot(&state, &key).await, before);
+        assert_eq!(content_memberships(&state, &key).await.len(), 1);
+        assert_eq!(
+            proof_window(&state, &key.parse().unwrap()).await,
+            Some(state.read().await.session_expires_at)
+        );
+    }
+
     /// A local-only invite has no remote to prove, so it commits on
     /// cryptographic verification alone — and still lands its roster.
     #[dialog_common::test]
