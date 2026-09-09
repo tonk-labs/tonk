@@ -55,6 +55,11 @@ mod blob_url;
 mod component;
 #[cfg(target_arch = "wasm32")]
 mod element;
+// The generated-JS half of the author-element runtime. Pure
+// string assembly over folded facts, so its tests run natively;
+// the DOM half lives in `assets/element-runtime.js` and is
+// exercised by `tests/element-runtime.mjs` in a real browser.
+pub mod element_source;
 #[cfg(target_arch = "wasm32")]
 mod fallback;
 #[cfg(target_arch = "wasm32")]
