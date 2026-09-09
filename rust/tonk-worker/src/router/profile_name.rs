@@ -248,6 +248,7 @@ mod tests {
             .expect("signing session opens");
         let reactor = crate::Reactor::new(profile.clone());
         TonkState {
+            seed_upgrades: Default::default(),
             profile,
             operator: session.operator,
             storage,

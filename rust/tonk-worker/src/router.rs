@@ -658,6 +658,7 @@ pub mod tests {
             directory: dialog_effects::storage::Directory::Profile,
         };
         TonkState {
+            seed_upgrades: Default::default(),
             profile,
             operator: session.operator,
             storage,
