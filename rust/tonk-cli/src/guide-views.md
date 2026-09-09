@@ -158,7 +158,7 @@ The editors persist the same way: bind the store's value in (as element
 text or an attribute), fire a command on the element's `change` event
 (read `dom.event.detail/…`), and a rule writes it back — the loop in
 `tonk help events`. `<tonk-table>` also offers a store-native *claims*
-mode (one claim per cell). Your own components (below) are peers of
+mode (one claim per cell). Your own elements (below) are peers of
 these.
 
 ## Web components
@@ -171,11 +171,23 @@ script. A `<script>` written directly in a template never executes
 template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
-A component is branch data: a `component` row whose `module` field is
-a JS module that defines your element.
+A custom element is branch data: an `element` row whose `module` field
+is JS defining the element. The row's identity IS the tag it defines
+(`element:<tag>`), the same way a view's identity is the model it
+renders — so re-authoring a tag replaces its module rather than adding
+a second definition beside the first.
+
+```text
+tonk element add tally-widget --module-file tally.js
+tonk element                       # every element defined on the branch
+```
+
+`tonk element add` expands to an assertion of the `element` concept;
+`--notation` prints it instead of evaluating:
 
 ```yaml tonk=eval
-component!: &tally-widget
+element!: &tally-widget
+  this: element:tally-widget
   module: |
     customElements.get('tally-widget') || customElements.define('tally-widget',
       class extends HTMLElement {
@@ -186,12 +198,12 @@ component!: &tally-widget
       });
 ```
 
-Mount the component directory once, in a view that always renders
+Mount the element directory once, in a view that always renders
 (typically your root/shell view); it is invisible and loads every
-component on the branch:
+element on the branch:
 
 ```html
-<tonk-display model=component />
+<tonk-display model=element />
 ```
 
 `<tonk-component>` executes each module once per realm (de-duplicated
@@ -199,23 +211,29 @@ by content), and from then on `<tally-widget>` upgrades wherever any
 view renders it. Rules of the road:
 
 - **Guard definitions** with `customElements.get(name) ||` — a custom
-  element name cannot be redefined, so an edited component takes
-  effect on the next page load.
+  element name cannot be redefined, so a replaced module takes effect
+  on the next page load.
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
   element; **actions flow out** as bubbling `CustomEvent`s, wired
   exactly like clicks — `onbump=<command>` on the element plus
   `dom.event.detail/amount` fields on the command (see `tonk help
   events`). The built-in `<tonk-sheet-binder>` works this way; your
-  components are peers of it.
+  elements are peers of it.
 - **One-off inline form**: inside a view template, a
   `<tonk-component>` wrapping an inert holder
   `<script type="tonk/module">…</script>` executes that source the
   same way — handy while prototyping, before promoting the source to
-  a `component` row.
-- Components **share the realm** with every view on the branch —
+  an `element` row.
+- Elements **share the realm** with every view on the branch —
   that is the point (they compose with bindings and events). For a
   fully isolated third-party page, use a portal (below) instead.
+- The older `component` concept does the same job without an
+  identity: an assertion that omits `this:` is keyed by its own body
+  digest, so an edit writes a SECOND row, the directory mounts both,
+  and the guard above lets whichever module runs first win. Branches
+  seeded before `element` still load their `component` rows (`tonk
+  element` lists them); author new definitions as `element`.
 
 ## Escape hatch: the `portal` model
 

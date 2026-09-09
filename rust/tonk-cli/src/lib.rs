@@ -50,6 +50,7 @@ pub mod customer;
 pub mod data;
 pub mod data_ops;
 pub mod deployment;
+pub mod elements;
 pub mod eval;
 pub mod guide;
 pub mod handoff;

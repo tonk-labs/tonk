@@ -370,3 +370,82 @@ mod when_adding_a_view {
         Ok(())
     }
 }
+
+/// The reason `element` exists beside the deprecated `component`:
+/// identity. A `component!:` with no `this:` is keyed by its body
+/// digest, so editing the module writes a SECOND row and the realm
+/// then loads both. `element` pins `element:<tag>`, so the same edit
+/// supersedes.
+mod when_defining_an_element {
+    use super::*;
+
+    const FIRST: &str = "customElements.get('tally-widget') || customElements.define('tally-widget', class extends HTMLElement {});";
+    const SECOND: &str = "customElements.get('tally-widget') || customElements.define('tally-widget', class extends HTMLElement { connectedCallback() {} });";
+
+    #[dialog_common::test]
+    async fn it_lists_the_element_under_its_tag() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(&test.site, "tally-widget", FIRST, Default::default())
+            .await?;
+        let listed = tonk_cli::elements::list(&test.site).await?;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].tag.as_deref(), Some("tally-widget"));
+        assert_eq!(listed[0].entity.to_string(), "element:tally-widget");
+        assert!(!listed[0].deprecated);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_supersedes_the_module_when_the_same_tag_is_redefined() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(&test.site, "tally-widget", FIRST, Default::default())
+            .await?;
+        tonk_cli::data_ops::element_add(&test.site, "tally-widget", SECOND, Default::default())
+            .await?;
+
+        // One row, not two: the tag is the identity, so the second
+        // definition replaced the first rather than landing beside it.
+        let listed = tonk_cli::elements::list(&test.site).await?;
+        assert_eq!(listed.len(), 1, "redefinition accrued a row: {listed:?}");
+        // The stored source is the module plus the one trailing
+        // newline a `|` block scalar clips to — so the row now holds
+        // the SECOND module, not the first.
+        assert_eq!(listed[0].module_bytes, SECOND.len() + 1);
+        assert_ne!(listed[0].module_bytes, FIRST.len() + 1);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_records_the_accrual_the_deprecated_component_concept_still_has() -> Result<()> {
+        let test = TestSite::new().await?;
+        // Two `component!:` assertions differing only in module text.
+        // Each is keyed by its own body digest, so the branch ends up
+        // holding both definitions of the same custom element and the
+        // directory view mounts both.
+        for module in [FIRST, SECOND] {
+            let doc = format!("component!:\n  module: |\n    {module}\n");
+            test.eval_inline(&doc).await?;
+        }
+        let listed = tonk_cli::elements::list(&test.site).await?;
+        let components: Vec<_> = listed.iter().filter(|row| row.deprecated).collect();
+        assert_eq!(
+            components.len(),
+            2,
+            "expected the digest-keyed concept to accrue both rows: {listed:?}",
+        );
+        // And the tag is unrecoverable from either — the listing has
+        // nothing to show but a digest.
+        assert!(components.iter().all(|row| row.tag.is_none()), "{listed:?}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_tag_no_browser_would_register() -> Result<()> {
+        let test = TestSite::new().await?;
+        let err = tonk_cli::data_ops::element_add(&test.site, "widget", FIRST, Default::default())
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("hyphen"), "{err}");
+        Ok(())
+    }
+}

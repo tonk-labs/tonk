@@ -1426,14 +1426,60 @@ view!:
     ui: |
       <tonk-portal html:content={content} />
 
-# A web component carried as branch data. `module` is a JS module the
-# `<tonk-component>` element executes once per document realm — the
-# place a template defines its own custom elements
-# (`customElements.get('x-foo') || customElements.define('x-foo', …)`)
-# and then uses them in any view, no shell change required. Unlike a
-# `portal` (an isolated iframe realm), a component's definitions share
-# the realm with every view on the branch, so they compose with
-# `{field}` bindings and the CustomEvent -> command pipeline.
+# An author-defined custom element carried as branch data. The
+# element's entity IS the tag it defines (`element:<tag>`), exactly as
+# a `view`'s entity IS the model it renders — so a tag names one row,
+# and re-asserting that tag supersedes its module instead of adding a
+# second definition beside the first.
+#
+# `module` is JS the `<tonk-component>` loader executes once per
+# document realm — the place a template defines its own custom
+# elements and then uses them in any view. Unlike a `portal` (an
+# isolated iframe realm), an element's definitions share the realm
+# with every view on the branch, so they compose with `{field}`
+# bindings and the CustomEvent -> command pipeline.
+#
+# `tonk element add <tag> --module-file <path>` is the authoring path
+# and expands to exactly this assertion; `--notation` prints it.
+concept!: &element
+  description: A custom element definition carried as branch data
+  with:
+    module:
+      description: |
+        JS module source defining the custom element named by this
+        entity's `element:<tag>` URI. Runs once per realm; guard the
+        definition with `customElements.get(name) ||` since a name
+        can't be redefined (a replaced module takes effect on the next
+        page load).
+      the: xyz.tonk.element/module
+      cardinality: one
+      as: text
+
+# The bridge from the `element` concept to the `<tonk-component>`
+# loader. The single-entity view loads one module; the directory view
+# is what templates mount (a hidden `<tonk-display model=element />`
+# in their shell view) to load every element asserted on the branch.
+view!:
+  this: element
+  show:
+    ui: |
+      <tonk-component module={module} />
+
+view!:
+  this: element
+  show:
+    directory: |
+      <div class="element-loader" hidden>
+        <tonk-component subject={this} module={module}></tonk-component>
+      </div>
+
+# DEPRECATED, superseded by `element` above. Identical in every way
+# except identity: a `component` assertion that omits `this:` is keyed
+# by its own body digest, so editing the module writes a SECOND row
+# rather than replacing the first — the directory then mounts both,
+# and the `customElements.get(name) ||` guard lets whichever module
+# executes first win. Kept so branches seeded before `element` keep
+# rendering; author new definitions as `element`.
 concept!: &component
   description: A JS module defining web components for the branch's views
   with:

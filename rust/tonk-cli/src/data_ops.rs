@@ -3,8 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
-    lint_view_template, parse_attr_spec,
+    AuthoringError, ViewKind, build_concept_decl, build_element_decl, build_home_recipe,
+    build_view_decl, lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -656,6 +656,42 @@ pub async fn view_add(
     } else {
         out.push_str("home unchanged; use --home or `tonk space home <concept>`\n");
     }
+    Ok(out)
+}
+
+/// Author a custom element definition: an `element!:` pinning
+/// `element:<tag>` and writing `module` under it.
+///
+/// `module` is cardinality one on an entity keyed by the tag, so
+/// re-running this against the same tag REPLACES the source rather
+/// than adding a second definition — the difference from the
+/// deprecated `component` concept, whose body-digest identity made
+/// every edit a new row.
+///
+/// Nothing here mounts the element. A branch loads its definitions
+/// through a `<tonk-display model=element />` in a view that always
+/// renders; the caller is told so when the branch has no such mount.
+pub async fn element_add(
+    site: &TonkSite,
+    tag: &str,
+    module: &str,
+    write: WriteOptions,
+) -> Result<String, DataOpError> {
+    let doc = build_element_decl(tag, module)?;
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+    let mut out = format!(
+        "{}\n",
+        write.summarize(format_args!("defined the <{tag}> element"))
+    );
+    out.push_str(&outcome.stdout);
+    out.push_str(&format!(
+        "\nuse it in any view as <{tag}>; a branch loads its elements through a \
+         `<tonk-display model=element />` in a view that always renders\n"
+    ));
     Ok(out)
 }
 

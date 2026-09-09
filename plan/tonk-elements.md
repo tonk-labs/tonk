@@ -51,13 +51,18 @@ Getting a component onto a page takes two manual steps:
 
 ### 1. Re-asserting a component accumulates rather than replaces
 
-An assertion with no `this:` is lowered to `id:<body-digest>`
-(`rust/tonk-analyzer/src/analyzer.rs:246`). The body includes `module`, so
-editing the source yields a different digest, a different entity, and a
-**second row** — the original is still on the branch. The directory facet
-mounts both, both modules execute, and the `customElements.get(name) ||`
-guard means whichever executes first wins. Execution order is directory
-row order.
+An assertion with no `this:` gets a content-derived entity: a hash of the
+predicate plus the resolved body, rendered as a `did:key:`
+(`derive_this`, `rust/tonk-schema/src/transact.rs:82`). The body includes
+`module`, so editing the source yields a different entity and a **second
+row** — the original is still on the branch. The directory facet mounts
+both, both modules execute, and the `customElements.get(name) ||` guard
+means whichever executes first wins. Execution order is directory row
+order.
+
+Verified against a real space: two `component!: &legacy` assertions
+differing only in module text leave two rows, each under its own
+`did:key:` digest. `tests/authoring.rs` pins this as a regression test.
 
 The `&anchor` does publish a name (`db.name/referent` on `id:<anchor>`,
 `rust/tonk-evaluator/src/evaluate.rs:1346`) and re-asserting repoints it —
@@ -69,9 +74,10 @@ page load", is optimistic: it may never take effect. This is the one part
 of this document that is a bug fix rather than a design change.
 
 *Open question:* the row order the directory query returns decides which
-definition wins. A test should pin this down before the migration, since it
-determines whether existing branches silently flip behaviour when they
-move to `element`.
+definition wins. That is still unpinned — it determines whether an
+existing branch's behaviour changes when its author migrates to
+`element`, but not whether the accrual itself happens, which is now
+demonstrated.
 
 ### 2. Three loading strategies for one idea
 
@@ -248,8 +254,13 @@ needs checking before either is planned. Phase 2 at the earliest.
 
 ## Phasing
 
-1. **`element` concept + pinned identity + `tonk element` CLI.** Fixes the
-   accumulation bug on its own. `component` keeps working unchanged.
+1. **`element` concept + pinned identity + `tonk element` CLI.** *Landed.*
+   Fixes the accumulation bug on its own; `component` keeps working,
+   deprecated in the library and listed by `tonk element` so an author can
+   see what to migrate. The module contract is unchanged — a module still
+   calls `customElements.define` itself, because the `export default`
+   contract only pays for itself once the autoloader consumes it, and
+   changing it now would cost authors two migrations instead of one.
 2. **The autoloader.** Removes the mount step. This is where the trust
    decision above has to be settled.
 3. **Analyzer check** via `Found::Element`.

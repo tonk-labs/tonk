@@ -18,6 +18,7 @@ use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::context::SpaceContext;
 use tonk_cli::data_ops;
+use tonk_cli::elements;
 use tonk_cli::eval::{self, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::listing::{self, Listing};
@@ -57,6 +58,7 @@ write facts
 define
    concept    List concepts, or define one with typed fields
    view       List views, or author one for a concept
+   element    List custom elements, or define one from a JS module
 
 collaborate (see also: tonk help sync)
    invite     Create an invite URL granting access to this space
@@ -160,6 +162,15 @@ enum Command {
         json: bool,
         #[command(subcommand)]
         command: Option<ViewCommand>,
+    },
+
+    /// Define a custom element a view can use
+    Element {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<ElementCommand>,
     },
 
     // -- data ---------------------------------------------------------
@@ -983,6 +994,39 @@ impl From<ViewKindArg> for tonk_cli::authoring::ViewKind {
     }
 }
 
+#[derive(Debug, Subcommand)]
+enum ElementCommand {
+    /// Define a custom element from a JS module
+    ///
+    /// The tag is the definition's identity, so re-running this
+    /// against the same tag replaces its module rather than adding a
+    /// second definition beside the first.
+    #[command(
+        after_help = "Examples:\n  tonk element add tally-widget --module-file tally.js\n  tonk element add tally-widget --module 'customElements.define(...)' --notation"
+    )]
+    Add {
+        /// The custom element name to define (must contain a hyphen).
+        #[arg(value_name = "TAG")]
+        tag: String,
+        /// Inline JS module source.
+        #[arg(
+            long,
+            value_name = "JS",
+            conflicts_with = "module_file",
+            required_unless_present = "module_file"
+        )]
+        module: Option<String>,
+        /// Read the module from a file instead.
+        #[arg(long, value_name = "PATH")]
+        module_file: Option<PathBuf>,
+        /// Print the notation document without evaluating it.
+        #[arg(long)]
+        notation: bool,
+        #[command(flatten)]
+        write: WriteArgs,
+    },
+}
+
 /// The switches every write verb takes, matching `tonk eval`'s.
 ///
 /// Flattened rather than repeated so the three stay spelled, defaulted, and
@@ -1164,6 +1208,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 Some(ViewCommand::Add { .. }) => "add",
             }),
         ),
+        Command::Element { command, .. } => (
+            "element",
+            Some(match command {
+                None => "list",
+                Some(ElementCommand::Add { .. }) => "add",
+            }),
+        ),
         Command::Telemetry { .. } => ("telemetry", None),
         Command::Update { .. } => ("update", None),
         Command::Blob { command, .. } => (
@@ -1225,6 +1276,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Blob { .. }
             | Command::Concept { .. }
             | Command::View { .. }
+            | Command::Element { .. }
     )
 }
 
@@ -1381,6 +1433,7 @@ async fn main() {
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
         Command::View { command, json } => view_op(command, json, space.as_deref()).await,
+        Command::Element { command, json } => element_op(command, json, space.as_deref()).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -4459,6 +4512,85 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
         }
         None => list_views_op(&site, json).await,
     }
+}
+
+/// Author a custom element definition, as rendered by
+/// [`data_ops::element_add`]. `--module-file` is read here (the thin
+/// binary owns I/O); an empty module surfaces as
+/// [`tonk_cli::authoring::AuthoringError::EmptyModule`] from the
+/// builder itself.
+async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+
+    match command {
+        Some(ElementCommand::Add {
+            tag,
+            module,
+            module_file,
+            notation,
+            write,
+        }) => {
+            let module = match (module, module_file) {
+                (Some(inline), _) => inline,
+                (None, Some(path)) => match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        return print_error(format!(
+                            "could not read module file {}: {e}",
+                            path.display()
+                        ));
+                    }
+                },
+                (None, None) => {
+                    return print_error("one of --module or --module-file is required".to_string());
+                }
+            };
+            match data_ops::element_add(&site, &tag, &module, write.options(notation)).await {
+                Ok(text) => {
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout.write_all(text.as_bytes()) {
+                        return print_error(format!("failed to write stdout: {e}"));
+                    }
+                    ExitCode::Success
+                }
+                Err(err) => print_coded(err),
+            }
+        }
+        None => list_elements_op(&site, json).await,
+    }
+}
+
+/// Bare `tonk element` — every custom element defined on the branch.
+async fn list_elements_op(site: &site::TonkSite, json: bool) -> ExitCode {
+    let listed = match elements::list(site).await {
+        Ok(v) => v,
+        Err(err) => return print_failure(err),
+    };
+    if json {
+        return print_json(&Rows::new("tonk.element-ls.v1", listed));
+    }
+    let mut listing = Listing::new(
+        &["TAG", "ENTITY", "BYTES", "CONCEPT"],
+        "no custom elements on this branch; define one with `tonk element add <tag> --module-file <path>`",
+    );
+    for row in &listed {
+        listing.push([
+            listing::cell(row.tag.as_deref()),
+            row.entity.to_string(),
+            row.module_bytes.to_string(),
+            if row.deprecated {
+                "component"
+            } else {
+                "element"
+            }
+            .to_string(),
+        ]);
+    }
+    println!("{}", listing.render());
+    ExitCode::Success
 }
 
 /// Put one or more concepts' directories on the space home, as

@@ -97,6 +97,18 @@ pub enum AuthoringError {
     /// template source and found it empty.
     #[error("the view template is empty; pass --template <html> or --template-file <path>")]
     EmptyTemplate,
+    /// An element tag that a browser would refuse to register.
+    #[error("'{raw}' is not a usable custom element name: {reason}")]
+    BadElementTag {
+        /// The offending tag, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
+    /// An element module was empty — neither `--module` nor
+    /// `--module-file` supplied any source.
+    #[error("the element module is empty; pass --module <js> or --module-file <path>")]
+    EmptyModule,
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -319,6 +331,97 @@ pub fn build_view_decl(kind: ViewKind, model: &str, template: &str) -> String {
     out
 }
 
+/// Custom element names a browser reserves for SVG/MathML, which
+/// contain a hyphen but can never be registered.
+const RESERVED_ELEMENT_TAGS: &[&str] = &[
+    "annotation-xml",
+    "color-profile",
+    "font-face",
+    "font-face-src",
+    "font-face-uri",
+    "font-face-format",
+    "font-face-name",
+    "missing-glyph",
+];
+
+/// Check `tag` against the rules a browser applies before it will
+/// register a custom element: it must start with an ASCII lowercase
+/// letter, contain a hyphen, carry no uppercase, and not be one of
+/// the reserved SVG/MathML names.
+///
+/// This is deliberately narrower than the spec's full
+/// `PotentialCustomElementName` grammar, which also admits most
+/// non-ASCII characters. A tag rejected here is still a name we can
+/// refuse to author with a clear message; a tag accepted here is one
+/// every browser will take.
+pub fn validate_element_tag(tag: &str) -> Result<(), AuthoringError> {
+    let bad = |reason| {
+        Err(AuthoringError::BadElementTag {
+            raw: tag.to_owned(),
+            reason,
+        })
+    };
+    if tag.is_empty() {
+        return bad("it is empty");
+    }
+    if !tag.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return bad("it must start with a lowercase ASCII letter");
+    }
+    if !tag.contains('-') {
+        return bad("it must contain a hyphen, e.g. tally-widget");
+    }
+    if tag
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_')))
+    {
+        return bad("it may only contain lowercase ASCII letters, digits, '-', '.' and '_'");
+    }
+    if RESERVED_ELEMENT_TAGS.contains(&tag) {
+        return bad("it is reserved for SVG/MathML");
+    }
+    Ok(())
+}
+
+/// The entity URI an element tag is stored under. The tag IS the
+/// identity — the same relationship a `view` has to the model it
+/// renders — so a second assertion of the same tag supersedes the
+/// first `module` rather than landing beside it as a new row.
+pub fn element_entity(tag: &str) -> String {
+    format!("element:{tag}")
+}
+
+/// The tag an [`element_entity`] URI names. `element:tally-widget` →
+/// `Some("tally-widget")`; anything else → `None`.
+pub fn element_tag(entity: &str) -> Option<&str> {
+    entity.strip_prefix("element:")
+}
+
+/// Build the `element!:` declaration that defines the custom element
+/// `tag` from `module`.
+///
+/// The entity is pinned to `element:<tag>` and `module` is
+/// cardinality one, so re-authoring the same tag replaces its source.
+/// The tag is also published as an `&anchor` name so `tonk show
+/// <tag>` resolves it like any other named entity.
+pub fn build_element_decl(tag: &str, module: &str) -> Result<String, AuthoringError> {
+    validate_element_tag(tag)?;
+    if module.trim().is_empty() {
+        return Err(AuthoringError::EmptyModule);
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "element!: &{tag}");
+    let _ = writeln!(out, "  this: {}", element_entity(tag));
+    out.push_str("  module: |\n");
+    for line in module.lines() {
+        if line.trim().is_empty() {
+            out.push('\n');
+        } else {
+            let _ = writeln!(out, "    {line}");
+        }
+    }
+    Ok(out)
+}
+
 /// Build the space-home recipe: the origin-keyed root concept, its
 /// view (one `<tonk-display model=X />` per model — wrapped in a
 /// `<section>` with an `<h2>` heading when there are 2+ models, a
@@ -514,6 +617,72 @@ mod tests {
             &fields(&["name"]),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn it_builds_an_element_declaration_pinned_to_its_tag() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "customElements.get('tally-widget') || customElements.define('tally-widget', C);",
+        )
+        .expect("valid tag and module");
+        assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
+        // The pinned `this` is the whole point: it is what makes a
+        // second `add` of the same tag supersede rather than accrue.
+        assert!(doc.contains("  this: element:tally-widget\n"), "{doc}");
+        assert!(doc.contains("  module: |\n"), "{doc}");
+        assert!(doc.contains("    customElements.get("), "{doc}");
+    }
+
+    #[test]
+    fn it_indents_every_module_line_under_the_block_scalar() {
+        let doc = build_element_decl("x-y", "const a = 1;\n\nconst b = 2;\n").expect("valid");
+        // A blank line inside the source stays blank (indenting it
+        // would put trailing whitespace in the notation); every
+        // content line carries the block scalar's four spaces.
+        assert!(
+            doc.contains("    const a = 1;\n\n    const b = 2;\n"),
+            "{doc}"
+        );
+    }
+
+    #[test]
+    fn it_round_trips_a_tag_through_its_entity_uri() {
+        assert_eq!(element_entity("tally-widget"), "element:tally-widget");
+        assert_eq!(element_tag("element:tally-widget"), Some("tally-widget"));
+        assert_eq!(element_tag("did:key:zAbc"), None);
+    }
+
+    #[test]
+    fn it_refuses_tags_a_browser_would_refuse() {
+        for (tag, why) in [
+            ("widget", "no hyphen"),
+            ("Tally-Widget", "uppercase"),
+            ("-widget", "leading hyphen"),
+            ("1-widget", "leading digit"),
+            ("tally widget", "whitespace"),
+            ("font-face", "reserved for SVG/MathML"),
+            ("", "empty"),
+        ] {
+            assert!(
+                validate_element_tag(tag).is_err(),
+                "expected {tag:?} to be rejected ({why})",
+            );
+        }
+        for tag in ["tally-widget", "x-y", "my-el.2", "a-b_c"] {
+            assert!(
+                validate_element_tag(tag).is_ok(),
+                "expected {tag:?} to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn it_refuses_an_empty_module() {
+        assert!(matches!(
+            build_element_decl("tally-widget", "   \n\n"),
+            Err(AuthoringError::EmptyModule)
+        ));
     }
 
     #[test]
