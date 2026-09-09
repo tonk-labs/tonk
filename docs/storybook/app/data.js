@@ -740,12 +740,12 @@ window.STORYBOOK_DATA = {
       "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized; named-space/profile inspector."
     },
     {
-      "evidence": "One deployment browser test plus build checks.",
-      "gaps": "Visible failure/retry, no infinite boot, diagnostics without leaking secrets.",
+      "evidence": "Deployment test, build checks, Doctor Node contracts and isolated Chrome fixtures; see Doctor diagnostics.",
+      "gaps": "Full installed-worker update/unregister preservation, real account APIs, Safari and hosted recovery.",
       "group": "Browser shell and runtime",
       "id": "UI-05",
-      "title": "Recover from service-worker or deployment configuration failure.",
-      "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache."
+      "title": "Recover from service-worker or deployment failure; inspect /doctor and copy an agent debug bundle.",
+      "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard."
     }
   ],
   "schemaVersion": 1,
@@ -2252,12 +2252,20 @@ window.STORYBOOK_DATA = {
       "id": "UI-11",
       "priority": "P2",
       "result": "—"
+    },
+    {
+      "claim": "Doctor remains usable during boot failure and produces a reviewable debug bundle (Doctor diagnostics).",
+      "device": "browser + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-12",
+      "priority": "P1",
+      "result": "Node contracts and isolated Chrome fixtures passed. Full Trunk/installed-worker lifecycle, actual account services, Safari and hosted behavior unrun."
     }
   ],
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 6,
+    "other": 7,
     "pass": 1,
     "unrun": 110
   },

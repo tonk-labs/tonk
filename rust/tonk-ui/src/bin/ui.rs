@@ -14,6 +14,16 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
+    // Diagnostics must remain available even when worker/Wasm startup fails.
+    if web_sys::window().is_some_and(|window| {
+        matches!(
+            window.location().pathname().as_deref(),
+            Ok("/doctor" | "/doctor/")
+        )
+    }) {
+        return;
+    }
+
     // Panic hook + (when a key is baked in and the user hasn't opted
     // out) posthog init, pageviews, and DOM-event listeners.
     tonk_ui::analytics::install();

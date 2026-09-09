@@ -1356,7 +1356,7 @@ function failurePage() {
 <p>The storage worker could not initialize. Attempt ${workerHealth.attempts}.</p>
 <pre>${escaped}</pre>
 <button onclick="location.reload()">Try again</button>
-<p class="hint">Diagnostics: <code>/api/health</code> has the full log ring.</p>
+<p class="hint"><a href="/doctor">Open Doctor</a> for diagnostics and worker tools. <code>/api/health</code> has the full log ring.</p>
 </main>
 </body></html>`,
         { status: 503, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -1399,7 +1399,8 @@ self.onfetch = event => {
     // init-retry holdoff still applies — a later reload attempts a fresh
     // initialization, and success clears this state.
     if (workerHealth.state === "failed") {
-        if (event.request.mode === "navigate" && !path.startsWith("/api/")) {
+        if (event.request.mode === "navigate" && !path.startsWith("/api/")
+            && path !== "/doctor" && path !== "/doctor/") {
             // Kick a background re-initialization (the holdoff inside
             // activateWorker paces it) so "Try again" can actually
             // succeed once the cause has healed.

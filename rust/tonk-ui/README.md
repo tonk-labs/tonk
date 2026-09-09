@@ -10,6 +10,37 @@ The shell mounts into the page, the service worker (`tonk-worker`) installs, and
 an otherwise-uncontrolled first-install page asks it for control. Once the
 worker is controlling, the UI's `/api/*` fetches route through it.
 
+## Doctor route
+
+Open `/doctor` (or `/doctor/`) for a browser diagnostic snapshot: document and
+worker build IDs, worker health, registration states, storage usage/cache names,
+account/root status, profile/operator DIDs, spaces, and the local profile roster.
+Each probe reports its own timing and error; a hung probe times out after eight
+seconds. The page runs from `assets/doctor.mjs` without waiting for UI Wasm or
+worker readiness and does not automatically register or update a worker.
+
+Refresh after account or worker changes. **Copy debug bundle for agent** copies
+one JSON bundle containing the current diagnostic snapshot (including probe
+sources, errors and timings), up to 200 recent worker log entries with timestamps
+and severity, and an optional issue/reproduction description. Expand the worker
+logs on the page to review them before sharing. Copy uses the displayed snapshot;
+use Refresh diagnostics to capture newer logs first.
+
+Logs are in memory and reset when the service worker restarts. The bundle does
+not capture earlier page-console history or server logs. Missing logs are
+reported explicitly. Root credential IDs, delegation bytes and encryption keys
+are omitted from identity projections. Known credential fields, authorization
+values, token patterns and URL parameters are filtered from the bundle and its
+log preview. Filtering is best-effort: emails, public identifiers and potentially
+private free-form log content remain, so review before sharing. `/api/health`
+remains available for direct inspection of the unfiltered worker log ring.
+
+The worker controls check for updates or, after confirmation, unregister only
+the registration covering the page. Unregister does not delete caches or local
+storage; open tabs can remain controlled until closed. Visiting the normal app
+registers its worker again. Worker-backed probes require a controlling worker;
+without one, browser diagnostics still work and API probes explain the limit.
+
 ## Local identity and invite visits
 
 Durable browser operations use a provider-neutral passkey root stored locally as
