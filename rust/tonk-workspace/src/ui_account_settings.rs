@@ -241,7 +241,14 @@ impl CustomElement for UiAccountSettings {
         let closed: EventClosure = Closure::wrap(Box::new(move |_: Event| {
             let _ = host.remove_attribute("data-passkey-screen");
             let _ = host.remove_attribute("data-passkey-requested");
-            show_status(&host, "");
+            // Closing the passkey UI is not a new command result. The worker
+            // may already have published its refusal while this screen hid it.
+            if !matches!(
+                host.get_attribute("data-ceremony-state").as_deref(),
+                Some(ceremony_state::REFUSED | ceremony_state::FAILED | ceremony_state::DONE)
+            ) {
+                show_status(&host, "");
+            }
         }));
         if let Some(window) = window() {
             let _ = window.add_event_listener_with_callback(
@@ -1251,6 +1258,49 @@ mod tests {
         );
         host.remove();
         style.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_close_preserves_the_handoff_refusal() {
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-screen", "").unwrap();
+        let row = js_sys::JSON::parse(
+            &serde_json::json!({
+                "fields": {
+                    "ceremony": tonk_schema::ceremony::AUTHORIZE_DEVICE,
+                    "state": tonk_schema::ceremony_state::REFUSED,
+                    "detail": "this handoff requires account did:key:expected"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        super::render_ceremony(&host, &row);
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account")
+        );
+        window()
+            .unwrap()
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account"),
+            "closing the passkey screen must retain the worker's refusal"
+        );
+        assert!(!status.has_attribute("hidden"));
+        assert!(!host.has_attribute("data-passkey-screen"));
+        host.remove();
     }
 
     fn mount() -> HtmlElement {

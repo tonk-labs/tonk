@@ -36,3 +36,9 @@ dismissal restores the approval rows.
 The desktop passkey message now uses the same 36px row height as the account
 bar, heading, and action buttons. Text can still grow the message row if it
 wraps. Browser measurements confirmed all four desktop rows are 36px.
+
+CI regression: wrong-account handoff rejection timed out reading its status.
+A focused browser reproducer confirmed that `tonk:custody-closed` erased the
+worker's refusal after the passkey screen had hidden it. Closing now preserves
+refused, failed, and completed ceremony results, while clearing temporary
+waiting text. The new refusal regression and existing dismissal test pass.
