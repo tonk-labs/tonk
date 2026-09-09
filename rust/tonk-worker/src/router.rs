@@ -110,6 +110,7 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
+mod onboarding_space;
 mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
@@ -277,6 +278,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
+        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route("/api/site", post(session::register_site))
         // Per-branch site registration: the branch comes from the URL (like
         // `/query` and `/transact`), not from parsing the document path. A

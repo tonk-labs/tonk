@@ -27,6 +27,29 @@ profile and account lifecycle. At `/activate?ucan=...`, it mounts
 or another content path, it mounts one `<tonk-site>` and the current profile's
 route table selects Hub or content.
 
+For `UI-01`, a first visit to `/` in a browser with no account or spaces creates
+one private local **Welcome to Tonk** space and opens its Welcome page. Later
+visits to `/` open Hub, including after the welcome space is removed. Existing
+accounts and profiles with spaces skip this onboarding. Explicit deep links
+retain their destination. Concurrent first visits create one space, and an
+interrupted seed resumes that same space.
+
+Its Agent playground uses the standard account-aware connect prompt, with
+instructions limiting agent work to that page and its own views, components,
+and data. Signed-out users see account setup guidance; ready users can copy the
+prompt. This is a prompt scope, not page-level authority enforcement.
+
+> Technical note: the bootstrap probe completes before the site mounts. The
+> bundled export excludes source credentials, governance, history, and repository
+> identity. Existing seeded copies retain their saved content.
+
+Local evidence for `feat/onboarding-space` (based on `ac7cdba11`): four worker
+tests cover sanitization, concurrent setup, resume, and existing-space skip.
+`it_opens_the_welcome_space_once_then_the_hub` passed in Chrome with an actual
+copy-button check using a prompt fixture. Isolated Chrome checks cover card
+spacing and status alignment. Full account/CLI handoff, Safari, offline first
+boot, and crash-at-each-write verification remain unrun for this change.
+
 At a named space's `/inspector` route, the inspector starts with one compact,
 full-width diagnostics summary above the notebook. It identifies the current
 branch, revision, and whether the branch is local-only or has an upstream. The

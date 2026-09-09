@@ -708,7 +708,7 @@
       "variants": "install script/npm/nix; newer/current; network/error/signature/swap failure."
     },
     {
-      "evidence": "Partial deployment and broad E2E setup.",
+      "evidence": "Partial deployment and broad E2E setup; first-root welcome seeding/return-to-Hub browser regression plus worker concurrency/resume tests.",
       "gaps": "Explicit boot state machine, update/reload failure, accessibility, recovery from stale assets.",
       "group": "Browser shell and runtime",
       "id": "UI-01",
@@ -2171,7 +2171,7 @@
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-01",
       "priority": "P1",
-      "result": "—"
+      "result": "First-root/returning-Hub Chrome regression and four worker tests passed locally. Full route matrix, Safari, and crash-at-each-write remain unrun."
     },
     {
       "claim": "First/returning/offline boot has bounded visible recovery (Remain in flight).",
@@ -2257,9 +2257,9 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 5,
+    "other": 6,
     "pass": 1,
-    "unrun": 111
+    "unrun": 110
   },
   "visualCommit": "49a873a23"
 }

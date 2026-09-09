@@ -2831,7 +2831,7 @@ const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
@@ -2870,13 +2870,19 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
         STANDARD_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/core.yaml").to_owned())
         }
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
+        }
+        "/library/onboarding-agent.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
+        }
+        "/library/onboarding.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
         }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
@@ -2889,7 +2895,7 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 /// the `/evaluate` route, which commits concept claims and `rule!:`
 /// installs alike. A bad library is a deployment fault, surfaced as
 /// an internal error.
-async fn seed_standard_library(
+pub(super) async fn seed_standard_library(
     tonk: &TonkState,
     repo: &str,
     branch: &str,
@@ -2910,7 +2916,10 @@ async fn seed_standard_library(
 /// the scaffold seed body (see [`seed_and_initialize`]) so the name lands
 /// in the same commit as the library that defines the `tonk/repository`
 /// concept it instantiates — no separate commit, no "Untitled" flash.
-fn repository_name_body(subject: &Did, display_name: &str) -> Result<String, RepositoryError> {
+pub(super) fn repository_name_body(
+    subject: &Did,
+    display_name: &str,
+) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
     // breaking the notation.
@@ -3781,7 +3790,7 @@ async fn record_replica_visibility(
 /// same hash `Replica::new` uses — so no read is needed to find it.
 ///
 /// Called from the background seed path, which only runs in the worker.
-async fn set_replica_status(
+pub(super) async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
     status: tonk_schema::domain::replica::Status,

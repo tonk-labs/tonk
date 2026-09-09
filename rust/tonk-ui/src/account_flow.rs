@@ -18,6 +18,71 @@ mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
+    #[dialog_common::test]
+    async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        driver.set_window_rect(0, 0, 1200, 900).await?;
+        enter_space_view(&driver).await?;
+        let welcome = wait_for_displayed(&driver, ".wp-outer").await?;
+        anyhow::ensure!(
+            welcome.text().await?.contains("makes your small software"),
+            "the seeded welcome page must render"
+        );
+        driver.enter_default_frame().await?;
+        anyhow::ensure!(driver.current_url().await?.path().starts_with("/space/"));
+
+        let space_path = driver.current_url().await?.path().to_owned();
+        let repo = space_path.strip_prefix("/space/").expect("space route");
+        enter_space_view(&driver).await?;
+        driver
+            .find(By::XPath("//*[text()='Agent playground']"))
+            .await?
+            .click()
+            .await?;
+        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]").await?;
+        driver.enter_default_frame().await?;
+        // Supply a prompt fixture to test the page's actual copy value.
+        // Account authorization and CLI confirmation have their own full-flow tests.
+        let body = format!(
+            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"https://example.test/playground-invite\"\n  account: {repo}\n"
+        );
+        let reply = post_yaml(
+            &driver,
+            &format!("/api/repository/{repo}/branch/main/evaluate?transact=true"),
+            &body,
+        )
+        .await?;
+        successful_body("seed playground prompt", &reply);
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".playground-agent .agent-prompt__copy").await?;
+        watch_clipboard(&driver).await?;
+        click(&driver, ".playground-agent .agent-prompt__copy").await?;
+        let prompt = copied_text(&driver).await?;
+        anyhow::ensure!(
+            prompt.contains("npx --yes @tonk/cli connect 'https://example.test/playground-invite'"),
+            "rendered playground prompt: {prompt}"
+        );
+        anyhow::ensure!(prompt.contains("--switch-account"));
+        anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
+        anyhow::ensure!(!prompt.contains("@tonk/cli space home"));
+        anyhow::ensure!(
+            driver
+                .find_all(By::Css(".pg-onboard__pre"))
+                .await?
+                .is_empty()
+        );
+        driver.enter_default_frame().await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, ".hub-page").await?;
+        driver.enter_default_frame().await?;
+        anyhow::ensure!(driver.current_url().await?.path() == "/");
+        driver.quit().await?;
+        Ok(())
+    }
+
     const EMAIL: &str = "person@example.com";
 
     async fn install_account_capture_fixture(driver: &WebDriver) -> Result<()> {
