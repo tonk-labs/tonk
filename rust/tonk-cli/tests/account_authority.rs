@@ -1026,6 +1026,7 @@ async fn replacement_does_not_hydrate_previous_account_facts(
         .transaction()
         .assert(private.clone())
         .commit()
+        .publish()
         .perform(&operator)
         .await?;
 
@@ -1048,6 +1049,7 @@ async fn replacement_does_not_hydrate_previous_account_facts(
             name: "Unpushed A-only edit".into(),
         })
         .commit()
+        .publish()
         .perform(&operator)
         .await?;
 

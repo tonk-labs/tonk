@@ -172,6 +172,7 @@ async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> a
         .transaction()
         .assert(first.invitation.clone())
         .commit()
+        .publish()
         .perform(&spoof.operator)
         .await?;
     registry.spaces.insert(
@@ -187,6 +188,7 @@ async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> a
         .transaction()
         .retract(first.invitation.clone())
         .commit()
+        .publish()
         .perform(&older.operator)
         .await?;
     let matched =
@@ -204,6 +206,7 @@ async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> a
         .transaction()
         .assert(fresh.invitation.clone())
         .commit()
+        .publish()
         .perform(&older.operator)
         .await?;
     let unmatched =
@@ -224,6 +227,7 @@ async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> a
         .transaction()
         .assert(first.invitation.clone())
         .commit()
+        .publish()
         .perform(&older.operator)
         .await?;
     let legacy =
@@ -300,6 +304,7 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
             name: tonk_schema::domain::repo::Name("Test Garden".into()),
         })
         .commit()
+        .publish()
         .perform(&test.site.operator)
         .await?;
     let mut registry = tonk_cli::space::Registry::default();
@@ -428,6 +433,7 @@ async fn explicit_library_evaluation_refreshes_a_frozen_blank_canvas() -> anyhow
         .transaction()
         .assert(replica.clone())
         .commit()
+        .publish()
         .perform(&test.site.operator)
         .await?;
     let route = tonk_cli::render::RenderRoute::parse(&format!("{}@tonk:blank", replica.this()))?;
