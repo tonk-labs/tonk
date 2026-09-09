@@ -130,6 +130,23 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
             | AccountAction::FinishAccountBackup
     );
 
+    // Safari also reports this generic refusal when an older passkey provider
+    // cannot fulfill a PRF assertion. It is not proof of missing PRF support,
+    // so keep the update guidance conditional.
+    if passkey_action
+        && detail.contains("notallowederror")
+        && detail.contains(
+            "the request is not allowed by the user agent or the platform in the current context",
+        )
+    {
+        return if action == AccountAction::DeleteAccount {
+            "Nothing was deleted. Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        } else {
+            "Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        }
+        .to_owned();
+    }
+
     if passkey_action
         && (detail.contains("notallowederror")
             || detail.contains("aborterror")
@@ -427,6 +444,29 @@ mod tests {
         for (action, detail, expected) in cases {
             assert_eq!(diagnostic(action, detail), expected);
         }
+    }
+
+    #[test]
+    fn safari_context_refusal_suggests_provider_updates_without_diagnosing_prf() {
+        let detail = "NotAllowedError: custody assertion failed: NotAllowedError: The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.";
+        for action in [AccountAction::LogIn, AccountAction::AddPasskey] {
+            assert_eq!(
+                diagnostic(action, detail),
+                "Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+            );
+        }
+        assert_eq!(
+            diagnostic(AccountAction::DeleteAccount, detail),
+            "Nothing was deleted. Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        );
+        assert_eq!(
+            diagnostic(
+                AccountAction::LogIn,
+                "AbortError: The operation was aborted"
+            ),
+            "The passkey prompt was cancelled or timed out. Try again and complete the prompt."
+        );
+        assert!(!diagnostic(AccountAction::SaveInitialDisplayName, detail).contains("PRF"));
     }
 
     #[test]
