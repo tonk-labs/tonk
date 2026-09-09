@@ -520,6 +520,7 @@ mod tests {
             .transaction()
             .assert(remote)
             .commit()
+            .publish()
             .perform(&operator)
             .await
             .unwrap();
