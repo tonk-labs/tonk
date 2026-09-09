@@ -2033,8 +2033,13 @@ pub(crate) fn finish_ceremony() {
     {
         if pending_share().is_some() {
             conclude("Your account is ready.");
-        } else if let Some(window) = web_sys::window() {
-            let _ = window.location().assign("/");
+        } else {
+            // A route change, not a document load. `location.assign`
+            // here reloaded the whole app -- wasm bundle, service
+            // worker handshake and all -- to reach a page the router
+            // can already render in place.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
         }
         return;
     }
@@ -2055,9 +2060,9 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            if let Some(window) = web_sys::window() {
-                let _ = window.location().assign("/");
-            }
+            // See above: the Hub is a route, so route to it.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
             return;
         }
         match named {
@@ -2585,9 +2590,14 @@ fn return_to_previous() {
     let anchored = host.is_some_and(|host| host.has_attribute("data-anchored"));
     match path {
         Some(path) => {
-            if let Some(location) = web_sys::window().map(|window| window.location()) {
-                let _ = location.assign(&path);
-            }
+            // A route change: the space page the share left is one the
+            // router renders, and a document load would rebuild the
+            // whole app to get back to it.
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to(&path);
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = &path;
         }
         None if anchored => {
             close();
