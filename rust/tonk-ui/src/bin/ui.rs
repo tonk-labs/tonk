@@ -14,6 +14,16 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
+    // Diagnostics must remain available even when worker/Wasm startup fails.
+    if web_sys::window().is_some_and(|window| {
+        matches!(
+            window.location().pathname().as_deref(),
+            Ok("/doctor" | "/doctor/")
+        )
+    }) {
+        return;
+    }
+
     // Panic hook + (when a key is baked in and the user hasn't opted
     // out) posthog init, pageviews, and DOM-event listeners.
     tonk_ui::analytics::install();
@@ -52,6 +62,13 @@ async fn main() {
         // dismiss remains the true teardown.
         let request = tonk_ui::register_dialog::parse_request(reason);
         match request.reason.as_str() {
+            "custody-anchor" => {
+                tonk_ui::custody_relay::return_to_approval(return_focus);
+                if let Some(anchor) = request.anchor {
+                    tonk_ui::custody_relay::reanchor(anchor);
+                }
+                return;
+            }
             "profile-transition" => {
                 // Add Account already promoted the empty landing profile.
                 // Preserve the anchored ceremony request, then reload so
@@ -117,12 +134,52 @@ async fn main() {
         show_readiness_failure();
         return;
     }
+    if let Err(error) = open_welcome_space().await {
+        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
+        show_readiness_failure();
+        return;
+    }
     mount_root();
     if let Some(request) = tonk_ui::register_dialog::take_reopen() {
         tonk_ui::register_dialog::open();
         tonk_ui::register_dialog::describe(&request);
         tonk_ui::register_dialog::adopt_stashed_share();
     }
+}
+
+/// Root visits alone consume first-use onboarding; deep links keep their destination.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn open_welcome_space() -> anyhow::Result<()> {
+    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("no window"))?;
+    let path = window.location().pathname().unwrap_or_default();
+    if path != "/" {
+        return Ok(());
+    }
+    #[derive(serde::Deserialize)]
+    struct Welcome {
+        path: Option<String>,
+    }
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/profile/welcome",
+            window.location().origin().unwrap_or_default()
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Welcome>()
+        .await?;
+    if let Some(destination) = response.path {
+        // A navigation while setup was in flight wins over the automatic visit.
+        if window.location().pathname().unwrap_or_default() == "/" {
+            window
+                .history()
+                .map_err(|e| anyhow::anyhow!("history: {e:?}"))?
+                .replace_state_with_url(&JsValue::NULL, "", Some(&destination))
+                .map_err(|e| anyhow::anyhow!("welcome navigation: {e:?}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

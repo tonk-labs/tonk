@@ -6,7 +6,7 @@
 /// A profile with no provider has no roster worth showing and no account
 /// to switch between; the only thing to do is link one. It used to
 /// navigate to `/settings`, which put two pages between the label and
-/// the ceremony — press "log in", land on a panel, press "link an
+/// the ceremony — press "log in", land on a panel, press "add an
 /// account" there, and only then meet the cluster. The cluster is the
 /// whole flow, so the label raises it directly.
 pub(crate) fn trigger_asks_to_link(active_provider: Option<&str>) -> bool {
@@ -20,7 +20,7 @@ pub(crate) fn trigger_asks_to_link(active_provider: Option<&str>) -> bool {
 /// naming it "log in" told half the users the wrong thing.
 pub(crate) fn trigger_label(active_provider: Option<&str>) -> &'static str {
     if trigger_asks_to_link(active_provider) {
-        "link an account"
+        "add an account"
     } else {
         "account"
     }
@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn it_asks_a_provider_free_profile_to_link() {
         assert!(super::trigger_asks_to_link(Some("false")));
-        assert_eq!(super::trigger_label(Some("false")), "link an account");
+        assert_eq!(super::trigger_label(Some("false")), "add an account");
     }
 
     #[test]

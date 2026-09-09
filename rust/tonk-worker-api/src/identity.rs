@@ -134,6 +134,9 @@ pub struct DeviceAuthorization {
     pub callback: String,
     /// The name the waiting process gave itself.
     pub name: String,
+    /// Account constraint from a scoped handoff, not proof of authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_account: Option<String>,
 }
 
 impl Default for CustodyIntent {
@@ -181,6 +184,9 @@ pub struct DeviceLink {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountCreation {
+    /// Chosen during signup, committed before enrollment sends the email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// The address the account is created for.
     pub email: String,
     /// What this browser is called in the account's device list.
@@ -228,7 +234,7 @@ impl WebAuthnKind {
     }
 }
 
-/// Ask the page to link an account so a share can proceed.
+/// Ask the page to add an account so a share can proceed.
 ///
 /// Sent by the invite handler when a space cannot be shared because
 /// nothing is registered. The page raises the registration UI; the

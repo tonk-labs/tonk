@@ -211,13 +211,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
+        .command::<tonk_schema::command::AgentHandoff>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
-        .command::<tonk_schema::command::AuthorizeDevice>()
+        .command::<super::ceremony::AuthorizeDeviceRequest>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
@@ -254,6 +255,7 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // pulled onto a device that does not have it yet, because the
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
+        .command::<tonk_schema::command::AgentHandoff>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
@@ -697,6 +699,8 @@ pub(crate) mod tests {
                 session_expires_at: session.expires_at,
                 profile_name: name.clone(),
                 reactor,
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
                 retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 view_bindings: Default::default(),
                 bridges: Default::default(),

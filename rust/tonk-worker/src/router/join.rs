@@ -1297,6 +1297,7 @@ pub(crate) async fn mount_replica_with_configuration(
     subject: &Did,
     configuration: RepositoryConfiguration,
 ) -> Result<Repository<Credential>, TonkWorkerError> {
+    let _admission_mutation = tonk.admission.mutation(subject.as_str());
     let key = subject.repo_key().to_owned();
     if super::account_state::is_account_key(tonk, &key).await {
         return Err(TonkWorkerError::Forbidden(
@@ -2890,7 +2891,9 @@ pub(crate) mod tests {
     #[dialog_common::test]
     async fn it_keeps_a_durable_members_authority_when_the_invite_is_reopened() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (url, key) = handcrafted_invite_url(90, 91).await;
+        // Space storage is keyed by subject, not profile. Keep this fixture
+        // distinct from members::tests (90, 91), which also commits a member.
+        let (url, key) = handcrafted_invite_url(218, 219).await;
         let subject: dialog_varsig::Did = key.parse().unwrap();
 
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
@@ -3043,6 +3046,85 @@ pub(crate) mod tests {
             reissued.did(),
             principal,
             "the seed derives the invite principal the membership hangs off",
+        );
+    }
+
+    /// Rebuild all worker state from durable storage after an onboarding
+    /// join. This fixture has no remote: it verifies local content and the
+    /// real storage proof, while network replication needs a served fixture.
+    #[dialog_common::test]
+    async fn it_reopens_an_onboarding_membership_with_a_disposable_session() {
+        let (name, registry, profile_did, operator_did, account, key, before, revision) = {
+            let fixture = test_state_without_root().await;
+            let initial = crate::worker::boot_state(
+                fixture.storage.clone(),
+                fixture.profile_name.clone(),
+                fixture.profile.clone(),
+                fixture.registry.clone(),
+            )
+            .await
+            .unwrap();
+            drop(fixture);
+            let (app, state, _lsp) = api_router_with_state(initial);
+            let (url, key) = handcrafted_invite_url(86, 87).await;
+            assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+            let before = snapshot(&state, &key).await;
+            let subject = key.parse().unwrap();
+            assert_eq!(
+                proof_window(&state, &subject).await,
+                Some(state.read().await.session_expires_at)
+            );
+            let tonk = state.read().await;
+            let account = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+            let branch = dialog_repository::Repository::from(tonk.profile.signer().clone())
+                .branch(dialog_repository::ACCESS_BRANCH)
+                .open()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            (
+                tonk.profile_name.clone(),
+                tonk.registry.clone(),
+                tonk.profile.did(),
+                tonk.operator.did(),
+                account,
+                key,
+                before,
+                branch.revision(),
+            )
+        };
+        let storage =
+            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
+        let profile = dialog_operator::Profile::open(&name)
+            .perform(&storage)
+            .await
+            .unwrap();
+        assert_eq!(profile.did(), profile_did);
+        // Isolate session construction from boot's legitimate meta work.
+        let session = crate::session::open(&profile, &storage).await.unwrap();
+        let branch = dialog_repository::Repository::from(profile.signer().clone())
+            .branch(dialog_repository::ACCESS_BRANCH)
+            .open()
+            .perform(&session.operator)
+            .await
+            .unwrap();
+        assert_eq!(branch.revision(), revision);
+        drop(branch);
+        drop(session);
+        let rebuilt = crate::worker::boot_state(storage, name, profile, registry)
+            .await
+            .unwrap();
+        assert_ne!(rebuilt.operator.did(), operator_did);
+        assert_eq!(
+            crate::onboarding::did(&rebuilt).await.unwrap(),
+            Some(account)
+        );
+        let (_app, state, _lsp) = api_router_with_state(rebuilt);
+        assert_eq!(snapshot(&state, &key).await, before);
+        assert_eq!(content_memberships(&state, &key).await.len(), 1);
+        assert_eq!(
+            proof_window(&state, &key.parse().unwrap()).await,
+            Some(state.read().await.session_expires_at)
         );
     }
 

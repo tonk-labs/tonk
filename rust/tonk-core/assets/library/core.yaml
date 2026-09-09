@@ -145,7 +145,7 @@ event!: &on/toggle
 
 # The blank canvas: what a lean (no-template) repo renders. It is the
 # default target of the `tonk/space` alias (below). Mirrors the mock's
-# "your starting layout is in place" frame: a connect-an-agent prompt
+# connect-an-agent frame: a prompt
 # (the same `tonk:invite` mint the share path uses, rendered via the
 # `tonk:agent-invite` prompt view).
 concept!: &blank
@@ -184,16 +184,6 @@ view!:
             text-transform: uppercase;
             color: var(--wa-color-text-quiet);
           }
-          .blank-canvas__title {
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            color: var(--wa-color-text-normal);
-            font-family: var(--wa-font-family-body);
-            font-size: var(--wa-font-size-2xl);
-            font-weight: var(--wa-font-weight-normal);
-            letter-spacing: -0.02em;
-          }
           .blank-canvas__deeplink {
             display: flex;
             flex-direction: column;
@@ -207,10 +197,8 @@ view!:
             display: none !important;
           }
         </style>
-        <span class="blank-canvas__label">no template &middot; empty view</span>
-        <h1 class="blank-canvas__title">your starting layout is in place</h1>
         <section class="blank-canvas__deeplink">
-          <tonk-page on:invite=tonk:invite></tonk-page>
+          <tonk-page on:invite=tonk:agent-handoff></tonk-page>
           <tonk-origin>
             <tonk-display
               entity={subject}
@@ -220,7 +208,7 @@ view!:
               <tonk-display
                 slot="no-entity"
                 entity={subject}
-                model=tonk:share/blocked>
+                model=tonk:agent-handoff-state>
                 <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
               </tonk-display>
             </tonk-display>
@@ -433,15 +421,46 @@ view!:
         </wa-input>
       </div>
 
-# The agent-invite concept: the live `tonk:invitation` joined with the
-# repository's display `name`, both keyed by the repo subject. The rule
-# below derives it so the agent-prompt view can template the repo name and
-# the invite URL from one model. It resolves only once the invitation's
-# both halves (durable authorization + overlay credential) exist, so the
-# canvas shows "Generating link…" until the mint lands or a refusal replaces it.
+# Agent handoffs have separate command and overlay attributes from ordinary sharing.
+concept!:
+  this: tonk:agent-handoff
+  description: Request an agent invitation scoped to the current browser account.
+  with:
+    time:
+      description: The time this handoff was requested.
+      the: xyz.tonk.agent-handoff/time
+      as: float
+      cardinality: one
+
+concept!: &tonk/agent-handoff-state
+  this: tonk:agent-handoff-state
+  description: Session-only account-scoped handoff response, independent of ordinary sharing.
+  with:
+    status:
+      description: Ready marker or a pending or failure explanation.
+      the: xyz.tonk.agent-handoff/status
+      as: text
+      cardinality: one
+    link:
+      description: Scoped invitation URL when ready, otherwise empty.
+      the: xyz.tonk.agent-handoff/link
+      as: text
+      cardinality: one
+    account:
+      description: Required account when ready; a device placeholder while unavailable.
+      the: xyz.tonk.agent-handoff/account
+      as: entity
+      cardinality: one
+
+view!:
+  this: tonk:agent-handoff-state
+  show:
+    ui: |
+      <p data-agent-handoff-status>{status}</p>
+
 concept!: &tonk/agent-invite
   this: tonk:agent-invite
-  description: A live invite joined with the repo's display name, for the agent prompt.
+  description: An account-scoped handoff joined with the repository name for the agent prompt.
   with:
     name:
       description: The repository's display name.
@@ -449,28 +468,15 @@ concept!: &tonk/agent-invite
       cardinality: one
       as: text
     link:
-      description: The complete invite URL — what the prompt embeds.
-      the: xyz.tonk.credential/link
+      description: The complete account-scoped handoff URL.
+      the: xyz.tonk.agent-invite/link
       cardinality: one
       as: text
-    access:
-      description: base58 delegation chain — the `?access=` part of the invite URL.
-      the: xyz.tonk.authorization/proof
+    account:
+      description: The browser account the agent must connect as.
+      the: xyz.tonk.agent-invite/account
       cardinality: one
-      as: text
-    remote:
-      description: >
-        Legacy sync-endpoint URL suffix. Empty for invites minted since
-        the endpoint moved into the delegation chain's signed
-        `home.address` meta.
-      the: xyz.tonk.authorization/remote
-      cardinality: one
-      as: text
-    code:
-      description: base58 keypair seed — the `#` fragment of the invite URL.
-      the: xyz.tonk.credential/seed
-      cardinality: one
-      as: text
+      as: entity
 
 # A refused invite mint, asserted into the session overlay by the worker.
 # The empty-canvas and empty-sheet agent-link panels use it as the fallback
@@ -547,89 +553,194 @@ view!:
         <p>{detail}</p>
       </div>
 
-# Derive `tonk:agent-invite` by joining the repo's `tonk:repository` name
-# and its live `tonk:invitation` on the same subject (`?this`). `?this`
-# becomes the derived entity; the same-named vars fill the conclusion's
-# fields.
+# Only a ready account-scoped response can produce an agent prompt. Its
+# derived attributes must differ from the response attributes, or a pending
+# response with an empty link satisfies the prompt concept directly.
 rule!:
-  description: Joins the repo name with the live invitation for the agent prompt
-  assert!: tonk/agent-invite
+  description: Joins the repository name with its ready account-scoped agent handoff.
+  assert: tonk/agent-invite
   when:
     - assert: tonk/repository
       where:
         this: ?this
         name: ?name
-    - assert: invitation
+    - assert: tonk/agent-handoff-state
       where:
         this: ?this
+        status: "ready"
         link: ?link
-        access: ?access
-        remote: ?remote
-        code: ?code
+        account: ?account
 
-# The agent-prompt view — the default view for `tonk:agent-invite`, so
-# `<tonk-display model=tonk:agent-invite>` mounts it with no explicit
-# `view=`. It renders a full, paste-able agent prompt (task + bootstrap
-# commands) with the minted invite URL embedded, instead of a bare link.
-# The repo `{name}` and invite `{access}`/`{remote}`/`{code}` are model
-# fields; the page title arrives as the `data-page` host attribute and the
-# origin base as `data-base` (from `<tonk-origin>`). `<wa-copy-button>`
-# copies the assembled prompt via its `value`.
+# Human-facing invitation; the machine instructions live only in the copy value.
 view!:
   this: tonk:agent-invite
   show:
     ui: |
       <div class="agent-prompt">
         <style>
-          .agent-prompt { border: var(--wa-border-width-s) solid var(--wa-color-surface-border); border-radius: var(--wa-border-radius-m); background: var(--wa-color-surface-lowered); overflow: hidden; }
-          .agent-prompt__bar { display: flex; align-items: center; justify-content: space-between; padding: var(--wa-space-s) var(--wa-space-m); border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
-          .agent-prompt__label { font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-text-quiet); }
-          .agent-prompt__copy { color: var(--wa-color-text-quiet); }
+          .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
+          .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
+          .agent-prompt__action { display: flex; gap: var(--wa-space-s); align-items: center; }
+          .agent-prompt__copy {
+            --agent-copy-ink: var(--fabb-ink, #38182a);
+            --agent-copy-surface: var(--fabb-on-ink, #f7f6f5);
+          }
           .agent-prompt__copy::part(button) {
-            display: inline-flex;
+            box-sizing: border-box;
+            min-width: 144px;
+            min-height: 44px;
+            padding: 0 16px;
+            border: 0;
+            border-radius: 0;
             align-items: center;
             justify-content: center;
-            padding: var(--wa-space-xs);
-            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-            border-radius: var(--wa-border-radius-m);
-            background: var(--wa-color-surface-default);
-            color: var(--wa-color-text-quiet);
-            transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+            background: var(--agent-copy-surface);
+            color: var(--agent-copy-ink);
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-copy-ink) 28%, transparent);
+            font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+            letter-spacing: .02em;
+            text-transform: lowercase;
+            transition: scale 150ms ease-out, background-color 150ms ease-out;
           }
           .agent-prompt__copy::part(button):hover {
-            background: var(--wa-color-neutral-fill-quiet);
-            border-color: var(--wa-color-neutral-border-loud);
-            color: var(--wa-color-text-normal);
+            background: color-mix(in srgb, var(--agent-copy-ink) 6%, var(--agent-copy-surface));
+            color: var(--agent-copy-ink);
           }
-          .agent-prompt__copy::part(copy-icon) { font-size: 15px; }
-          .agent-prompt__pre { margin: 0; padding: var(--wa-space-l) var(--wa-space-m); font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-s); line-height: var(--wa-line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wa-color-text-normal); }
+          .agent-prompt__copy::part(button):active {
+            scale: .96;
+            background: color-mix(in srgb, var(--agent-copy-ink) 12%, var(--agent-copy-surface));
+            color: var(--agent-copy-ink);
+          }
+          .agent-prompt__copy::part(button):focus-visible {
+            background: var(--agent-copy-surface);
+            color: var(--agent-copy-ink);
+            outline: 2px solid var(--agent-copy-ink);
+            outline-offset: 3px;
+          }
+          .agent-prompt__copy::part(copy-icon),
+          .agent-prompt__copy::part(success-icon),
+          .agent-prompt__copy::part(error-icon) {
+            color: inherit;
+            animation: none;
+          }
+          .agent-prompt__copy[disabled]::part(button) { opacity: .4; cursor: not-allowed; scale: 1; }
+          .agent-prompt__copy::part(tooltip__base) { display: none; }
+          @media (prefers-reduced-motion: reduce) {
+            .agent-prompt__copy::part(button) { transition: none; }
+            .agent-prompt__copy::part(button):active { scale: 1; }
+          }
+          .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
-        <div class="agent-prompt__bar">
-          <span class="agent-prompt__label">prompt for your agent</span>
-          <wa-copy-button class="agent-prompt__copy" value="You're helping build the &quot;{name}&quot; repo.
+        <p>Copy the prompt and give it to an agent of your choice. Then tell it what you want to build.</p>
+        <p class="agent-prompt__note">Your agent will connect to this space. If it needs to link your account, Tonk will open a browser approval. Keep this space open to see the connection confirmed and watch your changes arrive.</p>
+        <div class="agent-prompt__action">
+          <wa-copy-button class="agent-prompt__copy" copy-label="Copy prompt" success-label="Prompt copied" error-label="Could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
 
-      Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+      Connect to the exact space this prompt came from:
 
-      Ask me where I'd like to keep the &quot;{name}&quot; tonk on this machine, then cd into that folder and run:
+        npx --yes @tonk/cli connect '{link}'
 
-        npx @tonk/cli join '{link}'
-        npx @tonk/cli guide    # how to drive the CLI
-        npx @tonk/cli schema   # concepts already on the branch
+      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. This handoff requires account {account}. If the CLI reports a different account, explain the mismatch and ask me before switching. Only after I consent, rerun the same command with `--switch-account {account}`. Browser passkey approval is still required; tell me to approve the requested account in my Tonk browser. Do not log out first. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
 
-      Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home."></wa-copy-button>
+      Then run `npx --yes @tonk/cli status` and `npx --yes @tonk/cli help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
+            <span slot="copy-icon" aria-hidden="true">copy prompt</span>
+            <span slot="success-icon" aria-hidden="true">prompt copied</span>
+            <span slot="error-icon" aria-hidden="true">could not copy</span>
+          </wa-copy-button>
         </div>
-        <pre class="agent-prompt__pre">You're helping build the "{name}" repo.
-
-      Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
-
-      Ask me where I'd like to keep the "{name}" tonk on this machine, then cd into that folder and run:
-
-        npx @tonk/cli join '{link}'
-        npx @tonk/cli guide    # how to drive the CLI
-        npx @tonk/cli schema   # concepts already on the branch
-
-      Then build: define schema with `npx @tonk/cli concept add`, write data with `npx @tonk/cli assert`, add views with `npx @tonk/cli view add` — and finish with `npx @tonk/cli home &lt;concept&gt;` so the build lands on the space home.</pre>
       </div>
+
+# Connection receipt, written only after the CLI has pulled this space.
+# A durable acknowledgement, deliberately not an online/heartbeat signal.
+concept!: &agent-connection
+  this: tonk:agent-connection
+  description: Confirmation that an agent CLI pulled this space and sent a reply.
+  with:
+    status:
+      description: Human-readable acknowledgement of a completed agent connection.
+      the: xyz.tonk.agent-connection/status
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:agent-connection
+  show:
+    ui: |
+      <details open class="agent-connection" data-this={this}>
+        <summary aria-label="Dismiss agent connection notification">×</summary>
+        <span role="status">Your agent connected</span>
+        <style>
+          .agent-connection {
+            position: fixed;
+            left: 50%;
+            bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
+            z-index: 12;
+            box-sizing: border-box;
+            border: 0;
+            border-radius: 0;
+            margin: 0;
+            width: min(432px, calc(100vw - 48px));
+            min-height: 44px;
+            padding: 12px 52px 12px 24px;
+            background: rgb(253 252 252 / 72%);
+            color: #38182a;
+            box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
+            -webkit-backdrop-filter: blur(12px) saturate(1.5);
+            backdrop-filter: blur(12px) saturate(1.5);
+            font: 400 13px/1.45 var(--wa-font-family-body);
+            text-align: center;
+            transform: translateX(-50%);
+            animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
+              agent-connection-exit .4s ease-out 120s forwards;
+          }
+          .agent-connection:not([open]) { display: none; }
+          .agent-connection > summary {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            border-radius: 0;
+            position: absolute;
+            top: 0;
+            right: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 100%;
+            min-height: 44px;
+            list-style: none;
+            cursor: pointer;
+            font-size: 20px;
+            line-height: 1;
+          }
+          .agent-connection > summary::after { display: none; }
+          .agent-connection > summary::-webkit-details-marker { display: none; }
+          .agent-connection > summary:hover { background: rgb(56 24 42 / 6%); }
+          .agent-connection > summary:focus-visible {
+            outline: 2px solid currentColor;
+            outline-offset: -3px;
+          }
+          @keyframes agent-connection-enter {
+            from { opacity: 0; transform: translateX(-50%) translateY(70px); }
+            to { opacity: 1; transform: translateX(-50%); }
+          }
+          @keyframes agent-connection-exit {
+            from { opacity: 1; transform: translateX(-50%); }
+            to { opacity: 0; transform: translateX(-50%) translateY(12px); visibility: hidden; }
+          }
+          @media (prefers-color-scheme: dark) {
+            .agent-connection > summary:hover { background: rgb(226 223 221 / 9%); }
+            .agent-connection {
+              background: rgb(29 24 25 / 72%);
+              color: #e2dfdd;
+              box-shadow: 0 0 0 1px rgb(226 223 221 / 55%);
+            }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .agent-connection { animation-duration: 0s; }
+          }
+        </style>
+      </details>
 
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
@@ -1735,6 +1846,9 @@ view!:
   show:
     ui: |
       <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
+        <tonk-display entity="id:tonk:agent-connection" model=tonk:agent-connection with="{branch}@{repo}">
+          <span slot="no-entity"></span>
+        </tonk-display>
         <div class='display-view-slot'>
           <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
         </div>

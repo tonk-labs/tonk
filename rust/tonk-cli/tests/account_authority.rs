@@ -993,3 +993,126 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
     );
     Ok(())
 }
+
+/// Replacing the login must not publish the previous account's local facts.
+#[dialog_common::test]
+async fn replacement_does_not_hydrate_previous_account_facts(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::{RepositoryName, prelude::DidExt as _};
+
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    let previous = tonk_cli::account::active_in(&fixture.profile, &fixture.store)
+        .await?
+        .context("fixture A is active")?;
+    let previous_branch = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &operator,
+        &fixture.store,
+    )
+    .await?
+    .context("account A mounts")?;
+    let private = RepositoryName {
+        this: fixture.link.issuer().this(),
+        name: "A-only private account fact".into(),
+    };
+    previous_branch
+        .transaction()
+        .assert(private.clone())
+        .commit()
+        .perform(&operator)
+        .await?;
+
+    let guarded_site =
+        TonkSite::open_with(&fixture.pre_account_site.root, account_config(&fixture)).await?;
+    previous_branch
+        .push()
+        .perform(&guarded_site.operator)
+        .await?;
+
+    let previous_branch = dialog_repository::Repository::from(&fixture.profile)
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(&operator)
+        .await?;
+    previous_branch
+        .transaction()
+        .assert(RepositoryName {
+            this: private.this.clone(),
+            name: "Unpushed A-only edit".into(),
+        })
+        .commit()
+        .perform(&operator)
+        .await?;
+
+    let root = dialog_credentials::Ed25519Signer::generate().await?;
+    env.activate_customer(&root, "replacement@example.com")
+        .await?;
+    let authorized =
+        tonk_identity::ceremony::authorize_device(root, fixture.profile.did(), &remote).await?;
+    let bytes = hex::decode(&authorized.delegation_hex)?;
+    let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())?;
+    let replacement = tonk_cli::account::ActiveAccount {
+        credential_id: authorized.root_did.clone(),
+        root_did: authorized.root_did,
+        delegation_cid: chain.proof_cids()[0].to_string(),
+        delegation_hex: authorized.delegation_hex,
+        remote: Some(remote),
+        attachment_id: "replacement-test-generation".to_owned(),
+        attached_at: 1,
+    };
+    tonk_cli::account::replace_account_in(
+        &fixture.profile,
+        &fixture.store,
+        &previous,
+        &replacement,
+    )
+    .await?;
+    let outcome = tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator.clone(),
+        fixture.store.clone(),
+    )
+    .await?;
+    assert_eq!(
+        outcome.status,
+        tonk_account::AccountStateStatus::Ready,
+        "{outcome:?}"
+    );
+    assert!(
+        previous_branch
+            .push()
+            .perform(&guarded_site.operator)
+            .await
+            .is_err(),
+        "a retained A handle must not dispatch as B or push A's facts to B"
+    );
+    let branch = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &operator,
+        &fixture.store,
+    )
+    .await?
+    .context("account B mounts")?;
+    let names: Vec<RepositoryName> = branch
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(private.this),
+            name: Term::var("name"),
+        })
+        .perform(&operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow::anyhow!("query account B: {error:?}"))?;
+    assert!(
+        names.is_empty(),
+        "account B inherited A's private facts: {names:?}"
+    );
+    Ok(())
+}

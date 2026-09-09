@@ -375,6 +375,15 @@ async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
     let root = crate::ceremony::unlock_root(&endpoint)
         .await
         .map_err(js_error)?;
+    if let Some(expected) = optional_string_property(&input, "expectedAccount") {
+        use dialog_varsig::Principal as _;
+        if root.did().as_str() != expected {
+            return Err(JsValue::from_str(&format!(
+                "this handoff requires account {expected}; the unlocked passkey belongs to {}",
+                root.did()
+            )));
+        }
+    }
     let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
         .await
         .map_err(js_error)?;

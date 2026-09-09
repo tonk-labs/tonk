@@ -4,7 +4,8 @@
 
 The browser shell boots the host/service-worker environment and mounts exactly
 one top-level surface based on the URL. `/activate*` mounts the emailed customer
-activation page, and every other route mounts `<tonk-site>`, whose profile route
+activation page, `/doctor` and `/doctor/` mount standalone diagnostics, and every
+other route mounts `<tonk-site>`, whose profile route
 table brings up Hub, space chrome, and sealed guest content. Account settings
 are the hub's `/settings` route inside that guest; there is no top-level
 account page any more. A named space's
@@ -26,6 +27,29 @@ profile and account lifecycle. At `/activate?ucan=...`, it mounts
 `<tonk-activate>` without requiring a logged-in profile. At `/`, a space route,
 or another content path, it mounts one `<tonk-site>` and the current profile's
 route table selects Hub or content.
+
+For `UI-01`, a first visit to `/` in a browser with no account or spaces creates
+one private local **Welcome to Tonk** space and opens its Welcome page. Later
+visits to `/` open Hub, including after the welcome space is removed. Existing
+accounts and profiles with spaces skip this onboarding. Explicit deep links
+retain their destination. Concurrent first visits create one space, and an
+interrupted seed resumes that same space.
+
+Its Agent playground uses the standard account-aware connect prompt, with
+instructions limiting agent work to that page and its own views, components,
+and data. Signed-out users see account setup guidance; ready users can copy the
+prompt. This is a prompt scope, not page-level authority enforcement.
+
+> Technical note: the bootstrap probe completes before the site mounts. The
+> bundled export excludes source credentials, governance, history, and repository
+> identity. Existing seeded copies retain their saved content.
+
+Local evidence for `feat/onboarding-space` (based on `ac7cdba11`): four worker
+tests cover sanitization, concurrent setup, resume, and existing-space skip.
+`it_opens_the_welcome_space_once_then_the_hub` passed in Chrome with an actual
+copy-button check using a prompt fixture. Isolated Chrome checks cover card
+spacing and status alignment. Full account/CLI handoff, Safari, offline first
+boot, and crash-at-each-write verification remain unrun for this change.
 
 At a named space's `/inspector` route, the inspector starts with one compact,
 full-width diagnostics summary above the notebook. It identifies the current
@@ -293,3 +317,32 @@ avoid recording credential/passkey inputs.
   and deleted states through the real Hub/content shell.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
+
+
+## Doctor diagnostics
+
+Journey `UI-05`; verification `UI-12`. Open `/doctor` or `/doctor/` directly, or
+follow Open Doctor from a worker initialization failure. The page remains usable
+without UI Wasm readiness and does not automatically register/update a worker.
+Browser/build/storage information remains available without a controller; worker
+and identity probes report their own errors and eight-second timeouts.
+
+Refresh captures account, local-root, profile/operator, space and roster state,
+worker health and up to 200 recent worker log entries. Expand logs to inspect
+them. Add optional issue/reproduction context and use Copy debug bundle for
+agent to copy the displayed snapshot. The button says Copied for two seconds;
+clipboard errors appear beside it. Known credentials are filtered best-effort;
+emails, public identifiers and private free-form log content may remain. Logs
+reset when the worker restarts; earlier page-console and server logs are absent.
+
+Check for update applies to the registration covering this page. Unregister
+requires confirmation and removes only that registration, preserving caches and
+local data. Cancelling changes nothing. Existing tabs may remain controlled until
+closed; returning to the normal app registers the worker again. Failures remain
+visible in the worker panel and controls become available for retry. Refresh
+after account or worker changes; the snapshot is not a live account subscription.
+
+Source: `e884e4326` plus this Doctor change. Node contract tests and isolated
+Chrome source-shell fixtures cover probe failures, filtering, copy feedback,
+responsive spacing and boot isolation. Full Trunk/installed-worker lifecycle,
+real account APIs, Safari and hosted operation remain unverified.

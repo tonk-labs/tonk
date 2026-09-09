@@ -861,6 +861,13 @@ async fn create(
 ) -> Result<wasm_bindgen::JsValue, String> {
     use dialog_varsig::Principal as _;
 
+    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+
+    let display_name = creation.display_name.as_deref().map(str::trim);
+    if display_name.is_some_and(str::is_empty) {
+        return Err("Enter a display name to continue.".to_string());
+    }
+
     let account = open(custodian).await?;
     let root = account
         .signer()
@@ -870,7 +877,8 @@ async fn create(
     // signed with the concrete key.
     let dialog_credentials::Signer::Ed25519(root) = root;
 
-    let tonk = super::profiles::for_account(state.clone(), &root.did(), source)
+    let account_did = root.did();
+    let tonk = super::profiles::for_account(state.clone(), &account_did, source)
         .await
         .map_err(|error| format!("the account profile could not be selected: {error}"))?;
     log!(
@@ -937,6 +945,23 @@ async fn create(
         true,
     )
     .await?;
+
+    // This ceremony created the root, so its initial name can be authored
+    // before the remote is available. Ordinary renames still require hydrated
+    // account state. Like the custody records below, this fact lives on profile
+    // main and is published/converged by the first successful activation sweep.
+    // Commit before enrollment can send the verification email.
+    if let Some(name) = display_name {
+        tonk.reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .transaction()
+            .assert(AccountDisplayName::new(account_did.this(), name.to_owned()))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| format!("the initial display name was not recorded: {error}"))?;
+    }
 
     let answer = enroll(
         &tonk,

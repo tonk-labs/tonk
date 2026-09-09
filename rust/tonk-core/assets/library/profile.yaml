@@ -611,8 +611,10 @@ view!:
     ui: |
       <!-- Revoked and deleted intentionally share this one screen. The
            diagnostic reason remains in the console/worker status; rendering it
-           here would reveal whether the space still exists. -->
-      <section class="edge-wall edge-wall--closed" role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
+           here would reveal whether the space still exists. Bind the wall to
+           the failure row: static chrome renders even on an empty frame while
+           the join is pending or the entity query is still resolving. -->
+      <section class="edge-wall edge-wall--closed" data-id={this} role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
         <h1 class="edge-statement" id="edge-closed-title">this share link expired</h1>
         <div class="edge-narrator" id="edge-closed-guidance">ask the person who shared this space to send you a new link</div>
         <div class="edge-run">
@@ -1116,7 +1118,7 @@ view!:
              EVERY matching child, not the first). `no-entity` keeps the
              quiet placeholder: the concept resolved, the row just is not
              here yet. -->
-        <tonk-title slot="no-entity" text="Untitled — Tonk"></tonk-title>
+        <tonk-title slot="no-entity" hidden text="Untitled — Tonk"></tonk-title>
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
@@ -1128,7 +1130,9 @@ view!:
              Slotted rather than left to the built-in fallback, which
              would show "Model not found — concept: tonk:repository" to
              someone whose actual problem is that they were never invited. -->
-        <div slot="no-model" class="space-unknown">
+        <!-- Light-DOM slots must be hidden in the template too: before the
+             display initializes they otherwise paint as ordinary content. -->
+        <div slot="no-model" hidden class="space-unknown">
           <tonk-title text="Not here — Tonk"></tonk-title>
           <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
           <div class="space-unknown-wall">
@@ -1148,7 +1152,7 @@ view!:
              built-in red `<wa-callout>` fires. This inert child suppresses
              that callout while pushing no title, leaving the tab exactly
              as it was — the behavior for older spaces. -->
-        <span slot="no-view"></span>
+        <span slot="no-view" hidden></span>
       </tonk-display>
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The

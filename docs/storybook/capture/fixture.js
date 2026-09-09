@@ -5,7 +5,7 @@
   const screen = new URLSearchParams(location.search).get("screen") || "WEB-07";
   // The account screens that still exist as markup this fixture can
   // serve: the hub's settings panel and its clusters. Sign-up, log-in,
-  // and the link-an-account panels became the registration cluster the
+  // and the add-an-account panels became the registration cluster the
   // hub raises, which is captured from the running product.
   const accountScreens = new Set(["WEB-10", "WEB-11", "WEB-12", "WEB-13"]);
   const activationScreens = new Set(["WEB-14", "WEB-15"]);

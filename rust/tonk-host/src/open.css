@@ -1,0 +1,118 @@
+dialog.tonk-open {
+  /* Embedded chrome shares the FABB palette, independent of the guest theme. */
+  --open-ink: var(--fabb-ink, #38182a);
+  --open-on-ink: var(--fabb-on-ink, #f7f6f5);
+  --open-card: var(--fabb-panel, rgb(247 246 245 / 92%));
+  --open-soft: var(--fabb-ink-soft, #5b4953);
+  --open-ring: var(--fabb-ring, rgb(56 24 42 / 85%));
+  color-scheme: light;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  padding: 1px;
+  width: min(432px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  background: transparent;
+  box-shadow: none;
+  color: var(--open-ink);
+  font: 400 13.5px/1.5 var(--sans, "IBM Plex Sans", Helvetica, Arial, sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+dialog.tonk-open[open] {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+dialog.tonk-open::backdrop {
+  background: var(--fabb-dim, rgb(56 24 42 / 32%));
+}
+.tonk-open *, .tonk-open *::before, .tonk-open *::after {
+  box-sizing: border-box;
+}
+.tonk-open ::selection {
+  background: var(--open-ink);
+  color: var(--open-on-ink);
+}
+.tonk-open h2, .tonk-open button {
+  font: 600 13px/1 var(--cond, "IBM Plex Sans Condensed", "Arial Narrow", sans-serif);
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+.tonk-open h2, .tonk-open__body, .tonk-open__actions {
+  width: 100%;
+  min-width: 0;
+}
+.tonk-open h2 {
+  display: flex;
+  align-items: flex-end;
+  flex: none;
+  justify-content: flex-end;
+  min-height: 36px;
+  margin: 0;
+  padding: 10px 10px 9px 16px;
+  text-wrap: balance;
+  background: var(--open-card);
+  color: var(--open-ink);
+  box-shadow: 0 0 0 1px var(--open-ring);
+}
+.tonk-open__body {
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--open-card);
+  box-shadow: 0 0 0 1px var(--open-ring);
+}
+/* Both strings are untrusted: keep the full destination readable, including
+   the end of long hostnames. Never truncate or transform their case. */
+.tonk-open__label, .tonk-open__url {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+.tonk-open__label { font-weight: 600; }
+.tonk-open__url { margin-top: 4px; color: var(--open-soft); }
+.tonk-open__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 0;
+}
+.tonk-open button {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  width: 144px;
+  max-width: 50%;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 10px 9px 16px;
+  border: 0;
+  border-radius: 0;
+  appearance: none;
+  background: var(--open-card);
+  color: var(--open-ink);
+  box-shadow: 0 0 0 1px var(--open-ring);
+  cursor: pointer;
+  transition: background-color 150ms ease-out, scale 150ms ease-out;
+}
+.tonk-open button:hover {
+  background: linear-gradient(var(--fabb-hover, rgb(56 24 42 / 6%)), var(--fabb-hover, rgb(56 24 42 / 6%))), var(--open-card);
+}
+.tonk-open button:active { scale: 0.96; }
+.tonk-open button.tonk-open__confirm {
+  background: var(--open-ink);
+  color: var(--open-on-ink);
+}
+.tonk-open button.tonk-open__confirm:hover {
+  background: linear-gradient(color-mix(in srgb, var(--open-on-ink) 16%, transparent), color-mix(in srgb, var(--open-on-ink) 16%, transparent)), var(--open-ink);
+}
+.tonk-open button:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 1px var(--open-ring), inset 0 0 0 2px var(--open-on-ink), inset 0 0 0 4px var(--open-ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tonk-open button { transition: none; }
+  .tonk-open button:active { scale: 1; }
+}

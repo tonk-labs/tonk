@@ -302,6 +302,8 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     spawn_local(async move {
         if !reuse {
             render_in_iframe(&host_for_task, &cell, &site, with, allow);
+        } else if let Some(state) = cell.borrow().as_ref() {
+            crate::bridge::refresh_context(&host_for_task, state);
         }
         if let Err(error) =
             tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await

@@ -21,6 +21,15 @@
                 }
             })();
         </script>
+        <script>
+            globalThis.tonkDoctorRoute = ["/doctor", "/doctor/"].includes(location.pathname);
+        </script>
+        <script type="module">
+            if (globalThis.tonkDoctorRoute) {
+                const { mountDoctor } = await import("/doctor.mjs");
+                mountDoctor();
+            }
+        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -294,6 +303,8 @@
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
+            // Doctor observes the existing registration without starting or updating it.
+            if (!globalThis.tonkDoctorRoute) {
             const serviceWorkersSupported = "serviceWorker" in navigator;
 
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
@@ -736,6 +747,7 @@
                 if (document.visibilityState !== "visible") return;
                 sendVisibility().catch(() => {});
             });
+            }
         </script>
 
         <!-- Boot watchdog. A boot occasionally wedges — a wasm fetch that
@@ -760,7 +772,7 @@
          the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
-                if (!("serviceWorker" in navigator)) return;
+                if (globalThis.tonkDoctorRoute || !("serviceWorker" in navigator)) return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();
@@ -893,6 +905,7 @@
             data-target-path="__tonk"
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+        <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
         <link
             data-trunk
             rel="copy-file"
@@ -922,6 +935,8 @@
             href="../tonk-core/assets/library/core.yaml"
             data-target-path="library"
         />
+        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding.yaml" data-target-path="library" />
+        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding-agent.yaml" data-target-path="library" />
         <!-- Lean profile library: only the space concept + Hub view,
        seeded onto the profile meta branch (which backs only the Hub)
        instead of the full core.yaml. -->

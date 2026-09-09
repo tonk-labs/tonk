@@ -43,6 +43,8 @@ const ROUTES: &[&str] = &[
     "/api/profile/branch/{branch}/transact",
     "/api/profile/join",
     "/api/profile/repository",
+    // Bootstrap must choose the initial route before the page mounts a site.
+    "/api/profile/welcome",
     "/api/profiles",
     "/api/profiles/activate",
     "/api/profiles/add",

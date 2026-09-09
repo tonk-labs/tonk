@@ -348,7 +348,7 @@ pub async fn pull(
     // root is the linked account's root DID — NOT the account branch's
     // subject: the account is profile main's upstream, so the local
     // branch's subject is the profile itself.
-    let account_root: Did = crate::identity::local_root_with_operator(profile, &operator)
+    let account_root: Did = crate::identity::local_root_for_store(profile, &operator, store)
         .await?
         .context("no account root is recorded on this profile")?
         .root_did

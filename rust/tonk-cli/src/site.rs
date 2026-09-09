@@ -433,23 +433,31 @@ pub struct Identity {
 impl Identity {
     /// Resolve this installation's identities from one open replica.
     ///
-    /// The account comes from the registry and the local root from the
-    /// profile's credential store; both are properties of the installation,
-    /// not of the space, so any replica answers for all of them.
+    /// The account comes from one recovered canonical session snapshot.
+    /// A signed-out installation may retain its durable local root. Both
+    /// are installation properties, so any replica answers for them.
     pub async fn of(site: &TonkSite) -> Result<Self> {
-        Ok(Self {
-            account: site.account_store.account()?.map(|account| account.root),
-            // Best effort: a device that has never been provisioned has no
-            // local root, and that is not an error — it just means the row
-            // to look for is the profile's.
-            local_root: crate::identity::local_root_with_operator(
+        let active = crate::account_session::snapshot(
+            &site.profile,
+            site.operator.local(),
+            &site.account_store,
+        )
+        .await?
+        .active;
+        let account = active.as_ref().map(|account| account.root_did.clone());
+        let local_root = match active {
+            Some(active) => Some(active.root_did),
+            None => crate::identity::local_root_for_store(
                 &site.profile,
                 site.operator.local(),
+                &site.account_store,
             )
-            .await
-            .ok()
-            .flatten()
+            .await?
             .map(|root| root.root_did),
+        };
+        Ok(Self {
+            account,
+            local_root,
             onboarding: onboarding_grant_issuer(site).await,
             profile: site.profile.did().to_string(),
         })
@@ -458,7 +466,7 @@ impl Identity {
     /// The root of the account signed in here, if any.
     ///
     /// Narrower than [`Self::dids`] on purpose. "Which account am I signed
-    /// in as" is a question about the registry slot, and it is the one that
+    /// in as" is a question about canonical session state, which
     /// changes when somebody switches accounts; "can this installation act
     /// on this space" is the broader question the other identities answer.
     pub fn account(&self) -> Option<&str> {
@@ -566,7 +574,8 @@ async fn bootstrap_repository(
     let account_store = &config.account_store;
     let require_account = config.require_account;
     let provision_account_spaces = config.provision_account_spaces;
-    let local_root = crate::identity::local_root_with_operator(profile, operator).await?;
+    let local_root =
+        crate::identity::local_root_for_store(profile, operator, account_store).await?;
     let account_operator = if require_account {
         crate::account::require_account_with_operator_in(profile, operator, account_store).await?;
         let account_operator =
@@ -769,7 +778,8 @@ async fn mount_delegated_inner(
     config: SiteConfig,
     require_reusable: bool,
 ) -> Result<TonkSite> {
-    let local_root = crate::identity::local_root_with_operator(&profile, &operator).await?;
+    let local_root =
+        crate::identity::local_root_for_store(&profile, &operator, &config.account_store).await?;
     let require_account = config.require_account && require_reusable;
     if require_account {
         crate::account::require_account_with_operator_in(
@@ -822,6 +832,21 @@ async fn mount_delegated_inner(
         .perform(&operator)
         .await
         .context("failed to persist delegated authority")?;
+    let reusable = if matches!(
+        &reusable,
+        Err(tonk_account::prefix::PrefixError::AccountRootIntermediate)
+    ) {
+        // A handoff back to the issuing browser account includes that root
+        // before its final hop. Retain the already-signed prefix ending at
+        // the first root, rather than treating the whole loop as a reusable
+        // prefix. Recovery proves stored authority; it never mints a new hop.
+        let recovered = recover_prefix(&profile, &operator, &subject, &authority_root)
+            .await?
+            .context("claimed authority has no reusable account-root prefix")?;
+        verify_prefix(&recovered.to_bytes()?, &authority_root).await
+    } else {
+        reusable
+    };
     if let Ok(validated) = reusable {
         let prefix_bytes = validated
             .chain

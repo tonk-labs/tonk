@@ -110,6 +110,7 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
+mod onboarding_space;
 mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
@@ -277,6 +278,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
+        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route("/api/site", post(session::register_site))
         // Per-branch site registration: the branch comes from the URL (like
         // `/query` and `/transact`), not from parsing the document path. A
@@ -665,6 +667,8 @@ pub mod tests {
             session_expires_at: session.expires_at,
             profile_name,
             reactor,
+            admission: Default::default(),
+            reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),
@@ -1952,8 +1956,63 @@ pub mod tests {
         (url, subject_did)
     }
 
-    /// Issue `POST /api/profile/join` and return status + parsed
-    /// JSON body (or raw bytes when JSON parsing fails).
+    /// Agent handoffs select the browser account even in a foreign space.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn agent_handoff_targets_current_account_not_owner() {
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let (foreign, key) = open_invite_url(180, 181, None).await;
+        let (status, body) = post_join(&app, &foreign).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+        let expected = super::identity::local_root(&*state.read().await)
+            .await
+            .unwrap()
+            .root_did;
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/").unwrap();
+        let (first, _) =
+            super::create_invite::create_agent_handoff(state.clone(), key.clone(), origin.clone())
+                .await
+                .unwrap();
+        let first_invite = tonk_invite::Invite::parse_url(first.url().as_str())
+            .await
+            .unwrap();
+        assert!(matches!(
+            first_invite.audience,
+            tonk_invite::InviteAudience::Scoped
+        ));
+        assert_eq!(first_invite.chain.audience(), &expected);
+        assert_ne!(
+            first_invite.chain.issuer(),
+            &expected,
+            "the foreign owner must not select the handoff account"
+        );
+        let (second, _) =
+            super::create_invite::create_agent_handoff(state.clone(), key.clone(), origin.clone())
+                .await
+                .unwrap();
+        assert_ne!(
+            first.url(),
+            second.url(),
+            "each mint is an independent invitation"
+        );
+        let axum::Json(shared) = super::create_invite::create_invite(
+            axum::extract::State(state),
+            axum::extract::Path(key),
+            axum::Extension(origin),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            tonk_invite::Invite::parse_url(shared.url().as_str())
+                .await
+                .unwrap()
+                .audience,
+            tonk_invite::InviteAudience::Open { .. }
+        ));
+    }
+
     async fn post_join(app: &Router, url: &str) -> (StatusCode, serde_json::Value) {
         let body = serde_json::json!({ "url": url }).to_string();
         let response = app

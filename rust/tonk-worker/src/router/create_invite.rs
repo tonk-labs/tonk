@@ -111,6 +111,31 @@ pub async fn create_invite(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
+    mint_invite(state, repo_name, origin, request, None).await
+}
+
+/// Mint an agent handoff for the current browser account, never the space owner.
+pub(crate) async fn create_agent_handoff(
+    state: AppState,
+    repo_name: String,
+    origin: RequestOrigin,
+) -> Result<(CreateInviteResponse, super::identity::LocalRoot), TonkWorkerError> {
+    let account = super::identity::local_root(&*state.read().await).await?;
+    let request = CreateInviteRequest {
+        recipient_root: Some(account.root_did.clone()),
+        ..Default::default()
+    };
+    let Json(response) = mint_invite(state, repo_name, origin, request, Some(&account)).await?;
+    Ok((response, account))
+}
+
+async fn mint_invite(
+    state: AppState,
+    repo_name: String,
+    origin: RequestOrigin,
+    request: CreateInviteRequest,
+    expected: Option<&super::identity::LocalRoot>,
+) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
     let shorten_explicitly = request.base_url.is_some();
     let base_url = match request.base_url.clone() {
         Some(base_url) => base_url,
@@ -121,6 +146,15 @@ pub async fn create_invite(
     };
 
     let tonk = state.read().await;
+
+    if let Some(expected) = expected {
+        let current = super::identity::local_root(&tonk).await?;
+        if current.root_did != expected.root_did || current.bytes != expected.bytes {
+            return Err(TonkWorkerError::Conflict(
+                "browser account changed while creating the handoff; try again".into(),
+            ));
+        }
+    }
 
     if super::account::provider(&tonk).await.is_none() {
         return Err(TonkWorkerError::Forbidden(
@@ -157,6 +191,25 @@ pub async fn create_invite(
             )));
         }
     };
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if expected.is_some()
+        && super::repository::remote_is_own_service(remote.access_url.as_str())
+        && !super::customer::space_provider_recorded(&tonk, &repository.did()).await
+    {
+        match super::repository::provision_space_consumer(&tonk, &repository.did()).await {
+            Ok(()) => {}
+            Err(error @ TonkWorkerError::Upstream { .. })
+                if !super::customer::is_retryable(&error) =>
+            {
+                return Err(error);
+            }
+            // Match ordinary sharing: a member may lack the owner's local
+            // provisioning credential. Only a terminal service refusal is
+            // authoritative; missing local billing state is not a denial.
+            Err(error) => log!("agent handoff provisioning skipped: {error}"),
+        }
+    }
 
     // The leaf is signed with the space's upstream in its `home.address`
     // meta and — when one has hydrated here — its display name in
@@ -821,6 +874,46 @@ mod tests {
     use crate::axum::RequestOrigin;
     use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
+
+    #[dialog_common::test]
+    async fn agent_handoff_rejects_a_changed_account_generation_before_minting() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "handoff-generation").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+        let mut previous = crate::router::identity::local_root(&*state.read().await)
+            .await
+            .unwrap();
+        // Same root, different captured attachment: root equality alone is
+        // insufficient to let an earlier operation publish a handoff.
+        previous.bytes.push(0);
+        let result = super::mint_invite(
+            state.clone(),
+            key.clone(),
+            RequestOrigin::parse("https://local.example/").unwrap(),
+            super::CreateInviteRequest {
+                recipient_root: Some(previous.root_did.clone()),
+                ..Default::default()
+            },
+            Some(&previous),
+        )
+        .await;
+        assert!(matches!(result, Err(crate::TonkWorkerError::Conflict(_))));
+        assert!(content_invitations(&state, &key).await.is_empty());
+        crate::router::account::detach_test_account(&*state.read().await)
+            .await
+            .unwrap();
+        let result = super::create_agent_handoff(
+            state.clone(),
+            key.clone(),
+            RequestOrigin::parse("https://local.example/").unwrap(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "signed-out browser must not mint a handoff"
+        );
+        assert!(content_invitations(&state, &key).await.is_empty());
+    }
 
     #[dialog_common::test]
     async fn it_recovers_a_missing_dialog_remote_from_replica_metadata() {

@@ -255,6 +255,8 @@ mod tests {
             session_expires_at: session.expires_at,
             profile_name: name.to_string(),
             reactor,
+            admission: Default::default(),
+            reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),

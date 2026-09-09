@@ -43,6 +43,11 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 
 #[derive(Default)]
 struct UiAccountSettings {
+    custody_opened: Option<EventClosure>,
+    custody_closed: Option<EventClosure>,
+    position_change: Option<EventClosure>,
+    position_observer: Option<web_sys::ResizeObserver>,
+    position_callback: Option<FrameClosure>,
     click: Option<EventClosure>,
     change: Option<EventClosure>,
     keydown: Option<EventClosure>,
@@ -217,9 +222,98 @@ impl CustomElement for UiAccountSettings {
         subscribe_ceremony(this, self.subscription.clone());
 
         refresh(this);
+        let host = this.clone();
+        let opened: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            if host.has_attribute("data-passkey-screen") {
+                return;
+            }
+            let _ = host.set_attribute("data-passkey-screen", "");
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_opened = Some(opened);
+        let host = this.clone();
+        let closed: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            let _ = host.remove_attribute("data-passkey-screen");
+            let _ = host.remove_attribute("data-passkey-requested");
+            // Closing the passkey UI is not a new command result. The worker
+            // may already have published its refusal while this screen hid it.
+            if !matches!(
+                host.get_attribute("data-ceremony-state").as_deref(),
+                Some(ceremony_state::REFUSED | ceremony_state::FAILED | ceremony_state::DONE)
+            ) {
+                show_status(&host, "");
+            }
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_closed = Some(closed);
+        let host = this.clone();
+        let position: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            for event in ["scroll", "resize"] {
+                let _ = window.add_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        self.position_change = Some(position);
+        let host = this.clone();
+        let callback: FrameClosure = Closure::wrap(Box::new(move |_, _| {
+            publish_custody_seat(&host);
+        }));
+        if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            observer.observe(this);
+            self.position_observer = Some(observer);
+            self.position_callback = Some(callback);
+        }
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        if let Some(opened) = self.custody_opened.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(closed) = self.custody_closed.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(observer) = self.position_observer.take() {
+            observer.disconnect();
+        }
+        self.position_callback.take();
+        if let Some(position) = self.position_change.take()
+            && let Some(window) = window()
+        {
+            for event in ["scroll", "resize"] {
+                let _ = window.remove_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
         self.subscription.borrow_mut().take();
         self.frames.clear();
         if let Some(click) = self.click.take() {
@@ -283,6 +377,14 @@ pub(crate) fn refresh(this: &HtmlElement) {
         Some(request) => {
             set_text(this, "[data-link-name]", &request.name);
             set_text(this, "[data-link-did]", &request.audience);
+            set_text(
+                this,
+                "[data-link-account]",
+                request
+                    .expected_account
+                    .as_deref()
+                    .unwrap_or("your signed-in account"),
+            );
             set_pane(this, "link");
         }
         None => {
@@ -353,6 +455,7 @@ fn page_location() -> PageLocation {
 
 /// What a waiting terminal asked for, when this is its approval page.
 struct LinkRequest {
+    expected_account: Option<String>,
     audience: String,
     callback: String,
     name: String,
@@ -371,6 +474,7 @@ fn link_request() -> Option<LinkRequest> {
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "terminal".to_string());
     Some(LinkRequest {
+        expected_account: params.get("expectedAccount"),
         audience,
         callback,
         name,
@@ -444,13 +548,17 @@ fn set_hidden(this: &HtmlElement, selector: &str, hidden: bool) {
 fn open_delete_dialog(this: &HtmlElement) {
     let requested = requested_space_deletion();
     let deleting_space = requested.is_some();
-    let confirmation = DELETE_ACCOUNT_CONFIRMATION;
+    let confirmation = if deleting_space {
+        "delete space"
+    } else {
+        DELETE_ACCOUNT_CONFIRMATION
+    };
     set_text(this, "[data-delete-confirm-label]", confirmation);
     set_text(
         this,
         "[data-delete-submit-label]",
         if deleting_space {
-            "delete space permanently"
+            "delete space"
         } else {
             "delete account"
         },
@@ -464,7 +572,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         let _ = dialog.set_attribute(
             "heading",
             if deleting_space {
-                "confirm permanent space deletion"
+                "delete this space?"
             } else {
                 "confirm account deletion"
             },
@@ -474,7 +582,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         this,
         "[data-delete-question]",
         if deleting_space {
-            "are you sure you want to delete this space for every member?"
+            "Everyone will lose access to this space through Tonk. Your account and other spaces will stay."
         } else {
             "are you sure you want to delete all data associated with this account?"
         },
@@ -483,7 +591,7 @@ fn open_delete_dialog(this: &HtmlElement) {
         this,
         "[data-delete-consequence]",
         if deleting_space {
-            "this action is permanent. Tonk cannot erase copies already saved on other devices, but they will no longer be able to sync this space with Tonk."
+            "This cannot be undone. Copies saved on other devices may remain, but they will no longer sync."
         } else {
             "this action is permanent. there is no option to recover your data."
         },
@@ -536,13 +644,11 @@ fn open_delete_dialog(this: &HtmlElement) {
                     .is_none_or(|subject| space.subject == subject)
             })
             .collect();
-        if let Some(subject) = &requested
-            && spaces.is_empty()
-        {
+        if requested.is_some() && spaces.is_empty() {
             set_text(
                 &host,
                 "[data-delete-scope]",
-                &format!("{subject} is not an owned hosted space of this account."),
+                "This space cannot be deleted from this account. Go back to your spaces and check that you are signed into the account that owns it.",
             );
             return;
         }
@@ -553,7 +659,13 @@ fn open_delete_dialog(this: &HtmlElement) {
         let owned = spaces.len();
         let names: Vec<&str> = spaces
             .iter()
-            .map(|space| space.name.as_deref().unwrap_or(&space.subject))
+            .map(|space| {
+                space
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("unnamed space")
+            })
             .collect();
         let listed = if names.is_empty() {
             String::new()
@@ -561,7 +673,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             format!(": {}", names.join(", "))
         };
         let confirmation = if requested.is_some() {
-            format!("delete {}", names[0])
+            "delete space".to_owned()
         } else {
             DELETE_ACCOUNT_CONFIRMATION.to_owned()
         };
@@ -570,9 +682,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             &host,
             "[data-delete-scope]",
             &if requested.is_some() {
-                format!(
-                    "this permanently deletes the selected owned space{listed} from Tonk and makes it unavailable to every member. your account and every other space remain."
-                )
+                format!("Permanently delete {} from Tonk?", names[0])
             } else {
                 format!(
                     "{owned} owned hosted space{} will be deleted{listed}. {} joined space{} will be left intact.",
@@ -678,26 +788,52 @@ fn add_passkey(this: &HtmlElement) {
     );
 }
 
+/// The passkey runs in the top document; reserve and publish its seat in
+/// this sealed guest using the same page-effect relay as Hub registration.
+fn publish_custody_seat(this: &HtmlElement) {
+    let Some(seat) = this.query_selector("[data-custody-seat]").ok().flatten() else {
+        return;
+    };
+    let rect = seat.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    tonk_host::request_registration(
+        &serde_json::json!({
+            "reason": "custody-anchor",
+            "anchor": { "left": rect.left(), "bottom": rect.top() - 7.0, "width": rect.width() }
+        })
+        .to_string(),
+    );
+}
+
 /// Assert `tonk:authorize-device` for the terminal named in the URL.
 fn approve_link(this: &HtmlElement) {
     let Some(request) = link_request() else {
         return;
     };
+    let _ = this.set_attribute("data-passkey-requested", "");
     show_status(this, "Waiting for your passkey\u{2026}");
+    let mut fields = serde_json::json!({
+        "audience": request.audience,
+        "callback": bs58::encode(request.callback.as_bytes()).into_string(),
+        "name": request.name,
+    });
+    let mut attributes = serde_json::json!({
+        "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
+        "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
+        "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
+    });
+    if let Some(expected) = request.expected_account {
+        attributes["expectedAccount"] = serde_json::json!({ "the": "xyz.tonk.authorize-device/expected-account", "as": "Entity" });
+        fields["expectedAccount"] = expected.into();
+    }
     transact(
         this,
         &claim(
             "Delegate the account to a waiting terminal.",
-            serde_json::json!({
-                "audience": { "the": "xyz.tonk.authorize-device/audience", "as": "Entity" },
-                "callback": { "the": "xyz.tonk.authorize-device/callback", "as": "Text" },
-                "name": { "the": "xyz.tonk.authorize-device/name", "as": "Text" }
-            }),
-            serde_json::json!({
-                "audience": request.audience,
-                "callback": bs58::encode(request.callback.as_bytes()).into_string(),
-                "name": request.name,
-            }),
+            attributes,
+            fields,
         ),
     );
 }
@@ -720,6 +856,7 @@ fn decline_link(this: &HtmlElement) {
 fn show_status(this: &HtmlElement, text: &str) {
     set_text(this, "[data-ceremony-status]", text);
     set_hidden(this, "[data-ceremony-status]", text.is_empty());
+    publish_custody_seat(this);
 }
 
 /// A transient claim for `window.tonk.transact`: the concept inline,
@@ -876,6 +1013,13 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
         }
         _ => return,
     };
+    if which == ceremony::AUTHORIZE_DEVICE {
+        if state == ceremony_state::PENDING_CEREMONY || state == ceremony_state::WORKING {
+            let _ = this.set_attribute("data-passkey-requested", "");
+        } else {
+            let _ = this.remove_attribute("data-passkey-requested");
+        }
+    }
     let _ = this.set_attribute("data-ceremony", &which);
     let _ = this.set_attribute("data-ceremony-state", &state);
     show_status(this, &text);
@@ -1055,6 +1199,107 @@ mod tests {
             "settings has no devices tab or pane"
         );
 
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_screen_replaces_approval_and_restores_on_dismiss() {
+        let document = window().unwrap().document().unwrap();
+        let style = document.create_element("style").unwrap();
+        style.set_text_content(Some(include_str!("../../tonk-ui/styles.css")));
+        document.body().unwrap().append_child(&style).unwrap();
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-requested", "").unwrap();
+        super::show_status(&host, "Waiting for your passkey…");
+        let approval = pane(&host, "link");
+        let top = approval.get_bounding_client_rect().top();
+        let window = window().unwrap();
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-opened").unwrap())
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&status)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let seat = host.query_selector("[data-custody-seat]").unwrap().unwrap();
+        assert_eq!(seat.get_bounding_client_rect().top(), top);
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(!host.has_attribute("data-passkey-screen"));
+        assert!(!host.has_attribute("data-passkey-requested"));
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "flex"
+        );
+        host.remove();
+        style.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_close_preserves_the_handoff_refusal() {
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-screen", "").unwrap();
+        let row = js_sys::JSON::parse(
+            &serde_json::json!({
+                "fields": {
+                    "ceremony": tonk_schema::ceremony::AUTHORIZE_DEVICE,
+                    "state": tonk_schema::ceremony_state::REFUSED,
+                    "detail": "this handoff requires account did:key:expected"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        super::render_ceremony(&host, &row);
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account")
+        );
+        window()
+            .unwrap()
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account"),
+            "closing the passkey screen must retain the worker's refusal"
+        );
+        assert!(!status.has_attribute("hidden"));
+        assert!(!host.has_attribute("data-passkey-screen"));
         host.remove();
     }
 
@@ -1244,7 +1489,27 @@ mod tests {
             .unwrap();
         assert_eq!(
             dialog.get_attribute("heading").as_deref(),
-            Some("confirm permanent space deletion")
+            Some("delete this space?")
+        );
+        let native: web_sys::HtmlDialogElement = dialog
+            .shadow_root()
+            .unwrap()
+            .query_selector("dialog")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(
+            native.open(),
+            "the deletion URL opens the dialog on arrival"
+        );
+        assert_eq!(
+            host.query_selector("[data-delete-confirm-label]")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("delete space")
         );
         assert!(
             host.query_selector("[data-delete-question]")
@@ -1252,7 +1517,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .unwrap_or_default()
-                .contains("for every member")
+                .contains("Everyone will lose access")
         );
         assert!(
             host.query_selector("[data-delete-consequence]")
@@ -1260,7 +1525,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .unwrap_or_default()
-                .contains("cannot erase copies already saved")
+                .contains("Copies saved on other devices may remain")
         );
         assert_eq!(
             host.query_selector("[data-delete-passkey]")
@@ -1272,6 +1537,39 @@ mod tests {
         );
         host.remove();
         clear_context();
+    }
+
+    #[wasm_bindgen_test]
+    fn deletion_copy_wraps_long_space_names() {
+        clear_context();
+        let document = window().unwrap().document().unwrap();
+        let style = document.create_element("style").unwrap();
+        style.set_text_content(Some(include_str!("../../tonk-ui/styles.css")));
+        document.body().unwrap().append_child(&style).unwrap();
+        let host = mount();
+        super::open_delete_dialog(&host);
+        super::set_text(&host, "[data-delete-scope]", &"long-space-name".repeat(30));
+        let dialog: HtmlElement = host
+            .query_selector("[data-delete-account-dialog]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let body: HtmlElement = dialog
+            .shadow_root()
+            .unwrap()
+            .query_selector("[part=body]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert!(body.client_width() > 0);
+        assert!(
+            body.scroll_width() <= body.client_width(),
+            "long names must wrap within the dialog"
+        );
+        host.remove();
+        style.remove();
     }
 
     #[wasm_bindgen_test]

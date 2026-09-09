@@ -546,7 +546,20 @@ impl SpaceStore {
 
     /// The account this installation is signed into, if any.
     pub fn account(&self) -> Result<Option<AccountRecord>, SpaceError> {
-        Ok(self.load()?.account)
+        let recorded = self.load()?.account;
+        match crate::account_session::registry_account(self)
+            .map_err(|error| SpaceError::Io(error.to_string()))?
+        {
+            None => Ok(recorded),
+            Some(None) => Ok(None),
+            Some(Some(active)) => {
+                let mut record = recorded
+                    .filter(|record| record.root == active.root_did)
+                    .unwrap_or_else(|| AccountRecord::new(active.root_did));
+                record.access_remote = active.remote;
+                Ok(Some(record))
+            }
+        }
     }
 
     /// Record (or clear) the signed-in account.

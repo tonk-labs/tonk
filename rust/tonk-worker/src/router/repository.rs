@@ -889,6 +889,125 @@ impl crate::reactor::Decode for EnableSyncRequest {
     }
 }
 
+/// Mint an account-scoped handoff for the originating space.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AgentHandoff> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::AgentHandoff) {
+        if let Err(error) = run_agent_handoff(self).await {
+            log!("agent handoff failed: {error}");
+        }
+    }
+}
+
+async fn publish_agent_handoff(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    account: &Did,
+    status: String,
+    link: String,
+) -> Result<(), TonkWorkerError> {
+    use tonk_schema::prelude::DidExt as _;
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(tonk_schema::command::AgentHandoffState {
+            this: subject.this(),
+            status: status.into(),
+            link: link.into(),
+            account: account.this().into(),
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to publish handoff: {error}"))
+        })?;
+    Ok(())
+}
+
+async fn run_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
+    let repo = &env.origin().repo;
+    let subject = {
+        let tonk = env.state().read().await;
+        let repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        let subject = repository.did();
+        require_real_space(&tonk, &subject).await?;
+        if super::account::provider(&tonk).await.is_none() {
+            return publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                "Create an account or sign in to connect an agent. Open share and choose ‘log in to share’ to get started, then return here to copy your prompt.".into(),
+                String::new(),
+            )
+            .await;
+        }
+        publish_agent_handoff(
+            &tonk,
+            repo,
+            &subject,
+            &tonk.profile.did(),
+            "Generating account-scoped handoff…".into(),
+            String::new(),
+        )
+        .await?;
+        subject
+    };
+    let origin = crate::axum::RequestOrigin::parse(
+        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+    )
+    .map_err(|error| TonkWorkerError::Internal(format!("invalid handoff origin: {error:?}")))?;
+    let minted =
+        super::create_invite::create_agent_handoff(env.state().clone(), repo.clone(), origin).await;
+    let tonk = env.state().read().await;
+    match minted {
+        Ok((response, expected)) => {
+            let current = super::identity::local_root(&tonk).await?;
+            if current.root_did != expected.root_did || current.bytes != expected.bytes {
+                return publish_agent_handoff(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &current.root_did,
+                    "Account changed; generate a new handoff.".into(),
+                    String::new(),
+                )
+                .await;
+            }
+            publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "ready".into(),
+                response.url().to_string(),
+            )
+            .await
+        }
+        Err(error) => {
+            publish_agent_handoff(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                format!("Could not create an agent handoff: {error}"),
+                String::new(),
+            )
+            .await
+        }
+    }
+}
+
 impl dialog_capability::Command for EnableSyncRequest {
     type Input = Self;
     type Output = ();
@@ -1098,7 +1217,7 @@ async fn run_invite(
                 && let Some(client) = env.client()
                 && let Err(error) = super::navigate::request_account_link(client, &subject).await
             {
-                log!("Invite: could not ask the page to link an account: {error}");
+                log!("Invite: could not ask the page to add an account: {error}");
             }
 
             // `not-synced` is not a refusal either: the account has a
@@ -1154,8 +1273,10 @@ async fn run_invite(
     // when `/provider/add` succeeds and retracted when the gate stops
     // serving the subject, so a provisioned space mints its link with
     // no registration call at all. Only a space with no record runs the
-    // ceremony — a legacy space provisioned before the fact existed, or
-    // one whose earlier attempt failed — and success records the fact,
+    // ceremony for owned authority — a legacy space provisioned before the
+    // fact existed, or one whose earlier attempt failed. Joined authority
+    // keeps its existing provider; this account need not have its record.
+    // Success for an owned space records the fact,
     // so it runs once, not per share. Best effort like the enable-sync
     // attach: a foreign remote (self-hosted, a test server) is not our
     // access service, and refusing the mint over it would make those
@@ -1965,6 +2086,7 @@ pub(crate) async fn remove_space_inner(
         {
             return Err(RepositoryError::Internal(error.to_string()));
         }
+        let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
         // subscription reflects the removal (mirrors set_replica_status).
@@ -2017,6 +2139,7 @@ pub(crate) async fn remove_space_inner(
     // handle.
     {
         let tonk = state.write().await;
+        let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         tonk.reactor.evict(subject.repo_key());
     }
     Ok(())
@@ -2690,6 +2813,7 @@ async fn bail_if_space_removed(
         key,
         stage
     );
+    let _admission_mutation = tonk.admission.mutation(key);
     tonk.reactor.evict(key);
     Ok(true)
 }
@@ -3440,7 +3564,7 @@ const SEED_NONE: &str = "seed:none";
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
@@ -3479,7 +3603,7 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
         STANDARD_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/core.yaml").to_owned())
@@ -3487,10 +3611,51 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
+        "/library/onboarding-agent.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
+        }
+        "/library/onboarding.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
+        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
     }
+}
+
+/// Seed a notation document into `branch` by running it through the
+/// evaluate pipeline — the same `parse → analyze → commit` path as
+/// the `/evaluate` route, which commits concept claims and `rule!:`
+/// installs alike. A bad library is a deployment fault, surfaced as
+/// an internal error.
+pub(super) async fn seed_standard_library(
+    tonk: &TonkState,
+    repo: &str,
+    branch: &str,
+    library: &str,
+) -> Result<(), TonkWorkerError> {
+    // Recorded, like every other seed: the record names the commit that
+    // installs the library, so route provenance and a later upgrade can
+    // both read which seed this branch carries. A fresh space has no
+    // predecessor and nothing to replace.
+    let version = seed_version(library);
+    let record = |minted: &dialog_artifacts::history::Version| {
+        seed_record_facts(
+            &version,
+            STANDARD_LIBRARY_URL,
+            SEED_NONE,
+            SEED_NONE,
+            &encode_seed_version(minted),
+        )
+    };
+    super::evaluate::evaluate_body_recording(tonk, repo, branch, library.to_owned(), &record)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to seed standard library on branch '{branch}': {e}"
+            ))
+        })
 }
 
 /// Build the notation document asserting the repository's own
@@ -3498,7 +3663,10 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 /// the scaffold seed body (see [`seed_and_initialize`]) so the name lands
 /// in the same commit as the library that defines the `tonk/repository`
 /// concept it instantiates — no separate commit, no "Untitled" flash.
-fn repository_name_body(subject: &Did, display_name: &str) -> Result<String, RepositoryError> {
+pub(super) fn repository_name_body(
+    subject: &Did,
+    display_name: &str,
+) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
     // breaking the notation.
@@ -3720,8 +3888,8 @@ pub async fn create_repository(
     Ok(repository)
 }
 
-/// Provision `subject` under this profile's account, repairing a stale
-/// consent first.
+/// Provision owned `subject` under this profile's account, repairing a stale
+/// consent first. Indirect joined authority keeps its existing provider.
 ///
 /// A space created before sign-in mints its consent to the account the
 /// profile held THEN — the onboarding account — and the stored chain
@@ -3739,6 +3907,13 @@ pub(crate) async fn provision_space_consumer(
     subject: &Did,
 ) -> Result<(), TonkWorkerError> {
     let held = match space_root_prefix(tonk, subject).await {
+        // A joined prefix is `space -> ... -> account`, not the direct
+        // `space -> account` consent used to provision an owned space.
+        // `/provider/add` consumes its FIRST proof, whose audience belongs
+        // to the inviter, and correctly refuses it for this customer.
+        // Leave that provider alone. This is not an access check: minting
+        // and sync still prove their authority through the full chain.
+        Ok(prefix) if prefix.proofs().nth(1).is_some() => return Ok(()),
         Ok(prefix) => match super::identity::root_did(tonk).await {
             Ok(root) if prefix.audience() != &root => None,
             _ => Some(prefix),
@@ -3764,7 +3939,7 @@ pub(crate) async fn provision_space_consumer(
 /// party whose provisioning refusal is authoritative for it. A foreign
 /// remote (self-hosted, a test server) is attached and shared without
 /// asking our service's opinion.
-fn remote_is_own_service(remote: &str) -> bool {
+pub(super) fn remote_is_own_service(remote: &str) -> bool {
     let Ok(own) = super::customer::service_origin() else {
         return false;
     };
@@ -3773,7 +3948,7 @@ fn remote_is_own_service(remote: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Load the exact provider-neutral `space → root` prefix persisted at creation.
+/// Load the provider-neutral `space → … → root` prefix saved at creation or join.
 pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
@@ -3832,6 +4007,7 @@ where
     // `display_name` is only used for log context here.
     let did = repository.did();
     let key = did.repo_key();
+    let _admission_mutation = tonk.admission.mutation(key);
 
     // 3. Open the meta branch and start the single transaction
     // that will carry every concept describing the repository.
@@ -4362,7 +4538,7 @@ async fn record_replica_visibility(
 /// same hash `Replica::new` uses — so no read is needed to find it.
 ///
 /// Called from the background seed path, which only runs in the worker.
-async fn set_replica_status(
+pub(super) async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
@@ -4712,6 +4888,13 @@ where
     // lives with the repository (not in the profile's replica index), so
     // it stays current on every device that syncs the content branch.
     // Falls back to the routing `key` when no name has been seeded yet.
+    #[cfg(test)]
+    assert!(
+        !tonk
+            .reject_admission_content_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "unexpected content projection during admission",
+    );
     let label = repository_label(tonk, repository, key).await;
 
     // Pull every branch on the meta branch, local and remote.
@@ -5087,6 +5270,7 @@ where
     // What actually took effect: existing remotes are preserved rather
     // than rewritten, so the caller must mirror THIS into the account
     // directory, not the request.
+    let _admission_mutation = tonk.admission.mutation(repository.did().as_str());
     let mut effective = configuration.clone();
     if configuration.remote.is_empty() && configuration.branch.is_empty() {
         return Ok(effective);
@@ -7342,14 +7526,14 @@ block/insert!:
         );
     }
 
-    /// The empty-state canvas keeps the pending label only while the invite
+    /// The empty-state canvas keeps the pending label only while the handoff
     /// request is unanswered. A refusal resolves the nested model and renders
     /// the explicit local-only notice instead of spinning forever.
     #[dialog_common::test]
     fn it_routes_refused_agent_links_to_the_local_only_notice() {
         assert!(
-            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:share/blocked"),
-            "agent-link fallback should query the share refusal",
+            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:agent-handoff-state"),
+            "agent-link fallback should query its independent handoff status",
         );
         assert!(
             !CORE.contains("agent link &middot; paste into your agent"),
@@ -7359,14 +7543,10 @@ block/insert!:
             CORE.contains("tonk-display > [slot][hidden]"),
             "inactive pending and refusal slots should not survive a ready result",
         );
-        assert!(CORE.contains("sharing unavailable"));
+        assert!(CORE.contains("<p data-agent-handoff-status>{status}</p>"));
         assert!(
             !CORE.contains("Use connect in the condition banner"),
             "the refusal must not prescribe a repair that is absent or inappropriate"
-        );
-        assert!(
-            CORE.contains("<p>{detail}</p>"),
-            "the worker-owned complete sentence is the only refusal body"
         );
     }
 
@@ -7858,6 +8038,16 @@ block/insert!:
 
         let _ = post_remote(&app, &key, "https://sync.example.test/ucan/", None).await;
         let subject: dialog_varsig::Did = key.parse().expect("joined subject DID");
+        {
+            let tonk = state.read().await;
+            assert!(
+                !crate::router::customer::space_provider_recorded(&tonk, &subject).await,
+                "joining does not make this account the provider",
+            );
+            super::provision_space_consumer(&tonk, &subject)
+                .await
+                .expect("joined authority must leave provisioning with the existing provider");
+        }
         let before = content_invitations(&state, &key).await.len();
 
         crate::router::dispatch(
@@ -7875,6 +8065,25 @@ block/insert!:
         assert!(
             share_blocked_rows(&state, &key).await.is_empty(),
             "a joined member's valid authority must not be reported as a refused share",
+        );
+    }
+
+    /// Direct owned authority must still reach provisioning. This harness
+    /// has no worker origin, so reaching the service boundary returns an
+    /// error rather than silently treating the owned space as already served.
+    #[dialog_common::test]
+    async fn it_requires_provisioning_for_owned_space_authority() {
+        let (_app, state, key) = fresh_repo("owned-space-provisioning").await;
+        let tonk = state.read().await;
+        let subject = key.parse().unwrap();
+        let prefix = super::space_root_prefix(&tonk, &subject).await.unwrap();
+        assert_eq!(prefix.proofs().count(), 1);
+        let error = super::provision_space_consumer(&tonk, &subject)
+            .await
+            .expect_err("owned authority must still attempt provisioning");
+        assert!(
+            matches!(error, crate::TonkWorkerError::Internal(ref detail) if detail == "the worker origin is unavailable"),
+            "expected the service boundary, got {error}",
         );
     }
 

@@ -2196,7 +2196,8 @@ ui-account-settings .srowd { display: flex; justify-content: space-between;
 ui-account-settings .srowd b { font-family: var(--cond); font-weight: 600;
     font-size: 13.5px; color: var(--ink); text-align: right;
     white-space: nowrap; }
-ui-account-settings .srowd b.lft { text-align: left; white-space: normal; }
+ui-account-settings .srowd b.lft { min-width: 0; text-align: left;
+    white-space: normal; overflow-wrap: anywhere; }
 ui-account-settings .sect { margin-top: 18px; padding-bottom: 7px;
     font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
     text-transform: lowercase; color: var(--ink);
@@ -2247,9 +2248,11 @@ ui-account-settings tonk-dialog {
     --fabb-ring: var(--ring); --fabb-sep: var(--sep);
     --fabb-hover: var(--wash); --fabb-press: var(--wash);
     --fabb-dim: var(--dim); }
-ui-account-settings .confirm-body { margin: 0; font-family: var(--sans);
+ui-account-settings .confirm-body { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
+ui-account-settings .confirm-body > span { display: block; margin-bottom: 10px; }
+ui-account-settings .confirm-body > span:empty { display: none; }
 ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
     letter-spacing: 0.02em; color: var(--soft);
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -2272,6 +2275,41 @@ ui-account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
 /* where a ceremony got to, under the rows that asked for it */
 ui-account-settings [data-ceremony-status] { color: var(--ink); }
 ui-account-settings [data-ceremony-status][hidden] { display: none; }
+
+/* CLI approval follows the Hub's row stack rather than the settings sheet. */
+ui-account-settings .s-body:has([data-link-approval]:not([hidden])) {
+    min-height: 0; max-height: none; overflow: visible; padding: 0;
+    background: none; border: 0; position: relative;
+}
+ui-account-settings [data-link-approval]:not([hidden]) {
+    display: flex; flex-direction: column; gap: 7px;
+}
+ui-account-settings [data-link-approval] > :is(.sect, .srowd, .expl),
+ui-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
+    box-sizing: border-box; margin: 0; padding: 10px 16px;
+    min-height: 36px; max-width: none; background: var(--card);
+    border: 0; box-shadow: 0 0 0 1px var(--ring);
+}
+ui-account-settings [data-link-approval] .srowd b {
+    min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: right;
+}
+ui-account-settings [data-link-approval] .link-foot { margin: 0; }
+ui-account-settings [data-link-approval] .link-foot button {
+    font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+}
+ui-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
+    margin-top: 7px;
+}
+ui-account-settings [data-custody-seat] { display: none; }
+ui-account-settings[data-passkey-screen] [data-link-approval],
+ui-account-settings[data-passkey-screen] .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { display: none; }
+ui-account-settings[data-passkey-requested] [data-custody-seat] {
+    display: block; position: absolute; top: 0; left: 0; width: 100%; height: 180px;
+    pointer-events: none;
+}
+ui-account-settings[data-passkey-screen] [data-custody-seat] {
+    display: block; position: static; height: 180px;
+}
 
 /* Map our Web Awesome theme into the `<tonk-code>` element's
    public CSS variables. The element ships GitHub-flavored defaults
@@ -3096,7 +3134,7 @@ tonk-notebook-index {
      the [open] rule so it wins their specificity tie. */
   #tonk-register[data-suspended] { display: none; }
   #tonk-register::backdrop { background: var(--dim); }
-  /* Anchored — the Hub's link-an-account tab raised it: the ceremony rows
+  /* Anchored — the Hub's add-an-account tab raised it: the ceremony rows
      ARE that tab's page, seated in the column one gap under the bar, so
      there is no veil and no head row (the tab is the head). */
   #tonk-register[data-anchored]::backdrop { background: transparent; }
@@ -3125,6 +3163,7 @@ tonk-notebook-index {
        top-page ceremony replaces it. Paint the column's gaps as well as its
        blocks so menu labels cannot show through between ceremony rows. */
     background: var(--page);
+    box-shadow: 0 0 0 1px var(--page);
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
@@ -3299,6 +3338,13 @@ tonk-notebook-index {
   }
   .tonk-ceremony .oexp p b {
     font-weight: 600; color: var(--ink);
+  }
+  .tonk-ceremony .oexp a {
+    color: var(--ink);
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  .tonk-ceremony .oexp a:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: 3px;
   }
 
   /* The way out: the quietest thing on screen. */

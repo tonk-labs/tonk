@@ -302,6 +302,24 @@ where
     false
 }
 
+/// Save the account name and wait for its durable write before reporting success.
+pub async fn set_display_name(
+    name: &str,
+) -> Result<tonk_worker_api::AccountDisplayNameResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let request = reqwest::Client::new()
+        .post(format!("{}/api/account/display-name", origin()))
+        .json(&tonk_worker_api::AccountDisplayNameRequest {
+            name: name.to_owned(),
+        });
+    decode_account(
+        send_account(request, "POST", "/api/account/display-name").await?,
+        "POST",
+        "/api/account/display-name",
+    )
+    .await
+}
+
 /// Load verified account and passkey facts for the linked account.
 pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
     tonk_host::ready::wait().await;

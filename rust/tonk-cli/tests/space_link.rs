@@ -177,6 +177,7 @@ async fn it_refuses_to_move_a_linked_space_to_another_account(
     // Sign out, then sign in as somebody else on the same device.
     store.set_account(None)?;
     store.set_account(Some(AccountRecord::new(OTHER_ACCOUNT)))?;
+    common::set_display_account(&fixture.pre_account_site, OTHER_ACCOUNT)?;
 
     let error = tonk_cli::space_link::execute(&store, &config, "garden")
         .await
@@ -278,6 +279,7 @@ async fn it_lists_a_previous_accounts_space_with_its_owner(
 
     store.set_account(None)?;
     store.set_account(Some(AccountRecord::new(OTHER_ACCOUNT)))?;
+    common::set_display_account(&fixture.pre_account_site, OTHER_ACCOUNT)?;
 
     let report = tonk_cli::inventory::list_local(&store, &config).await?;
     let rendered = tonk_cli::inventory::render(&report.rows);

@@ -281,7 +281,8 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // the host can word the prompt. Fire-and-forget (no response).
     register:function(reason){
       var opener=document.activeElement;
-      var token=(opener&&opener!==document.body)?mint():"";
+      // Even an unfocused opener needs the ceremony's terminal event.
+      var token=mint();
       if(token){ registerFocus.set(token,opener); }
       ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
@@ -320,6 +321,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     var env=event.data; if(!env) return;
     switch(env.type){
       case "ready": tonk.context=env.context; resolveReady(); return;
+      case "context": tonk.context=env.context; return;
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
@@ -332,6 +334,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve(env.delegation); return;
       }
+      case "custody-open": {
+        window.dispatchEvent(new Event("tonk:custody-opened")); return;
+      }
+      case "custody-focus":
       case "register-focus": {
         var opener=registerFocus.get(env.focusToken);
         registerFocus.delete(env.focusToken);
@@ -340,7 +346,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         // so signal the guest window even when that old node can no longer
         // take focus. Hub chrome uses this terminal event to clear its durable
         // linking marker and restore the spaces page in one step.
-        window.dispatchEvent(new Event("tonk:registration-closed"));
+        window.dispatchEvent(new Event(env.type==="custody-focus" ? "tonk:custody-closed" : "tonk:registration-closed"));
         if(opener&&opener.isConnected&&!opener.matches(":disabled")){
           window.focus();
           opener.focus({preventScroll:true});
@@ -1638,6 +1644,17 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
     let _ = port.post_message(&ready);
 }
 
+/// Update URL context before a reused guest receives the next route frame.
+pub(crate) fn refresh_context(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    let port = state.borrow().port.clone();
+    if let Some(port) = port {
+        let envelope = Object::new();
+        set_v1(&envelope, "context");
+        let _ = Reflect::set(&envelope, &"context".into(), &build_context(host, state));
+        let _ = port.post_message(&envelope);
+    }
+}
+
 // --- Envelope dispatch (parent side) ------------------------------
 
 fn make_dispatcher(
@@ -1998,6 +2015,17 @@ impl RegisterFocusReturn {
             let _ = frame.focus();
         }
         self.post("register-focus");
+        self.handled = true;
+    }
+
+    /// Replace the guest approval rows once the top-page prompt is ready.
+    pub fn show_custody(&self) {
+        self.post("custody-open");
+    }
+
+    /// Finish an account custody screen without closing Hub registration.
+    pub fn restore_custody(mut self) {
+        self.post("custody-focus");
         self.handled = true;
     }
 
@@ -3466,6 +3494,41 @@ mod tests {
         );
     }
 
+    #[dialog_common::test]
+    async fn it_refreshes_location_in_a_reused_guest() {
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+        let win = window().unwrap();
+        let original = win.location().href().unwrap();
+        win.history()
+            .unwrap()
+            .push_state_with_url(
+                &JsValue::NULL,
+                "",
+                Some("/settings?delete-space=did%3Akey%3AzOwned#delete-account"),
+            )
+            .unwrap();
+        refresh_context(&consumer, &state);
+        let update = listener.wait_for("context").await;
+        let context = Reflect::get(&update, &"context".into()).unwrap();
+        win.history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original))
+            .unwrap();
+        assert_eq!(get_str(&context, "path").as_deref(), Some("/settings"));
+        assert_eq!(
+            get_str(&context, "search").as_deref(),
+            Some("?delete-space=did%3Akey%3AzOwned")
+        );
+        assert_eq!(
+            get_str(&context, "hash").as_deref(),
+            Some("#delete-account")
+        );
+    }
+
     /// When THIS portal is itself a nested guest, its host document is
     /// `about:srcdoc` and `location.origin` is `"null"`; the real origin lives
     /// in the parent-forwarded `window.tonk.context.origin`. The ready envelope
@@ -4273,6 +4336,24 @@ mod tests {
 
         let returned = listener.wait_for("register-focus").await;
         assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_and_restores_custody_through_the_request_port() {
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let reply = RegisterFocusReturn {
+            port: channel.port1(),
+            frame: None,
+            token: "custody-1".into(),
+            handled: false,
+        };
+        reply.show_custody();
+        let opened = listener.wait_for("custody-open").await;
+        assert_eq!(get_str(&opened, "focusToken").as_deref(), Some("custody-1"));
+        reply.restore_custody();
+        let closed = listener.wait_for("custody-focus").await;
+        assert_eq!(get_str(&closed, "focusToken").as_deref(), Some("custody-1"));
     }
 
     /// `open_href` accepts only a well-formed `{type:"open", href}`. The

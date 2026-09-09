@@ -567,7 +567,7 @@ the surface never."
 
 ```
 ┌─────────────────────────────┐
-│ link an account             │   ← heading row
+│ add an account              │   ← heading row
 ├─────────────────────────────┤
 │ email              you@…  ▌ │   ← editor row: noun left, value right,
 ├─────────────────────────────┤     block cursor on the tail
@@ -587,7 +587,7 @@ closing action. Each step gets its own row, and the narrator explains
 only the step in front of you.
 
 ```
-link an account
+add an account
 email        you@example.com      settled
 passkey      Chrome on macOS      settled
 check email  waiting…             waits on a fact, takes no input
@@ -613,7 +613,7 @@ what choose the step. `unregistered` unfolds the passkey row;
 `active`/`pending` route to sign-in instead; `checking` holds; the
 terminal states stop with the narrator saying why.
 
-Wording, per the FABB bar's own "log in to share": the heading is **link
+Wording, per the FABB bar's own "log in to share": the heading is **add
 an account**, not "create an account" — someone who already has one is
 linking it, not making a second. The narrator says what linking buys
 (somewhere for this space to sync from) rather than describing account

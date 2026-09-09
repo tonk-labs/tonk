@@ -336,6 +336,47 @@ mod tests {
         func.call1(&JsValue::NULL, detail).expect("call draw");
     }
 
+    /// The actual join failure wall must be conditional on a failure row.
+    /// Displays replay an empty cached frame when the view arrives, before
+    /// the entity query has matched (and pending joins never match it).
+    #[dialog_common::test]
+    fn it_renders_the_join_failure_wall_only_for_a_matching_row() {
+        let library = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let template = library
+            .split("view!:\n  this: tonk:join/failure\n  show:\n    ui: |\n")
+            .nth(1)
+            .and_then(|tail| tail.split("\n# ===").next())
+            .expect("join failure template");
+        let host = mount(template);
+        let empty = serde_wasm_bindgen::to_value(&Vec::<Conclusion>::new()).unwrap();
+        call_draw(&host, &empty);
+        assert!(
+            host.query_selector(".edge-wall--closed").unwrap().is_none(),
+            "a pending join must not render the expired-link wall"
+        );
+
+        call_draw(
+            &host,
+            &detail(
+                "tonk:join/status",
+                &[("reason", "refused"), ("kind", "revoked")],
+            ),
+        );
+        assert!(host.query_selector(".edge-wall--closed").unwrap().is_some());
+        assert!(
+            host.text_content()
+                .unwrap()
+                .contains("this share link expired")
+        );
+
+        call_draw(&host, &empty);
+        assert!(
+            host.query_selector(".edge-wall--closed").unwrap().is_none(),
+            "clearing a failure for a new attempt must remove the wall"
+        );
+        host.remove();
+    }
+
     /// A connected view advertises the host attributes its template reads
     /// via `{dom.host/<attr>}` on `data-host-bindings`, space-separated —
     /// the owning `<tonk-display>` watches exactly those for changes.

@@ -39,6 +39,10 @@ path = "tests/revoked_device.rs"
 required-features = ["integration-tests"]
 
 [[test]]
+name = "handoff"
+path = "tests/handoff.rs"
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 

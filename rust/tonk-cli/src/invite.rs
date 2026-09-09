@@ -31,6 +31,10 @@ use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
 use crate::site::{self, SiteConfig, TonkSite};
 use crate::sync;
 
+/// Non-replicated claim identity, written only after local authority is saved.
+/// Contains the invitation entity, never the bearer URL or secret.
+pub(crate) const CLAIMED_INVITATION_FILE: &str = "claimed-invitation";
+
 /// Default base URL for minted invites. Mirrors
 /// [`tonk_invite::DEFAULT_BASE_URL`] — exposed here so
 /// integration tests can reach it without depending on
@@ -102,6 +106,17 @@ pub struct ClaimOutcome {
     /// own record once content syncs — useful as a default label for
     /// the joined space.
     pub space_name: Option<String>,
+}
+
+/// Validated invite information safe to use before changing local authority.
+#[derive(Debug)]
+pub struct InvitePreflight {
+    /// Resolved long-form invite URL. Short links are expanded exactly once.
+    pub url: String,
+    /// Stable identity of this exact minted invitation.
+    pub invitation: Invitation,
+    /// Validated audience of a scoped invitation, absent for open invitations.
+    pub expected_root: Option<Did>,
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -377,20 +392,8 @@ pub async fn claim(
         return Err(InviteError::SiteAlreadyExists(root.to_path_buf()));
     }
 
-    // Short links (`/@/{hash}#seed`) resolve to the long form first —
-    // the browser gets this from the 301 + fragment inheritance; here
-    // it's done by hand.
-    let resolved;
-    let invite_url = if is_shortcut(invite_url) {
-        resolved = resolve_shortcut(invite_url).await?;
-        resolved.as_str()
-    } else {
-        invite_url
-    };
-
-    let invite = Invite::parse_url(invite_url)
-        .await
-        .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
+    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite = parse_invite_url(&invite_url).await?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
     let invitation_execution = InvitationExecution::new(
@@ -417,34 +420,37 @@ pub async fn claim(
     // device's account is the ONBOARDING account — a real account
     // custodied locally — so the join is durable to the same identity
     // creates delegate to, and the sign-in rotation carries it forward.
-    let member = match crate::identity::local_root_with_operator(&profile, &operator)
-        .await
-        .map_err(|e| InviteError::Io(e.to_string()))?
-    {
-        Some(root) => root
-            .root_did
-            .parse()
-            .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
-        None => {
-            use dialog_varsig::Principal as _;
-            let store_operator = crate::account_state::store_operator_with_config(
-                &profile,
-                &config.account_store,
-                &config.profile_name,
-                config.profile_directory.clone(),
-            )
+    let member =
+        match crate::identity::local_root_for_store(&profile, &operator, &config.account_store)
             .await
-            .map_err(|e| InviteError::Io(format!("{e:#}")))?;
-            let secret = crate::onboarding::account(&profile, &store_operator)
+            .map_err(|e| InviteError::Io(e.to_string()))?
+        {
+            Some(root) => root
+                .root_did
+                .parse()
+                .map_err(|e| InviteError::Io(format!("stored root DID is invalid: {e}")))?,
+            None => {
+                use dialog_varsig::Principal as _;
+                let store_operator = crate::account_state::store_operator_with_config(
+                    &profile,
+                    &config.account_store,
+                    &config.profile_name,
+                    config.profile_directory.clone(),
+                )
                 .await
                 .map_err(|e| InviteError::Io(format!("{e:#}")))?;
-            secret
-                .signer()
-                .await
-                .map_err(|e| InviteError::Io(format!("the onboarding signer did not derive: {e}")))?
-                .did()
-        }
-    };
+                let secret = crate::onboarding::account(&profile, &store_operator)
+                    .await
+                    .map_err(|e| InviteError::Io(format!("{e:#}")))?;
+                secret
+                    .signer()
+                    .await
+                    .map_err(|e| {
+                        InviteError::Io(format!("the onboarding signer did not derive: {e}"))
+                    })?
+                    .did()
+            }
+        };
     let space_name = invite.space_name.clone();
     let claimed = invite
         .claim(&member)
@@ -461,6 +467,11 @@ pub async fn claim(
     let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
+    std::fs::write(
+        joined.root.join(CLAIMED_INVITATION_FILE),
+        invitation.this.to_string(),
+    )
+    .map_err(|e| InviteError::Io(format!("failed to record the local invitation claim: {e}")))?;
     retain_claim_authority(&joined, chain).await;
 
     // Wire the embedded remote (if any) onto the freshly
@@ -735,6 +746,40 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
     resolve_location(short_url, location).map_err(|e| InviteError::InvalidInvite(e.to_string()))
 }
 
+/// Validate an invite before beginning a user-visible ceremony.
+///
+/// Short links are resolved here and returned in their complete long form so
+/// the later claim can reuse the result instead of making a second request.
+/// No local state is created and no authority is changed.
+pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError> {
+    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite = parse_invite_url(&invite_url).await?;
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
+    Ok(InvitePreflight {
+        url: invite_url,
+        invitation,
+        expected_root: match invite.audience {
+            InviteAudience::Scoped => Some(invite.chain.audience().clone()),
+            InviteAudience::Open { .. } => None,
+        },
+    })
+}
+
+async fn resolve_invite_url(invite_url: &str) -> Result<String, InviteError> {
+    if is_shortcut(invite_url) {
+        resolve_shortcut(invite_url).await
+    } else {
+        Ok(invite_url.to_owned())
+    }
+}
+
+async fn parse_invite_url(invite_url: &str) -> Result<Invite, InviteError> {
+    Invite::parse_url(invite_url)
+        .await
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))
+}
+
 /// Generate an ephemeral Ed25519 signer with an extractable
 /// seed. Mirrors [`tonk_worker`'s helper] — wasm's default
 /// `Ed25519Signer::generate` produces a non-extractable
@@ -845,6 +890,23 @@ mod tests {
         #[dialog_common::test]
         fn it_is_off_when_the_flag_is_passed() {
             assert!(!shorten_enabled(true));
+        }
+    }
+
+    mod when_preflighting_an_invite {
+        use super::*;
+
+        #[dialog_common::test]
+        async fn it_rejects_a_missing_capability_before_any_claim() {
+            let error = preflight("https://example.test/join")
+                .await
+                .expect_err("an invite without access must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("missing the `access` query parameter"),
+                "{error}"
+            );
         }
     }
 }
