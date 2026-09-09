@@ -535,7 +535,6 @@ impl CustomElement for UiHubAccount {
                     enter_linking(&host);
                     request_linking_position_for(&host, "profile-transition");
                 });
-                return;
             }
         }));
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
