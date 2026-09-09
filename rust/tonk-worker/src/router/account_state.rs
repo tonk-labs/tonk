@@ -665,16 +665,20 @@ async fn observe_registration(
 /// the regions nothing touches (the history lineage, above all, which
 /// lives in the same tree as the data) stay where they are.
 ///
-/// Three touches, in the order they are needed:
+/// Three phases, in the order the SCREEN needs them:
 ///
-/// 1. the account's own facts — the name the Hub renders
-/// 2. one authorization proof per space — the capability chain that lets
-///    that space open with no network
-/// 3. nothing else: content arrives when a space is actually opened
+/// 1. the account name — the Hub's account cell can render
+/// 2. the space list — the Hub's stack can render
+/// 3. the capability chains — the spaces can be opened offline
 ///
-/// Best-effort throughout. A space whose proof does not resolve is a
-/// space that will hydrate on first use, which is the ordinary lazy
-/// path, not a failure worth refusing the sweep over.
+/// The first two are what unblock the UI, so they come first and are
+/// cheap: one region each. The third is the expensive one and it blocks
+/// nothing on screen — it buys the ability to work with no network, for
+/// spaces the person may never open this session.
+///
+/// Best-effort throughout, and a proof that does not resolve is an
+/// ORDINARY outcome, not a failure: the space still opens through the
+/// lazy path the moment it is asked for.
 async fn hydrate_account_essentials(tonk: &TonkState) {
     let Ok(root) = super::identity::local_root(tonk).await else {
         // No local root yet: nothing to prove against. The next sweep
@@ -695,45 +699,108 @@ async fn hydrate_account_essentials(tonk: &TonkState) {
         }
     };
 
-    // (1) The account's own facts. Reading the name walks the region the
-    // Hub's account cell renders from.
+    // (1) The account name — the Hub's account cell renders from this,
+    // and until it lands the cell holds a skeleton.
     let _ = super::account_devices::account_display_name(tonk).await;
 
-    // (2) One proof per space. `prove` walks the delegation chain for
-    // that subject, so a successful proof means every block that chain
-    // needs is now local — which is what makes the space openable
-    // offline, and what the next session open reads without a network.
+    // (2) The space list — the Hub's stack renders from this. Together
+    // with the name it is everything the screen needs, so the expensive
+    // phase below starts only once both have landed.
     let keys = super::profile_name::real_space_keys(tonk).await;
+
+    // (3) Every capability, per space — not one proof per space.
+    //
+    // The walk admits a candidate only when the REQUESTED command falls
+    // under the delegated one (`access.command.starts_with(delegated)`),
+    // so a `/` proof never touches the envelope of a `/use` grant: a
+    // member's chain is invisible to it. Whichever chain this device
+    // actually holds is the one that has to be local for the space to
+    // open offline, so each scope is proved in turn and the first that
+    // answers is the one that hydrated.
+    //
+    // Ordered widest-first: a founder or admin holds `/`, which covers
+    // the rest, so the common case admits one envelope and stops.
     let mut proved = 0usize;
     for key in &keys {
         let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
             continue;
         };
-        let proof = branch
+        if hydrate_space_capabilities(tonk, &branch, &root.root_did, &subject).await {
+            proved += 1;
+        }
+    }
+    // A space that proved nothing is not a failure and is not logged as
+    // one: this device may hold no grant over it, the grant may not have
+    // replicated yet, or the space may be one it can only reach online.
+    // Every one of those is an ordinary state, and the space still opens
+    // through the lazy path the moment it is asked for. Hydrating is an
+    // optimization for going offline, not a precondition for working.
+    log!(
+        "hydrated the account and {proved}/{} space capability chains",
+        keys.len()
+    );
+}
+
+/// The capability scopes a device can hold over a space.
+///
+/// Reading and writing are SEPARATE grants — a device can hold one
+/// without the other — so each is proved on its own; `/` is the
+/// founder's and an admin's, covering both. They are different chains
+/// with different envelopes, and the proof walk only admits a delegation
+/// whose command covers the one being asked for, so proving `/` tells
+/// you nothing about whether a `/use/get` chain is local.
+///
+/// Widest first: a `/` holder is covered by one envelope and the rest
+/// are skipped.
+const SPACE_SCOPES: [&str; 3] = ["/", "/use/get", "/use/put"];
+
+/// Prove each scope this device might hold over `subject`, so whichever
+/// chain it actually has is materialized locally.
+///
+/// Returns whether any scope proved, for the count in the log line only.
+/// Proving nothing is an ordinary answer — this device may hold no grant
+/// over the space — so no scope is required to succeed and none of them
+/// failing is not an error.
+///
+/// A `/` proof short-circuits the rest, since it covers them. The read
+/// and write scopes are otherwise BOTH walked: holding one says nothing
+/// about the other, and a device that can read but not write still needs
+/// its read chain local to open the space offline.
+async fn hydrate_space_capabilities(
+    tonk: &TonkState,
+    branch: &crate::reactor::BranchSession,
+    root: &dialog_varsig::Did,
+    subject: &dialog_varsig::Did,
+) -> bool {
+    let mut any = false;
+    for scope in SPACE_SCOPES {
+        let Ok(command) = dialog_ucan_core::command::Command::parse(scope) else {
+            continue;
+        };
+        let proved = branch
             .handle()
             .delegations()
             .prove(
-                root.root_did.clone(),
+                root.clone(),
                 dialog_ucan::Scope {
-                    subject: dialog_ucan_core::subject::Subject::Specific(subject),
-                    command: dialog_ucan_core::command::Command::parse("/")
-                        .expect("the root command parses"),
+                    subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+                    command,
                     parameters: dialog_ucan::Parameters::default(),
                 },
             )
             .perform(&tonk.operator)
-            .await;
-        match proof {
-            Ok(_) => proved += 1,
-            // Ordinary for a space this device has not been granted, or
-            // one whose grant has not replicated yet.
-            Err(error) => log!("hydrate: no proof for space '{key}' yet: {error}"),
+            .await
+            .is_ok();
+        if proved {
+            // `/` is the whole space: nothing narrower can add a chain
+            // this did not already admit.
+            if scope == "/" {
+                return true;
+            }
+            any = true;
         }
     }
-    log!(
-        "hydrated the account and {proved}/{} space capabilities",
-        keys.len()
-    );
+    any
 }
 
 async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
