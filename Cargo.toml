@@ -23,6 +23,7 @@ members = [
   "rust/tonk-language-server",
   "rust/tonk-macros",
   "rust/tonk-notation",
+  "rust/tonk-perf",
   "rust/tonk-portal",
   "rust/tonk-prose",
   "rust/tonk-render",
