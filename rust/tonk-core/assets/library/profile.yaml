@@ -309,6 +309,25 @@ view!:
 
         </main>
       </div>
+    # The space page's waiting room. Reached only when the space's own
+    # content has not arrived but the account's DIRECTORY ROW for it has
+    # — so this device knows the space exists and is entitled to it, and
+    # the bytes are simply still coming. Named `downloading` because
+    # that is the whole message: no error, no invitation advice.
+    #
+    # The name is the directory mirror (`xyz.tonk.space/name`), written
+    # at create and kept current by rename, which exists so a device
+    # that has not replicated a space can still label it.
+    downloading: |
+      <div class="space-unknown">
+        <tonk-title text="Downloading — Tonk"></tonk-title>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <div class="space-unknown-wall">
+          <h1 class="space-unknown-statement">downloading {name}</h1>
+          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+        </div>
+      </div>
+
 
 # ============================================================
 # FAB — floating action button view (rendered in the FAB portal iframe)
@@ -1122,27 +1141,49 @@ view!:
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
-             in `no-model` — the same state a not-yet-synced concept
-             reaches, which is exactly right: the space may arrive later,
-             and when it does the standing subscription delivers a real
-             frame and this panel is replaced in place.
+             in `no-model`.
 
-             Slotted rather than left to the built-in fallback, which
-             would show "Model not found — concept: tonk:repository" to
-             someone whose actual problem is that they were never invited. -->
+             That state has TWO causes and they need opposite words: a
+             space the account knows and is still pulling, and a space
+             this person was never invited to. The DIRECTORY ROW tells
+             them apart. It hangs on the repository's own entity, is
+             asserted once per space and converges on every device, and
+             lives on the profile branch — so it is readable here even
+             though the space's own content is not. A row means the
+             account has this space and the bytes are on their way; no
+             row means the link opens nothing this account holds.
+
+             So the panel is a nested display over `tonk:space`, and
+             "invalid link" moves into ITS `no-model` — reached only
+             when there is genuinely no directory row. -->
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-title text="Not here — Tonk"></tonk-title>
-          <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-          <div class="space-unknown-wall">
-            <h1 class="space-unknown-statement">invalid link</h1>
-            <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
-            <!-- A plain anchor lets the guest relay navigation to the host. -->
-            <div class="space-unknown-run">
-              <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
+          <tonk-display with="main@profile:tonk" entity={id} model=space view=downloading>
+            <!-- The account has this space: it is arriving, not missing.
+                 When it lands, the OUTER display's standing subscription
+                 delivers a real frame and this whole panel is replaced. -->
+            <!-- No directory row: the link really does open nothing this
+                 account holds. -->
+            <div slot="no-model" hidden>
+              <tonk-title text="Not here — Tonk"></tonk-title>
+              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <div class="space-unknown-wall">
+                <h1 class="space-unknown-statement">invalid link</h1>
+                <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
+                <!-- A plain anchor lets the guest relay navigation to the host. -->
+                <div class="space-unknown-run">
+                  <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
+                </div>
+              </div>
             </div>
-          </div>
+            <!-- A space seeded before the `downloading` facet existed
+                 resolves no view. Stay quiet rather than firing the
+                 built-in red callout at someone whose space is merely
+                 still arriving: `update_slot_children` toggles `hidden`
+                 on matching children, so an inert one suppresses it. -->
+            <span slot="no-view" hidden></span>
+          </tonk-display>
         </div>
         <!-- A space created before the title facet existed has no
              `show: {title: …}` entry on its branch, so `view=title`

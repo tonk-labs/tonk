@@ -313,12 +313,21 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    // Two, and they must stay two: the absent-space panel says one of
+    // exactly two things. A space the account's directory row names is
+    // DOWNLOADING; one it does not name is an invalid link. Collapsing
+    // them is the bug this pins -- a space that is merely still
+    // arriving was told it did not have access.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        1,
-        "the absent-space explanation must render as one card"
+        2,
+        "the absent-space panel must explain both causes: downloading, and never invited"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("model=space view=downloading"),
+        "the absent-space panel must consult the directory row before accusing the link"
     );
     assert!(
         !PROFILE_LIBRARY.contains("you don't have this spot")
