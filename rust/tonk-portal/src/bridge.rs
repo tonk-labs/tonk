@@ -281,7 +281,8 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // the host can word the prompt. Fire-and-forget (no response).
     register:function(reason){
       var opener=document.activeElement;
-      var token=(opener&&opener!==document.body)?mint():"";
+      // Even an unfocused opener needs the ceremony's terminal event.
+      var token=mint();
       if(token){ registerFocus.set(token,opener); }
       ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
@@ -333,6 +334,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve(env.delegation); return;
       }
+      case "custody-open": {
+        window.dispatchEvent(new Event("tonk:custody-opened")); return;
+      }
+      case "custody-focus":
       case "register-focus": {
         var opener=registerFocus.get(env.focusToken);
         registerFocus.delete(env.focusToken);
@@ -341,7 +346,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         // so signal the guest window even when that old node can no longer
         // take focus. Hub chrome uses this terminal event to clear its durable
         // linking marker and restore the spaces page in one step.
-        window.dispatchEvent(new Event("tonk:registration-closed"));
+        window.dispatchEvent(new Event(env.type==="custody-focus" ? "tonk:custody-closed" : "tonk:registration-closed"));
         if(opener&&opener.isConnected&&!opener.matches(":disabled")){
           window.focus();
           opener.focus({preventScroll:true});
@@ -2010,6 +2015,17 @@ impl RegisterFocusReturn {
             let _ = frame.focus();
         }
         self.post("register-focus");
+        self.handled = true;
+    }
+
+    /// Replace the guest approval rows once the top-page prompt is ready.
+    pub fn show_custody(&self) {
+        self.post("custody-open");
+    }
+
+    /// Finish an account custody screen without closing Hub registration.
+    pub fn restore_custody(mut self) {
+        self.post("custody-focus");
         self.handled = true;
     }
 
@@ -4320,6 +4336,24 @@ mod tests {
 
         let returned = listener.wait_for("register-focus").await;
         assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_and_restores_custody_through_the_request_port() {
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let reply = RegisterFocusReturn {
+            port: channel.port1(),
+            frame: None,
+            token: "custody-1".into(),
+            handled: false,
+        };
+        reply.show_custody();
+        let opened = listener.wait_for("custody-open").await;
+        assert_eq!(get_str(&opened, "focusToken").as_deref(), Some("custody-1"));
+        reply.restore_custody();
+        let closed = listener.wait_for("custody-focus").await;
+        assert_eq!(get_str(&closed, "focusToken").as_deref(), Some("custody-1"));
     }
 
     /// `open_href` accepts only a well-formed `{type:"open", href}`. The
