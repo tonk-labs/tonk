@@ -3170,13 +3170,30 @@ async fn commit_replica_stamp(
 /// A space whose seed already matches is left alone, which is the common
 /// case: this runs on every mount.
 pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
-    let session = tonk
+    // Replicas exist under either key spelling — legacy mounts used the
+    // bare suffix, newer ones the full did:key URI — so try the given
+    // spelling and fall back to the other before reporting a miss.
+    let session = match tonk
         .reactor
         .repository(key)
         .branch(CONTENT_BRANCH)
         .acquire(&tonk.operator)
         .await
-        .map_err(|e| RepositoryError::Internal(format!("open '{key}': {e}")))?;
+    {
+        Ok(session) => session,
+        Err(first) => {
+            let alternate = match key.strip_prefix("did:key:") {
+                Some(suffix) => suffix.to_string(),
+                None => format!("did:key:{key}"),
+            };
+            tonk.reactor
+                .repository(&alternate)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .map_err(|_| RepositoryError::Internal(format!("open '{key}': {first}")))?
+        }
+    };
 
     let current = read_installed_seed(tonk, &session)
         .await
@@ -4486,7 +4503,10 @@ pub async fn get_repository(
     // The outcome rides the not-found error: a swallowed mount failure
     // turns an explainable miss into a bare 404.
     let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
-        Ok(true) => None,
+        Ok(true) => {
+            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &name).await;
+            None
+        }
         Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
         Err(error) => {
             log!("on-demand mount of '{}' failed: {error}", name);

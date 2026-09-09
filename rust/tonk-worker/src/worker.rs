@@ -411,6 +411,9 @@ pub struct TonkState {
     /// whether we have observed it alive. The stale-client sweep reaps
     /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
     pub clients: crate::router::ClientRegistry,
+    /// Spaces whose seed this worker instance already checked against the
+    /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
+    pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -1781,6 +1784,7 @@ pub(crate) async fn boot_state(
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
+        seed_upgrades: Default::default(),
         account_keys: Default::default(),
         registry,
         profile_transition: Arc::new(Mutex::new(())),

@@ -63,13 +63,12 @@ pub(crate) async fn ensure_space_mounted(
         {
             log!("space adoption: directory reconcile for mounted '{subject}': {error}");
         }
-        // A space keeps the definitions it was seeded with, so a redesign
-        // shipped in a new bundle never reaches it. Catching up on mount
-        // costs nothing for a space already on the shipped seed, and an
-        // unopened space pays nothing at all.
-        if let Err(error) = super::repository::upgrade_seed(tonk, suffix).await {
-            log!("seed upgrade for mounted '{subject}': {error}");
-        }
+        // Seed catch-up is NOT run here: it fetches the seed source over
+        // HTTP before its version compare can short-circuit, and this
+        // path sits on every data-plane request. The routes that mount
+        // call [`schedule_seed_upgrade`], which runs it detached, once
+        // per worker instance per space — a new worker is a new bundle,
+        // which is exactly when a shipped redesign can have appeared.
         return Ok(true);
     }
     let Some(configuration) = directory_configuration(tonk, &subject).await else {
@@ -143,11 +142,78 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
         }
         let tonk = self.state().read().await;
         match ensure_space_mounted(&tonk, &key).await {
-            Ok(true) => log!("ReplicateSpace '{key}': mounted"),
+            Ok(true) => {
+                schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
+                log!("ReplicateSpace '{key}': mounted");
+            }
             // Not an error: the directory has no mount record for it, so
             // there is nothing this device could pull.
             Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
             Err(error) => log!("ReplicateSpace '{key}': {error}"),
+        }
+    }
+}
+
+/// Spaces whose seed this worker instance has already checked, by full
+/// subject DID. In memory on purpose: a worker instance corresponds to
+/// one shipped bundle, so once-per-instance is once-per-bundle for any
+/// space that gets used — an upgrade lands with the SW upgrade rather
+/// than being re-verified on every load.
+#[derive(Default)]
+pub(crate) struct SeedUpgrades(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl SeedUpgrades {
+    /// Claim the once-per-instance check for `key`. `false` means some
+    /// earlier request already claimed it.
+    fn begin(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key.to_string())
+    }
+}
+
+/// Catch a mounted space's seed up with the shipped bundle, detached
+/// from the request that touched it.
+///
+/// Best-effort by design: the work runs off the request path (a load is
+/// never blocked on the seed source fetch), at most once per worker
+/// instance per space, and a failed attempt simply waits for the next
+/// worker to try again. On wasm the task is not tied to the fetch
+/// lifetime, so an idling worker may cut it short — the same next-boot
+/// retry covers that. Native (the single-threaded test and host builds,
+/// same as `spawn_dispatch`) runs it inline instead.
+pub(crate) async fn schedule_seed_upgrade(
+    tonk: &TonkState,
+    state: crate::router::AppState,
+    key: &str,
+) {
+    let Some(subject) = space_subject(key) else {
+        return;
+    };
+    let key = subject.to_string();
+    // Claim under the CALLER's guard, before anything is spawned: the
+    // detached task re-locks for itself, and taking a second read here
+    // while the caller holds one could park behind a queued writer.
+    if !tonk.seed_upgrades.begin(&key) {
+        return;
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(async move {
+        let tonk = state.read().await;
+        match super::repository::upgrade_seed(&tonk, &key).await {
+            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+            Ok(false) => {}
+            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
+        }
+    });
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = state;
+        match super::repository::upgrade_seed(tonk, &key).await {
+            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+            Ok(false) => {}
+            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
         }
     }
 }

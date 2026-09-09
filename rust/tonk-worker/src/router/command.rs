@@ -703,6 +703,7 @@ pub(crate) mod tests {
                 sync_queue: Default::default(),
                 commands: crate::router::command_providers(),
                 clients: Default::default(),
+                seed_upgrades: Default::default(),
                 account_keys: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),

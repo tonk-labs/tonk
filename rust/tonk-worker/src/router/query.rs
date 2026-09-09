@@ -59,8 +59,14 @@ pub async fn query(
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — the lazy half of
     // directory-driven adoption. A no-op for mounted repos.
-    if let Err(error) = super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
-        tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
+    match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
+        Ok(true) => {
+            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
+        }
     }
     let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
     query_on_branch(&tonk, branch, headers, request, client).await
