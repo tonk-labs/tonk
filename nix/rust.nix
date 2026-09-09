@@ -18,8 +18,8 @@ let
   # that the same dependencies can be used across all derivations that
   # need them. Crane expects the full git URL as the key.
   cargoGitDependencies = {
-    "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-05-19#9c49c9956028119d7d9293b93e329dc1b84e4999" =
-      "sha256-jwKq75n7oPjfNglx+mArc79+Y/v3yRZj4teeNs9iZCw=";
+    "git+https://github.com/dialog-db/dialog-db.git?rev=314e49926eb5bca58bacdcf9f2123ccb4422ea35#314e49926eb5bca58bacdcf9f2123ccb4422ea35" =
+      "sha256-V3ZKANhlwG2MLTW6A4c/GS76k1bVB0OusFLGrNj4t9Q=";
   };
 
   # Filter source to only Rust-relevant files

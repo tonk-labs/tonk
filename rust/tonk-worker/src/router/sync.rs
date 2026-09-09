@@ -1387,34 +1387,26 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
-/// Make sure every credential this worker is about to sign with is still
-/// good, rotating the operator and replaying every guest invite onto it
-/// when anything is due.
-///
-/// Rotation replaces the operator key, not just its delegation: the
-/// certificate store is content-addressed with no delete, and its chain
-/// walk never consults the clock, so a re-minted delegation filed under
-/// the same audience would sit beside the lapsed one and be chosen about
-/// half the time. A new key means a new audience and no ambiguity.
-///
-/// That is also why one guest coming due rotates for all of them. The
-/// operator is shared by every mounted repository, so a new audience
-/// orphans every guest chain at once, and the only safe rotation is the
-/// one that re-mints the whole set. Durable spaces need no replay: they
-/// reach the operator through `space -> root -> device -> operator`,
-/// whose last hop `session::open` re-mints anyway.
-///
-/// The replacement is built over the state's existing storage pool, so
-/// every repository and branch handle the reactor has cached stays
-/// valid — the operator changes, the spaces underneath do not.
-///
-/// Order matters at the end: every replacement chain is retained first,
-/// every record is written second, and only then does the state adopt
-/// the new operator. A failure anywhere leaves the current operator and
-/// the current records exactly as they were — the chains retained for an
-/// audience nothing points at are inert, and a record still naming the
-/// previous operator reads as due on the next attempt.
+/// Replace a due session with a disposable operator and bounded in-memory
+/// grant. Account and profile authority survives without invitation replay.
+/// Build over the existing storage pool outside the state write lock, then
+/// install only if the observed generation is still current. Losing
+/// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
+    renew_session_with(state, |profile, storage| async move {
+        crate::session::rotate(&profile, &storage).await
+    })
+    .await
+}
+
+async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
+where
+    F: FnOnce(
+        dialog_operator::Profile,
+        dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
+    ) -> Fut,
+    Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
+{
     let now = crate::session::now();
     let (profile, storage, expires_at) = {
         let tonk = state.read().await;
@@ -1429,10 +1421,9 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
         return Ok(());
     }
 
-    // Mint outside the lock — nothing else may proceed while a write
-    // lock is held, and this signs. The operator KEY is stable, so this
-    // replaces the delegation authorizing it, not the audience.
-    let session = crate::session::rotate(&profile, &storage).await?;
+    // Signing happens outside the write lock; existing readers finish
+    // before the new operator and expiry are installed together.
+    let session = build(profile, storage).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1442,10 +1433,6 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
         return Ok(());
     }
 
-    // No guest replay: a guest's chain is addressed to the operator, and
-    // the operator's DID no longer moves, so a renewed delegation leaves
-    // every guest chain exactly as valid as it was. Replaying invites
-    // here was the only consumer of a guest's retained invite URL.
     tonk.operator = session.operator;
     tonk.session_expires_at = session.expires_at;
     Ok(())
@@ -1739,14 +1726,13 @@ mod overlay_tests {
     }
 }
 
-/// Session renewal tests — wasm-only, because they need a real
-/// certificate store to mint against.
+/// Session renewal tests exercise the worker's state replacement boundary.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod renewal_tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use super::ensure_session_authority;
+    use super::{ensure_session_authority, renew_session_with};
     use crate::router::tests::test_state;
     use crate::router::{AppState, api_router_with_state};
 
@@ -1754,25 +1740,99 @@ mod renewal_tests {
         state.read().await.operator.did().to_string()
     }
 
-    /// The operator key derives from a CONSTANT context, so renewal
-    /// replaces the delegation authorizing it and never the key itself.
-    ///
-    /// This is what lets a chain addressed to the operator, such as a
-    /// guest's invite hop, survive renewal. Deriving a fresh key each
-    /// time invalidated those chains twice a day, which made a retained
-    /// bearer secret the only way to mint replacements.
+    async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
+        let tonk = state.read().await;
+        dialog_repository::Repository::from(tonk.profile.signer().clone())
+            .branch(dialog_repository::ACCESS_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap()
+            .revision()
+    }
+
     #[dialog_common::test]
-    async fn it_keeps_the_operator_did_across_renewal() {
+    async fn it_replaces_a_due_session_once_without_committing() {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let before = operator_did(&state).await;
-
+        let head = revision(&state).await;
+        state.write().await.session_expires_at = crate::session::now();
         ensure_session_authority(&state).await.unwrap();
+        let renewed = operator_did(&state).await;
+        assert_ne!(before, renewed);
+        assert_eq!(revision(&state).await, head);
+        {
+            let tonk = state.read().await;
+            let proof = tonk
+                .profile
+                .access()
+                .prove(
+                    dialog_capability::Subject::from(tonk.profile.did())
+                        .attenuate(dialog_effects::Use),
+                )
+                .audience(&tonk.operator)
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            assert_eq!(proof.duration.expiration, Some(tonk.session_expires_at));
+            assert_eq!(
+                proof.proofs.last().unwrap().0.audience(),
+                &tonk.operator.did()
+            );
+        }
         ensure_session_authority(&state).await.unwrap();
+        assert_eq!(operator_did(&state).await, renewed);
+    }
 
-        assert_eq!(
-            before,
-            operator_did(&state).await,
-            "renewal re-mints the delegation, not the operator key",
-        );
+    #[dialog_common::test]
+    async fn it_keeps_the_current_session_when_construction_fails() {
+        let (_app, state, _lsp) = api_router_with_state(test_state().await);
+        let before = operator_did(&state).await;
+        let head = revision(&state).await;
+        let due = crate::session::now();
+        state.write().await.session_expires_at = due;
+        let result = renew_session_with(&state, |_, _| async {
+            Err(crate::TonkWorkerError::Internal(
+                "injected session construction failure".into(),
+            ))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(operator_did(&state).await, before);
+        assert_eq!(state.read().await.session_expires_at, due);
+        assert_eq!(revision(&state).await, head);
+    }
+
+    #[dialog_common::test]
+    async fn it_installs_only_one_concurrent_candidate() {
+        let (_app, state, _lsp) = api_router_with_state(test_state().await);
+        let head = revision(&state).await;
+        state.write().await.session_expires_at = crate::session::now();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
+        let winner = async {
+            renew_session_with(&state, |profile, storage| async move {
+                ready_rx.await.unwrap();
+                crate::session::rotate(&profile, &storage).await
+            })
+            .await
+            .unwrap();
+            let installed = operator_did(&state).await;
+            installed_tx.send(installed.clone()).unwrap();
+            installed
+        };
+        let loser = renew_session_with(&state, |profile, storage| async move {
+            let candidate = crate::session::rotate(&profile, &storage).await.unwrap();
+            ready_tx.send(()).unwrap();
+            let installed = installed_rx.await.unwrap();
+            assert_ne!(candidate.operator.did().to_string(), installed);
+            Ok(candidate)
+        });
+        let (installed, result) = futures_util::join!(winner, loser);
+        result.unwrap();
+        assert_eq!(operator_did(&state).await, installed);
+        assert_eq!(revision(&state).await, head);
+        ensure_session_authority(&state).await.unwrap();
+        assert_eq!(operator_did(&state).await, installed);
     }
 }
