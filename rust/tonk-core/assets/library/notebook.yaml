@@ -480,16 +480,6 @@ rule!:
         notebook: ?notebook
         source: ?source
 
-rule!:
-  description: Persist a block whose insert is still pending.
-  assert!: notebook/block
-  when:
-    - assert: block/pending
-      where:
-        this: ?this
-        notebook: ?notebook
-        source: ?source
-
 # A block already in the sequence is at the position it is stored under.
 # This is what gives the derivation rule its neighbours.
 rule!:
@@ -505,159 +495,16 @@ rule!:
         this: ?at
         is: ?block/key
 
-<<<<<<< Updated upstream
 # An inserted block's successor, kept as a fact so the position rules can
 # recurse over it. `case:none` at the tail is an ordinary sentinel entity —
 # it simply matches no block, which is what ends the recursion.
 rule!:
   description: Record an inserted block's successor.
   assert: block/chain
-=======
-# The document's edge HAS a position: the empty one.
-#
-# That is what keeps the derivation below to a single rule. Without it a
-# rule body naming `head` never fires for a block at the top, and one
-# variant per present/absent combination is needed instead.
-block/position!:
-  this: tonk:notebook/edge
-  at: ""
-
-# An insert still waiting for its predecessor's position.
-#
-# `block/insert` is a command, and a command is transient: it is visible to
-# rule bodies for exactly ONE round. A block whose predecessor is inserted
-# in the same transaction cannot derive its position in that round — the
-# predecessor has none yet — and by the next round the command is gone.
-# Three blocks pasted together therefore all derived against the document
-# edge, produced the same key, and left one entry between them.
-#
-# Re-emitting the insert as a transient carries it into the next round,
-# where the predecessor's position is durable. The relay re-emits itself
-# for as long as the predecessor is unplaced, so a run of N blocks resolves
-# in N rounds; dialog fails a commit that outruns its round budget rather
-# than diverging.
-concept!: &block/pending
-  this: tonk:notebook/block-pending
-  transient:
-  description: An insert whose predecessor is not yet positioned.
-  with:
-    notebook:
-      description: The notebook the block belongs to.
-      the: xyz.tonk.notebook.pending/notebook
-      cardinality: one
-      as: entity
-    source:
-      description: The block's markdown source.
-      the: xyz.tonk.notebook.pending/source
-      cardinality: one
-      as: text
-    # Required HERE even though it is optional on the command: a pending
-    # insert exists precisely because it has a predecessor to wait for. An
-    # insert with none is positioned in round one and never held.
-    head:
-      description: The block this one follows.
-      the: xyz.tonk.notebook.pending/head
-      cardinality: one
-      as: entity
-
-# Round one: an insert with a predecessor becomes pending.
-rule!:
-  description: Hold an insert until its predecessor is positioned.
-  assert!: block/pending
   when:
     - assert: block/insert
       where:
         this: ?this
-        notebook: ?notebook
-        source: ?source
-        head: ?maybe-head
-    # `head` is optional on the command and required here, so it is bound
-    # through a constraint: the equality holds only where a head is
-    # present, which is exactly when an insert needs holding.
-    - assert: "=="
-      where:
-        this: ?head
-        is: ?maybe-head
-
-# ...and a pending insert re-emits itself while the predecessor is
-# unplaced, so the wait is as long as the chain.
-rule!:
-  description: Carry a pending insert into the next round.
-  assert!: block/pending
-  when:
-    - assert: block/pending
-      where:
-        this: ?carried
-        notebook: ?notebook
-        source: ?source
-        head: ?head
-    # The head is re-bound under its own name so the rule is not read as
-    # tautological: the check fires when EVERY head key reads back the
-    # variable of the same name, and it does not look at `unless:`. The
-    # negation below is what actually makes this productive — it re-emits
-    # only the inserts still waiting.
-    - assert: "=="
-      where:
-        this: ?this
-        is: ?carried
-  unless:
-    # A negation cannot introduce a variable, so the position is matched
-    # with a blank: the question is whether the head has ANY position, not
-    # which one.
-    - assert: block/position
-      where:
-        this: ?head
-        at: _
-
-# ...and an inserted block's position is derived from its neighbours'.
-#
-# TWO rules, split on whether the block names a predecessor. That split is
-# not cosmetic: it is what makes a run of blocks order itself.
-#
-# `coalesce` cannot do it. Coalescing an absent head to the edge sentinel
-# gives every block a bound immediately, so all of them derive in the same
-# round — and a block whose predecessor is being inserted in that very
-# round sees no position for it and falls back to the edge too. Three
-# blocks then derive the identical key and two of the three entries are
-# overwritten, leaving one.
-#
-# Requiring the predecessor's position instead makes the rule WAIT: block 2
-# cannot fire until block 1's position is durable, which happens in the
-# round before. The cascade is bounded by the run's length, and dialog
-# fails a commit that exceeds its round budget rather than diverging.
-
-# A block with a predecessor: after it, before whatever followed it.
-rule!:
-  description: Derive an inserted block's position after its predecessor.
-  assert!: block/position
-  when:
-    - assert: block/pending
-      where:
-        this: ?this
-        notebook: ?notebook
-        head: ?head
-    - assert: block/position
-      where:
-        this: ?head
-        at: ?head-at
-    - assert: dialog/position
-      where:
-        member: ?this
-        after: ?head-at
-        before: ""
-        is: ?at
-
-# A block with no predecessor is at the document's head. `""` is the empty
-# bound, which `dialog/position` reads as unbounded.
-rule!:
-  description: Derive the position of an inserted block with no predecessor.
-  assert!: block/position
->>>>>>> Stashed changes
-  when:
-    - assert: block/insert
-      where:
-        this: ?this
-<<<<<<< Updated upstream
         next: ?next
 
 # The document's edge HAS a position: the empty one, which
@@ -745,25 +592,7 @@ rule!:
         member: ?this
         after: ?prev-at
         before: ?next-at
-=======
-        notebook: ?notebook
-        source: ?source
-    - assert: dialog/position
-      where:
-        member: ?this
-        after: ""
-        before: ""
->>>>>>> Stashed changes
         is: ?at
-  unless:
-    # Only for a block that names NO predecessor. Without this the rule
-    # matches every insert, so a block that is waiting for its predecessor
-    # also gets a head-of-document position — and two blocks then hold the
-    # same key, which is one entry between them.
-    - assert: block/pending
-      where:
-        this: ?this
-        head: _
 
 # The derived position becomes the block's entry in the sequence.
 rule!:
@@ -780,7 +609,6 @@ rule!:
         at: ?block/key
 
 rule!:
-<<<<<<< Updated upstream
   description: Retitle a notebook from its heading.
   assert!: notebook/named
   when:
@@ -788,19 +616,6 @@ rule!:
       where:
         subject: ?this
         title: ?title
-=======
-  description: Place a block that was held pending.
-  assert!: notebook/blocks
-  when:
-    - assert: block/pending
-      where:
-        this: ?block
-        notebook: ?this
-    - assert: block/position
-      where:
-        this: ?block
-        at: ?block/key
->>>>>>> Stashed changes
 
 rule!:
   description: Persist a block edit onto its block.
