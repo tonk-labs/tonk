@@ -372,46 +372,83 @@ mod when_adding_a_view {
 }
 
 /// The reason `element` exists beside the deprecated `component`:
-/// identity. A `component!:` with no `this:` is keyed by its body
-/// digest, so editing the module writes a SECOND row and the realm
-/// then loads both. `element` pins `element:<tag>`, so the same edit
-/// supersedes.
+/// identity that never moves. A `component!:` with no `this:` is keyed
+/// by its body digest, so editing it writes a SECOND row and the realm
+/// loads both. `element` pins `element:<tag>`, so facts accumulate on
+/// one entity and a later assertion supersedes only the methods it
+/// names.
 mod when_defining_an_element {
     use super::*;
 
-    const FIRST: &str = "customElements.get('tally-widget') || customElements.define('tally-widget', class extends HTMLElement {});";
-    const SECOND: &str = "customElements.get('tally-widget') || customElements.define('tally-widget', class extends HTMLElement { connectedCallback() {} });";
+    fn methods(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
 
     #[dialog_common::test]
-    async fn it_lists_the_element_under_its_tag() -> Result<()> {
+    async fn it_lists_the_element_under_its_tag_with_its_methods() -> Result<()> {
         let test = TestSite::new().await?;
-        tonk_cli::data_ops::element_add(&test.site, "tally-widget", FIRST, Default::default())
-            .await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            &methods(&[
+                ("connected", "(self) => { self.textContent = 'v1'; }"),
+                ("disconnected", "(self) => {}"),
+            ]),
+            Default::default(),
+        )
+        .await?;
         let listed = tonk_cli::elements::list(&test.site).await?;
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].tag.as_deref(), Some("tally-widget"));
         assert_eq!(listed[0].entity.to_string(), "element:tally-widget");
+        assert_eq!(listed[0].methods, vec!["connected", "disconnected"]);
         assert!(!listed[0].deprecated);
         Ok(())
     }
 
+    /// The property the whole `method:` dictionary exists for, and the
+    /// one derived identity cannot provide: authoring ONE method
+    /// leaves the others standing.
     #[dialog_common::test]
-    async fn it_supersedes_the_module_when_the_same_tag_is_redefined() -> Result<()> {
+    async fn it_supersedes_only_the_methods_a_later_assertion_names() -> Result<()> {
         let test = TestSite::new().await?;
-        tonk_cli::data_ops::element_add(&test.site, "tally-widget", FIRST, Default::default())
-            .await?;
-        tonk_cli::data_ops::element_add(&test.site, "tally-widget", SECOND, Default::default())
-            .await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            &methods(&[
+                ("connected", "(self) => { self.textContent = 'v1'; }"),
+                ("disconnected", "(self) => { self.dataset.gone = '1'; }"),
+                ("bump", "(self) => 1"),
+            ]),
+            Default::default(),
+        )
+        .await?;
+        // Re-author `connected` ALONE.
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            &methods(&[("connected", "(self) => { self.textContent = 'v2'; }")]),
+            Default::default(),
+        )
+        .await?;
 
-        // One row, not two: the tag is the identity, so the second
-        // definition replaced the first rather than landing beside it.
         let listed = tonk_cli::elements::list(&test.site).await?;
         assert_eq!(listed.len(), 1, "redefinition accrued a row: {listed:?}");
-        // The stored source is the module plus the one trailing
-        // newline a `|` block scalar clips to — so the row now holds
-        // the SECOND module, not the first.
-        assert_eq!(listed[0].module_bytes, SECOND.len() + 1);
-        assert_ne!(listed[0].module_bytes, FIRST.len() + 1);
+        assert_eq!(
+            listed[0].methods,
+            vec!["bump", "connected", "disconnected"],
+            "authoring one method dropped the others",
+        );
+        // And the surviving `connected` is the NEW one.
+        let described = tonk_cli::data_ops::query(&test.site, "element", false).await?;
+        assert!(described.contains("'v2'"), "{described}");
+        assert!(
+            !described.contains("'v1'"),
+            "old method still present:\n{described}"
+        );
         Ok(())
     }
 
@@ -422,8 +459,8 @@ mod when_defining_an_element {
         // Each is keyed by its own body digest, so the branch ends up
         // holding both definitions of the same custom element and the
         // directory view mounts both.
-        for module in [FIRST, SECOND] {
-            let doc = format!("component!:\n  module: |\n    {module}\n");
+        for body in ["console.log('v1');", "console.log('v2');"] {
+            let doc = format!("component!:\n  module: |\n    {body}\n");
             test.eval_inline(&doc).await?;
         }
         let listed = tonk_cli::elements::list(&test.site).await?;
@@ -442,10 +479,30 @@ mod when_defining_an_element {
     #[dialog_common::test]
     async fn it_refuses_a_tag_no_browser_would_register() -> Result<()> {
         let test = TestSite::new().await?;
-        let err = tonk_cli::data_ops::element_add(&test.site, "widget", FIRST, Default::default())
-            .await
-            .unwrap_err();
+        let err = tonk_cli::data_ops::element_add(
+            &test.site,
+            "widget",
+            &methods(&[("connected", "(self) => {}")]),
+            Default::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{err}").contains("hyphen"), "{err}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_method_that_would_shadow_an_html_element_member() -> Result<()> {
+        let test = TestSite::new().await?;
+        let err = tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            &methods(&[("remove", "(self) => {}")]),
+            Default::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("shadow"), "{err}");
         Ok(())
     }
 }

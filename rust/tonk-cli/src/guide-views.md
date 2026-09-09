@@ -171,32 +171,52 @@ script. A `<script>` written directly in a template never executes
 template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
-A custom element is branch data: an `element` row whose `module` field
-is JS defining the element. The row's identity IS the tag it defines
-(`element:<tag>`), the same way a view's identity is the model it
-renders — so re-authoring a tag replaces its module rather than adding
-a second definition beside the first.
+A custom element is branch data: an `element` row whose `method`
+dictionary holds its functions. The row's identity IS the tag it
+defines (`element:<tag>`), the same way a view's identity is the model
+it renders — and identity never moves, so a later assertion supersedes
+only the methods it names.
 
 ```text
-tonk element add tally-widget --module-file tally.js
+tonk element add tally-widget --method-file connected=tally.js
 tonk element                       # every element defined on the branch
 ```
 
-`tonk element add` expands to an assertion of the `element` concept;
-`--notation` prints it instead of evaluating:
+`method` is the same construct as a view's `show`: one fact per entry,
+cardinality one. **A view is a dictionary of templates keyed by facet;
+an element is a dictionary of functions keyed by method.** Re-authoring
+`connected` alone leaves `disconnected` standing, exactly as
+re-authoring one view facet leaves the rest of `show` alone.
 
 ```yaml tonk=eval
 element!: &tally-widget
   this: element:tally-widget
-  module: |
-    customElements.get('tally-widget') || customElements.define('tally-widget',
-      class extends HTMLElement {
-        connectedCallback() {
-          this.addEventListener('click', () => this.dispatchEvent(
-            new CustomEvent('bump', { bubbles: true, detail: { amount: 1 } })));
-        }
-      });
+  method:
+    connected: |
+      (self) => {
+        self.textContent = `count: ${self.getAttribute('count') ?? 0}`;
+      }
+    bump: |
+      (self) => self.dispatchEvent(
+        new CustomEvent('bump', { bubbles: true, detail: { amount: 1 } }))
 ```
+
+Each value is a JS arrow function taking the element as its first
+argument. Four keys are dispatched by the DOM lifecycle:
+
+| Key | Signature |
+|-----|-----------|
+| `connected` | `(self) => …` |
+| `disconnected` | `(self) => …` |
+| `adopted` | `(self) => …` |
+| `attribute-changed` | `(self, name, before, after) => …` |
+
+Any other key becomes a method on the element, camelCased —
+`attribute-changed` is `self.attributeChanged`, a custom `bump` is
+`self.bump()`. Keys stay kebab in the data, matching every other tonk
+key; `el['my-method']()` is not callable JS but `el.myMethod()` is. A
+key that would shadow a member every element already has (`remove`,
+`click`, `id`, `text-content`) is refused at authoring time.
 
 Mount the element directory once, in a view that always renders
 (typically your root/shell view); it is invisible and loads every
@@ -206,13 +226,12 @@ element on the branch:
 <tonk-display model=element />
 ```
 
-`<tonk-component>` executes each module once per realm (de-duplicated
-by content), and from then on `<tally-widget>` upgrades wherever any
-view renders it. Rules of the road:
+The runtime registers each tag ONCE, with a generated wrapper that
+dispatches through a live table (tag → method → function) kept in step
+with these facts by a subscription. So editing a method is a fact
+write, not a re-registration — `customElements.define` is never called
+twice, and no page reload is needed. Rules of the road:
 
-- **Guard definitions** with `customElements.get(name) ||` — a custom
-  element name cannot be redefined, so a replaced module takes effect
-  on the next page load.
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
   element; **actions flow out** as bubbling `CustomEvent`s, wired
@@ -220,20 +239,19 @@ view renders it. Rules of the road:
   `dom.event.detail/amount` fields on the command (see `tonk help
   events`). The built-in `<tonk-sheet-binder>` works this way; your
   elements are peers of it.
-- **One-off inline form**: inside a view template, a
-  `<tonk-component>` wrapping an inert holder
-  `<script type="tonk/module">…</script>` executes that source the
-  same way — handy while prototyping, before promoting the source to
-  an `element` row.
+- **The escape hatch is a reserved key.** What a method table cannot
+  say — `static formAssociated`, extending a built-in — goes in
+  `define`, `() => class extends HTMLElement { … }`, whose returned
+  class is registered instead of the wrapper, ignoring every other key.
 - Elements **share the realm** with every view on the branch —
   that is the point (they compose with bindings and events). For a
   fully isolated third-party page, use a portal (below) instead.
-- The older `component` concept does the same job without an
+- The older `component` concept carries one anonymous JS module with no
   identity: an assertion that omits `this:` is keyed by its own body
   digest, so an edit writes a SECOND row, the directory mounts both,
-  and the guard above lets whichever module runs first win. Branches
-  seeded before `element` still load their `component` rows (`tonk
-  element` lists them); author new definitions as `element`.
+  and whichever module runs first wins. Branches seeded before
+  `element` still load their `component` rows (`tonk element` lists
+  them); author new definitions as `element`.
 
 ## Escape hatch: the `portal` model
 

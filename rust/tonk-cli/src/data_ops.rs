@@ -660,32 +660,37 @@ pub async fn view_add(
 }
 
 /// Author a custom element definition: an `element!:` pinning
-/// `element:<tag>` and writing `module` under it.
+/// `element:<tag>` and writing `methods` into its `method` dictionary.
 ///
-/// `module` is cardinality one on an entity keyed by the tag, so
-/// re-running this against the same tag REPLACES the source rather
-/// than adding a second definition — the difference from the
-/// deprecated `component` concept, whose body-digest identity made
-/// every edit a new row.
+/// The dictionary is cardinality one per entry on an entity keyed by
+/// the tag, so this supersedes only the methods it names — authoring
+/// `connected` on its own leaves `disconnected` standing, the way
+/// re-authoring one view facet leaves the rest of `show` alone.
 ///
 /// Nothing here mounts the element. A branch loads its definitions
 /// through a `<tonk-display model=element />` in a view that always
-/// renders; the caller is told so when the branch has no such mount.
+/// renders; the caller is reminded of that on success.
 pub async fn element_add(
     site: &TonkSite,
     tag: &str,
-    module: &str,
+    methods: &[(String, String)],
     write: WriteOptions,
 ) -> Result<String, DataOpError> {
-    let doc = build_element_decl(tag, module)?;
+    let doc = build_element_decl(tag, methods)?;
     if write.notation {
         return Ok(doc);
     }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+    let named: Vec<&str> = methods.iter().map(|(key, _)| key.as_str()).collect();
     let mut out = format!(
         "{}\n",
-        write.summarize(format_args!("defined the <{tag}> element"))
+        write.summarize(format_args!(
+            "defined {n} method{s} on <{tag}>: {list}",
+            n = named.len(),
+            s = if named.len() == 1 { "" } else { "s" },
+            list = named.join(", "),
+        ))
     );
     out.push_str(&outcome.stdout);
     out.push_str(&format!(

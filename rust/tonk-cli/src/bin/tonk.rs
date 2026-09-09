@@ -1008,23 +1008,31 @@ enum ElementCommand {
         /// The custom element name to define (must contain a hyphen).
         #[arg(value_name = "TAG")]
         tag: String,
-        /// Inline JS module source.
-        #[arg(
-            long,
-            value_name = "JS",
-            conflicts_with = "module_file",
-            required_unless_present = "module_file"
-        )]
-        module: Option<String>,
-        /// Read the module from a file instead.
-        #[arg(long, value_name = "PATH")]
-        module_file: Option<PathBuf>,
+        /// Inline method source: `<name>=<js>`. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        method: Vec<String>,
+        /// Read a method's source from a file: `<name>=<path>`. Repeatable.
+        #[arg(long, value_name = "NAME=PATH")]
+        method_file: Vec<String>,
         /// Print the notation document without evaluating it.
         #[arg(long)]
         notation: bool,
         #[command(flatten)]
         write: WriteArgs,
     },
+}
+
+/// Split a `<name>=<rest>` flag value on its FIRST `=`, so a method
+/// body containing `=` survives.
+fn split_method_arg(raw: &str) -> Result<(String, String), String> {
+    match raw.split_once('=') {
+        Some((name, rest)) if !name.is_empty() && !rest.is_empty() => {
+            Ok((name.to_owned(), rest.to_owned()))
+        }
+        _ => Err(format!(
+            "--method/--method-file '{raw}' is malformed; expected <name>=<value>"
+        )),
+    }
 }
 
 /// The switches every write verb takes, matching `tonk eval`'s.
@@ -4528,27 +4536,34 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
     match command {
         Some(ElementCommand::Add {
             tag,
-            module,
-            module_file,
+            method,
+            method_file,
             notation,
             write,
         }) => {
-            let module = match (module, module_file) {
-                (Some(inline), _) => inline,
-                (None, Some(path)) => match tokio::fs::read_to_string(&path).await {
-                    Ok(text) => text,
-                    Err(e) => {
-                        return print_error(format!(
-                            "could not read module file {}: {e}",
-                            path.display()
-                        ));
-                    }
-                },
-                (None, None) => {
-                    return print_error("one of --module or --module-file is required".to_string());
+            // Inline methods first, then file-backed ones, each in the
+            // order given — the notation preserves that order so a
+            // `--notation` dry run reads the way it was typed.
+            let mut methods: Vec<(String, String)> = Vec::new();
+            for raw in &method {
+                match split_method_arg(raw) {
+                    Ok(pair) => methods.push(pair),
+                    Err(message) => return print_error(message),
                 }
-            };
-            match data_ops::element_add(&site, &tag, &module, write.options(notation)).await {
+            }
+            for raw in &method_file {
+                let (name, path) = match split_method_arg(raw) {
+                    Ok(pair) => pair,
+                    Err(message) => return print_error(message),
+                };
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => methods.push((name, text)),
+                    Err(e) => {
+                        return print_error(format!("could not read method file {path}: {e}"));
+                    }
+                }
+            }
+            match data_ops::element_add(&site, &tag, &methods, write.options(notation)).await {
                 Ok(text) => {
                     let mut stdout = std::io::stdout().lock();
                     if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -4573,14 +4588,18 @@ async fn list_elements_op(site: &site::TonkSite, json: bool) -> ExitCode {
         return print_json(&Rows::new("tonk.element-ls.v1", listed));
     }
     let mut listing = Listing::new(
-        &["TAG", "ENTITY", "BYTES", "CONCEPT"],
-        "no custom elements on this branch; define one with `tonk element add <tag> --module-file <path>`",
+        &["TAG", "ENTITY", "METHODS", "CONCEPT"],
+        "no custom elements on this branch; define one with `tonk element add <tag> --method-file connected=<path>`",
     );
     for row in &listed {
         listing.push([
             listing::cell(row.tag.as_deref()),
             row.entity.to_string(),
-            row.module_bytes.to_string(),
+            if row.methods.is_empty() {
+                "-".to_string()
+            } else {
+                row.methods.join(" ")
+            },
             if row.deprecated {
                 "component"
             } else {

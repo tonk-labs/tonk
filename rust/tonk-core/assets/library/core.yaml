@@ -1426,52 +1426,45 @@ view!:
     ui: |
       <tonk-portal html:content={content} />
 
-# An author-defined custom element carried as branch data. The
-# element's entity IS the tag it defines (`element:<tag>`), exactly as
-# a `view`'s entity IS the model it renders — so a tag names one row,
-# and re-asserting that tag supersedes its module instead of adding a
-# second definition beside the first.
+# An author-defined custom element carried as branch data.
 #
-# `module` is JS the `<tonk-component>` loader executes once per
-# document realm — the place a template defines its own custom
-# elements and then uses them in any view. Unlike a `portal` (an
-# isolated iframe realm), an element's definitions share the realm
-# with every view on the branch, so they compose with `{field}`
-# bindings and the CustomEvent -> command pipeline.
+# The element's entity IS the tag it defines (`element:<tag>`), exactly
+# as a `view`'s entity IS the model it renders. Identity never moves,
+# so facts accumulate on it and a later assertion supersedes only what
+# it names.
 #
-# `tonk element add <tag> --module-file <path>` is the authoring path
-# and expands to exactly this assertion; `--notation` prints it.
+# `method` is a keyed dictionary, the same construct as a view's
+# `show`: one fact per entry, cardinality one, so a method is authored
+# on its own or alongside the others and re-authoring one leaves the
+# rest standing. A view is a dictionary of templates keyed by facet; an
+# element is a dictionary of functions keyed by method.
+#
+# The runtime defines the tag ONCE with a generated wrapper that
+# dispatches through a live table (tag -> method -> function) which a
+# subscription keeps in step with these facts. So editing a method is a
+# fact write, not a re-registration: `customElements.define` is never
+# called twice and no page reload is needed.
 concept!: &element
   description: A custom element definition carried as branch data
   with:
-    module:
+    method:
       description: |
-        JS module source defining the custom element named by this
-        entity's `element:<tag>` URI. Runs once per realm; guard the
-        definition with `customElements.get(name) ||` since a name
-        can't be redefined (a replaced module takes effect on the next
-        page load).
-      the: xyz.tonk.element/module
+        The element's methods, keyed by name, each a JS arrow-function
+        expression taking the element as its first argument.
+
+        Four keys are dispatched by the DOM lifecycle: `connected`,
+        `disconnected`, `adopted` — all `(self) => …` — and
+        `attribute-changed`, `(self, name, before, after) => …`. The
+        reserved `define` key is the escape hatch for what a method
+        table cannot express (`static formAssociated`, extending a
+        built-in): `() => class extends HTMLElement { … }`, whose
+        returned class the runtime registers INSTEAD of the generated
+        wrapper, ignoring every other key. Any other key becomes a
+        method on the element, callable as `el.<name>()`; a key that
+        would shadow a member of `HTMLElement.prototype` is refused.
+      the: xyz.tonk.element.method
+      as: {[symbol]: text}
       cardinality: one
-      as: text
-
-# The bridge from the `element` concept to the `<tonk-component>`
-# loader. The single-entity view loads one module; the directory view
-# is what templates mount (a hidden `<tonk-display model=element />`
-# in their shell view) to load every element asserted on the branch.
-view!:
-  this: element
-  show:
-    ui: |
-      <tonk-component module={module} />
-
-view!:
-  this: element
-  show:
-    directory: |
-      <div class="element-loader" hidden>
-        <tonk-component subject={this} module={module}></tonk-component>
-      </div>
 
 # DEPRECATED, superseded by `element` above. Identical in every way
 # except identity: a `component` assertion that omits `this:` is keyed

@@ -105,10 +105,25 @@ pub enum AuthoringError {
         /// Which rule it broke, phrased for a terminal.
         reason: &'static str,
     },
-    /// An element module was empty — neither `--module` nor
-    /// `--module-file` supplied any source.
-    #[error("the element module is empty; pass --module <js> or --module-file <path>")]
-    EmptyModule,
+    /// A `method:` key that would not survive contact with a browser.
+    #[error("'{raw}' is not a usable method name: {reason}")]
+    BadMethodKey {
+        /// The offending key, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
+    /// A named method carried no source.
+    #[error("the '{key}' method is empty")]
+    EmptyMethod {
+        /// The method key whose source was blank.
+        key: String,
+    },
+    /// An element was authored with no methods at all.
+    #[error(
+        "an element needs at least one method; pass --method <name>=<js> or --method-file <name>=<path>"
+    )]
+    NoMethods,
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -396,27 +411,167 @@ pub fn element_tag(entity: &str) -> Option<&str> {
     entity.strip_prefix("element:")
 }
 
-/// Build the `element!:` declaration that defines the custom element
-/// `tag` from `module`.
+/// The four method keys the DOM lifecycle dispatches. Everything else
+/// in a `method:` dictionary becomes a method on the element.
+pub const LIFECYCLE_METHODS: &[&str] =
+    &["connected", "disconnected", "adopted", "attribute-changed"];
+
+/// The reserved key whose value is a class factory. When present the
+/// runtime registers the class it returns instead of the generated
+/// wrapper — the escape hatch for what a method table cannot say.
+pub const DEFINE_METHOD: &str = "define";
+
+/// Members a custom method must not shadow. Installing `remove` or
+/// `click` on the prototype breaks the element in ways that surface
+/// far from the cause, so the name is refused at authoring time.
 ///
-/// The entity is pinned to `element:<tag>` and `module` is
-/// cardinality one, so re-authoring the same tag replaces its source.
-/// The tag is also published as an `&anchor` name so `tonk show
-/// <tag>` resolves it like any other named entity.
-pub fn build_element_decl(tag: &str, module: &str) -> Result<String, AuthoringError> {
+/// The inherited chain (EventTarget -> Node -> Element -> HTMLElement)
+/// down to the members an author plausibly reaches for; it is a guard
+/// against the likely collisions, not a proof of their absence, since
+/// the real prototype grows with the platform. The runtime repeats the
+/// check against the live prototype, which is exact.
+///
+/// Members whose real spelling holds an acronym (`innerHTML`,
+/// `outerHTML`) are unreachable anyway: a kebab key camel-cases to
+/// `innerHtml`, which shadows nothing. They are listed for the reader,
+/// not because a key could hit them.
+const RESERVED_MEMBERS: &[&str] = &[
+    "addEventListener",
+    "after",
+    "animate",
+    "append",
+    "appendChild",
+    "attachInternals",
+    "attachShadow",
+    "attributes",
+    "before",
+    "blur",
+    "childNodes",
+    "children",
+    "classList",
+    "className",
+    "click",
+    "cloneNode",
+    "closest",
+    "connectedCallback",
+    "contains",
+    "dataset",
+    "dispatchEvent",
+    "focus",
+    "getAttribute",
+    "hasAttribute",
+    "hidden",
+    "id",
+    "innerHTML",
+    "innerText",
+    "insertBefore",
+    "matches",
+    "nodeName",
+    "nodeType",
+    "outerHTML",
+    "parentElement",
+    "parentNode",
+    "prepend",
+    "querySelector",
+    "querySelectorAll",
+    "remove",
+    "removeAttribute",
+    "removeChild",
+    "removeEventListener",
+    "replaceChild",
+    "replaceWith",
+    "setAttribute",
+    "shadowRoot",
+    "slot",
+    "style",
+    "tagName",
+    "textContent",
+    "title",
+    "toggleAttribute",
+];
+
+/// The JS property name a method key installs on the element:
+/// `attribute-changed` -> `attributeChanged`, `bump` -> `bump`.
+///
+/// Keys stay kebab in the data — matching every other tonk key — and
+/// become camelCase on the prototype so `el.myMethod()` is callable
+/// JS, which `el['my-method']()` is not.
+pub fn method_property(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut upper = false;
+    for c in key.chars() {
+        if c == '-' {
+            upper = true;
+        } else if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Check one `method:` key: kebab-cased, and not a name that would
+/// shadow an `HTMLElement` member once camelCased.
+pub fn validate_method_key(key: &str) -> Result<(), AuthoringError> {
+    let bad = |reason| {
+        Err(AuthoringError::BadMethodKey {
+            raw: key.to_owned(),
+            reason,
+        })
+    };
+    if key.is_empty() {
+        return bad("it is empty");
+    }
+    if !key.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return bad("it must start with a lowercase ASCII letter");
+    }
+    if key
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    {
+        return bad("it may only contain lowercase ASCII letters, digits and '-'");
+    }
+    if RESERVED_MEMBERS.contains(&method_property(key).as_str()) {
+        return bad("it would shadow a member every HTML element already has");
+    }
+    Ok(())
+}
+
+/// Build the `element!:` declaration defining the custom element `tag`
+/// from `methods`, a list of `(key, source)` pairs.
+///
+/// The entity is pinned to `element:<tag>` and `method` is a keyed
+/// dictionary at cardinality one, so a later assertion supersedes only
+/// the keys it names — authoring one method leaves the others
+/// standing, exactly as re-authoring one view facet leaves the rest of
+/// `show` alone. The tag is also published as an `&anchor` name so
+/// `tonk show <tag>` resolves it like any other named entity.
+pub fn build_element_decl(
+    tag: &str,
+    methods: &[(String, String)],
+) -> Result<String, AuthoringError> {
     validate_element_tag(tag)?;
-    if module.trim().is_empty() {
-        return Err(AuthoringError::EmptyModule);
+    if methods.is_empty() {
+        return Err(AuthoringError::NoMethods);
     }
     let mut out = String::new();
     let _ = writeln!(out, "element!: &{tag}");
     let _ = writeln!(out, "  this: {}", element_entity(tag));
-    out.push_str("  module: |\n");
-    for line in module.lines() {
-        if line.trim().is_empty() {
-            out.push('\n');
-        } else {
-            let _ = writeln!(out, "    {line}");
+    out.push_str("  method:\n");
+    for (key, source) in methods {
+        validate_method_key(key)?;
+        if source.trim().is_empty() {
+            return Err(AuthoringError::EmptyMethod { key: key.clone() });
+        }
+        let _ = writeln!(out, "    {key}: |");
+        for line in source.lines() {
+            if line.trim().is_empty() {
+                out.push('\n');
+            } else {
+                let _ = writeln!(out, "      {line}");
+            }
         }
     }
     Ok(out)
@@ -619,29 +774,61 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
+    fn methods(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
     #[test]
     fn it_builds_an_element_declaration_pinned_to_its_tag() {
         let doc = build_element_decl(
             "tally-widget",
-            "customElements.get('tally-widget') || customElements.define('tally-widget', C);",
+            &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
         )
-        .expect("valid tag and module");
+        .expect("valid tag and method");
         assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
         // The pinned `this` is the whole point: it is what makes a
-        // second `add` of the same tag supersede rather than accrue.
+        // later `add` land on the same entity instead of a new one.
         assert!(doc.contains("  this: element:tally-widget\n"), "{doc}");
-        assert!(doc.contains("  module: |\n"), "{doc}");
-        assert!(doc.contains("    customElements.get("), "{doc}");
+        assert!(doc.contains("  method:\n    connected: |\n"), "{doc}");
+        assert!(doc.contains("      (self) => { self.textContent"), "{doc}");
     }
 
     #[test]
-    fn it_indents_every_module_line_under_the_block_scalar() {
-        let doc = build_element_decl("x-y", "const a = 1;\n\nconst b = 2;\n").expect("valid");
+    fn it_writes_every_method_as_its_own_dictionary_entry() {
+        let doc = build_element_decl(
+            "tally-widget",
+            &methods(&[
+                ("connected", "(self) => {}"),
+                ("attribute-changed", "(self, name, before, after) => {}"),
+                ("bump", "(self) => {}"),
+            ]),
+        )
+        .expect("valid");
+        // Each key is its own entry, so each is its own fact and
+        // supersedes independently.
+        for key in ["connected", "attribute-changed", "bump"] {
+            assert!(
+                doc.contains(&format!("    {key}: |\n")),
+                "{key} missing:\n{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_indents_every_method_line_under_the_block_scalar() {
+        let doc = build_element_decl(
+            "x-y",
+            &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
+        )
+        .expect("valid");
         // A blank line inside the source stays blank (indenting it
         // would put trailing whitespace in the notation); every
-        // content line carries the block scalar's four spaces.
+        // content line carries the block scalar's six spaces.
         assert!(
-            doc.contains("    const a = 1;\n\n    const b = 2;\n"),
+            doc.contains("      (self) => {\n\n        const a = 1;\n"),
             "{doc}"
         );
     }
@@ -678,10 +865,57 @@ mod tests {
     }
 
     #[test]
-    fn it_refuses_an_empty_module() {
+    fn it_camel_cases_a_method_key_for_the_prototype() {
+        assert_eq!(method_property("attribute-changed"), "attributeChanged");
+        assert_eq!(method_property("bump"), "bump");
+        assert_eq!(method_property("a-b-c"), "aBC");
+    }
+
+    #[test]
+    fn it_refuses_method_keys_that_shadow_an_html_element_member() {
+        // `remove` and `click` are outright; `text-content` is caught
+        // only after camel-casing, which is the form that actually
+        // lands on the prototype.
+        for key in ["remove", "click", "id", "text-content"] {
+            assert!(
+                validate_method_key(key).is_err(),
+                "expected {key:?} to be refused",
+            );
+        }
+        // Acronym-cased members are out of reach by construction:
+        // `inner-html` camel-cases to `innerHtml`, not `innerHTML`,
+        // so it shadows nothing.
+        assert!(validate_method_key("inner-html").is_ok());
+        for key in LIFECYCLE_METHODS {
+            assert!(validate_method_key(key).is_ok(), "{key} should be allowed");
+        }
+        assert!(validate_method_key(DEFINE_METHOD).is_ok());
+        assert!(validate_method_key("bump").is_ok());
+    }
+
+    #[test]
+    fn it_refuses_malformed_method_keys() {
+        for key in ["", "Connected", "-connected", "2connected", "on_connect"] {
+            assert!(
+                validate_method_key(key).is_err(),
+                "expected {key:?} to be refused",
+            );
+        }
+    }
+
+    #[test]
+    fn it_refuses_an_element_with_no_methods() {
         assert!(matches!(
-            build_element_decl("tally-widget", "   \n\n"),
-            Err(AuthoringError::EmptyModule)
+            build_element_decl("tally-widget", &[]),
+            Err(AuthoringError::NoMethods)
+        ));
+    }
+
+    #[test]
+    fn it_refuses_an_empty_method_body() {
+        assert!(matches!(
+            build_element_decl("tally-widget", &methods(&[("connected", "  \n\n")])),
+            Err(AuthoringError::EmptyMethod { .. })
         ));
     }
 

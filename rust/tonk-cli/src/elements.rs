@@ -1,25 +1,35 @@
 //! `tonk element` — enumerate the custom elements defined on the
 //! local branch.
 //!
-//! One row per `xyz.tonk.element/module` claim. An element's entity IS
-//! the tag it defines (`element:<tag>`, written by
+//! One row per entity carrying `method` entries. An element's entity
+//! IS the tag it defines (`element:<tag>`, written by
 //! [`crate::authoring::build_element_decl`]), so the listing recovers
 //! the tag from the URI rather than from a field — there is only ever
 //! one source of truth for what a row defines.
+//!
+//! The methods are a keyed dictionary, so each lands as its own fact
+//! under `xyz.tonk.element.method/<key>`. The listing reads that
+//! domain directly and recovers each key from the attribute's name
+//! half, which is the same place the runtime's method table reads it
+//! from.
 //!
 //! The deprecated `component` concept is listed alongside, tagless,
 //! because a branch seeded before `element` existed still loads those
 //! rows and an author needs to see them to migrate.
 
-use anyhow::{Result, anyhow};
-use dialog_artifacts::{Attribute, Entity, Value};
+use anyhow::{Context, Result, anyhow};
+use std::collections::BTreeMap;
+
+use dialog_artifacts::{Attribute, Entity};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+use tonk_render::QueryBackend as _;
 
 use crate::authoring::element_tag;
 use crate::site::TonkSite;
 
-/// The attribute an `element!:` assertion writes.
-const ELEMENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.element/module";
+/// The domain an `element!:` assertion writes its methods under. Each
+/// entry is `<domain>/<key>`.
+const ELEMENT_METHOD_DOMAIN: &str = "xyz.tonk.element.method";
 /// The attribute the deprecated `component!:` assertion writes.
 const COMPONENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.component/module";
 
@@ -33,9 +43,10 @@ pub struct ElementSummary {
     pub tag: Option<String>,
     /// Entity carrying the module claim.
     pub entity: Entity,
-    /// Byte length of the module source — enough to tell an empty row
-    /// from a real one without dumping the JavaScript.
-    pub module_bytes: usize,
+    /// The method keys this element defines, sorted — the lifecycle
+    /// hooks and any custom methods. Empty for a legacy `component`
+    /// row, which carries one anonymous module instead.
+    pub methods: Vec<String>,
     /// Whether this row came from the deprecated `component` concept
     /// rather than `element`.
     pub deprecated: bool,
@@ -45,19 +56,24 @@ pub struct ElementSummary {
 /// first and legacy `component` rows after, each group ordered by tag
 /// then entity so the listing is reproducible.
 pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
-    let mut out = Vec::new();
-    for (uri, deprecated) in [
-        (ELEMENT_MODULE_ATTRIBUTE, false),
-        (COMPONENT_MODULE_ATTRIBUTE, true),
-    ] {
-        for claim in claims_for_attribute(site, uri).await? {
-            out.push(ElementSummary {
-                tag: element_tag(&claim.of.to_string()).map(str::to_owned),
-                entity: claim.of,
-                module_bytes: module_byte_len(&claim.is),
-                deprecated,
-            });
-        }
+    let mut out: Vec<ElementSummary> = Vec::new();
+    // Methods are one fact per key, so an element with three methods
+    // is three claims on one entity. Fold them back into a row.
+    for (entity, methods) in method_dictionaries(site).await? {
+        out.push(ElementSummary {
+            tag: element_tag(&entity.to_string()).map(str::to_owned),
+            entity,
+            methods,
+            deprecated: false,
+        });
+    }
+    for claim in claims_for_attribute(site, COMPONENT_MODULE_ATTRIBUTE).await? {
+        out.push(ElementSummary {
+            tag: element_tag(&claim.of.to_string()).map(str::to_owned),
+            entity: claim.of,
+            methods: Vec::new(),
+            deprecated: true,
+        });
     }
     out.sort_by(|a, b| {
         a.deprecated
@@ -91,11 +107,65 @@ async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_q
         .map_err(|e| anyhow!("{uri} enumeration failed: {e:?}"))
 }
 
-fn module_byte_len(value: &Value) -> usize {
-    match value {
-        Value::String(s) => s.len(),
-        Value::Symbol(s) => s.to_string().len(),
-        Value::Bytes(b) => b.len(),
-        _ => 0,
+/// Every element's method dictionary, folded to one entry per entity.
+///
+/// The same wire query the display stack runs for a view's `show`
+/// (`resolve.rs view_predicate`), pointed at the method domain with
+/// `this` left as a variable so it matches every element on the
+/// branch. A keyed collection binds two terms — the field and its key
+/// operand — because an entry is a `(key, value)` pair; requesting
+/// only the field leaves the key unbound and every entry reads empty.
+///
+/// A raw `AttributeQuery` cannot do this job: a dictionary's key set
+/// is open, so the attribute would have to be a variable too, and a
+/// selector with nothing constrained is refused as a full scan.
+async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>)>> {
+    let body = serde_json::json!({
+        "terms": {
+            "this":       { "?": { "name": "this" } },
+            "method":     { "?": { "name": "method" } },
+            "method/key": { "?": { "name": "method/key" } },
+        },
+        "predicate": {
+            "with": {
+                "method": {
+                    "the": { "domain": ELEMENT_METHOD_DOMAIN, "keyed": "dictionary" },
+                    "as": "Text",
+                    "cardinality": "one"
+                }
+            }
+        }
+    });
+    let query: tonk_schema::query::Query =
+        serde_json::from_value(body).context("method query body is well-formed")?;
+    let concept_query = query
+        .into_concept_query()
+        .map_err(|e| anyhow!("method query should lower to a concept query: {e:?}"))?;
+    let rows = site
+        .query(concept_query)
+        .await
+        .map_err(|e| anyhow!("method enumeration failed: {e}"))?;
+    // One flat row per entry, `method` a one-entry `{key: source}`
+    // map; merge rows by entity.
+    let mut folded: BTreeMap<Entity, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let Ok(entity) = row.this.parse::<Entity>() else {
+            continue;
+        };
+        let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get("method") else {
+            continue;
+        };
+        let keys = folded.entry(entity).or_default();
+        for key in entries.keys() {
+            keys.push(key.clone());
+        }
     }
+    Ok(folded
+        .into_iter()
+        .map(|(entity, mut keys)| {
+            keys.sort();
+            keys.dedup();
+            (entity, keys)
+        })
+        .collect())
 }
