@@ -12,7 +12,7 @@
 //! key with the root (`POST /api/identity/root`, what the worker is
 //! waiting on), and stays up to say what happened.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use tonk_worker_api::{
     LINK_ACCOUNT, LinkAccountRequest, RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
@@ -24,6 +24,8 @@ use web_sys::{Element, MessageEvent};
 use crate::user_error::{self, AccountAction};
 
 thread_local! {
+    static RETURN_FOCUS: RefCell<Option<tonk_portal::RegisterFocusReturn>> = const { RefCell::new(None) };
+    static ANCHOR: RefCell<Option<crate::register_dialog::Anchor>> = const { RefCell::new(None) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// One card at a time: a second request arriving while the card is
     /// up is already answered by the save the first one performs.
@@ -42,7 +44,8 @@ const CARD_HTML: &str = r#"
               box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
               font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
               letter-spacing:.02em;text-transform:lowercase">passkey needed</div>
-  <p id="tonk-custody-text" style="margin:0;padding:14px 16px;background:var(--card, #fcfbfb);
+  <p id="tonk-custody-text" style="box-sizing:border-box;min-height:36px;display:flex;align-items:center;
+            margin:0;padding:var(--custody-message-padding, 14px) 16px;background:var(--card, #fcfbfb);
             box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font-weight:600">
     Tonk is securing something to your account and needs your passkey to
     unlock the account&rsquo;s custody key on this device.
@@ -103,10 +106,19 @@ pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
 }
 
 fn remove_card() {
-    if let Some(card) = card() {
+    let anchored = card().is_some_and(|card| {
+        let anchored = card.has_attribute("data-anchored");
         card.remove();
-    }
+        anchored
+    });
     BUSY.with(|busy| busy.set(false));
+    if anchored {
+        RETURN_FOCUS.with(|focus| {
+            if let Some(focus) = focus.borrow_mut().take() {
+                focus.restore_custody();
+            }
+        });
+    }
 }
 
 fn card() -> Option<Element> {
@@ -151,13 +163,76 @@ fn on_click(card: &Element, selector: &str, callback: impl FnMut() + 'static) {
     closure.forget();
 }
 
-fn mount_card() -> Option<Element> {
+/// Retain the guest lifecycle reply while its approval screen is replaced.
+pub fn return_to_approval(focus: Option<tonk_portal::RegisterFocusReturn>) {
+    if let Some(focus) = focus {
+        if card().is_some_and(|card| card.has_attribute("data-anchored")) {
+            focus.show_custody();
+        }
+        RETURN_FOCUS.with(|current| *current.borrow_mut() = Some(focus));
+    }
+}
+
+/// Keep the top-document passkey rows seated in the guest's dialog column.
+pub fn reanchor(anchor: crate::register_dialog::Anchor) {
+    if !anchor.left.is_finite()
+        || !anchor.bottom.is_finite()
+        || !anchor.width.is_finite()
+        || anchor.width <= 0.0
+    {
+        return;
+    }
+    ANCHOR.with(|seat| *seat.borrow_mut() = Some(anchor));
+    position_card();
+}
+
+fn position_card() {
+    let Some(rows) = card()
+        .filter(|host| host.has_attribute("data-anchored"))
+        .and_then(|host| host.first_element_child())
+    else {
+        return;
+    };
+    let Some(rows) = rows.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
+    ANCHOR.with(|seat| {
+        if let Some(anchor) = seat.borrow().as_ref() {
+            let style = rows.style();
+            let _ = style.set_property("left", &format!("{}px", anchor.left));
+            let _ = style.set_property("top", &format!("{}px", anchor.bottom + 7.0));
+            let _ = style.set_property("width", &format!("{}px", anchor.width));
+            let _ = style.set_property("right", "auto");
+            let _ = style.set_property("bottom", "auto");
+            let _ = style.remove_property("visibility");
+        } else {
+            // The worker and guest relay arrive independently. Wait for the
+            // seat instead of flashing this prompt in the floating fallback.
+            let _ = rows.style().set_property("visibility", "hidden");
+        }
+    });
+}
+
+fn mount_card(anchored: bool) -> Option<Element> {
     let document = web_sys::window().and_then(|window| window.document())?;
     let body = document.body()?;
     let host = document.create_element("div").ok()?;
     host.set_id(CARD_ID);
+    if anchored {
+        host.set_attribute("data-anchored", "").ok()?;
+        host.set_attribute("style", "--custody-message-padding:7px")
+            .ok()?;
+    }
     host.set_inner_html(CARD_HTML);
     body.append_child(&host).ok()?;
+    position_card();
+    if anchored {
+        RETURN_FOCUS.with(|focus| {
+            if let Some(focus) = focus.borrow().as_ref() {
+                focus.show_custody();
+            }
+        });
+    }
     Some(host)
 }
 
@@ -165,7 +240,7 @@ fn mount_card() -> Option<Element> {
 /// the click and reports the outcome on the card; dismissing leaves the
 /// worker's wait to time out, failing the operation that asked.
 fn show_consent() {
-    let Some(host) = mount_card() else {
+    let Some(host) = mount_card(false) else {
         BUSY.with(|busy| busy.set(false));
         return;
     };
@@ -253,7 +328,10 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     if BUSY.with(|busy| busy.replace(true)) {
         return;
     }
-    let Some(host) = mount_card() else {
+    let Some(host) = mount_card(matches!(
+        &intent,
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+    )) else {
         BUSY.with(|busy| busy.set(false));
         return;
     };
@@ -598,5 +676,47 @@ fn describe(error: &wasm_bindgen::JsValue) -> String {
     match name {
         Some(name) => format!("{name}: {message}"),
         None => message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn device_consent_tracks_its_guest_seat() {
+        remove_card();
+        ANCHOR.with(|seat| seat.borrow_mut().take());
+        let host = mount_card(true).unwrap();
+        let rows: web_sys::HtmlElement = host.first_element_child().unwrap().dyn_into().unwrap();
+        assert_eq!(
+            rows.style().get_property_value("visibility").unwrap(),
+            "hidden"
+        );
+        reanchor(crate::register_dialog::Anchor {
+            left: 24.0,
+            bottom: 320.0,
+            width: 288.0,
+        });
+        let rows = host.first_element_child().unwrap();
+        let rect = rows.get_bounding_client_rect();
+        assert_eq!(rect.left(), 24.0);
+        assert_eq!(rect.top(), 327.0);
+        assert_eq!(rect.width(), 288.0);
+        reanchor(crate::register_dialog::Anchor {
+            left: 32.0,
+            bottom: 160.0,
+            width: 576.0,
+        });
+        assert_eq!(rows.get_bounding_client_rect().top(), 167.0);
+        assert_eq!(rows.get_bounding_client_rect().width(), 576.0);
+        remove_card();
+        // A subsequent unrelated custody request keeps its floating placement.
+        let host = mount_card(false).unwrap();
+        let rows: web_sys::HtmlElement = host.first_element_child().unwrap().dyn_into().unwrap();
+        assert_eq!(rows.style().get_property_value("bottom").unwrap(), "16px");
+        remove_card();
+        ANCHOR.with(|seat| seat.borrow_mut().take());
     }
 }

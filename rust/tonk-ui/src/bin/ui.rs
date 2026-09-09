@@ -62,6 +62,13 @@ async fn main() {
         // dismiss remains the true teardown.
         let request = tonk_ui::register_dialog::parse_request(reason);
         match request.reason.as_str() {
+            "custody-anchor" => {
+                tonk_ui::custody_relay::return_to_approval(return_focus);
+                if let Some(anchor) = request.anchor {
+                    tonk_ui::custody_relay::reanchor(anchor);
+                }
+                return;
+            }
             "profile-transition" => {
                 // Add Account already promoted the empty landing profile.
                 // Preserve the anchored ceremony request, then reload so

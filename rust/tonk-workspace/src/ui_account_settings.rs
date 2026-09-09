@@ -43,6 +43,11 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 
 #[derive(Default)]
 struct UiAccountSettings {
+    custody_opened: Option<EventClosure>,
+    custody_closed: Option<EventClosure>,
+    position_change: Option<EventClosure>,
+    position_observer: Option<web_sys::ResizeObserver>,
+    position_callback: Option<FrameClosure>,
     click: Option<EventClosure>,
     change: Option<EventClosure>,
     keydown: Option<EventClosure>,
@@ -217,9 +222,98 @@ impl CustomElement for UiAccountSettings {
         subscribe_ceremony(this, self.subscription.clone());
 
         refresh(this);
+        let host = this.clone();
+        let opened: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            if host.has_attribute("data-passkey-screen") {
+                return;
+            }
+            let _ = host.set_attribute("data-passkey-screen", "");
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_opened = Some(opened);
+        let host = this.clone();
+        let closed: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            let _ = host.remove_attribute("data-passkey-screen");
+            let _ = host.remove_attribute("data-passkey-requested");
+            // Closing the passkey UI is not a new command result. The worker
+            // may already have published its refusal while this screen hid it.
+            if !matches!(
+                host.get_attribute("data-ceremony-state").as_deref(),
+                Some(ceremony_state::REFUSED | ceremony_state::FAILED | ceremony_state::DONE)
+            ) {
+                show_status(&host, "");
+            }
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_closed = Some(closed);
+        let host = this.clone();
+        let position: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            for event in ["scroll", "resize"] {
+                let _ = window.add_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        self.position_change = Some(position);
+        let host = this.clone();
+        let callback: FrameClosure = Closure::wrap(Box::new(move |_, _| {
+            publish_custody_seat(&host);
+        }));
+        if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            observer.observe(this);
+            self.position_observer = Some(observer);
+            self.position_callback = Some(callback);
+        }
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        if let Some(opened) = self.custody_opened.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(closed) = self.custody_closed.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(observer) = self.position_observer.take() {
+            observer.disconnect();
+        }
+        self.position_callback.take();
+        if let Some(position) = self.position_change.take()
+            && let Some(window) = window()
+        {
+            for event in ["scroll", "resize"] {
+                let _ = window.remove_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
         self.subscription.borrow_mut().take();
         self.frames.clear();
         if let Some(click) = self.click.take() {
@@ -694,11 +788,31 @@ fn add_passkey(this: &HtmlElement) {
     );
 }
 
+/// The passkey runs in the top document; reserve and publish its seat in
+/// this sealed guest using the same page-effect relay as Hub registration.
+fn publish_custody_seat(this: &HtmlElement) {
+    let Some(seat) = this.query_selector("[data-custody-seat]").ok().flatten() else {
+        return;
+    };
+    let rect = seat.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    tonk_host::request_registration(
+        &serde_json::json!({
+            "reason": "custody-anchor",
+            "anchor": { "left": rect.left(), "bottom": rect.top() - 7.0, "width": rect.width() }
+        })
+        .to_string(),
+    );
+}
+
 /// Assert `tonk:authorize-device` for the terminal named in the URL.
 fn approve_link(this: &HtmlElement) {
     let Some(request) = link_request() else {
         return;
     };
+    let _ = this.set_attribute("data-passkey-requested", "");
     show_status(this, "Waiting for your passkey\u{2026}");
     let mut fields = serde_json::json!({
         "audience": request.audience,
@@ -742,6 +856,7 @@ fn decline_link(this: &HtmlElement) {
 fn show_status(this: &HtmlElement, text: &str) {
     set_text(this, "[data-ceremony-status]", text);
     set_hidden(this, "[data-ceremony-status]", text.is_empty());
+    publish_custody_seat(this);
 }
 
 /// A transient claim for `window.tonk.transact`: the concept inline,
@@ -898,6 +1013,13 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
         }
         _ => return,
     };
+    if which == ceremony::AUTHORIZE_DEVICE {
+        if state == ceremony_state::PENDING_CEREMONY || state == ceremony_state::WORKING {
+            let _ = this.set_attribute("data-passkey-requested", "");
+        } else {
+            let _ = this.remove_attribute("data-passkey-requested");
+        }
+    }
     let _ = this.set_attribute("data-ceremony", &which);
     let _ = this.set_attribute("data-ceremony-state", &state);
     show_status(this, &text);
@@ -1077,6 +1199,107 @@ mod tests {
             "settings has no devices tab or pane"
         );
 
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_screen_replaces_approval_and_restores_on_dismiss() {
+        let document = window().unwrap().document().unwrap();
+        let style = document.create_element("style").unwrap();
+        style.set_text_content(Some(include_str!("../../tonk-ui/styles.css")));
+        document.body().unwrap().append_child(&style).unwrap();
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-requested", "").unwrap();
+        super::show_status(&host, "Waiting for your passkey…");
+        let approval = pane(&host, "link");
+        let top = approval.get_bounding_client_rect().top();
+        let window = window().unwrap();
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-opened").unwrap())
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&status)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let seat = host.query_selector("[data-custody-seat]").unwrap().unwrap();
+        assert_eq!(seat.get_bounding_client_rect().top(), top);
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(!host.has_attribute("data-passkey-screen"));
+        assert!(!host.has_attribute("data-passkey-requested"));
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "flex"
+        );
+        host.remove();
+        style.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_close_preserves_the_handoff_refusal() {
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-screen", "").unwrap();
+        let row = js_sys::JSON::parse(
+            &serde_json::json!({
+                "fields": {
+                    "ceremony": tonk_schema::ceremony::AUTHORIZE_DEVICE,
+                    "state": tonk_schema::ceremony_state::REFUSED,
+                    "detail": "this handoff requires account did:key:expected"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        super::render_ceremony(&host, &row);
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account")
+        );
+        window()
+            .unwrap()
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account"),
+            "closing the passkey screen must retain the worker's refusal"
+        );
+        assert!(!status.has_attribute("hidden"));
+        assert!(!host.has_attribute("data-passkey-screen"));
         host.remove();
     }
 
