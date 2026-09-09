@@ -376,6 +376,33 @@ describe("exact fetch routing", () => {
     assert.equal(await (await app.response()).text(), "APP SHELL");
   });
 
+  test("doctor remains reachable when Rust initialization has failed", async () => {
+    const { self, caches } = withGlobals();
+    self.clients.get = async () => ({ frameType: "top-level" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/doctor.mjs"],
+      exports: ["SHELL_CACHE", "workerHealth"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("APP SHELL"));
+    await cache.put("https://tonk.test/doctor.mjs", new Response("DOCTOR MODULE"));
+    mod.workerHealth.state = "failed";
+    mod.workerHealth.error = "broken wasm";
+    for (const path of ["/doctor", "/doctor/"]) {
+      const visit = fetchEvent({ method: "GET", mode: "navigate", url: `https://tonk.test${path}` }, "top-level");
+      self.onfetch(visit.event);
+      assert.equal(await (await visit.response()).text(), "APP SHELL");
+    }
+    const asset = fetchEvent(new Request("https://tonk.test/doctor.mjs"), "top-level");
+    self.onfetch(asset.event);
+    assert.equal(await (await asset.response()).text(), "DOCTOR MODULE");
+    const api = fetchEvent(new Request("https://tonk.test/api/profile"));
+    self.onfetch(api.event);
+    assert.equal((await api.response()).status, 503);
+  });
+
   test("delegates live edge routes instead of turning them into retained-cache 503s", async () => {
     const { self } = withGlobals({
       fetchImpl: async () => new Response(new Uint8Array([0])),
