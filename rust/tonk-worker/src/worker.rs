@@ -1742,6 +1742,12 @@ pub(crate) async fn boot_state(
                         "failed to open the access branch for hydration: {e} (after session open failed: {error})"
                     ))
                 })?;
+            // The one place a whole-tree walk is still right: the
+            // session failed to open, so the proof could not resolve
+            // from what is local and there is no cheaper question to
+            // ask. Every other caller hydrates by reading (see
+            // `hydrate_account_essentials`); this is the fallback for
+            // when that was not enough.
             access
                 .handle()
                 .download()

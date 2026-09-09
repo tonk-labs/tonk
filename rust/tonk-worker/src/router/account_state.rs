@@ -482,10 +482,13 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 
     match probe_remote_main(&remote, &tonk.operator).await {
         Ok(RemotePresence::Present(_)) => {
+            // Adopt the head; hydrate by reading. See
+            // `hydrate_account_essentials` — the whole-tree walk this
+            // used to do pulled the branch's entire history, which lives
+            // in the same tree as the data, before the first render.
             session
                 .handle()
                 .pull()
-                .download()
                 .perform(&tonk.operator)
                 .await
                 .map_err(|error| {
@@ -493,6 +496,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                         "failed to hydrate the account into profile main: {error}"
                     ))
                 })?;
+            hydrate_account_essentials(tonk).await;
         }
         Ok(RemotePresence::Absent) => {
             tonk.reactor
@@ -652,6 +656,86 @@ async fn observe_registration(
     }
 }
 
+/// Materialize what this device needs to keep working offline, by
+/// READING it rather than by transferring the whole branch.
+///
+/// Every read goes through `NetworkedIndex`, which resolves a local miss
+/// against the remote and writes the block into the local archive on the
+/// way through. So touching a region hydrates exactly that region — and
+/// the regions nothing touches (the history lineage, above all, which
+/// lives in the same tree as the data) stay where they are.
+///
+/// Three touches, in the order they are needed:
+///
+/// 1. the account's own facts — the name the Hub renders
+/// 2. one authorization proof per space — the capability chain that lets
+///    that space open with no network
+/// 3. nothing else: content arrives when a space is actually opened
+///
+/// Best-effort throughout. A space whose proof does not resolve is a
+/// space that will hydrate on first use, which is the ordinary lazy
+/// path, not a failure worth refusing the sweep over.
+async fn hydrate_account_essentials(tonk: &TonkState) {
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        // No local root yet: nothing to prove against. The next sweep
+        // runs this again.
+        return;
+    };
+    let branch = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("hydrate: account branch unavailable: {error}");
+            return;
+        }
+    };
+
+    // (1) The account's own facts. Reading the name walks the region the
+    // Hub's account cell renders from.
+    let _ = super::account_devices::account_display_name(tonk).await;
+
+    // (2) One proof per space. `prove` walks the delegation chain for
+    // that subject, so a successful proof means every block that chain
+    // needs is now local — which is what makes the space openable
+    // offline, and what the next session open reads without a network.
+    let keys = super::profile_name::real_space_keys(tonk).await;
+    let mut proved = 0usize;
+    for key in &keys {
+        let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
+            continue;
+        };
+        let proof = branch
+            .handle()
+            .delegations()
+            .prove(
+                root.root_did.clone(),
+                dialog_ucan::Scope {
+                    subject: dialog_ucan_core::subject::Subject::Specific(subject),
+                    command: dialog_ucan_core::command::Command::parse("/")
+                        .expect("the root command parses"),
+                    parameters: dialog_ucan::Parameters::default(),
+                },
+            )
+            .perform(&tonk.operator)
+            .await;
+        match proof {
+            Ok(_) => proved += 1,
+            // Ordinary for a space this device has not been granted, or
+            // one whose grant has not replicated yet.
+            Err(error) => log!("hydrate: no proof for space '{key}' yet: {error}"),
+        }
+    }
+    log!(
+        "hydrated the account and {proved}/{} space capabilities",
+        keys.len()
+    );
+}
+
 async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     let session = tonk
         .reactor
@@ -660,18 +744,28 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
-    // Pull-and-materialize: profile main is also the access branch, and
-    // the authorization walk over it must read entirely locally at the
-    // next session open (see `adopt_account_upstream`). Downloading here,
-    // while this session can still authorize remote reads, is what keeps
-    // a bare adoption from bricking the next boot.
+    // Adopt the upstream head WITHOUT materializing the whole tree.
+    //
+    // `.download()` here walked every block the revision references —
+    // and history records live in the same tree as the data, so that
+    // walk pulled the branch's entire lineage before anything could
+    // render. What the next boot actually needs is not every block: it
+    // is the handful the authorization walk reads, and those arrive by
+    // being READ. `NetworkedIndex` hydrates a read-miss from the remote
+    // and writes it into the local archive on the way through, so
+    // hydrating by query materializes exactly the regions touched and
+    // leaves the history region alone.
     session
         .handle()
         .pull()
-        .download()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    // What the download used to guarantee, obtained by touching it:
+    // the account's own facts, and every space's capability chain, so
+    // the proof at the next session open resolves locally and those
+    // spaces stay usable offline.
+    hydrate_account_essentials(tonk).await;
     // The account's own sync is not enough on its own: the operator proves
     // from the PROFILE's access branch, so authority that arrived in the
     // account above is present but unusable until the access branch adopts

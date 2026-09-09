@@ -3507,15 +3507,24 @@ ui-hub-account[data-linking] .hc-acct { cursor:default; }
    never takes a color. The sheen carries the motion, so nothing here
    animates by hand. */
 ui-hub-account [data-account-skeleton] {
-  /* BOTH stops, explicitly. The component derives `--sheen-color` by
-     mixing `--color` with `--wa-color-surface-raised`; a translucent
-     `--color` makes that mix collapse toward the same value and the
-     sheen becomes invisible. Two opaque-enough inks keep the travelling
-     highlight readable while staying achromatic. */
-  --color: color-mix(in srgb, currentColor 12%, transparent);
-  --sheen-color: color-mix(in srgb, currentColor 26%, transparent);
-  width:88px; height:0.7em; min-height:0; align-self:center;
-  flex:0 0 auto; }
+  display:block; width:88px; height:0.7em; align-self:center;
+  flex:0 0 auto; border-radius:2px;
+  /* A travelling highlight over a dim base -- the sheen, done in two
+     stops of the cell's OWN ink so waiting never takes a color. The
+     band is 400% wide and slides, which is what reads as motion; the
+     base stays put. */
+  background:linear-gradient(90deg,
+    color-mix(in srgb, currentColor 12%, transparent) 0%,
+    color-mix(in srgb, currentColor 12%, transparent) 35%,
+    color-mix(in srgb, currentColor 30%, transparent) 50%,
+    color-mix(in srgb, currentColor 12%, transparent) 65%,
+    color-mix(in srgb, currentColor 12%, transparent) 100%);
+  background-size:400% 100%;
+  animation:tonk-sheen 2.2s ease-in-out infinite; }
+ui-hub-account [data-account-skeleton][hidden] { display:none; }
+@keyframes tonk-sheen {
+  from { background-position:200% 0; }
+  to { background-position:-200% 0; } }
 /* the wrapper, not the link, is the positioning context: the verbs
    and the confirm cluster sit OUTSIDE the anchor (a control inside
    one is invalid markup, and a label inside one navigates instead of

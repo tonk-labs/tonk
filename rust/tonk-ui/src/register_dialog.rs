@@ -102,6 +102,11 @@ const NAME_ROW: &str = "#tonk-register-name-row";
 /// to await a confirmation that had arrived.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
+/// The row recording that this device's passkey answered. Settled the
+/// moment the ceremony's own work is done, so what follows reads as the
+/// account arriving rather than as the passkey still being in question.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
@@ -1249,6 +1254,16 @@ const RETURN_TO_SPACE: &str = "return to space";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const RETURN_TO_HUB: &str = "return to hub";
 
+/// Custody: recovering this device's own credential. The step that can
+/// fail, and the only one the person is told about by name.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RECOVERING_CREDENTIAL: &str = "recovering account credential";
+
+/// Custody recovered. The account's own content is still arriving, which
+/// is what the remaining phases are reading — but the DEVICE is done.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEVICE_LINKED: &str = "device linked";
+
 /// Offer the destination the ceremony actually replaced.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn set_return_action() {
@@ -1929,11 +1944,77 @@ pub(crate) fn finish_ceremony() {
                     "display name",
                     &name,
                 );
-                conclude("Your account is ready.");
+                if signing_in {
+                    hand_over_to_the_hub(&host);
+                } else {
+                    conclude("Your account is ready.");
+                }
             }
-            None if signing_in => conclude("You're signed in."),
+            // Signing in: the passkey answered, so the ceremony's own
+            // work is done. What remains is the account arriving, and
+            // that is narrated rather than waited on behind one word.
+            None if signing_in => hand_over_to_the_hub(&host),
             None => ask_for_name(&host),
         }
+    });
+}
+
+/// Walk the post-passkey phases, then leave for the spaces stack.
+///
+/// The ceremony used to end here on "return to hub" — a button offering
+/// a destination the person had already asked for, in front of an
+/// account that had not arrived. It now states what is happening and
+/// leaves on its own once the Hub can actually render:
+///
+///   passkey (settled)         the ceremony's own result
+///   recovering credential     custody, the only step that can fail
+///   device linked             custody recovered; the name is queried
+///   (tab fills in)            the account name lands
+///   (spaces queried)          what the Hub list needs
+///   -> the spaces stack       nothing left to say
+///
+/// Per-space capabilities keep being claimed after the handover, in the
+/// background: they are what lets those spaces open offline, and none of
+/// them gate the screen.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hand_over_to_the_hub(host: &Element) {
+    // ADD, not settle: no passkey row was ever raised — the ceremony
+    // narrated the wait through the action row instead. `settle_named_row`
+    // silently no-ops on a row that does not exist, so this has to create
+    // it. Guarded, because a second activation frame reaches here too.
+    if host.query_selector(PASSKEY_ROW).ok().flatten().is_none() {
+        add_row(
+            host,
+            PASSKEY_ROW.trim_start_matches('#'),
+            "passkey",
+            "this device",
+        );
+    }
+    set_action(RECOVERING_CREDENTIAL, false);
+    let host = host.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        // Custody first: it is the step that can fail, and everything
+        // after it is a read that either answers or does not.
+        if !crate::api::await_custody().await {
+            set_status(
+                "Your passkey was approved, but this device could not recover its credential.",
+            );
+            set_return_action();
+            focus_action();
+            return;
+        }
+        set_action(DEVICE_LINKED, false);
+
+        // The account name fills the Hub's account cell; the spaces
+        // query is what its list renders. Neither is allowed to strand
+        // the screen, so both are best-effort with a bound.
+        let _ = crate::api::await_account_name().await;
+        let _ = crate::api::await_spaces().await;
+
+        // Nothing left to narrate: leave, rather than asking the person
+        // to press a button to go where they were already headed.
+        let _ = host;
+        return_to_previous();
     });
 }
 
