@@ -47,29 +47,6 @@ pub async fn open_deletion(
     Ok(url)
 }
 
-/// Open the browser's passkey-protected review for deleting one owned space.
-pub async fn open_space_deletion(
-    profile: &Profile,
-    account_url: &str,
-    subject: &str,
-    open_browser: bool,
-) -> Result<String> {
-    let status = status(profile).await?;
-    if !matches!(status, AccountStatus::Registered { .. }) {
-        bail!("no account is linked to this profile");
-    }
-    subject
-        .parse::<Did>()
-        .context("space subject is not a valid DID")?;
-    let mut url = Url::parse(account_url).context("account page URL is invalid")?;
-    url.query_pairs_mut().append_pair("delete-space", subject);
-    url.set_fragment(Some("delete-account"));
-    let url = url.to_string();
-    if open_browser && webbrowser::open(&url).is_err() {
-        bail!("could not open the space deletion page; open {url}");
-    }
-    Ok(url)
-}
 /// Credential-store key for optional provider attachment metadata.
 pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
