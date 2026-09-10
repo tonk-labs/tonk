@@ -3637,11 +3637,7 @@ mod tests {
             second.find(By::Css("#tonk-register")).await.is_err(),
             "login must leave the registration ceremony automatically"
         );
-        let summary = account_summary(&second).await?;
-        assert_eq!(
-            successful_body("read the newly linked account", &summary)["displayName"],
-            NAME
-        );
+        await_account_name(&second, NAME).await?;
 
         enter_hub(&second).await?;
         assert!(
@@ -3793,6 +3789,28 @@ mod tests {
     }
 
     /// Wait for the top document to land on `path`, whatever the query.
+    /// Wait for the account's chosen name to replicate.
+    ///
+    /// Login now ends at CUSTODY RECOVERY: the account's own facts arrive
+    /// behind it, and the Hub's account cell subscribes to the name and
+    /// holds a skeleton until it lands. Asserting the name the instant
+    /// the ceremony leaves tests the old contract, where login blocked
+    /// until the whole account had hydrated.
+    async fn await_account_name(driver: &WebDriver, expected: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let summary = account_summary(driver).await?;
+            if summary["body"]["displayName"] == expected {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the account name never replicated; last read {summary}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     async fn await_url_path(driver: &WebDriver, path: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
