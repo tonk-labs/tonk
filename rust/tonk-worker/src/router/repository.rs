@@ -3685,14 +3685,18 @@ pub(super) async fn seed_standard_library(
     // and an imported application snapshot. These bytes are not core.yaml and
     // must not advertise it as an upgrade source. Ordinary space creation uses
     // seed_and_initialize, which records the actual seed separately.
-    super::evaluate::evaluate_body(tonk, repo, branch, library.to_owned(), true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to seed standard library on branch '{branch}': {e}"
-            ))
-        })
+    super::evaluate::seed_on_branch(
+        tonk,
+        tonk.reactor.repository(repo).branch(branch),
+        library.to_owned(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+        TonkWorkerError::Internal(format!(
+            "failed to seed standard library on branch '{branch}': {e}"
+        ))
+    })
 }
 
 /// Build the notation document asserting the repository's own
