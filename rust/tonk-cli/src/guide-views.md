@@ -246,12 +246,17 @@ twice, and no page reload is needed. Rules of the road:
 - Elements **share the realm** with every view on the branch —
   that is the point (they compose with bindings and events). For a
   fully isolated third-party page, use a portal (below) instead.
-- The older `component` concept carries one anonymous JS module with no
-  identity: an assertion that omits `this:` is keyed by its own body
-  digest, so an edit writes a SECOND row, the directory mounts both,
-  and whichever module runs first wins. Branches seeded before
-  `element` still load their `component` rows (`tonk element` lists
-  them); author new definitions as `element`.
+- **The older `component` shape still works, alongside this one.** A
+  `component` row is one anonymous JS module that calls
+  `customElements.define` itself. The two concepts share nothing — a
+  component's facts are `xyz.tonk.component/module`, an element's are
+  `xyz.tonk.element.method/<key>` — so a branch carries both, each with
+  its own loader, and nothing has to be migrated. `tonk element` lists
+  both, naming the concept each row came from. What `component` cannot
+  offer is identity: an assertion that omits `this:` is keyed by its own
+  body digest, so an edit writes a SECOND row, the directory mounts
+  both, and whichever module runs first wins. Prefer `element` for new
+  work for that reason, not because `component` stops working.
 
 ## Escape hatch: the `portal` model
 

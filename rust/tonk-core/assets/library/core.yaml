@@ -1444,7 +1444,16 @@ view!:
 # subscription keeps in step with these facts. So editing a method is a
 # fact write, not a re-registration: `customElements.define` is never
 # called twice and no page reload is needed.
+# The concept itself is PINNED (`this: tonk:element`), like most of
+# this library. An unpinned `concept!:` is keyed by its own declaration
+# digest, so every edit to the shape below would mint a DIFFERENT
+# concept entity, and rows asserted against the previous one would stop
+# matching on any branch seeded from an earlier library. Pinning is
+# what lets this declaration grow while facts already on a branch keep
+# resolving — and it is why `component` below can go on working
+# alongside it rather than being migrated.
 concept!: &element
+  this: tonk:element
   description: A custom element definition carried as branch data
   with:
     method:
@@ -1466,14 +1475,27 @@ concept!: &element
       as: {[symbol]: text}
       cardinality: one
 
-# DEPRECATED, superseded by `element` above. Identical in every way
-# except identity: a `component` assertion that omits `this:` is keyed
-# by its own body digest, so editing the module writes a SECOND row
-# rather than replacing the first — the directory then mounts both,
-# and the `customElements.get(name) ||` guard lets whichever module
-# executes first win. Kept so branches seeded before `element` keep
-# rendering; author new definitions as `element`.
+# The older shape: one anonymous JS module that calls
+# `customElements.define` itself. Superseded by `element` for new work
+# but still fully supported — the two COEXIST on a branch and nothing
+# has to be migrated.
+#
+# They coexist because they share nothing. A component's facts are
+# `xyz.tonk.component/module`; an element's are
+# `xyz.tonk.element.method/<key>`. Neither concept's query can match
+# the other's rows, each has its own loader, and a branch can mount
+# both directories. `tonk element` lists both, naming the concept each
+# row came from.
+#
+# What `component` cannot offer is identity. An assertion that omits
+# `this:` is keyed by its own body digest, so editing the module writes
+# a SECOND row rather than replacing the first — the directory mounts
+# both, and the `customElements.get(name) ||` guard every such module
+# carries lets whichever executes first win. That is the reason to
+# prefer `element` for new work, not a reason `component` stops
+# working.
 concept!: &component
+  this: tonk:component
   description: A JS module defining web components for the branch's views
   with:
     module:

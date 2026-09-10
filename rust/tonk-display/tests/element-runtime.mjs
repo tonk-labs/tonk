@@ -192,6 +192,34 @@ check('rewriting the same value fires nothing', await page.evaluate(async () => 
   return afterReplay === 1 && globalThis.hits === 1;
 }));
 
+// 14. A legacy `component` module and a table-driven `element` share
+// the realm. The old shape calls `customElements.define` itself; the
+// new one goes through the table. Neither knows about the other, which
+// is exactly why a branch can carry both without migrating.
+check('a legacy module and a table-driven element coexist', await page.evaluate(() => {
+  // What `<tonk-component>` injects for a `component` row.
+  const script = document.createElement('script');
+  script.textContent = `customElements.get('legacy-widget') || customElements.define('legacy-widget',
+    class extends HTMLElement { connectedCallback() { this.textContent = 'legacy'; } });`;
+  document.head.append(script);
+
+  defineTonkElement('modern-widget', { connected: (self) => { self.textContent = 'modern'; } });
+
+  const legacy = document.createElement('legacy-widget');
+  const modern = document.createElement('modern-widget');
+  document.body.append(legacy, modern);
+  return legacy.textContent === 'legacy' && modern.textContent === 'modern';
+}));
+
+// 15. Editing the modern one still live-swaps with a legacy element
+// present — the table is per-tag, so the legacy registration is
+// untouched.
+check('editing an element leaves a legacy neighbour alone', await page.evaluate(() => {
+  defineTonkElement('modern-widget', { connected: (self) => { self.textContent = 'modern v2'; } });
+  return document.querySelector('modern-widget').textContent === 'modern v2'
+      && document.querySelector('legacy-widget').textContent === 'legacy';
+}));
+
 await browser.close();
 let failed = 0;
 for (const r of results) {

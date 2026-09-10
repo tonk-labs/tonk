@@ -476,6 +476,65 @@ mod when_defining_an_element {
         Ok(())
     }
 
+    /// The two shapes share nothing — different attributes, different
+    /// loaders — so a branch can carry both without either shadowing
+    /// the other. Nothing has to be migrated to adopt `element`.
+    #[dialog_common::test]
+    async fn it_carries_component_and_element_rows_side_by_side() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(
+            "component!:\n  module: |\n    customElements.define('old-widget', class extends HTMLElement {});\n",
+        )
+        .await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "new-widget",
+            &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
+            Default::default(),
+        )
+        .await?;
+
+        let listed = tonk_cli::elements::list(&test.site).await?;
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        let new = listed
+            .iter()
+            .find(|row| !row.deprecated)
+            .expect("element row present");
+        assert_eq!(new.tag.as_deref(), Some("new-widget"));
+        assert_eq!(new.methods, vec!["connected"]);
+        assert!(
+            listed.iter().any(|row| row.deprecated),
+            "component row disappeared: {listed:?}",
+        );
+
+        // Each concept's own query sees ONLY its own rows: the
+        // component's module is not visible as an element, and the
+        // element's methods are not visible as a component.
+        let elements = tonk_cli::data_ops::query(&test.site, "element", false).await?;
+        assert!(elements.contains("new-widget"), "{elements}");
+        assert!(!elements.contains("old-widget"), "{elements}");
+        let components = tonk_cli::data_ops::query(&test.site, "component", false).await?;
+        assert!(components.contains("old-widget"), "{components}");
+        assert!(!components.contains("new-widget"), "{components}");
+        Ok(())
+    }
+
+    /// The pin is what lets the `element` declaration grow later
+    /// without stranding rows: an unpinned concept is keyed by its own
+    /// declaration digest, so an edit would mint a different entity
+    /// and every existing row would stop matching.
+    #[dialog_common::test]
+    async fn it_pins_both_concepts_so_a_later_declaration_keeps_its_rows() -> Result<()> {
+        let test = TestSite::new().await?;
+        for (name, pinned) in [("element", "tonk:element"), ("component", "tonk:component")] {
+            let entity = tonk_cli::views::entity_for_name(&test.site, name)
+                .await?
+                .unwrap_or_else(|| panic!("{name} should resolve"));
+            assert_eq!(entity.to_string(), pinned, "{name} is not pinned");
+        }
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_refuses_a_tag_no_browser_would_register() -> Result<()> {
         let test = TestSite::new().await?;
