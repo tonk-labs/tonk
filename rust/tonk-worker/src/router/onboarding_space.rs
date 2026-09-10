@@ -247,6 +247,15 @@ async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorker
         .any(|replica| replica.subject.0.to_string() == key))
 }
 
+/// An imported application is not a replaceable core-library seed. Also
+/// recognizes snapshots created by the builds that wrote incorrect seed records.
+pub(super) async fn has_welcome_snapshot(
+    tonk: &TonkState,
+    key: &str,
+) -> Result<bool, TonkWorkerError> {
+    imported(tonk, key, "welcome").await
+}
+
 /// A branch-local marker shares the snapshot commit, unlike the credential
 /// journal. It closes the crash window between data commit and journal save.
 async fn imported(tonk: &TonkState, key: &str, shard: &str) -> Result<bool, TonkWorkerError> {
@@ -598,6 +607,59 @@ mod tests {
         rows.map(|row| row.unwrap().to_owned().unwrap())
             .collect()
             .await
+    }
+
+    #[dialog_common::test]
+    async fn mounting_welcome_never_replays_the_core_seed_over_its_home() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let key = path.strip_prefix("/space/").unwrap();
+        let tonk = state.read().await;
+        let before = values(&tonk, key, "db.name/referent").await;
+        assert!(!repository::upgrade_seed(&tonk, key).await.unwrap());
+        assert_eq!(values(&tonk, key, "db.name/referent").await, before);
+    }
+
+    #[dialog_common::test]
+    async fn legacy_welcome_seed_records_do_not_overwrite_authored_home() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let key = path.strip_prefix("/space/").unwrap();
+        let tonk = state.read().await;
+        let agent = repository::fetch_standard_library("/library/onboarding-agent.yaml")
+            .await
+            .unwrap();
+        // Reproduce the record written by the broken onboarding helper. Its
+        // bytes describe the agent supplement, but its source names core.yaml.
+        super::super::evaluate::evaluate_body_recording(
+            &tonk,
+            key,
+            "main",
+            agent.clone(),
+            &|version| {
+                repository::seed_record_facts(
+                    &format!("seed:{}", blake3::hash(agent.as_bytes()).to_hex()),
+                    "/library/core.yaml",
+                    "seed:none",
+                    "seed:none",
+                    &repository::encode_seed_version(version),
+                )
+            },
+        )
+        .await
+        .unwrap();
+        super::super::evaluate::evaluate_body(
+            &tonk,
+            key,
+            "main",
+            "name!:\n  this: id:tonk/space\n  entity: tonk:custom-home\n".into(),
+            true,
+        )
+        .await
+        .unwrap();
+        let before = values(&tonk, key, "db.name/referent").await;
+        assert!(!repository::upgrade_seed(&tonk, key).await.unwrap());
+        assert_eq!(values(&tonk, key, "db.name/referent").await, before);
     }
 
     #[dialog_common::test]
