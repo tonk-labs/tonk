@@ -232,8 +232,18 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
         RemotePresence::Absent
     );
 
-    let genesis_a = branch_a.transaction().commit().perform(&operator_a).await?;
-    let genesis_b = branch_b.transaction().commit().perform(&operator_b).await?;
+    let genesis_a = branch_a
+        .transaction()
+        .commit()
+        .publish()
+        .perform(&operator_a)
+        .await?;
+    let genesis_b = branch_b
+        .transaction()
+        .commit()
+        .publish()
+        .perform(&operator_b)
+        .await?;
     // The head carries an opaque branch entity committing to
     // (profile, subject, name) rather than the subject DID itself.
     assert_eq!(
@@ -295,6 +305,7 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
         .transaction()
         .assert(Note::of(note_one).is("loser write".to_string()))
         .commit()
+        .publish()
         .perform(loser_operator)
         .await?;
     assert!(loser_branch.push().perform(loser_operator).await?.is_some());
@@ -311,6 +322,7 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
         .transaction()
         .assert(Note::of(note_two).is("winner write".to_string()))
         .commit()
+        .publish()
         .perform(winner_operator)
         .await?;
     assert!(
@@ -357,6 +369,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
         .branch
         .transaction()
         .commit()
+        .publish()
         .perform(&winner.operator)
         .await?;
     assert!(matches!(
@@ -369,6 +382,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
         .transaction()
         .assert(Note::of(note).is("initial name".to_string()))
         .commit()
+        .publish()
         .perform(&winner.operator)
         .await?;
     assert!(
@@ -387,6 +401,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
         .branch
         .transaction()
         .commit()
+        .publish()
         .perform(&loser.operator)
         .await?;
     let CreateGenesis::Loser(adopted) =
@@ -453,7 +468,12 @@ async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyho
         probe_remote_main(&remote, &operator).await?,
         RemotePresence::Absent
     );
-    let genesis = branch.transaction().commit().perform(&operator).await?;
+    let genesis = branch
+        .transaction()
+        .commit()
+        .publish()
+        .perform(&operator)
+        .await?;
     assert_eq!(
         publish_genesis_if_absent(&branch, &remote, &operator).await?,
         CreateGenesis::Winner(genesis.clone())

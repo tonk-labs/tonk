@@ -444,6 +444,7 @@ mod when_minting_an_invite_for_a_named_space {
                     name: tonk_schema::domain::repo::Name("Garden Plans".to_owned()),
                 })
                 .commit()
+                .publish()
                 .perform(&inviter.site.operator)
                 .await?;
         }

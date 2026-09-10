@@ -33,6 +33,10 @@ type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
+/// The email row, read as a fact rather than fetched.
+const ACCOUNT_TAG: &str = "ui-account-settings:account";
+/// The passkey rows, likewise.
+const PASSKEY_TAG: &str = "ui-account-settings:passkeys";
 const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
@@ -55,6 +59,10 @@ struct UiAccountSettings {
     dialog_open: Option<EventClosure>,
     /// The live ceremony-status subscription, held while connected.
     subscription: Rc<RefCell<Option<Subscription>>>,
+    /// The account facts the email row renders.
+    account_subscription: Rc<RefCell<Option<Subscription>>>,
+    /// The passkey rows the panel lists.
+    passkey_subscription: Rc<RefCell<Option<Subscription>>>,
     /// The frame delegates the host calls by name off the element.
     frames: Vec<FrameClosure>,
 }
@@ -209,17 +217,31 @@ impl CustomElement for UiAccountSettings {
         // calls `reset` (snapshot) and `update` (delta) by name off this
         // element for every frame, so both delegates hang off it.
         let host = this.clone();
-        let reset: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
-            on_ceremony_snapshot(&host, payload);
-        }));
+        let reset: FrameClosure = Closure::wrap(Box::new(
+            move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
+                Some(ACCOUNT_TAG) => on_account_snapshot(&host, payload),
+                Some(PASSKEY_TAG) => render_passkeys(&host, &js_sys::Array::from(&payload)),
+                _ => on_ceremony_snapshot(&host, payload),
+            },
+        ));
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         let host = this.clone();
-        let update: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
-            on_ceremony_delta(&host, payload);
-        }));
+        let update: FrameClosure = Closure::wrap(Box::new(
+            move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
+                Some(ACCOUNT_TAG) => on_account_delta(&host, payload),
+                Some(PASSKEY_TAG) => {
+                    let asserted =
+                        Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+                    render_passkeys(&host, &js_sys::Array::from(&asserted));
+                }
+                _ => on_ceremony_delta(&host, payload),
+            },
+        ));
         let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
         self.frames = vec![reset, update];
         subscribe_ceremony(this, self.subscription.clone());
+        subscribe_account(this, self.account_subscription.clone());
+        subscribe_passkeys(this, self.passkey_subscription.clone());
 
         refresh(this);
         let host = this.clone();
@@ -398,7 +420,6 @@ pub(crate) fn refresh(this: &HtmlElement) {
         }
     }
     prefill_name(this);
-    load_summary(this);
 }
 
 /// The one space `?delete-space=` names, when this page was opened to
@@ -964,6 +985,224 @@ fn subscribe_ceremony(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscr
     });
 }
 
+/// Read a subscription frame's tag, so two subscriptions can share one
+/// pair of delegates.
+fn frame_tag(opts: &JsValue) -> Option<String> {
+    Reflect::get(opts, &"tag".into())
+        .ok()
+        .and_then(|tag| tag.as_string())
+}
+
+/// Watch the account facts the email and passkey rows render.
+///
+/// These were fetched from `/api/account/summary`, whose handler answers
+/// by reading these very attributes off this very branch. A subscription
+/// gets them without the round trip AND follows them: an address
+/// enrolled or a passkey added on another device lands here rather than
+/// waiting for the next mount.
+fn subscribe_account(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        if host.get_attribute("with").is_none() {
+            let _ = host.set_attribute("with", PROFILE_WITH);
+        }
+        let consumer: Element = host.clone().into();
+        // Directory mode (`this` unbound), like the Hub cell's own name
+        // subscription: this element does not know the account subject,
+        // and asking the worker for it would be another round trip to
+        // learn something the branch is about to tell us anyway.
+        //
+        // A browser that has held more than one account can carry more
+        // than one row, and `render_account` takes the first. That is
+        // the same exposure the Hub cell has had; binding the subject
+        // here means threading it in, which is worth doing once for
+        // both rather than differently in each.
+        let body = r#"{
+          "predicate": { "with": {
+            "email": { "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one" }
+          } },
+          "terms": {
+            "this": { "?": { "name": "this" } },
+            "email": { "?": { "name": "email" } }
+          }
+        }"#;
+        let Ok(body) = JSON::parse(body) else {
+            return;
+        };
+        let tag = JsValue::from_str(ACCOUNT_TAG);
+        match consumer::subscribe(&consumer, &body, Some(&tag)) {
+            Ok(sub) => *subscription.borrow_mut() = Some(sub),
+            Err(error) => {
+                tonk_common::log!("ui-account-settings: account subscribe failed: {error:?}")
+            }
+        }
+    });
+}
+
+/// Watch the passkey rows the settings panel lists.
+///
+/// `RecoveryPasskey` carries everything shown — the creation label and
+/// its timestamp — so this reads the concept directly.
+///
+/// The worker enumerates an account's passkeys by joining through the
+/// `SecretMessage` whose sender is the account, because the passkey row
+/// deliberately holds no second copy of the account it belongs to. That
+/// join answers "whose passkey is this", which a DISPLAY on this branch
+/// does not have to ask: passkey rows are written to the profile's own
+/// branch beside the account's envelope, and a profile branch carries
+/// one account. Every row here is this account's.
+fn subscribe_passkeys(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        if host.get_attribute("with").is_none() {
+            let _ = host.set_attribute("with", PROFILE_WITH);
+        }
+        let consumer: Element = host.clone().into();
+        let body = r#"{
+          "predicate": { "with": {
+            "created_on": { "the": "xyz.tonk.recovery/created-on", "as": "Text", "cardinality": "one" },
+            "created_at": { "the": "xyz.tonk.recovery/created-at", "as": "UnsignedInteger", "cardinality": "one" }
+          } },
+          "terms": {
+            "this": { "?": { "name": "this" } },
+            "created_on": { "?": { "name": "created_on" } },
+            "created_at": { "?": { "name": "created_at" } }
+          }
+        }"#;
+        let Ok(body) = JSON::parse(body) else {
+            return;
+        };
+        let tag = JsValue::from_str(PASSKEY_TAG);
+        match consumer::subscribe(&consumer, &body, Some(&tag)) {
+            Ok(sub) => *subscription.borrow_mut() = Some(sub),
+            Err(error) => {
+                tonk_common::log!("ui-account-settings: passkey subscribe failed: {error:?}")
+            }
+        }
+    });
+}
+
+/// List every passkey the account has, newest first.
+///
+/// Rows arrive unordered, so they are sorted here. The panel ships one
+/// row of markup as its template; the rest are cloned from it, and the
+/// whole list is rebuilt on each frame rather than diffed -- a handful
+/// of passkeys is not worth reconciling.
+fn render_passkeys(this: &HtmlElement, rows: &js_sys::Array) {
+    let Some(first) = this
+        .query_selector("[data-settings-passkey-device]")
+        .ok()
+        .flatten()
+        .and_then(|device| device.parent_element())
+    else {
+        return;
+    };
+    let Some(parent) = first.parent_element() else {
+        return;
+    };
+
+    let mut passkeys: Vec<(f64, String)> = Vec::new();
+    for row in rows.iter() {
+        let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
+            continue;
+        };
+        let created_on = Reflect::get(&fields, &"created_on".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        let created_at = Reflect::get(&fields, &"created_at".into())
+            .ok()
+            .and_then(|value| value.as_f64());
+        if let (Some(on), Some(at)) = (created_on, created_at) {
+            passkeys.push((at, on));
+        }
+    }
+    passkeys.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    // Drop every row this rebuild replaces, keeping the first as the
+    // template to clone from.
+    while let Some(extra) = first.next_element_sibling().filter(|sibling| {
+        sibling
+            .query_selector("[data-settings-passkey-device]")
+            .ok()
+            .flatten()
+            .is_some()
+    }) {
+        let _ = parent.remove_child(&extra);
+    }
+
+    if passkeys.is_empty() {
+        set_text(this, "[data-settings-passkey-device]", "Unavailable");
+        set_text(this, "[data-settings-passkey-created]", "");
+        return;
+    }
+
+    for (index, (created_at, created_on)) in passkeys.iter().enumerate() {
+        let row = if index == 0 {
+            first.clone()
+        } else {
+            let Ok(clone) = first.clone_node_with_deep(true) else {
+                break;
+            };
+            let Ok(clone) = clone.dyn_into::<Element>() else {
+                break;
+            };
+            let _ = parent.insert_before(&clone, first.next_sibling().as_ref());
+            clone
+        };
+        if let Ok(Some(device)) = row.query_selector("[data-settings-passkey-device]") {
+            device.set_text_content(Some(created_on));
+        }
+        if let Ok(Some(created)) = row.query_selector("[data-settings-passkey-created]") {
+            let date = js_sys::Date::new(&JsValue::from_f64(created_at * 1000.0))
+                .to_locale_date_string("default", &JsValue::UNDEFINED);
+            created.set_text_content(Some(&format!("created {}", String::from(date))));
+        }
+    }
+}
+
+/// A snapshot frame carrying the account row.
+fn on_account_snapshot(this: &HtmlElement, payload: JsValue) {
+    let rows = js_sys::Array::from(&payload);
+    render_account(this, &rows.get(0));
+}
+
+/// A delta frame: the newest asserted row carries the current value.
+fn on_account_delta(this: &HtmlElement, payload: JsValue) {
+    let asserted = Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    if rows.length() > 0 {
+        render_account(this, &rows.get(rows.length() - 1));
+    }
+}
+
+/// Paint the email row from a subscription row.
+///
+/// An absent value leaves the row alone rather than blanking it: an
+/// empty frame means the fact has not arrived, not that the account has
+/// no address.
+fn render_account(this: &HtmlElement, row: &JsValue) {
+    let email = Reflect::get(row, &"fields".into())
+        .ok()
+        .and_then(|fields| Reflect::get(&fields, &"email".into()).ok())
+        .and_then(|value| value.as_string())
+        .filter(|email| !email.trim().is_empty());
+    // Always writes: the markup ships "loading…" as its placeholder, so
+    // returning early on an empty frame leaves that word on screen for
+    // good. An account with no address recorded reads "Unavailable",
+    // which is what the fetch this replaced said.
+    set_text(
+        this,
+        "[data-settings-email]",
+        email.as_deref().unwrap_or("Unavailable"),
+    );
+}
+
 /// A snapshot frame: the row as it stands, or nothing yet.
 fn on_ceremony_snapshot(this: &HtmlElement, payload: JsValue) {
     let rows = js_sys::Array::from(&payload);
@@ -1023,9 +1262,9 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
     let _ = this.set_attribute("data-ceremony", &which);
     let _ = this.set_attribute("data-ceremony-state", &state);
     show_status(this, &text);
-    if state == ceremony_state::DONE && which == ceremony::ADD_PASSKEY {
-        load_summary(this);
-    }
+    // No refresh on ADD_PASSKEY: the passkey rows subscribe to
+    // `RecoveryPasskey`, so a new one lands on its own commit rather
+    // than on a re-read this ceremony has to remember to trigger.
 }
 
 /// Seed the display-name editable with what the roster resolved, so the
@@ -1075,50 +1314,6 @@ fn name_input(this: &HtmlElement) -> Option<HtmlInputElement> {
         .ok()
         .flatten()
         .and_then(|field| field.dyn_into().ok())
-}
-
-fn load_summary(this: &HtmlElement) {
-    let host = this.clone();
-    spawn_local(async move {
-        match tonk_host::get_json("/api/account/summary").await {
-            Ok(body) => {
-                let summary: Option<tonk_worker_api::AccountSummary> =
-                    serde_json::from_str(&body).ok();
-                let summary = summary.unwrap_or(tonk_worker_api::AccountSummary {
-                    email: None,
-                    passkey: None,
-                    display_name: None,
-                });
-                let email = summary
-                    .email
-                    .filter(|email| !email.trim().is_empty())
-                    .unwrap_or_else(|| "Unavailable".to_string());
-                set_text(&host, "[data-settings-email]", &email);
-                match summary.passkey {
-                    Some(passkey) => {
-                        set_text(&host, "[data-settings-passkey-device]", &passkey.created_on);
-                        let date = js_sys::Date::new(&JsValue::from_f64(
-                            passkey.created_at as f64 * 1000.0,
-                        ))
-                        .to_locale_date_string("default", &JsValue::UNDEFINED);
-                        set_text(
-                            &host,
-                            "[data-settings-passkey-created]",
-                            &format!("created {}", String::from(date)),
-                        );
-                    }
-                    None => {
-                        set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-                        set_text(&host, "[data-settings-passkey-created]", "");
-                    }
-                }
-            }
-            Err(_) => {
-                set_text(&host, "[data-settings-email]", "Unavailable");
-                set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-            }
-        }
-    });
 }
 
 /// Register `<ui-account-settings>`. Idempotent.

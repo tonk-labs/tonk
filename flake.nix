@@ -539,13 +539,13 @@
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`

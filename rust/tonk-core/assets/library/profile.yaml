@@ -37,15 +37,22 @@ concept!: &space
       the: xyz.tonk.space/subject
       cardinality: one
       as: entity
-    status:
+  maybe:
+    presence:
       description: >
-        tonk:blank while the space's content branch is still
-        seeding, tonk:initialized once seeded. The Hub card
-        reflects it via [data-status] (an installing animation).
-      the: xyz.tonk.space/status
+        Where this space stands ON THIS DEVICE: case:remote when no
+        replica is held here, case:seeding while its content branch is
+        still being seeded, case:replicated once it is. A remote row
+        renders as a hollow space that replicates on first visit.
+
+        Derived by the rules below from this device's replica rather
+        than stored, so it cannot drift from it. The remote case is a
+        negated premise (`unless: space/replica`) rather than an absent
+        fact, so every row carries a presence and a view can select on
+        it. The Hub card reflects this via [data-presence].
+      the: xyz.tonk.space/presence
       cardinality: one
       as: entity
-  maybe:
     name:
       description: >
         The directory mirror of the space's display name — written at
@@ -54,15 +61,6 @@ concept!: &space
       the: xyz.tonk.space/name
       cardinality: one
       as: text
-    local:
-      description: >
-        Whether THIS device holds a replica. Overlay-only (the worker
-        stamps it at boot and on mount), so it never replicates; a row
-        without it renders as a hollow space that replicates on first
-        visit.
-      the: xyz.tonk.space/local
-      cardinality: one
-      as: boolean
     provider:
       description: >
         The account providing this space with the access service. Its
@@ -119,6 +117,7 @@ event!: &on/space-create
   prevent-default: true
   where:
     name: ".currentTarget.elements.name.value"
+    open: ".currentTarget.elements.open.value"
 
 command!: &space/create
   description: A request to create a new space.
@@ -134,6 +133,36 @@ command!: &space/create
         transient would never trigger the handler.
       the: xyz.tonk.command.create-space/name
       as: text
+    open:
+      description: >
+        Whether to navigate into the space once it exists. Absent means
+        create only — the space appears in the Hub and the person stays
+        where they are; the Hub's own form passes `true` because that IS
+        what clicking "create new space" asks for. Creating and opening
+        are separate wants: an agent or script creating a space in the
+        background must not yank the page out from under whoever is
+        using it.
+      the: xyz.tonk.command.create-space/open
+      as: text
+
+# Pull a space the account has but this device does not. The Hub's
+# remote rows are hollow — the directory names them but no replica is
+# held here — and replication used to be implicit: the first data-plane
+# request naming an unmounted repo tripped the mount as a side effect.
+# This makes it something you can ASK for. The worker's provider runs
+# the SAME routine the lazy path does, so both report identical state.
+#
+# Carries its target `space` rather than firing on the dispatch origin:
+# the affordance is a Hub card on the profile branch, naming precisely
+# the space this device has no replica of.
+command!: &space/replicate
+  this: tonk:space/replicate
+  description: Pull a space this device holds no replica of.
+  with:
+    space:
+      description: The space to pull, as its subject DID.
+      the: xyz.tonk.command.replicate-space/space
+      as: entity
 
 # The device-local Remove Space command. A joined-space leave or local-only
 # delete submits this transient; the worker's `RemoveSpaceHandler` retracts
@@ -229,13 +258,19 @@ view!:
           <ui-hub-account></ui-hub-account>
 
         <div class="stack chrome" data-spaces-view aria-label="spaces">
-          <div class="sempty">no spaces yet</div>
+          <!-- No empty-state bar. An account with no spaces and an
+               account whose spaces are still arriving look identical
+               from here, so any words this row could carry are wrong in
+               one of those two cases. The waiting is stated where the
+               waiting is known: the account cell, which holds a skeleton
+               while the link runs. An empty stack simply shows the one
+               row that is always true — "create new space". -->
           <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
                link, so the verbs and the confirm cluster travel with the row
                while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
-          <div class="srow-wrap" data-status={status} data-local={local} data-id={this}>
+          <div class="srow-wrap" data-presence={presence} data-id={this}>
             <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
             <!-- Both verbs sit outside the anchor and are laid over it: a
                  <button> inside an <a> is invalid markup the parser reshapes,
@@ -267,12 +302,32 @@ view!:
                registers stays local until it is shared. -->
           <form class="snew-form" on:space-create=space/create>
             <input type="hidden" name="name" value="Untitled">
+            <input type="hidden" name="open" value="true">
             <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
         </div>
 
         </main>
       </div>
+    # The space page's waiting room. Reached only when the space's own
+    # content has not arrived but the account's DIRECTORY ROW for it has
+    # — so this device knows the space exists and is entitled to it, and
+    # the bytes are simply still coming. Named `downloading` because
+    # that is the whole message: no error, no invitation advice.
+    #
+    # The name is the directory mirror (`xyz.tonk.space/name`), written
+    # at create and kept current by rename, which exists so a device
+    # that has not replicated a space can still label it.
+    downloading: |
+      <div class="space-unknown">
+        <tonk-title text="Downloading — Tonk"></tonk-title>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <div class="space-unknown-wall">
+          <h1 class="space-unknown-statement">downloading {name}</h1>
+          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+        </div>
+      </div>
+
 
 # ============================================================
 # FAB — floating action button view (rendered in the FAB portal iframe)
@@ -342,6 +397,108 @@ command!: &profile/rename
 # It used to carry a marker field too, whose only job was to keep this
 # shape distinct from `tonk:invite`'s identical {this, time}. Each
 # command now owns its attribute namespace, so the two cannot collide.
+
+# Ask whether a newer seed is waiting for a space, without installing it.
+# The command fetches the space's own seed source, compares the bytes
+# against what it is running, and asserts the answer as an OVERLAY fact:
+# the result is this device's observation at this moment, not something
+# true of the space, so it must not replicate. `time` makes each ask a
+# distinct transient.
+command!: &tonk/check-update
+  this: tonk:check-update
+  description: Ask whether a newer seed is waiting for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each ask a distinct transient.
+      the: xyz.tonk.command.check-update/time
+      as: float
+    space:
+      description: The space to check, as its subject DID.
+      the: xyz.tonk.command.check-update/space
+      as: entity
+
+# A seed-update check IN FLIGHT on this device, keyed on the replica —
+# the entity that already pairs this profile with this subject, so a
+# check on one device says nothing about another. Replica records live
+# on the profile meta branch and never replicate, which is exactly the
+# scope of "am I checking right now".
+#
+# Presence IS the state: the attribute is asserted before the fetch and
+# retracted when the check settles, so a view asks whether it exists
+# rather than comparing against a `case:` value. It holds the check's
+# own transient entity rather than a boolean, so a marker stranded by a
+# crashed worker is identifiable and a second check cannot silently
+# clobber the first.
+concept!: &replica/checking
+  this: tonk:replica/checking
+  description: A seed-update check in flight on this device.
+  with:
+    checking:
+      description: The dispatched check's transient entity.
+      the: xyz.tonk.replica/checking
+      cardinality: one
+      as: entity
+
+# When the last check COMPLETED on this device. Separate from the
+# in-flight marker above so it survives the next check starting: a
+# single status field would have to overwrite the previous result to
+# say "pending", losing the answer the view is showing.
+concept!: &replica/checked
+  this: tonk:replica/checked
+  description: When this device last completed a seed-update check.
+  with:
+    checked:
+      description: The completing check's timestamp.
+      the: xyz.tonk.replica/checked
+      cardinality: one
+      as: float
+
+# Why the last check FAILED, asserted only on failure and retracted on
+# the next success. Text rather than a case: an unreachable source and
+# a malformed document are different problems and the message is the
+# useful part. A space that never recorded a seed is NOT a failure —
+# it simply has no installed-seed fact, and that absence is the answer.
+concept!: &replica/check-failure
+  this: tonk:replica/check-failure
+  description: Why this device's last seed-update check failed.
+  with:
+    failure:
+      description: What went wrong, as reported to the person.
+      the: xyz.tonk.replica/check-failure
+      cardinality: one
+      as: text
+
+# A seed that EXISTS and where its bytes came from — global, durable,
+# and silent about whether anything installed it. The entity is the
+# content hash of the bytes, so two devices fetching the same library
+# converge on one entity without coordinating.
+#
+# `seed/installed` below adds the install-specific fields on this same
+# entity. Keeping them apart means a fetched-but-uninstalled seed can
+# never look half-installed, and `version` never has an absent case a
+# reader has to interpret.
+concept!: &seed/available
+  this: tonk:seed/available
+  description: A seed that exists, and where its bytes came from.
+  with:
+    source:
+      description: >
+        Where these bytes were fetched from. The entity is the content
+        hash alone, so the source rides alongside because a custom seed
+        is a different URL at the same shape.
+      the: xyz.tonk.seed/source
+      cardinality: one
+      as: text
+    replaces:
+      description: >
+        The installed seed this one would supersede — the backlink that
+        makes an available seed answerable on its own ("this is an
+        update to what you are running") rather than only by joining it
+        against the space's install record.
+      the: xyz.tonk.seed/replaces
+      cardinality: one
+      as: entity
+
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
@@ -557,6 +714,42 @@ concept!: &route
       the: xyz.tonk.route/concept
       cardinality: one
       as: entity
+
+# What a seed version seeded, one attribute per component kind, on the
+# seed version's own entity. The kinds are split rather than folded into
+# one `component` because retraction differs by kind (a view retracts from
+# a pin, a concept must already be on the branch, a rule wants its effect
+# URI) and the order matters — a concept retracted before the views naming
+# it would dangle. `route` doubles as the router's precedence signal: a
+# route named here came from the seed, and one that is not came from the
+# space, which wins an equal-specificity tie.
+concept!: &seed/installed
+  this: tonk:seed/installed
+  description: The seed a space is running — what an upgrade withdraws.
+  with:
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
+    version:
+      description: >
+        The version of the commit that installed this seed. A version,
+        not a revision: a revision includes the tree its commit produces,
+        so a fact inside a commit can never name it, while a version is
+        knowable before the batch is written — which is what lets this
+        record ride the same commit as the claims it describes.
+
+        This is the whole upgrade mechanism: nothing tags individual
+        definitions, so an upgrade reads THIS commit's history, inverts
+        its assertions into retractions, and applies them alongside the
+        new library in one atomic commit.
+      the: xyz.tonk.seed/version
+      cardinality: one
+      as: text
 
 # The profile's only route for now: `/` renders the Hub.
 route!: &route/home
@@ -948,27 +1141,49 @@ view!:
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
-             in `no-model` — the same state a not-yet-synced concept
-             reaches, which is exactly right: the space may arrive later,
-             and when it does the standing subscription delivers a real
-             frame and this panel is replaced in place.
+             in `no-model`.
 
-             Slotted rather than left to the built-in fallback, which
-             would show "Model not found — concept: tonk:repository" to
-             someone whose actual problem is that they were never invited. -->
+             That state has TWO causes and they need opposite words: a
+             space the account knows and is still pulling, and a space
+             this person was never invited to. The DIRECTORY ROW tells
+             them apart. It hangs on the repository's own entity, is
+             asserted once per space and converges on every device, and
+             lives on the profile branch — so it is readable here even
+             though the space's own content is not. A row means the
+             account has this space and the bytes are on their way; no
+             row means the link opens nothing this account holds.
+
+             So the panel is a nested display over `tonk:space`, and
+             "invalid link" moves into ITS `no-model` — reached only
+             when there is genuinely no directory row. -->
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-title text="Not here — Tonk"></tonk-title>
-          <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-          <div class="space-unknown-wall">
-            <h1 class="space-unknown-statement">invalid link</h1>
-            <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
-            <!-- A plain anchor lets the guest relay navigation to the host. -->
-            <div class="space-unknown-run">
-              <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
+          <tonk-display with="main@profile:tonk" entity={id} model=space view=downloading>
+            <!-- The account has this space: it is arriving, not missing.
+                 When it lands, the OUTER display's standing subscription
+                 delivers a real frame and this whole panel is replaced. -->
+            <!-- No directory row: the link really does open nothing this
+                 account holds. -->
+            <div slot="no-model" hidden>
+              <tonk-title text="Not here — Tonk"></tonk-title>
+              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <div class="space-unknown-wall">
+                <h1 class="space-unknown-statement">invalid link</h1>
+                <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
+                <!-- A plain anchor lets the guest relay navigation to the host. -->
+                <div class="space-unknown-run">
+                  <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
+                </div>
+              </div>
             </div>
-          </div>
+            <!-- A space seeded before the `downloading` facet existed
+                 resolves no view. Stay quiet rather than firing the
+                 built-in red callout at someone whose space is merely
+                 still arriving: `update_slot_children` toggles `hidden`
+                 on matching children, so an inert one suppresses it. -->
+            <span slot="no-view" hidden></span>
+          </tonk-display>
         </div>
         <!-- A space created before the title facet existed has no
              `show: {title: …}` entry on its branch, so `view=title`
@@ -1119,6 +1334,27 @@ concept!: &account/registered
 
 # Activation. Its PRESENCE is what makes an account served; nothing has
 # to overwrite the registration to say so.
+# The account is being LINKED on this device right now — overlay-only.
+# Login finishes as soon as custody is recovered, so between then and the
+# account branch arriving there is a real window where the person is
+# signed in but their spaces are not here yet. Without this the Hub had
+# nothing to say in that window: it offered "link an account" (a door
+# already walked through) over an empty stack (a claim nobody had
+# established).
+#
+# Presence is the whole signal, and overlay because the window is
+# temporary: a worker that dies mid-link leaves nothing to clear.
+concept!: &account/linking
+  this: tonk:account/linking
+  description: This device is linking the account right now.
+  # ENTITY: the account's own DID.
+  with:
+    linking:
+      description: Always true while the link runs; dropped when it settles.
+      the: xyz.tonk.account/linking
+      cardinality: one
+      as: boolean
+
 concept!: &account/active
   this: tonk:account/active
   description: The account confirmed its address and is served.
@@ -1230,6 +1466,195 @@ concept!: &account/status
       as: entity
 
 # An onboarding account that has not been handed over is interim.
+# ---------------------------------------------------------------
+# PRESENCE — where a space stands on THIS device
+# ---------------------------------------------------------------
+#
+# Derived rather than stored so they cannot drift from the replica they
+# describe.
+#
+# The replica is resolved FORWARD from the session: a replica entity is
+# derived from `(profile, subject)`, so binding the space and the session's
+# profile determines the row. Both rules therefore bind `?replica` in
+# `when:`, which is what lets the second one negate over it — a negated
+# premise may not introduce bindings, its own entity included.
+#
+# There is no `remote` rule for that reason: remote is the ABSENCE of a
+# replica row, and negating it would have to introduce the very entity it
+# is testing for. Absence of `presence` carries that case instead.
+#
+# Seeding is genuinely per-replica: only the device that CREATED a space
+# ever sees it mid-seed, since any other device holding it pulled content
+# that already carries the seed.
+
+concept!: &db/session:
+  this: concept:session
+  description: Database session information
+  with:
+    profile:
+      description: >
+        Profile entity (as did:key) representing persistent identity on
+        this device.
+      the: dialog.session/profile
+      as: entity
+
+concept!: &space/replica
+  this: tonk:space/replica
+  description: A device profile's replica of a space.
+  with:
+    subject:
+      description: The space this replica is a view of.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    profile:
+      description: The device profile holding it.
+      the: xyz.tonk.replica/profile
+      cardinality: one
+      as: entity
+
+concept!: &space/replica-status
+  this: tonk:space/replica-status
+  description: A replica's seeding status.
+  with:
+    status:
+      description: '`tonk:blank` while seeding, `tonk:initialized` after.'
+      the: xyz.tonk.replica/status
+      cardinality: one
+      as: entity
+
+# A pull IN FLIGHT on this device, overlay-only. Asserted before the
+# mount starts and retracted when it settles, so its PRESENCE is the
+# state — which is why it is overlay rather than durable: a worker
+# killed mid-pull leaves nothing to clear, and the row falls back to
+# remote ready to retry. A durable marker would strand it forever.
+concept!: &space/replicating
+  this: tonk:space/replicating
+  description: A replication in flight on this device, keyed on the replica.
+  with:
+    subject:
+      description: >
+        The space being pulled. Carried so a rule can join this marker
+        to the directory row: during the pull that CREATES the replica
+        there is no replica record to join through yet.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    replicating:
+      description: Always true while a pull runs; retracted when it settles.
+      the: xyz.tonk.space/replicating
+      cardinality: one
+      as: boolean
+
+concept!: &space/presence
+  this: tonk:space/presence
+  description: Where a space stands on this device.
+  with:
+    presence:
+      description: '`case:remote`, `case:replicating`, `case:seeding`, or `case:replicated`.'
+      the: xyz.tonk.space/presence
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A space this device holds no replica of and is not pulling is remote
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:remote
+  unless:
+    - assert: space/replica
+      where:
+        subject: ?subject
+        profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+
+# A pull in flight, whether an explicit `space/replicate` asked for it or
+# the lazy first-use path tripped it. Distinct from `case:seeding`: that
+# is the CREATING device writing its own first content, this is pulling
+# content someone else authored. They fail differently and mean different
+# things to the person watching the row.
+rule!:
+  description: A space being pulled onto this device is replicating
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicating
+
+rule!:
+  description: A replica still seeding its content branch
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: space/replica-status
+      where:
+        this: ?replica
+        status: tonk:blank
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:seeding
+
+rule!:
+  description: A replica that is no longer seeding is replicated
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicated
+  unless:
+    - assert: space/replica-status
+      where:
+        this: ?replica
+        status: tonk:blank
+
 rule!:
   description: A live onboarding account is interim
   assert: account/status

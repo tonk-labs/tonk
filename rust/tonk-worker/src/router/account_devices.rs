@@ -216,11 +216,55 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     Ok(summary)
 }
 
+/// The account name for an explicit profile, read without booting it.
+///
+/// The switcher lists other profiles on this device; each names its own
+/// account, so the lookup has to run against that profile's repository
+/// rather than the active one's.
+pub(crate) async fn account_display_name_for(
+    profile: &dialog_operator::Profile,
+    operator: &crate::worker::DefaultOperator,
+) -> Option<String> {
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_repository::Repository;
+    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+
+    let account = super::identity::historical_root_did(profile, operator)
+        .await
+        .ok()
+        .flatten()?;
+    let branch = Repository::from(profile)
+        .branch(tonk_account::MAIN_BRANCH)
+        .open()
+        .perform(operator)
+        .await
+        .ok()?;
+    let names: Vec<AccountDisplayName> = branch
+        .query()
+        .select(Query::<AccountDisplayName> {
+            this: Term::from(account.this()),
+            name: Term::var("name"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names
+        .into_iter()
+        .next()
+        .map(|row| row.name.0)
+        .filter(|name| !name.trim().is_empty())
+}
+
 /// The chosen account display name, straight from the fact — `None` when
-/// nobody has named the account yet. Distinct from the roster's
-/// display name, which falls back to an auto-generated petname and so
-/// cannot say whether a person ever chose one.
-async fn account_display_name(state: &TonkState) -> Option<String> {
+/// nobody has named the account yet.
+///
+/// This is the AUTHORITATIVE name: it is keyed on the account DID and
+/// replicates with the account, so every device that opens it agrees.
+/// `tonk:profile/name` is a different thing — one device's own override,
+/// a legacy of naming profiles rather than accounts — and must not stand
+/// in for this one.
+pub(crate) async fn account_display_name(state: &TonkState) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
@@ -248,15 +292,6 @@ async fn account_display_name(state: &TonkState) -> Option<String> {
         .next()
         .map(|row| row.name.0)
         .filter(|name| !name.trim().is_empty())
-}
-
-/// Return verified account facts authorized by this profile's active grant.
-#[wasm_compat]
-pub async fn summary(
-    State(state): State<AppState>,
-) -> Result<Json<AccountSummary>, TonkWorkerError> {
-    let state = state.read().await;
-    Ok(Json(account_summary(&state).await?))
 }
 
 /// Mint a revocation for ANOTHER device, under this device's own
@@ -566,9 +601,13 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_summary_for_an_unlinked_profile() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        // `account_summary` outlived its route: account deletion and the
+        // link path still read it, and an unlinked profile must refuse
+        // rather than answer with empty facts that read as an account
+        // with nothing in it.
+        let state = test_state_without_account().await;
         assert!(matches!(
-            summary(State(state)).await,
+            account_summary(&state).await,
             Err(TonkWorkerError::NotFound(_))
         ));
     }

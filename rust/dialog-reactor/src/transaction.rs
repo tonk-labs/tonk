@@ -197,7 +197,7 @@ impl Commit<'_> {
                 .dispatch(transients.clone());
 
             let t_commit = web_time::Instant::now();
-            match txn.commit().perform(env).await {
+            match txn.commit().publish().perform(env).await {
                 Ok(revision) => {
                     let commit_ms = t_commit.elapsed().as_millis();
                     dialog_common::log!("reactor commit timing: commit {commit_ms}ms");

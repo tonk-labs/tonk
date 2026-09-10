@@ -313,12 +313,21 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    // Two, and they must stay two: the absent-space panel says one of
+    // exactly two things. A space the account's directory row names is
+    // DOWNLOADING; one it does not name is an invalid link. Collapsing
+    // them is the bug this pins -- a space that is merely still
+    // arriving was told it did not have access.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        1,
-        "the absent-space explanation must render as one card"
+        2,
+        "the absent-space panel must explain both causes: downloading, and never invited"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("model=space view=downloading"),
+        "the absent-space panel must consult the directory row before accusing the link"
     );
     assert!(
         !PROFILE_LIBRARY.contains("you don't have this spot")
@@ -401,10 +410,15 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the centered Hub launcher must reject `{rejected}`",
     );
+    // The empty stack carries NO words. An account with no spaces and an
+    // account whose spaces are still downloading are indistinguishable
+    // from the stack, so any sentence here is wrong in one of those two
+    // cases. The waiting is stated where it is known — the account cell
+    // holds a skeleton while the link runs.
     assert_eq!(
         PROFILE_LIBRARY.matches("no spaces yet").count(),
-        1,
-        "the empty Hub must state the neutral roster fact exactly once",
+        0,
+        "the empty Hub must not claim a roster fact it cannot tell from a pending download",
     );
     for rejected in ["signed out", "no spaces available"] {
         assert!(
@@ -711,7 +725,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".hubbar, .hcell { height:44px; min-height:44px; }",
-        ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
+        ".account-menu__row, .srow, .snew { min-height:44px; }",
     ] {
         assert!(
             HUB_STYLES.contains(contract),

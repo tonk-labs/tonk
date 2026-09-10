@@ -382,6 +382,15 @@ fn expand(
                             // content-derived `this()`.
                             let intent = ThisIntent::Derived;
                             this = intent.clone();
+                            // An anchor on a rule publishes that derived
+                            // identity, the same as on any other head. It
+                            // does not travel the assertion path, so it is
+                            // recorded here or nowhere.
+                            if let Some(name) = &anchor
+                                && let Some(entity) = rule.try_this()
+                            {
+                                working.declarations.insert(name.clone(), entity);
+                            }
                             rule_effect = Some((*rule).clone());
                             claims
                                 .push(Statement::Assert(Application::Rule { rule, this: intent }));
@@ -931,6 +940,7 @@ mod tests {
             txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("concept assertion commits");
@@ -1027,6 +1037,7 @@ mod tests {
                 txn = txn.assert(the.of(entity.clone()).is(attr_entity));
             }
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("pinned concept assertion commits");
@@ -1041,6 +1052,7 @@ mod tests {
                 .transaction()
                 .assert(the!("db.name/referent").of(id_entity).is(entity))
                 .commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("name publication commits");
@@ -4915,6 +4927,71 @@ mod library_analysis_tests {
             "profile.yaml",
             include_str!("../../tonk-core/assets/library/profile.yaml"),
         );
+    }
+
+    /// A rule may carry an `&anchor`, and it publishes the rule's own
+    /// content-derived identity.
+    ///
+    /// Anchors were rejected on rules on the grounds that a rule has no
+    /// single subject entity. It does — `InductiveRule::this()` — it
+    /// simply is not the head's `this:`. Without this a rule was the one
+    /// installed thing a document could not name.
+    #[test]
+    fn it_publishes_a_rule_anchor() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        let doc = r#"rule!: &named-rule
+  description: Renames the repository from a rename-repository command
+  assert!: tonk/repository
+  when:
+    - assert: tonk/rename-repository
+      where:
+        subject: ?this
+        name: ?name
+"#;
+        let source = format!("{core}\n{doc}");
+        let parsed = tonk_notation::parse(&source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "an anchored rule must parse: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        let analysis = analyze_local(&syntax).expect("an anchored rule must analyze");
+
+        let published = analysis
+            .analysis
+            .declarations
+            .get("named-rule")
+            .expect("the anchor publishes the rule's entity");
+        assert!(
+            published.to_string().starts_with("rule:"),
+            "the published entity is the rule's content-derived identity: {published}"
+        );
+    }
+
+    /// The seed record's two concepts must analyze against the library
+    /// that declares them.
+    ///
+    /// The worker asserts these as typed facts rather than notation, so
+    /// what is pinned here is that the DECLARATIONS exist and accept the
+    /// shape: identity plus source on `seed/available`, and the install
+    /// fields on `seed/installed` over the same entity. A seed a check
+    /// merely found asserts only the first, which is why the two are
+    /// separable rather than one concept with optional fields.
+    #[test]
+    fn it_analyzes_a_seed_record() {
+        let core = include_str!("../../tonk-core/assets/library/core.yaml");
+        let body = r#"seed/available!:
+  this: seed:abc
+  source: "/library/core.yaml"
+  replaces: seed:none
+
+seed/installed!:
+  this: seed:abc
+  prior: seed:none
+  version: "1@abc"
+"#;
+        assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }
 
     /// The notebook library must also lower onto the PROFILE branch.

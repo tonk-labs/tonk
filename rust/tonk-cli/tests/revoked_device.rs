@@ -234,6 +234,7 @@ async fn it_lists_devices_promptly_after_another_device_pushed(
             "pushed from the other device".to_string(),
         ))
         .commit()
+        .publish()
         .perform(&other_operator)
         .await?;
     branch.push().perform(&other_operator).await?;

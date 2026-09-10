@@ -143,6 +143,53 @@ impl SpaceLocal {
     }
 }
 
+/// A replication IN FLIGHT on this device — overlay-only.
+///
+/// Asserted when a pull for the space starts, retracted when it
+/// settles. Overlay rather than durable for the reason the state
+/// itself is temporary: a worker killed mid-pull would otherwise
+/// strand the space as "replicating" forever with nothing to clear
+/// it, whereas an overlay fact is simply absent after a restart and
+/// the row falls back to remote, ready to retry.
+///
+/// Keyed on the REPLICA entity, not the directory row. The marker is
+/// per-device state, and the replica entity is a pure hash of
+/// `(profile, subject)` — derivable before any replica record exists,
+/// so a pull can announce itself before it has mounted anything.
+///
+/// Its own entity also makes it separately clearable: the overlay's
+/// retract is a TOMBSTONE, not a removal, so clearing this marker means
+/// dropping the entity's overlay facts wholesale. On the directory
+/// entity that would take the locality stamp with it.
+///
+/// Distinct from the seeding status a fresh space carries. Seeding is
+/// the creating device writing its own first content; replicating is
+/// this device pulling content someone else authored. They fail
+/// differently and mean different things to the person watching.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceReplicating {
+    /// The replica entity — `(profile, subject)`, this device's view.
+    pub this: Entity,
+    /// The space being pulled, so a rule can join this marker back to
+    /// the directory row without a replica record existing yet — there
+    /// is none during the pull that creates it.
+    pub subject: crate::domain::replica::Subject,
+    /// Always `true` while a pull runs; the fact's PRESENCE is the
+    /// state, so it is retracted rather than set false.
+    pub replicating: crate::domain::space::Replicating,
+}
+
+impl SpaceReplicating {
+    /// An in-flight marker for this profile's replica of `subject`.
+    pub fn new(profile: Did, subject: Did) -> Self {
+        Self {
+            this: Replica::new(profile, subject.clone()).this().clone(),
+            subject: crate::domain::replica::Subject(subject.this()),
+            replicating: crate::domain::space::Replicating(true),
+        }
+    }
+}
+
 /// The account-directory copy of a space's display name, on the
 /// directory entity. The space's own content branch remains the
 /// editable source of truth (`tonk/repository`); this mirror exists so

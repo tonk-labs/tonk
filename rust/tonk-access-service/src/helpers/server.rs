@@ -758,8 +758,20 @@ async fn handle_request(
             .unwrap_or_else(|_| "?".into());
         let subject =
             crate::provisioning::container_subject(&body_bytes).unwrap_or_else(|| "?".into());
+        // The permit URL names the object the redeem is for (e.g.
+        // `{subject}/index/{hash}`), which is what a replication trace
+        // needs: without it every block fetch logs as the same command
+        // and over-fetching is invisible.
+        let object = match &outcome {
+            Ok(permit) => format!("{} {}", permit.method, permit.url.path()),
+            Err(_) => "-".into(),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|t| t.as_millis())
+            .unwrap_or(0);
         println!(
-            "ACCESS_UCAN command=/{command} subject={subject} authorized={}",
+            "ACCESS_UCAN t={now} command=/{command} subject={subject} authorized={} object={object}",
             outcome.is_ok()
         );
     }
