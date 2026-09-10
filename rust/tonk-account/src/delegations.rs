@@ -136,8 +136,10 @@ where
     // by-reference node at session open cannot hydrate it (the session
     // being opened is what would authorize the fetch), which bricks the
     // worker at boot. Downloading while a live session holds authority
-    // keeps the store complete for the next boot.
-    Ok(access.pull().download().perform(env).await?)
+    // keeps the store complete for the next boot. Operational only:
+    // authorization reads the data orderings, while history grows with
+    // every edit the account ever made and can hydrate on demand.
+    Ok(access.pull().download().operational().perform(env).await?)
 }
 
 /// Why adopting the account as an access-branch upstream failed.
