@@ -1399,13 +1399,7 @@ async fn run_invite(
     // fully functional. Minting never fails, or hangs, because a
     // convenience did.
     drop(tonk);
-    let link = match super::create_invite::shorten(&link).await {
-        Ok(short) => short,
-        Err(error) => {
-            log!("invite shortcut failed; using the full URL: {error}");
-            link
-        }
-    };
+    let link = shortened_or_full(link).await;
     let tonk = env.state().read().await;
 
     let authorization = Authorization {
@@ -1617,6 +1611,28 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The shortcut for `link`, or `link` itself when there isn't one.
+///
+/// Every way the attempt can end badly resolves to the full URL: an
+/// unreachable or unresolvable host, a request that times out, a non-2xx
+/// (a target over the service's size cap answers 400), a 200 carrying
+/// anything but the target's own content address, and a stored shortcut
+/// whose probe serves bytes instead of redirecting or redirects somewhere
+/// else. All of them mean the host does not provide shortening, and the
+/// long URL is fully functional, so none of them may fail a mint.
+///
+/// Named rather than inlined so the fallback is reachable from a test
+/// without standing up a misbehaving shortcut host.
+async fn shortened_or_full(link: String) -> String {
+    match super::create_invite::shorten(&link).await {
+        Ok(short) => short,
+        Err(error) => {
+            log!("invite shortcut failed; using the full URL: {error}");
+            link
+        }
+    }
 }
 
 /// Assemble the long invite URL a recipient opens.
@@ -6405,9 +6421,15 @@ mod invite_chain_tests {
                 "the minted link is rooted on the space's serving host"
             );
             // The fixture host provides conforming shortening (content
-            // hash + redirect), so the mint shortened; resolve the way a
-            // claimer does before parsing. A long link (a host without
-            // shortening) parses as-is — both arms are live behavior.
+            // hash + redirect), so the mint MUST have delivered a short
+            // link. Asserted rather than tolerated: the url the mint
+            // delivers is the one the share control copies, and a mint
+            // that quietly fell back to the long form is the regression
+            // this pins.
+            assert!(
+                tonk_invite::shortcut::is_shortcut(&link),
+                "the fixture shortens, so the minted link must be a shortcut, not {link}"
+            );
             let resolved = if tonk_invite::shortcut::is_shortcut(&link) {
                 let client = reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
@@ -6461,6 +6483,43 @@ mod invite_chain_tests {
             .into_inner();
         crate::router::account_state::tests::discard(tonk, &account_key);
         drop(service);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_fallback_tests {
+    /// A shortcut host that does not answer leaves the full URL standing.
+    ///
+    /// Shortening is a convenience, so every way it can fail has to end
+    /// with a link the recipient can still open: a 400 for a target over
+    /// the service's size cap, a 404 or 405 from a host serving no
+    /// shortcut route, a 200 from a blob store that stored the bytes
+    /// without understanding them, a probe that never redirects. Port 1
+    /// on loopback refuses immediately, which is the same `Err` arm all
+    /// of those land in.
+    ///
+    /// What this pins is the recovery, the part with no other coverage:
+    /// the fallback yields the url UNCHANGED — not an error that would
+    /// fail the mint, not an empty string, and with the seed fragment
+    /// still attached, since a link that lost its `#seed` would look
+    /// fine and redeem into nothing.
+    #[dialog_common::test]
+    async fn it_falls_back_to_the_full_url_when_the_shortcut_fails() {
+        let full = "http://127.0.0.1:1/join?access=PROOF&tonk_channel=reshare#SEED";
+        assert_eq!(
+            super::shortened_or_full(full.to_owned()).await,
+            full,
+            "a refused shortcut must yield the full URL, verbatim"
+        );
+
+        // A url no shortcut request can even be derived from must fall
+        // back rather than propagate.
+        let unshortenable = "not a url";
+        assert_eq!(
+            super::shortened_or_full(unshortenable.to_owned()).await,
+            unshortenable,
+            "a url the shortcut request cannot be derived from must yield itself"
+        );
     }
 }
 

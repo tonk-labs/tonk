@@ -407,7 +407,7 @@ pub(super) async fn retain_invite_authority(
 /// twice this — still far inside the share control's own 15s backstop
 /// (`tonk_fab::logic::SHARE_TIMEOUT_MS`), which is what has to stay true
 /// for the long-URL fallback to reach the clipboard.
-pub(super) const SHORTCUT_TIMEOUT_MS: u32 = 2_000;
+pub(super) const SHORTCUT_TIMEOUT_MS: u32 = tonk_invite::shortcut::TIMEOUT_MS;
 
 pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
     let request = ShortcutRequest::new(url)
@@ -418,6 +418,29 @@ pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble short URL: {e}")))?;
     probe_shortcut(&request, &hash).await?;
     Ok(short)
+}
+
+/// `AbortSignal.timeout(SHORTCUT_TIMEOUT_MS)`, or `None` on a runtime
+/// without it.
+///
+/// `web-sys` generates this static as a NON-catching binding, so calling
+/// it where `AbortSignal.timeout` is absent throws straight through the
+/// wasm frame instead of returning an error — killing the mint that the
+/// timeout exists to protect, which is precisely the failure the whole
+/// best-effort shortcut is written to avoid. Feature-detect instead: no
+/// signal means an untimed request, exactly what it was before the
+/// timeout existed, and the share control's own backstop still ends the
+/// wait. Never a thrown mint.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn shortcut_timeout_signal() -> Option<web_sys::AbortSignal> {
+    use wasm_bindgen::JsValue;
+
+    let constructor =
+        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortSignal")).ok()?;
+    let timeout = js_sys::Reflect::get(&constructor, &JsValue::from_str("timeout")).ok()?;
+    timeout
+        .is_function()
+        .then(|| web_sys::AbortSignal::timeout_with_u32(SHORTCUT_TIMEOUT_MS))
 }
 
 /// Probe the stored shortcut: `HEAD {origin}/@/{hash}` must redirect
@@ -437,9 +460,7 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
     let init = RequestInit::new();
     init.set_method("HEAD");
-    init.set_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
-        SHORTCUT_TIMEOUT_MS,
-    )));
+    init.set_signal(shortcut_timeout_signal().as_ref());
     let probe_request = Request::new_with_str_and_init(&probe, &init)
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe request: {e:?}")))?;
     let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
@@ -508,9 +529,7 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
     let init = RequestInit::new();
     init.set_method("PUT");
     init.set_body(&target.into());
-    init.set_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
-        SHORTCUT_TIMEOUT_MS,
-    )));
+    init.set_signal(shortcut_timeout_signal().as_ref());
     let request = Request::new_with_str_and_init(endpoint, &init)
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut request: {e:?}")))?;
 
