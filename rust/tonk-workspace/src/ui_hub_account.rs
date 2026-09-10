@@ -2188,7 +2188,13 @@ mod tests {
                 profiles: vec![profile("spry-yak", None, None, None, true)],
             },
         );
-        assert_eq!(label.text_content().as_deref(), Some("link an account"));
+        // Read from `trigger_label` rather than repeating its words: this
+        // pins that a signed-out cell offers the ACTION, never the
+        // profile handle, and a copy change should not fail it.
+        assert_eq!(
+            label.text_content().as_deref(),
+            Some(crate::hub_account::trigger_label(Some("false")))
+        );
         assert!(!host.has_attribute("data-account-linking"));
     }
 
