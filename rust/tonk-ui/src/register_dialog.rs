@@ -2038,6 +2038,11 @@ pub(crate) fn finish_ceremony() {
             // here reloaded the whole app -- wasm bundle, service
             // worker handshake and all -- to reach a page the router
             // can already render in place.
+            //
+            // Close FIRST: the reload used to take the dialog down with
+            // the document, and a route change does not. Leaving it up
+            // parks a finished ceremony over the Hub.
+            close();
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             tonk_host::navigate_to("/");
         }
@@ -2060,7 +2065,8 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            // See above: the Hub is a route, so route to it.
+            // See above: close the ceremony, then route to the Hub.
+            close();
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             tonk_host::navigate_to("/");
             return;
