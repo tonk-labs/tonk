@@ -1,5 +1,7 @@
 use serde::Deserialize;
-use tonk_worker_api::{AccountStatus, IdentifyResponse, RootStatus, SaveRootRequest};
+use tonk_worker_api::{
+    AccountStatus, AccountSummary, IdentifyResponse, RootStatus, SaveRootRequest,
+};
 
 use crate::error::AccountTransportKind;
 use crate::error::TonkUiError;
@@ -257,49 +259,6 @@ pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
     .await
 }
 
-/// Poll until this device holds a recovered credential, or give up.
-///
-/// Custody is the one post-passkey step that can genuinely fail, so it
-/// is the only one whose failure the ceremony reports. `Ready` is the
-/// answer; anything else is not yet.
-pub async fn await_custody() -> bool {
-    poll_until(RECOVERY_ATTEMPTS, || async {
-        matches!(root_status().await, Ok(RootStatus::Ready { .. }))
-    })
-    .await
-}
-
-/// How long custody recovery waits before the ceremony stops narrating
-/// it. Generous, because the point is to describe a slow network rather
-/// than to time it out — but bounded, because a phase that never answers
-/// must not strand the screen.
-const RECOVERY_ATTEMPTS: usize = 120;
-
-/// The beat between polls. Long enough not to hammer the worker, short
-/// enough that a phase which resolves quickly reads as immediate.
-const POLL_EVERY_MS: i32 = 250;
-
-/// Run `check` until it answers true or `attempts` are spent.
-async fn poll_until<F, Fut>(attempts: usize, check: F) -> bool
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    for _ in 0..attempts {
-        if check().await {
-            return true;
-        }
-        let sleep = js_sys::Promise::new(&mut |resolve, _| {
-            if let Some(window) = web_sys::window() {
-                let _ = window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, POLL_EVERY_MS);
-            }
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(sleep).await;
-    }
-    false
-}
-
 /// Save the account name and wait for its durable write before reporting success.
 pub async fn set_display_name(
     name: &str,
@@ -314,6 +273,18 @@ pub async fn set_display_name(
         send_account(request, "POST", "/api/account/display-name").await?,
         "POST",
         "/api/account/display-name",
+    )
+    .await
+}
+
+/// Load verified account and passkey facts for the linked account.
+pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let response = reqwest::Client::new().get(format!("{}/api/account/summary", origin()));
+    decode_account(
+        send_account(response, "GET", "/api/account/summary").await?,
+        "GET",
+        "/api/account/summary",
     )
     .await
 }

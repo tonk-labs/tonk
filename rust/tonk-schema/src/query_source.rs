@@ -101,7 +101,7 @@ pub enum Source<'a> {
     /// Resolve against a committed branch.
     Branch(QueryLayer<'a>),
     /// Resolve against a transaction's "as-if committed" view.
-    Transaction(&'a Transaction<&'a Branch>),
+    Transaction(&'a Transaction<'a>),
 }
 
 impl<'a> From<&'a Branch> for Source<'a> {
@@ -110,8 +110,8 @@ impl<'a> From<&'a Branch> for Source<'a> {
     }
 }
 
-impl<'a> From<&'a Transaction<&'a Branch>> for Source<'a> {
-    fn from(transaction: &'a Transaction<&'a Branch>) -> Self {
+impl<'a> From<&'a Transaction<'a>> for Source<'a> {
+    fn from(transaction: &'a Transaction<'a>) -> Self {
         Self::Transaction(transaction)
     }
 }
@@ -212,7 +212,6 @@ mod tests {
                 name: people::Name("Alice".into()),
             })
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 

@@ -8,15 +8,6 @@
     aria-controls="hub-account-menu"
   >
     <span data-account-label>account</span>
-    <!-- Stands in for the name while the account replicates one. Hidden
-         unless the cell is waiting; `data-account-label` empties itself
-         then, so the two never show at once.
-
-         A plain span, NOT <wa-skeleton>: web-awesome elements register
-         through an autoloader that runs a beat after load, so a wa-
-         element here would sit unstyled and then pop. This bar is two
-         gradient stops and a keyframe -- not worth a flash. -->
-    <span data-account-skeleton hidden></span>
   </button>
   <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
     spaces

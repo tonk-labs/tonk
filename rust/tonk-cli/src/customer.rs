@@ -120,54 +120,6 @@ pub async fn provision_in(
     }
 }
 
-/// Release a hosted space: the mirror of [`provision_in`].
-///
-/// Signed with THIS DEVICE's own authority, proving through the
-/// account's chain — no passkey. A passkey holds the account root and
-/// belongs to deleting the account itself; releasing one space this
-/// account provides is an ordinary device-authorized invocation.
-pub async fn deprovision(profile: &Profile, consumer: &Did) -> Result<()> {
-    let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
-    deprovision_in(profile, &store, consumer).await
-}
-
-/// Release one hosted space under one explicit account profile.
-pub async fn deprovision_in(
-    profile: &Profile,
-    store: &crate::space::SpaceStore,
-    consumer: &Did,
-) -> Result<()> {
-    let connection = crate::account::optional_connection_in(profile, store)
-        .await?
-        .context("no active account; run `tonk account login`")?;
-    let origin = access_origin_in(profile, store)
-        .await?
-        .context("the account has no repository descriptor to locate its service by")?;
-    let body = tonk_identity::request::build_provider_remove_invocation(
-        profile.signer().signer().clone(),
-        &connection.link,
-        consumer,
-    )
-    .await?;
-    let response = reqwest::Client::new()
-        .post(origin.join("ucan/")?)
-        .header("content-type", "application/cbor")
-        .body(body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .context("failed to reach the access service")?;
-    if response.status().is_success() {
-        return Ok(());
-    }
-    let status = response.status();
-    let refusal: serde_json::Value = response.json().await.unwrap_or_default();
-    match serde_json::from_value::<RegistrationError>(refusal["error"].clone()) {
-        Ok(refusal) => bail!("the access service refused the release: {refusal}"),
-        Err(_) => bail!("access service rejected the release ({status})"),
-    }
-}
-
 /// The service's view of this profile's account: `Ok(None)` when the
 /// profile is not linked or its account has no located service, and an
 /// inner `None` when the service does not know the customer.

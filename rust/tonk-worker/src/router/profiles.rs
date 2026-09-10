@@ -96,12 +96,7 @@ async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry
         root_did,
         provider: provider.clone(),
         email: provider.and(email),
-        // The ACCOUNT's name, not the profile's. The roster feeds the
-        // Hub's account cell, which names the account — and that name
-        // arrives with the account branch, so `None` here is what makes
-        // the cell hold a skeleton until it replicates. The profile-name
-        // override is a per-device legacy and cannot answer for it.
-        display_name: super::account_devices::account_display_name(tonk).await,
+        display_name: super::profile_name::resolve_display_name(tonk).await,
     }
 }
 
@@ -127,9 +122,7 @@ async fn inspected_entry(
         root_did,
         provider,
         email: None,
-        // The ACCOUNT's name, like the active row — read from this
-        // profile's own repository, since each names its own account.
-        display_name: super::account_devices::account_display_name_for(profile, operator).await,
+        display_name: super::profile_name::resolve_display_name_from(profile, operator).await,
     }
 }
 
@@ -170,7 +163,7 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
                 root_did: entry.root_did,
                 provider: entry.provider,
                 email: entry.email,
-                display_name: entry.display_name,
+                display_name: Some(entry.display_name),
             })
             .collect(),
     }
@@ -670,34 +663,21 @@ mod tests {
             active.root_did.is_some(),
             "an attached profile names its account root"
         );
-        // No name until the ACCOUNT carries one: a fresh profile has not
-        // replicated an account name, and the roster no longer invents a
-        // petname to fill the gap.
-        assert!(
-            active.display_name.is_none(),
-            "an unnamed account reports no name rather than a generated one"
-        );
+        assert!(active.display_name.is_some());
     }
 
     #[dialog_common::test]
     async fn it_reads_an_inactive_profiles_current_display_name_and_account_state() {
-        use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
+        use tonk_schema::{ProfileName, prelude::DidExt as _};
 
         let state = Arc::new(RwLock::new(test_state().await));
         let first = {
             let tonk = state.read().await;
-            // Keyed on the ACCOUNT root, which is the entity
-            // `account_display_name` queries — not the profile DID. The
-            // roster reports the account's name; the per-device profile
-            // override is a different thing and must not stand in for it.
-            let account = crate::router::identity::root_did(&tonk)
-                .await
-                .expect("the test profile has a root");
             tonk.reactor
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .assert(AccountDisplayName::new(account.this(), "jack".into()))
+                .assert(ProfileName::new(tonk.profile.did().this(), "jack".into()))
                 .commit()
                 .perform(&tonk.operator)
                 .await

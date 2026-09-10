@@ -23,10 +23,7 @@ use crate::envelope::capability::{Opening, Sealing};
 pub enum Custodian {
     /// A locally generated keypair. What a device has before it signs
     /// in, and what the CLI has always.
-    ///
-    /// Boxed: it is far larger than the passkey variant, and an unboxed
-    /// one would make every `Custodian` pay its size.
-    Native(Box<native::Custodian>),
+    Native(native::Custodian),
 
     /// A passkey, reached through the two handles its PRF evaluates to.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -63,10 +63,8 @@ pub(crate) struct RosterEntry {
     pub provider: Option<String>,
     /// Account email, captured best-effort at link time. May lag.
     pub email: Option<String>,
-    /// Display name at last refresh. `None` when nothing names this
-    /// profile yet — a derived stand-in here would be indistinguishable
-    /// from a name the person chose.
-    pub display_name: Option<String>,
+    /// Display name at last refresh.
+    pub display_name: String,
 }
 
 /// Where the pointer lives: a profile name and the directory it is
@@ -276,10 +274,15 @@ impl Registry {
         let mut roster: Vec<RosterEntry> = profiles
             .into_iter()
             .map(|profile| {
-                // An unreadable profile is simply unnamed here; an
-                // ordinary switcher read replaces this with the name
-                // stored in the profile's own repository.
-                let display_name = None;
+                // Keep a deterministic fallback for an unreadable profile.
+                // Ordinary switcher reads replace it with the name stored in
+                // this profile's own repository.
+                let display_name = profile
+                    .this()
+                    .as_str()
+                    .parse()
+                    .map(|did| tonk_schema::petname(&did))
+                    .unwrap_or_default();
                 RosterEntry {
                     profile_name: profile.name.0,
                     root_did: None,
@@ -312,7 +315,6 @@ impl Registry {
             .transaction()
             .assert(DeviceProfile::new(profile, storage_name))
             .commit()
-            .publish()
             .perform(operator)
             .await
             .map(|_| ())
@@ -348,7 +350,6 @@ impl Registry {
                 .transaction()
                 .retract(entry)
                 .commit()
-                .publish()
                 .perform(operator)
                 .await
                 .map_err(|error| {
@@ -481,17 +482,16 @@ mod tests {
         );
     }
 
-    /// The row `read_roster` yields for a profile stored under `name`:
-    /// the handle alone. The durable roster carries no display name —
-    /// identity lives on the profile's own account branch, and a derived
-    /// stand-in here would read as a name the person chose.
-    fn entry(_profile: &Did, name: &str) -> RosterEntry {
+    /// The row `read_roster` yields for `profile` stored under `name`:
+    /// the handle, plus the petname the display name defaults to —
+    /// identity beyond that lives on the profile's own account branch.
+    fn entry(profile: &Did, name: &str) -> RosterEntry {
         RosterEntry {
             profile_name: name.to_string(),
             root_did: None,
             provider: None,
             email: None,
-            display_name: None,
+            display_name: tonk_schema::petname(profile),
         }
     }
 

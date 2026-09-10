@@ -191,11 +191,10 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::dispatch`] as background work so it never blocks the
-/// triggering response (shared by the transact and evaluate routes). The
-/// service worker attaches the dispatch promise to the originating fetch
-/// event; native builds run it inline so tests remain deterministic.
-pub(super) async fn spawn_dispatch(
+/// Run [`super::dispatch`] as background work so it never blocks the transact
+/// response. The service worker attaches the dispatch promise to the originating
+/// fetch event; native builds run it inline so tests remain deterministic.
+async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,

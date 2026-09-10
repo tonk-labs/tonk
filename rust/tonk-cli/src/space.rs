@@ -838,7 +838,6 @@ pub async fn create(
                 name: tonk_schema::domain::repo::Name(name.to_owned()),
             })
             .commit()
-            .publish()
             .perform(&site.operator)
             .await
             .map_err(|e| SpaceError::Init(format!("failed to stamp repository identity: {e}")))?;

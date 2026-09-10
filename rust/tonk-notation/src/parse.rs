@@ -401,6 +401,16 @@ fn walk_expression(
     // value spans drift unreliably after block scalars.
     let rule_body = effect && is_rule_predicate(&head);
 
+    // `rule!:` claims forbid `&anchor`: the rule has no single
+    // subject entity to bind a name to (the rule's *effect entity*
+    // is content-derived from the body).
+    if rule_body && anchor.is_some() {
+        out.push(error(
+            block_range,
+            r#"`&anchor` is not valid on a `rule!:` claim. Anchors publish a single entity's name; rules have no single subject entity (the effect's identity is derived from its rule body)."#,
+        ));
+    }
+
     // Body: null/empty (no-fields query or assertion), or a
     // mapping of fields. A bare `_` body is rejected — entity
     // selection requires a `this:` field, which requires a
@@ -2657,14 +2667,12 @@ page!:
         );
     }
 
-    /// A `rule!:` head may carry an `&anchor`.
-    ///
-    /// It was rejected on the grounds that a rule has no single subject
-    /// entity to name. It has one — its content-derived identity — and
-    /// the analyzer publishes that under the anchor, so a rule can be
-    /// named like anything else.
+    /// Anchors on `rule!:` heads are rejected — rules don't have a
+    /// single subject entity to name. (Validation that lives in the
+    /// parser because it's a syntactic restriction on the
+    /// head-grammar slot, not a semantic property of the rule body.)
     #[dialog_common::test]
-    fn it_accepts_an_anchor_on_a_rule_head() {
+    fn it_rejects_anchor_on_rule_head() {
         let parsed = parse(
             r#"rule!: &mine
   assert!: pong
@@ -2673,11 +2681,16 @@ page!:
       where: {}
 "#,
         );
-
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
         assert!(
-            parsed.diagnostics.is_empty(),
-            "an anchored rule must parse: {:?}",
-            parsed.diagnostics
+            messages
+                .iter()
+                .any(|m| m.contains("&anchor") && m.contains("`rule!:`")),
+            "expected diagnostic about anchor on rule, got {messages:?}",
         );
     }
 }

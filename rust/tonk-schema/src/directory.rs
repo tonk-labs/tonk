@@ -147,7 +147,7 @@ where
                 .assert(TrackingBranch::new(&local, &upstream));
         }
     }
-    transaction.commit().publish().perform(env).await?;
+    transaction.commit().perform(env).await?;
     Ok(())
 }
 
@@ -520,7 +520,6 @@ mod tests {
             .transaction()
             .assert(remote)
             .commit()
-            .publish()
             .perform(&operator)
             .await
             .unwrap();

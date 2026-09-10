@@ -157,31 +157,8 @@ fn it_fetches_staging_for_a_matching_staging_receipt() {
     assert!(stdout.contains("staging"), "stdout: {stdout}");
 }
 
-/// Wait for the recording server to have logged at least one request.
-///
-/// The update check runs on a BACKGROUND thread, so the probe's exit does
-/// not mean its request has landed — `cmd.output()` waits for the process,
-/// not for the socket. Asserting straight after exit made these tests pass
-/// on an idle machine and fail on a loaded one, which is how they read as
-/// flaky rather than as a race in the assertion.
-///
-/// Bounded, not infinite: a request that never arrives still fails, just
-/// with a real timeout instead of an instant empty read.
-fn wait_for_a_request(requests: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    const ATTEMPTS: usize = 200;
-    const EVERY: std::time::Duration = std::time::Duration::from_millis(25);
-    for _ in 0..ATTEMPTS {
-        let seen = requests.lock().expect("read requests").clone();
-        if !seen.is_empty() {
-            return seen;
-        }
-        std::thread::sleep(EVERY);
-    }
-    Vec::new()
-}
-
 fn assert_only_stable_was_requested(requests: &Arc<Mutex<Vec<String>>>) {
-    let requests = wait_for_a_request(requests);
+    let requests = requests.lock().expect("read requests");
     assert!(
         !requests.is_empty(),
         "expected at least one release request"
@@ -344,8 +321,9 @@ fn it_checks_staging_in_the_background_for_a_matching_staging_receipt() {
 
     let output = run_probe(&endpoint, dir.path(), &[]);
     assert!(output.status.success());
+    let requests = requests.lock().expect("read requests");
     assert_eq!(
-        wait_for_a_request(&requests).as_slice(),
+        requests.as_slice(),
         ["/releases/download/tonk-staging/manifest.json"]
     );
 }

@@ -719,7 +719,6 @@ async fn mount(
         .assert(replica.clone())
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
         .commit()
-        .publish()
         .perform(operator)
         .await
         .context("failed to stamp account replica kind")?;
@@ -753,12 +752,7 @@ async fn hydrate(
             branch.pull().download().perform(operator).await?;
         }
         Ok(RemotePresence::Absent) => {
-            branch
-                .transaction()
-                .commit()
-                .publish()
-                .perform(operator)
-                .await?;
+            branch.transaction().commit().perform(operator).await?;
             if let CreateGenesis::Loser(_) =
                 publish_genesis_if_absent(branch, &remote, operator).await?
             {

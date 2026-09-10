@@ -187,7 +187,6 @@ pub async fn run_against_site(
         let revision_after = evaluated
             .txn
             .commit()
-            .publish()
             .perform(&site.operator)
             .await
             .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;

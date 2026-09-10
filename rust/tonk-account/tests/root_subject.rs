@@ -50,12 +50,7 @@ async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> an
         .open()
         .perform(&operator)
         .await?;
-    let revision = branch
-        .transaction()
-        .commit()
-        .publish()
-        .perform(&operator)
-        .await?;
+    let revision = branch.transaction().commit().perform(&operator).await?;
 
     // The head no longer carries the subject DID; its opaque branch
     // entity commits to (profile, subject, name) instead.

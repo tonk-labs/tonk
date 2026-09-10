@@ -1,4 +1,4 @@
-//! [`Membership`] — an account's membership of a repository.
+//! [`Membership`] — a profile's membership of a repository.
 
 // The `#[derive(Concept)]` macro generates helper types without doc
 // comments; suppress `missing_docs` like the sibling concept modules.
@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::domain::membership::{Invitation, Member, Name, Role, Subject};
 use crate::prelude::*;
 
-/// A membership — an account is a member of a repository.
+/// A membership — a profile is a member of a repository.
 ///
 /// The `this` entity is content-derived from the `(subject, member)`
 /// pair, so re-asserting a membership (multi-device claims, repeated
@@ -32,7 +32,7 @@ pub struct Membership {
     pub this: Entity,
     /// Reference to the repository.
     pub subject: Subject,
-    /// Reference to the member account.
+    /// Reference to the member profile.
     pub member: Member,
 }
 
@@ -45,7 +45,7 @@ enum This<'a> {
 }
 
 impl Membership {
-    /// Build a membership from the member account DID and the
+    /// Build a membership from the member profile DID and the
     /// repository subject DID.
     pub fn new(member: Did, subject: Did) -> Self {
         Self {
