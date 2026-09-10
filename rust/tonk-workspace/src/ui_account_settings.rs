@@ -1010,8 +1010,16 @@ fn subscribe_account(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscri
             let _ = host.set_attribute("with", PROFILE_WITH);
         }
         let consumer: Element = host.clone().into();
-        // Directory mode (`this` unbound): the account subject is not
-        // known here, and the profile branch carries one such row.
+        // Directory mode (`this` unbound), like the Hub cell's own name
+        // subscription: this element does not know the account subject,
+        // and asking the worker for it would be another round trip to
+        // learn something the branch is about to tell us anyway.
+        //
+        // A browser that has held more than one account can carry more
+        // than one row, and `render_account` takes the first. That is
+        // the same exposure the Hub cell has had; binding the subject
+        // here means threading it in, which is worth doing once for
+        // both rather than differently in each.
         let body = r#"{
           "predicate": { "with": {
             "email": { "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one" }

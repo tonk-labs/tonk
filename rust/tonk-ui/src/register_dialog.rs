@@ -1429,6 +1429,15 @@ async fn read_invite_link(space: &str) -> Option<String> {
 /// petname and so cannot tell a named account from a fresh one.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_display_name() -> Option<String> {
+    // Bound to THIS account's subject, the way the worker's own read is
+    // (`Query::<AccountDisplayName> { this: account.this(), .. }`).
+    // Leaving `this` unbound matches any account named on the branch,
+    // and a browser that has held more than one would answer with
+    // whichever row came back first.
+    let root = match crate::api::root_status().await {
+        Ok(tonk_worker_api::RootStatus::Ready { root_did, .. }) => root_did,
+        _ => return None,
+    };
     let body = serde_json::json!({
         "predicate": { "with": {
             "name": {
@@ -1437,7 +1446,7 @@ async fn account_display_name() -> Option<String> {
             }
         } },
         "terms": {
-            "this": { "?": { "name": "this" } },
+            "this": root,
             "name": { "?": { "name": "name" } }
         }
     });
