@@ -647,7 +647,15 @@ async fn observe_registration(
 
     // The address rides along because `record_customer_status` writes
     // the whole fact; it is not being changed here. No recorded address
-    // means no enrollment on this device, and nothing to complete.
+    // means no enrollment on this device, and nothing to complete — an
+    // account still on its onboarding standin has no registration to
+    // observe, and `tonk:account/onboarding` is what represents it.
+    //
+    // `account_registration` now reports a blank address as `None`, so
+    // this guard sees the state it was always written for: it used to
+    // read `Some("")` as an address and write the blank back on every
+    // sweep, which is how an emailless registration kept re-creating
+    // itself.
     let email = match super::customer::registration(tonk).await {
         super::customer::Registration::AwaitingActivation { email } => email,
         _ => match super::customer::account_registration(tonk).await.email {
