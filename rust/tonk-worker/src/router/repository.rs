@@ -1382,10 +1382,23 @@ async fn run_invite(
     // they carry, and that url is what reaches the clipboard — a shorter
     // one published afterwards arrives too late to be copied.
     //
-    // Best effort, as the shortcut always was: a `PUT /@` that fails
-    // (offline, no service deployed, a non-2xx, an answer that is not the
-    // target's own content address) leaves the long URL standing, which is
-    // fully functional. Minting never fails because a convenience did.
+    // Outside the state lock, which guards the whole worker (profile,
+    // operator, and the reactor's cached handles and subscriptions).
+    // Holding it across a network round-trip would stall every reader,
+    // not just a writer: the lock is write-preferring, so one queued
+    // writer parks every reader behind it. Nothing below the drop
+    // borrows from the guard — the rest of the mint reaches state
+    // through `tonk.reactor` and `tonk.operator`, both re-resolved from
+    // the guard taken back afterwards, which also means this picks up a
+    // session rotated while the shortcut was in flight rather than
+    // committing under a retired operator.
+    //
+    // Best effort, as the shortcut always was: a `PUT /@` that fails,
+    // answers non-conformingly, or stops answering at all (each leg
+    // carries its own timeout) leaves the long URL standing, which is
+    // fully functional. Minting never fails, or hangs, because a
+    // convenience did.
+    drop(tonk);
     let link = match super::create_invite::shorten(&link).await {
         Ok(short) => short,
         Err(error) => {
@@ -1393,6 +1406,7 @@ async fn run_invite(
             link
         }
     };
+    let tonk = env.state().read().await;
 
     let authorization = Authorization {
         this: subject_entity.clone(),

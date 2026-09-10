@@ -398,6 +398,17 @@ pub(super) async fn retain_invite_authority(
 ///
 /// Shared with the `tonk:invite` command handler in [`super::repository`],
 /// the other mint path, so both shorten identically.
+/// How long each leg of a shortcut attempt may take.
+///
+/// The service answers a `PUT /@` in ~10ms, so this is a hang detector,
+/// not a budget: a shortcut host that stops answering (a captive portal,
+/// a stalled origin, a dropped connection) must not pin the mint on a
+/// convenience. Both legs get their own timeout, so the worst case is
+/// twice this — still far inside the share control's own 15s backstop
+/// (`tonk_fab::logic::SHARE_TIMEOUT_MS`), which is what has to stay true
+/// for the long-URL fallback to reach the clipboard.
+pub(super) const SHORTCUT_TIMEOUT_MS: u32 = 2_000;
+
 pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
     let request = ShortcutRequest::new(url)
         .map_err(|e| TonkWorkerError::Internal(format!("failed to derive shortcut: {e}")))?;
@@ -426,6 +437,9 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
     let init = RequestInit::new();
     init.set_method("HEAD");
+    init.set_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
+        SHORTCUT_TIMEOUT_MS,
+    )));
     let probe_request = Request::new_with_str_and_init(&probe, &init)
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe request: {e:?}")))?;
     let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
@@ -456,6 +470,7 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_millis(SHORTCUT_TIMEOUT_MS.into()))
         .build()
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe client: {e}")))?;
     let response = client
@@ -493,6 +508,9 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
     let init = RequestInit::new();
     init.set_method("PUT");
     init.set_body(&target.into());
+    init.set_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
+        SHORTCUT_TIMEOUT_MS,
+    )));
     let request = Request::new_with_str_and_init(endpoint, &init)
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut request: {e:?}")))?;
 
@@ -523,7 +541,10 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
 /// PUT a shortcut target, returning the hash the service responds with.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(SHORTCUT_TIMEOUT_MS.into()))
+        .build()
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut PUT client: {e}")))?
         .put(endpoint)
         .body(target)
         .send()
