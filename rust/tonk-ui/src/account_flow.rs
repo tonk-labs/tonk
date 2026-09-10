@@ -1155,7 +1155,7 @@ mod tests {
         );
         type_into_settled_row(&driver, "display name", "Tab Owner").await?;
         await_narrator_containing(&driver, "confirmation link").await?;
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("pending account summary", &summary)["displayName"],
             "Tab Owner"
@@ -1197,7 +1197,7 @@ mod tests {
         driver.close_window().await?;
         driver.switch_to_window(original).await?;
         await_signup_hub(&driver).await?;
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("account summary", &summary)["displayName"],
             "Tab Owner"
@@ -1222,7 +1222,7 @@ mod tests {
         element(&other, "#activate-accept").await?.click().await?;
         wait_for_displayed(&other, "#activate-done").await?;
         assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
-        let summary = get_json(&other, "/api/account/summary").await?;
+        let summary = account_summary(&other).await?;
         let summary = successful_body("other account summary", &summary);
         assert_eq!(summary["email"], "other-account@example.com");
         assert_eq!(summary["displayName"], "Tab Owner");
@@ -1336,7 +1336,7 @@ mod tests {
             "Active"
         );
         await_signup_hub(&driver).await?;
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("account summary", &summary)["displayName"],
             "Tab Owner"
@@ -1954,17 +1954,17 @@ mod tests {
                 .await
                 .map(|value| value.json().clone());
             eprintln!("PROBE /api/health: {health:?}");
-            for path in ["/api/account", "/api/account/summary"] {
-                let answer = get_json(&driver, path).await;
-                eprintln!("PROBE {path}: {answer:?}");
-            }
+            let answer = get_json(&driver, "/api/account").await;
+            eprintln!("PROBE /api/account: {answer:?}");
+            let answer = account_summary(&driver).await;
+            eprintln!("PROBE account summary: {answer:?}");
             dump_browser_log(&driver, &env).await;
             return Err(wait_error).context(format!(
                 "same-account re-login stopped in mode {mode:?}: {error:?}"
             ));
         }
 
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("account summary after re-login", &summary)["email"],
             EMAIL
@@ -3637,7 +3637,7 @@ mod tests {
             second.find(By::Css("#tonk-register")).await.is_err(),
             "login must leave the registration ceremony automatically"
         );
-        let summary = get_json(&second, "/api/account/summary").await?;
+        let summary = account_summary(&second).await?;
         assert_eq!(
             successful_body("read the newly linked account", &summary)["displayName"],
             NAME
@@ -4610,6 +4610,92 @@ mod tests {
         Ok(result.json().clone())
     }
 
+    /// The account facts `/api/account/summary` used to return, read the
+    /// way the app reads them now: a query against the profile branch.
+    ///
+    /// The route is gone — it answered by reading these very attributes
+    /// off this very branch, so it was a second copy of what a query
+    /// returns. Shaped like the old response (`status` + `body` with
+    /// camelCase keys) so the assertions that consumed it still read.
+    async fn account_summary(driver: &WebDriver) -> Result<serde_json::Value> {
+        let query = serde_json::json!({
+            "predicate": { "with": {
+                "email": {
+                    "the": "xyz.tonk.account/customer-email",
+                    "as": "Text", "cardinality": "one"
+                }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "email": { "?": { "name": "email" } }
+            }
+        });
+        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let email = rows["body"]
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["email"].as_str())
+            .filter(|email| !email.trim().is_empty());
+
+        let query = serde_json::json!({
+            "predicate": { "with": {
+                "name": {
+                    "the": "xyz.tonk.account/display-name",
+                    "as": "Text", "cardinality": "one"
+                }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "name": { "?": { "name": "name" } }
+            }
+        });
+        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let display_name = rows["body"]
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["name"].as_str())
+            .filter(|name| !name.trim().is_empty());
+
+        let query = serde_json::json!({
+            "predicate": { "with": {
+                "created_on": {
+                    "the": "xyz.tonk.recovery/created-on",
+                    "as": "Text", "cardinality": "one"
+                },
+                "created_at": {
+                    "the": "xyz.tonk.recovery/created-at",
+                    "as": "UnsignedInteger", "cardinality": "one"
+                }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "created_on": { "?": { "name": "created_on" } },
+                "created_at": { "?": { "name": "created_at" } }
+            }
+        });
+        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        // Newest first, as the panel lists them.
+        let passkey = rows["body"].as_array().and_then(|rows| {
+            rows.iter()
+                .max_by_key(|row| row["fields"]["created_at"].as_u64().unwrap_or(0))
+                .map(|row| {
+                    serde_json::json!({
+                        "createdOn": row["fields"]["created_on"],
+                        "createdAt": row["fields"]["created_at"],
+                    })
+                })
+        });
+
+        Ok(serde_json::json!({
+            "status": 200,
+            "body": {
+                "email": email,
+                "displayName": display_name,
+                "passkey": passkey,
+            }
+        }))
+    }
+
     async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
         let result = driver
             .execute_async(
@@ -5327,7 +5413,7 @@ mod tests {
         // The released email creates a genuinely new account on the
         // fresh profile.
         sign_up(&driver, &env, email).await?;
-        let recreated = get_json(&driver, "/api/account/summary").await?;
+        let recreated = account_summary(&driver).await?;
         assert_eq!(
             successful_body("load the recreated account", &recreated)["email"],
             email
@@ -5405,7 +5491,7 @@ mod tests {
             space_keys(successful_body("list second account's spaces", &listed)).is_empty(),
             "a fresh account must not see the other account's spaces"
         );
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         let passkey_created_on =
             successful_body("read second account summary", &summary)["passkey"]["createdOn"]
                 .as_str()
@@ -5683,7 +5769,7 @@ mod tests {
             profile_count,
             "routing to an existing account must not create a third profile"
         );
-        let summary = get_json(&driver, "/api/account/summary").await?;
+        let summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("second account summary", &summary)["email"],
             SECOND
@@ -5711,7 +5797,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         wait_for_service_worker(&driver).await?;
-        let sibling_summary = get_json(&driver, "/api/account/summary").await?;
+        let sibling_summary = account_summary(&driver).await?;
         assert_eq!(
             successful_body("second account in reloaded sibling", &sibling_summary)["email"],
             SECOND,
