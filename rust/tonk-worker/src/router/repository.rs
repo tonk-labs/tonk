@@ -2047,6 +2047,39 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
                 return;
             }
         };
+        // A space this account PROVIDES has a copy on Tonk services,
+        // and dropping the local replica alone would strand it there.
+        //
+        // `space_provider_recorded` is the whole difference between
+        // LEAVING a space and destroying it for everyone: the fact
+        // exists only when THIS account hosts the space, so a space
+        // someone else provides falls straight through to the local
+        // removal below and its hosted copy is untouched.
+        //
+        // No passkey: deprovisioning signs `/provider/remove` with this
+        // device's own authority. The passkey belongs to deleting the
+        // ACCOUNT, which is a different command.
+        {
+            let tonk = self.state().read().await;
+            // The worker's own origin: a command has no request behind
+            // it to carry one, and the access service that provides the
+            // space is the one this worker is served from.
+            let origin = super::customer::service_origin();
+            if super::customer::space_provider_recorded(&tonk, &subject).await
+                && let Ok(origin) = origin
+                && let Err(error) =
+                    super::customer::deprovision_consumer(&tonk, &origin, &subject).await
+            {
+                // Reported, not fatal: the local removal still runs, so
+                // the row disappears and the service copy is reconciled
+                // by the next sweep rather than blocking the person.
+                log!(
+                    "RemoveSpace '{}' could not be deprovisioned: {}",
+                    subject,
+                    error
+                );
+            }
+        }
         if let Err(error) = remove_space_inner(self.state(), &subject).await {
             log!("RemoveSpace '{}' failed: {}", subject, error);
         }
