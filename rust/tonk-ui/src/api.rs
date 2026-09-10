@@ -1,7 +1,5 @@
 use serde::Deserialize;
-use tonk_worker_api::{
-    AccountStatus, AccountSummary, IdentifyResponse, RootStatus, SaveRootRequest,
-};
+use tonk_worker_api::{AccountStatus, IdentifyResponse, RootStatus, SaveRootRequest};
 
 use crate::error::AccountTransportKind;
 use crate::error::TonkUiError;
@@ -316,18 +314,6 @@ pub async fn set_display_name(
         send_account(request, "POST", "/api/account/display-name").await?,
         "POST",
         "/api/account/display-name",
-    )
-    .await
-}
-
-/// Load verified account and passkey facts for the linked account.
-pub async fn account_summary() -> Result<AccountSummary, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/account/summary", origin()));
-    decode_account(
-        send_account(response, "GET", "/api/account/summary").await?,
-        "GET",
-        "/api/account/summary",
     )
     .await
 }

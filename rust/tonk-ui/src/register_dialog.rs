@@ -1419,6 +1419,44 @@ async fn read_invite_link(space: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The account's CHOSEN name, read once off the profile branch.
+///
+/// A query, not `/api/account/summary`: that route answers by reading
+/// this very attribute on this very branch, so fetching it was asking
+/// the worker for a second copy of what a query returns directly.
+///
+/// The chosen name, not the roster's — the roster falls back to a
+/// petname and so cannot tell a named account from a fresh one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_display_name() -> Option<String> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "name": {
+                "the": "xyz.tonk.account/display-name",
+                "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "name": { "?": { "name": "name" } }
+        }
+    });
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    let rows: serde_json::Value = response.json().await.ok()?;
+    rows.as_array()?
+        .iter()
+        .find_map(|row| row["fields"]["name"].as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
 /// Sleep, for a poll that has no fact to wait on.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn wait_ms(ms: i32) {
@@ -2055,12 +2093,10 @@ pub(crate) fn finish_ceremony() {
         // back to a petname and so cannot tell a named account from a
         // fresh one. Best-effort: an unreadable summary only means the
         // record row is not shown.
-        let named = crate::api::account_summary()
-            .await
-            .ok()
-            .and_then(|summary| summary.display_name)
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty());
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let named = account_display_name().await;
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let named: Option<String> = None;
         if !host.is_connected() {
             return;
         }

@@ -294,15 +294,6 @@ pub(crate) async fn account_display_name(state: &TonkState) -> Option<String> {
         .filter(|name| !name.trim().is_empty())
 }
 
-/// Return verified account facts authorized by this profile's active grant.
-#[wasm_compat]
-pub async fn summary(
-    State(state): State<AppState>,
-) -> Result<Json<AccountSummary>, TonkWorkerError> {
-    let state = state.read().await;
-    Ok(Json(account_summary(&state).await?))
-}
-
 /// Mint a revocation for ANOTHER device, under this device's own
 /// account grant.
 ///
@@ -610,9 +601,13 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_summary_for_an_unlinked_profile() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        // `account_summary` outlived its route: account deletion and the
+        // link path still read it, and an unlinked profile must refuse
+        // rather than answer with empty facts that read as an account
+        // with nothing in it.
+        let state = test_state_without_account().await;
         assert!(matches!(
-            summary(State(state)).await,
+            account_summary(&state).await,
             Err(TonkWorkerError::NotFound(_))
         ));
     }
