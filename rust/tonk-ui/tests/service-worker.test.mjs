@@ -847,6 +847,8 @@ describe("immutable generation install", () => {
       data: { type: "claim" },
       waitUntil: (promise) => pending.push(promise),
     });
+    assert.equal(await caches.match("/", { cacheName: mod.SHELL_CACHE }), undefined);
+    self.onmessage({ data: { type: "content-ready" }, waitUntil: promise => pending.push(promise) });
     const fillStarted = await Promise.race([
       shellRequested.then(() => true),
       new Promise((resolve) => {
@@ -1492,8 +1494,8 @@ describe("immutable generation install", () => {
     await assert.rejects(install, /storage full/);
     assert.deepEqual(
       await caches.keys(),
-      [],
-      "a failed incoming install must not leave a partial generation installable",
+      [`TONK_DOWNLOAD_${buildId}_${await sha256Hex(utf8(manifestText))}`],
+      "a failed incoming install retains only verified download inputs",
     );
   });
 
@@ -2252,4 +2254,70 @@ describe("retiring on a waiting successor", () => {
       "`retired` is used before it is declared — a TDZ error at runtime",
     );
   });
+});
+
+test("foreground guests and offline fill share downloads and resume verified partials after restart", async () => {
+  const buildId = "shared-downloads";
+  const bodies = { "/": "root", "/guest.wasm": "guest bytes", "/late.js": "late" };
+  const assets = Object.fromEntries(await Promise.all(Object.entries(bodies).map(async ([p, b]) => [p, await sha256Hex(utf8(b))])));
+  const manifestText = JSON.stringify({ version: 1, build: buildId, assets });
+  const counts = new Map();
+  let failLate = true;
+  const { caches } = withGlobals({ fetchImpl: async input => {
+    const path = new URL(input).pathname;
+    counts.set(path, (counts.get(path) ?? 0) + 1);
+    if (path === "/asset-manifest.json") return new Response(manifestText);
+    if (path === "/late.js" && failLate) throw new Error("interrupted download");
+    return new Response(bodies[path]);
+  } });
+  const options = { buildId, assetManifestHash: await sha256Hex(utf8(manifestText)), exports: ["fetchVerifiedRetainedAsset", "fetchVerifiedAssets", "fetchVerifiedAssetManifest", "DOWNLOAD_CACHE", "SHELL_CACHE"] };
+  let mod = await loadWith(options);
+  const [a, b, entries] = await Promise.all([
+    mod.fetchVerifiedRetainedAsset("/guest.wasm"),
+    mod.fetchVerifiedRetainedAsset("/guest.wasm"),
+    mod.fetchVerifiedAssetManifest(),
+    mod.fetchVerifiedAssets([["/guest.wasm", assets["/guest.wasm"]]]),
+  ]);
+  assert.equal(await a.text(), bodies["/guest.wasm"]);
+  assert.equal(await b.text(), bodies["/guest.wasm"]);
+  assert.equal(counts.get("/asset-manifest.json"), 1);
+  assert.equal(counts.get("/guest.wasm"), 1);
+  await assert.rejects(mod.fetchVerifiedAssets(entries), /interrupted download/);
+  // Successful loops may finish after another loop rejects.
+  await mod.fetchVerifiedRetainedAsset("/");
+  assert.equal(await caches.match("/", { cacheName: mod.SHELL_CACHE }), undefined);
+  failLate = false;
+  mod = await loadWith(options);
+  await mod.fetchVerifiedAssets(await mod.fetchVerifiedAssetManifest());
+  assert.equal(counts.get("/guest.wasm"), 1);
+  assert.equal(counts.get("/"), 1);
+  assert.equal(counts.get("/late.js"), 2);
+  const partial = await caches.open(mod.DOWNLOAD_CACHE);
+  await partial.put("https://tonk.test/guest.wasm", new Response("corrupt"));
+  assert.equal(await (await mod.fetchVerifiedRetainedAsset("/guest.wasm")).text(), bodies["/guest.wasm"]);
+  assert.equal(counts.get("/guest.wasm"), 2);
+ });
+
+test("failed manifest verification is shared and retryable", async () => {
+  const buildId = "manifest-retry";
+  const manifest = JSON.stringify({ version: 1, build: buildId, assets: { "/": await sha256Hex(utf8("root")) } });
+  let valid = false;
+  let requests = 0;
+  withGlobals({ fetchImpl: async () => { requests++; return new Response(valid ? manifest : "bad"); } });
+  const mod = await loadWith({ buildId, assetManifestHash: await sha256Hex(utf8(manifest)), exports: ["fetchVerifiedAssetManifest"] });
+  const results = await Promise.allSettled([mod.fetchVerifiedAssetManifest(), mod.fetchVerifiedAssetManifest()]);
+  assert.ok(results.every(result => result.status === "rejected"));
+  assert.equal(requests, 1);
+  valid = true;
+  await mod.fetchVerifiedAssetManifest();
+  await mod.fetchVerifiedAssetManifest();
+  assert.equal(requests, 2);
+ });
+
+test("optional download retention failure does not break verified foreground loading", async () => {
+  const body = "verified online bytes";
+  const { caches } = withGlobals({ fetchImpl: async () => new Response(body) });
+  caches.open = async () => { throw new Error("quota exceeded"); };
+  const mod = await loadWith({ exports: ["sharedVerifiedAsset"] });
+  assert.equal(await (await mod.sharedVerifiedAsset("/", await sha256Hex(utf8(body)))).text(), body);
 });

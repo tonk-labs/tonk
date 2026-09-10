@@ -859,6 +859,7 @@
 
                 const timer = setInterval(() => {
                     if (booted()) {
+                        navigator.serviceWorker.controller.postMessage({ type: "content-ready" });
                         clearInterval(timer);
                         try {
                             sessionStorage.removeItem(RETRIES);

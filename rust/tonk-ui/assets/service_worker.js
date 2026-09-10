@@ -344,7 +344,7 @@ function validateAssetManifest(manifest) {
     return entries;
 }
 
-async function fetchVerifiedAssetManifest() {
+async function loadVerifiedAssetManifest() {
     const { bytes } = await fetchVerified(
         ASSET_MANIFEST_URL,
         ASSET_MANIFEST_HASH,
@@ -356,7 +356,59 @@ async function fetchVerifiedAssetManifest() {
     } catch {
         throw new Error("asset manifest is not valid JSON");
     }
-    return validateAssetManifest(manifest);
+    const entries = validateAssetManifest(manifest);
+    assetManifestMap = new Map(entries);
+    return entries;
+}
+
+// The worker source pins both identities for its entire lifetime. Failed
+// verification is retryable; successful verification is shared by every caller.
+let assetManifestPromise;
+let assetManifestMap;
+function fetchVerifiedAssetManifest() {
+    if (!assetManifestPromise) {
+        assetManifestPromise = loadVerifiedAssetManifest().catch(error => {
+            assetManifestPromise = null;
+            throw error;
+        });
+    }
+    return assetManifestPromise;
+}
+
+const DOWNLOAD_CACHE = `TONK_DOWNLOAD_${BUILD_ID}_${ASSET_MANIFEST_HASH}`;
+const assetDownloads = new Map();
+
+// This cache is resumable verified input, never an adopted offline generation.
+// Reverify persisted responses after worker restart or storage corruption. Keep
+// the in-flight entry through Cache.put so foreground and fill cannot race.
+async function sharedVerifiedAsset(path, hash, cacheNames = [], onChunk = null) {
+    const key = `${path}:${hash}`;
+    let pending = assetDownloads.get(key);
+    if (!pending) {
+        pending = (async () => {
+            const cached = await verifiedGenerationResponse(
+                [DOWNLOAD_CACHE, ...cacheNames], assetCacheKey(path), hash,
+            );
+            const response = cached ?? (await fetchVerified(
+                new URL(path, self.location.origin).href, hash, `asset ${path}`, onChunk,
+            )).response;
+            try {
+                const cache = await caches.open(DOWNLOAD_CACHE);
+                await cache.put(assetCacheKey(path), response.clone());
+            } catch (error) {
+                // Optional retention must not prevent online use of bytes
+                // already verified. Publication still requires every put.
+                log(`Unable to retain verified download ${path}:`, error);
+            }
+            return response;
+        })();
+        assetDownloads.set(key, pending);
+    }
+    try {
+        return (await pending).clone();
+    } finally {
+        if (assetDownloads.get(key) === pending) assetDownloads.delete(key);
+    }
 }
 
 /// Recover one evicted member without mutating the retained generation. The
@@ -364,16 +416,12 @@ async function fetchVerifiedAssetManifest() {
 /// worker, and the resource must match its manifest digest. A newer deploy,
 /// an offline network, or a corrupt response therefore fails closed.
 async function fetchVerifiedRetainedAsset(path) {
-    const entries = await fetchVerifiedAssetManifest();
-    const expectedHash = new Map(entries).get(path);
+    await fetchVerifiedAssetManifest();
+    const expectedHash = assetManifestMap.get(path);
     if (!expectedHash) {
         throw new Error(`asset manifest has no retained path: ${path}`);
     }
-    return (await fetchVerified(
-        new URL(path, self.location.origin).href,
-        expectedHash,
-        `asset ${path}`,
-    )).response;
+    return sharedVerifiedAsset(path, expectedHash);
 }
 
 let installProgressReportedAt = 0;
@@ -480,40 +528,18 @@ async function fetchVerifiedAssets(entries, cacheNames = []) {
         while (next < entries.length) {
             const index = next++;
             const [path, hash] = entries[index];
-            const url = new URL(path, self.location.origin).href;
-            const cached = await verifiedGenerationResponse(
-                cacheNames,
-                assetCacheKey(path),
-                hash,
-            );
-            if (cached) {
-                results[index] = { path, response: cached };
-                completed += 1;
-                await reportInstallProgress("verify", completed, entries.length);
-                continue;
-            }
             let firstChunk = true;
-            const { response } = await fetchVerified(
-                url,
-                hash,
-                `asset ${path}`,
-                () => {
-                    const force = firstChunk;
-                    firstChunk = false;
-                    return reportInstallProgress(
-                        "verify",
-                        completed,
-                        entries.length,
-                        force,
-                    );
-                },
-            );
+            const response = await sharedVerifiedAsset(path, hash, cacheNames, () => {
+                const force = firstChunk;
+                firstChunk = false;
+                return reportInstallProgress("verify", completed, entries.length, force);
+            });
             results[index] = { path, response };
             completed += 1;
             await reportInstallProgress("verify", completed, entries.length);
         }
     };
-    const concurrency = Math.min(8, entries.length);
+    const concurrency = Math.min(2, entries.length);
     await Promise.all(Array.from({ length: concurrency }, fetchNext));
     return results;
 }
@@ -736,6 +762,7 @@ async function installGeneration() {
             caches.delete(marker.shellStage),
             caches.delete(marker.workerStage),
             caches.delete(RUNTIME_CACHE),
+            caches.delete(DOWNLOAD_CACHE),
         ]);
         await reportInstallProgress("adopted", assets.length, assets.length, true);
     } catch (error) {
@@ -750,6 +777,7 @@ async function installGeneration() {
 function lifecycleCacheBuild(name) {
     return parseFinalShellGeneration(name) ??
         parseFinalWorkerGeneration(name) ??
+        parsedBuild(name, /^TONK_DOWNLOAD_([0-9a-f]{16})_[0-9a-f]{64}$/) ??
         parseRuntimeGeneration(name) ??
         parseGenerationMarkerCache(name) ??
         parseShellStageGeneration(name) ??
@@ -799,9 +827,28 @@ function ensureOfflineGeneration() {
     return offlineGenerationResolves;
 }
 
+let offlineFillScheduled;
+let contentReady = false;
+let lastForegroundAssetAt = 0;
+let foregroundAssets = 0;
+const OFFLINE_QUIET_MS = 5_000;
+const OFFLINE_MAX_DELAY_MS = 60_000;
+
 function extendOfflineGeneration(event) {
     if (typeof event.waitUntil !== "function") return;
-    event.waitUntil(ensureOfflineGeneration());
+    if (!offlineFillScheduled) {
+        offlineFillScheduled = (async () => {
+            const started = Date.now();
+            // Leave startup's asset traffic alone. A deadline also permits
+            // preparation on pages with continuous foreground activity.
+            do {
+                await new Promise(resolve => setTimeout(resolve, OFFLINE_QUIET_MS));
+            } while ((!contentReady || foregroundAssets > 0 || Date.now() - lastForegroundAssetAt < OFFLINE_QUIET_MS) &&
+                Date.now() - started < OFFLINE_MAX_DELAY_MS);
+            await ensureOfflineGeneration();
+        })().finally(() => { offlineFillScheduled = null; });
+    }
+    event.waitUntil(offlineFillScheduled);
 }
 
 /// The wasm bytes this worker boots from: prefer the complete offline
@@ -1242,6 +1289,16 @@ function isShellCacheable(request, path) {
 // after proving that both the live manifest and member still belong to this
 // exact generation. Never backfill an old cache from the live deployment.
 async function serveAsset(event) {
+    foregroundAssets += 1;
+    try {
+        return await serveGenerationAsset(event);
+    } finally {
+        foregroundAssets -= 1;
+        lastForegroundAssetAt = Date.now();
+    }
+}
+
+async function serveGenerationAsset(event) {
     // Match ONLY the top-level resource graph installed under the request URL.
     // A guest-iframe subresource is rewritten to a branch-scoped `/api/...`
     // path by the worker, so it can never match here — no cross-serving a
@@ -1492,6 +1549,11 @@ self.onfetch = event => {
 // `controllerchange` on the page side, which the shell's
 // `serviceWorkerActivates()` Promise awaits.
 self.onmessage = event => {
+    if (event.data?.type === "content-ready") {
+        contentReady = true;
+        extendOfflineGeneration(event);
+        return;
+    }
     if (event.data && event.data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
         extendOfflineGeneration(event);
