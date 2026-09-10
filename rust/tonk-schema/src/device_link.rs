@@ -5,14 +5,14 @@
 // comments; suppress `missing_docs` like the sibling concept modules.
 #![allow(missing_docs)]
 
-use dialog_artifacts::{ArtifactSelector, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::{Concept, EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, DELEGATION_AUDIENCE, RemoteSite};
+use dialog_repository::{Branch, DELEGATION_AUDIENCE, Hydrate, RemoteSite};
 use futures_util::StreamExt as _;
 
 use crate::domain::device::{CreatedAt, Reason, Title};
@@ -89,6 +89,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -127,6 +130,7 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

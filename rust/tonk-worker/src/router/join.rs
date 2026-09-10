@@ -56,7 +56,9 @@
 
 use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
+use dialog_artifacts::{
+    ArtifactSelector, Attribute, Changes, Entity, Preload, Speculation, Statement as _, Value,
+};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
@@ -68,7 +70,7 @@ use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{
-    Branch, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
+    Branch, Hydrate, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
 };
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
@@ -140,6 +142,9 @@ pub(crate) trait BranchEnv:
     + Provider<Attest>
     + Provider<Prove<Ucan>>
     + Provider<Retain<Ucan>>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -157,6 +162,9 @@ impl<T> BranchEnv for T where
         + Provider<Attest>
         + Provider<Prove<Ucan>>
         + Provider<Retain<Ucan>>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

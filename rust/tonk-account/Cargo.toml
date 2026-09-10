@@ -15,6 +15,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 blake3 = { workspace = true }
+dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
