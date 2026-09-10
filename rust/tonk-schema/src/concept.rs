@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity};
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -33,7 +33,7 @@ use dialog_query::{
     Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
     Term, the, try_stream,
 };
-use dialog_repository::RemoteSite;
+use dialog_repository::{Hydrate, RemoteSite};
 use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Type};
@@ -161,6 +161,9 @@ pub trait QueryEnv:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -173,6 +176,9 @@ impl<T> QueryEnv for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
