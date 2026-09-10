@@ -112,7 +112,6 @@ mod tests {
                 "Chrome on macOS",
             ))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 
@@ -164,7 +163,6 @@ mod tests {
                 "Safari on iOS",
             ))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 
@@ -225,7 +223,6 @@ mod tests {
                 "Safari",
             ))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 

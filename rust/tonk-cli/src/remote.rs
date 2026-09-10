@@ -164,7 +164,6 @@ pub async fn add_with_revocation(
     }
     transaction
         .commit()
-        .publish()
         .perform(&site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
@@ -289,7 +288,6 @@ pub async fn set_upstream(
         .assert(tracked)
         .assert(tracking)
         .commit()
-        .publish()
         .perform(&site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;

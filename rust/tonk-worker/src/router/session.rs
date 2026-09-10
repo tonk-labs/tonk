@@ -620,26 +620,6 @@ struct MatchedRoute {
     params: tonk_router::Params,
 }
 
-/// Order routes for insertion into the router: the space's own routes first,
-/// then the seed's, each group by entity URI.
-///
-/// The router preserves insertion order among routes of equal specificity, so
-/// this ordering is what settles those ties. A route the space authored is not
-/// named by any `xyz.tonk.seed/route` fact and so wins over a seed route of
-/// the same shape; the URI tiebreak keeps the result deterministic within a
-/// group.
-///
-/// Split out of [`match_route`] so it is testable off-target — `match_route`
-/// itself needs a branch session and so is wasm-only.
-fn route_order(routes: &mut [tonk_schema::Route], seed: &std::collections::HashSet<String>) {
-    let from_seed = |route: &tonk_schema::Route| seed.contains(&route.this.to_string());
-    routes.sort_by(|a, b| {
-        from_seed(a)
-            .cmp(&from_seed(b))
-            .then_with(|| a.this.to_string().cmp(&b.this.to_string()))
-    });
-}
-
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
 /// `tonk:route` table.
 ///
@@ -647,9 +627,9 @@ fn route_order(routes: &mut [tonk_schema::Route], seed: &std::collections::HashS
 /// each route's `path` pattern compiles via [`Route::parse_pattern`], paired with
 /// its `(route entity, model)`. [`recognize`](tonk_router::Router::recognize)
 /// matches most-specific-first (static > param > catch-all) and returns the
-/// captured params. Routes are inserted in [`route_order`] so equal-specificity
-/// ties resolve deterministically. Returns `None` when nothing matches or a
-/// pattern fails to compile.
+/// captured params. Routes are inserted in stable entity-URI order so equal-
+/// specificity ties resolve deterministically. Returns `None` when nothing
+/// matches or a pattern fails to compile.
 ///
 /// [`recognize`]: tonk_router::Router::recognize
 async fn match_route(
@@ -674,29 +654,9 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Which routes the seed installed, read from the revision it committed
-    // at: a route it installed is a claim it asserted, so the changelog
-    // already names them and nothing has to be recorded twice. A route the
-    // space authored is simply absent.
-    let seeds: Vec<tonk_schema::SeedInstalled> = state
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::SeedInstalled> {
-            this: Term::var("this"),
-            prior: Term::var("prior"),
-            version: Term::var("version"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default();
-    let seed = match seeds.first() {
-        Some(seed) => super::repository::seed_routes(tonk, state, &seed.version.0.to_string())
-            .await
-            .unwrap_or_default(),
-        None => std::collections::HashSet::new(),
-    };
-    route_order(&mut routes, &seed);
+    // Stable order by entity URI so equal-specificity ties resolve
+    // deterministically (the table preserves insertion order among equal scores).
+    routes.sort_by_key(|route| route.this.to_string());
 
     let mut router = tonk_router::Router::new();
     for route in &routes {
@@ -723,195 +683,6 @@ async fn match_route(
             })
         }
         Err(_) => None,
-    }
-}
-
-/// End-to-end: the route table a branch actually holds, resolved through
-/// `match_route`. Complements `route_order_tests`, which pins the ordering
-/// alone — these prove the `SeedRoute` query and the router wiring agree
-/// with it.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod match_route_tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    /// Seed `body` onto a fresh repo's `main` and resolve `path` against it,
-    /// answering with the matched route's entity.
-    /// Install `seed` as a seed, optionally author `authored` on top, and
-    /// resolve `path` through the real router.
-    ///
-    /// The seed is recorded the way an install does — naming the revision
-    /// it committed at — because that record is how the router tells a
-    /// seed route from one the space wrote.
-    async fn matched_route(seed: &str, authored: Option<&str>, path: &str) -> Option<String> {
-        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "route-e2e").await;
-        let tonk = state.read().await;
-
-        let installed = crate::router::evaluate::evaluate_body_recording(
-            &tonk,
-            &key,
-            "main",
-            format!("{LIBRARY}\n{seed}"),
-            &|minted| {
-                crate::router::repository::seed_record_facts(
-                    "seed:probe",
-                    "/library/core.yaml",
-                    "seed:none",
-                    "seed:none",
-                    &crate::router::repository::encode_seed_version(minted),
-                )
-            },
-        )
-        .await
-        .expect("the seed installs");
-        let _ = installed;
-
-        if let Some(authored) = authored {
-            crate::router::evaluate::evaluate_body(&tonk, &key, "main", authored.to_owned(), true)
-                .await
-                .expect("the space's own route commits");
-        }
-
-        let session = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .expect("main acquires");
-        super::match_route(&tonk, &session, path)
-            .await
-            .map(|matched| matched.route.to_string())
-    }
-
-    /// The collision this whole mechanism exists for: the seed installs
-    /// `/` and the space authors its own `/`. The space's must win —
-    /// resolved through the real router, not just the sort.
-    ///
-    /// Which routes came from the seed is read from the revision it
-    /// committed at, so the two must be SEPARATE commits here: a route
-    /// authored in the same batch as the seed is indistinguishable from
-    /// one the seed installed, and rightly so.
-    #[dialog_common::test]
-    async fn it_prefers_a_space_route_over_a_seed_route() {
-        // `id:` entities sort with the seed's FIRST, so a plain entity-URI
-        // order would pick the seed route. Only its provenance demotes it.
-        let matched = matched_route(
-            r#"
-route!:
-  this: id:aaa/seed-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            Some(
-                r#"
-route!:
-  this: id:zzz/space-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            ),
-            "/",
-        )
-        .await;
-
-        assert_eq!(
-            matched.as_deref(),
-            Some("id:zzz/space-home"),
-            "the space's own route must win the tie against the seed's"
-        );
-    }
-
-    /// With nothing but seed routes the seed still resolves — demoting
-    /// them must not mean dropping them.
-    #[dialog_common::test]
-    async fn it_falls_back_to_a_seed_route() {
-        let matched = matched_route(
-            r#"
-route!:
-  this: id:aaa/seed-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            None,
-            "/",
-        )
-        .await;
-
-        assert_eq!(
-            matched.as_deref(),
-            Some("id:aaa/seed-home"),
-            "a seed route still resolves when the space authored none"
-        );
-    }
-}
-
-#[cfg(test)]
-mod route_order_tests {
-    use std::collections::HashSet;
-
-    use tonk_schema::Route;
-    use tonk_schema::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
-
-    /// A route row at `uri` matching `path`. The concept is irrelevant to
-    /// ordering, so every row shares one.
-    fn route(uri: &str, path: &str) -> Route {
-        let entity: dialog_artifacts::Entity = uri.parse().expect("route uri parses");
-        let concept: dialog_artifacts::Entity = "tonk:model".parse().expect("concept uri parses");
-        Route {
-            this: entity,
-            path: RouteTablePath(path.to_string()),
-            concept: RoutePathConcept(concept),
-        }
-    }
-
-    fn ordered(routes: &[Route]) -> Vec<String> {
-        routes.iter().map(|route| route.this.to_string()).collect()
-    }
-
-    /// The tie this exists to settle: a space's own route and a seed route
-    /// on the same path. The space's wins because it carries no layer, and it
-    /// wins regardless of how the URIs sort — which is what the old
-    /// entity-URI-only order got wrong.
-    #[test]
-    fn it_orders_a_space_route_before_a_seed_route() {
-        let mut routes = vec![route("id:aaa/seed", "/"), route("id:zzz/space", "/")];
-        let seed = HashSet::from(["id:aaa/seed".to_string()]);
-
-        super::route_order(&mut routes, &seed);
-
-        assert_eq!(
-            ordered(&routes),
-            vec!["id:zzz/space", "id:aaa/seed"],
-            "the space's own route must precede the seed's"
-        );
-    }
-
-    /// Within one group the order is by entity URI, so the table a router is
-    /// built from is the same on every device.
-    #[test]
-    fn it_breaks_ties_within_a_group_by_entity_uri() {
-        let mut routes = vec![route("id:zzz", "/"), route("id:aaa", "/")];
-
-        super::route_order(&mut routes, &HashSet::new());
-
-        assert_eq!(ordered(&routes), vec!["id:aaa", "id:zzz"]);
-    }
-
-    /// Two seed routes still order deterministically between themselves —
-    /// the `/` collision core.yaml and notebook.yaml both declare.
-    #[test]
-    fn it_orders_two_seed_routes_by_entity_uri() {
-        let mut routes = vec![route("id:zzz/notebook", "/"), route("id:aaa/core", "/")];
-        let seed = HashSet::from(["id:zzz/notebook".to_string(), "id:aaa/core".to_string()]);
-
-        super::route_order(&mut routes, &seed);
-
-        assert_eq!(ordered(&routes), vec!["id:aaa/core", "id:zzz/notebook"]);
     }
 }
 

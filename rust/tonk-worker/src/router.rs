@@ -240,6 +240,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/custody/provision", post(customer::provision_custody))
         .route("/api/custody/queue", post(customer::queue_custody))
         .route("/api/account/devices", get(account_devices::list))
+        .route("/api/account/summary", get(account_devices::summary))
         .route(
             "/api/account/devices/register",
             post(account_devices::register),
@@ -659,7 +660,6 @@ pub mod tests {
             directory: dialog_effects::storage::Directory::Profile,
         };
         TonkState {
-            seed_upgrades: Default::default(),
             profile,
             operator: session.operator,
             storage,

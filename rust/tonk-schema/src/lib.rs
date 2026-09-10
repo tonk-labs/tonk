@@ -65,8 +65,8 @@ pub use sync::*;
 
 pub mod account;
 pub use account::{
-    AccountActive, AccountDisplayName, AccountLinking, AccountRegistered, AccountSealedInbox,
-    AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
+    AccountActive, AccountDisplayName, AccountRegistered, AccountSealedInbox, AccountSuspended,
+    CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
 };
 
 pub mod custody;
@@ -111,9 +111,7 @@ pub mod space;
 pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path};
 
 pub mod site;
-pub use site::{
-    ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable, SeedInstalled, Site,
-};
+pub use site::{Route, Site};
 
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};

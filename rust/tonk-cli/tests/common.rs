@@ -199,7 +199,6 @@ impl AccountFixture {
                         recipient.this(),
                     ))
                     .commit()
-                    .publish()
                     .perform(&account_operator)
                     .await?;
             }

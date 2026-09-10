@@ -90,7 +90,6 @@ mod tests {
             .transaction()
             .assert(DeviceProfile::new(&subject, "profile-1"))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 
@@ -122,7 +121,6 @@ mod tests {
             .assert(DeviceProfile::new(&did!("test:profile-one"), "profile-1"))
             .assert(DeviceProfile::new(&did!("test:profile-two"), "profile-2"))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 
@@ -156,14 +154,12 @@ mod tests {
             .transaction()
             .assert(DeviceProfile::new(&subject, "profile-1"))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
         branch
             .transaction()
             .assert(DeviceProfile::new(&subject, "profile-renamed"))
             .commit()
-            .publish()
             .perform(&operator)
             .await?;
 

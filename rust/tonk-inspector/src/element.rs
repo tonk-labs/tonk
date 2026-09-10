@@ -288,14 +288,15 @@ impl DebugPanel {
             .flatten()
             .is_some_and(|details| details.has_attribute("open"));
         self.host.set_inner_html(html);
-        if expanded
-            && let Some(details) = self
+        if expanded {
+            if let Some(details) = self
                 .host
                 .query_selector(".inspector-debug__disclosure")
                 .ok()
                 .flatten()
-        {
-            details.set_attribute("open", "").ok();
+            {
+                details.set_attribute("open", "").ok();
+            }
         }
     }
 
@@ -763,12 +764,6 @@ pub(crate) fn reflect_string(value: &JsValue, key: &str) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-fn reflect_f64(value: &JsValue, key: &str) -> Option<f64> {
-    js_sys::Reflect::get(value, &JsValue::from_str(key))
-        .ok()
-        .and_then(|v| v.as_f64())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,4 +799,10 @@ mod tests {
         space.remove();
         profile.remove();
     }
+}
+
+fn reflect_f64(value: &JsValue, key: &str) -> Option<f64> {
+    js_sys::Reflect::get(value, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_f64())
 }

@@ -14,8 +14,6 @@ pub struct Pull<'a> {
     pub branch: BranchReference<'a>,
     /// Materialize the adopted revision locally after the pull.
     download: bool,
-    /// Restrict that materialization to the operational regions.
-    operational: bool,
 }
 
 impl<'a> Pull<'a> {
@@ -24,7 +22,6 @@ impl<'a> Pull<'a> {
         Self {
             branch,
             download: false,
-            operational: false,
         }
     }
 
@@ -35,22 +32,6 @@ impl<'a> Pull<'a> {
     /// remote bricks the next boot.
     pub fn download(mut self) -> Self {
         self.download = true;
-        self
-    }
-
-    /// Narrow the download to the regions a read can reach: the
-    /// entity/attribute/value indexes and the blob index.
-    ///
-    /// That is every fact the branch holds — every delegation included —
-    /// so an authorization walk still resolves entirely locally. What it
-    /// leaves by reference is history and coverage, which no read path
-    /// can reach and which grow with every edit ever made rather than
-    /// with the live fact count. A history record that does turn out to
-    /// be needed hydrates from the upstream on demand.
-    ///
-    /// No effect without [`download`](Self::download).
-    pub fn operational(mut self) -> Self {
-        self.operational = true;
         self
     }
 
@@ -102,13 +83,7 @@ impl<'a> Pull<'a> {
         }
 
         if self.download {
-            let download = cached.handle().download();
-            let download = if self.operational {
-                download.operational()
-            } else {
-                download
-            };
-            download.perform(env).await?;
+            cached.handle().download().perform(env).await?;
         }
 
         Ok(revision)

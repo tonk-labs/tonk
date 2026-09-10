@@ -88,28 +88,22 @@ fn classify_action(this: &HtmlElement) {
     });
 }
 
-/// The hosted case differs from the local one only in the WORDS: the
-/// same `space/remove` command the form already binds carries it, and
-/// the worker releases the hosted copy when the account provides the
-/// space.
-///
-/// This used to navigate to `/settings#delete-account` — the ACCOUNT
-/// deletion screen, with the subject as a query parameter. Deleting one
-/// space is not deleting an account, and the confirmation belongs on the
-/// row that raised it, like leaving and local deletion already do.
+fn open_hosted_deletion(this: &HtmlElement) {
+    let subject = value(this, "data-space-subject");
+    if subject.is_empty() {
+        return;
+    }
+    let Ok(params) = web_sys::UrlSearchParams::new() else {
+        return;
+    };
+    params.append("delete-space", &subject);
+    tonk_host::navigate_to(&format!("/settings?{}#delete-account", params.to_string()));
+}
 
 fn prepare_local_dialog(this: &HtmlElement, action: &str) {
     let name = value(this, "data-space-name");
     let name = if name.is_empty() { "this space" } else { &name };
-    let (heading, copy, submit) = if action == ACTION_DELETE_HOSTED {
-        (
-            "confirm space deletion",
-            format!(
-                "Permanently delete {name}? This account hosts it, so its copy on Tonk services is released along with the local data. Other members lose access. Your account and other spaces are untouched."
-            ),
-            "delete space",
-        )
-    } else if action == ACTION_DELETE_LOCAL {
+    let (heading, copy, submit) = if action == ACTION_DELETE_LOCAL {
         (
             "confirm space deletion",
             format!(
@@ -168,10 +162,11 @@ impl CustomElement for UiSpaceRemove {
                 return;
             }
             let action = value(&host, "data-space-action");
-            if action != ACTION_DELETE_HOSTED
-                && action != ACTION_DELETE_LOCAL
-                && action != ACTION_LEAVE
-            {
+            if action == ACTION_DELETE_HOSTED {
+                open_hosted_deletion(&host);
+                return;
+            }
+            if action != ACTION_DELETE_LOCAL && action != ACTION_LEAVE {
                 return;
             }
             prepare_local_dialog(&host, &action);

@@ -226,7 +226,6 @@ pub async fn add(
         .assert(ContentType::of(entity.clone()).is(content_type.clone()))
         .assert(Name::of(entity.clone()).is(name.unwrap_or_else(|| entity.to_string())));
     tx.commit()
-        .publish()
         .perform(&site.operator)
         .await
         .map_err(|e| BlobError::Site(format!("assert metadata: {e}")))?;

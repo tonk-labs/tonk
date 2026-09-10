@@ -9,7 +9,7 @@
 //! scaffolding's `space`-attribute default, proving that seam accepts either
 //! shape.
 //!
-//! Reads `xyz.tonk.space/{subject,name,presence}` through ONE inline
+//! Reads `xyz.tonk.space/{subject,name,status}` through ONE inline
 //! directory-mode predicate (`this` unbound, so every account-level directory
 //! entry returns as a row) — see [`crate::logic::space_list_query_body`]. The
 //! mirrored `name` is available even when this device has not replicated the
@@ -19,9 +19,8 @@
 //! (this element's `current` attribute) is shown like the wireframe shows
 //! it — marked `current`, always making the cut — and picking it merely
 //! closes the stack (see `element.rs`): where you are is a fact, not a
-//! navigation. A row stamps `data-presence` so existing CSS can dim a
-//! still-seeding space; an absent presence means the space is not
-//! replicated here.
+//! navigation. A row stamps `data-status` from the directory status so
+//! existing CSS can dim a still-seeding space.
 //!
 //! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
 //! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
@@ -57,7 +56,7 @@ const UNTITLED: &str = "Untitled";
 struct Row {
     subject: String,
     name: Option<String>,
-    presence: String,
+    status: String,
 }
 
 #[derive(Default)]
@@ -173,11 +172,9 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
     }
 }
 
-/// Read `(row.this, Row { subject, name?, presence? })` off a raw subscription
+/// Read `(row.this, Row { subject, name?, status })` off a raw subscription
 /// row. `None` for a missing/empty row, a missing entity id, or a missing
-/// required field. `name` is optional so pre-mirror entries remain reachable,
-/// and `presence` is optional because its absence is the not-replicated-here
-/// case rather than a malformed row.
+/// required field. `name` is optional so pre-mirror entries remain reachable.
 fn read_row(row: &JsValue) -> Option<(String, Row)> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -190,20 +187,15 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
     let name = Reflect::get(&fields, &"name".into())
         .ok()
         .and_then(|v| v.as_string());
-    // Optional in the query, and its ABSENCE is meaningful: a space the
-    // account knows about but this device has not replicated has no
-    // presence fact. Dropping such a row would hide exactly the remote
-    // spaces the switcher exists to offer.
-    let presence = Reflect::get(&fields, &"presence".into())
+    let status = Reflect::get(&fields, &"status".into())
         .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
+        .and_then(|v| v.as_string())?;
     Some((
         this_id,
         Row {
             subject,
             name,
-            presence,
+            status,
         },
     ))
 }
@@ -238,7 +230,7 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
         // The space is a user word — it passes through untouched, so this row
         // is deliberately NOT `chrome`.
         let _ = item.set_attribute("data-space", &row.subject);
-        let _ = item.set_attribute("data-presence", &row.presence);
+        let _ = item.set_attribute("data-status", &row.status);
         if row.subject == current {
             let _ = item.set_attribute("current", "");
         }

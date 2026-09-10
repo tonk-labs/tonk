@@ -44,11 +44,7 @@ async fn founded_by(
             display_name.to_owned(),
         ));
     }
-    transaction
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await?;
+    transaction.commit().perform(&site.operator).await?;
     Ok(site)
 }
 
@@ -236,7 +232,6 @@ mod when_the_service_refuses_a_sync {
             .assert(membership.clone())
             .assert(MemberRole::member(membership.this().clone()))
             .commit()
-            .publish()
             .perform(&site.operator)
             .await?;
         drop(session);

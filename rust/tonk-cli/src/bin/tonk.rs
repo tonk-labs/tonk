@@ -630,9 +630,17 @@ enum AccountSpaceCommand {
         /// Full repository subject DID.
         #[arg(value_name = "SUBJECT")]
         subject: String,
-        /// Delete without the typed confirmation.
+        /// Browser account page that runs the deletion ceremony.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = account::DEFAULT_ACCOUNT_PAGE,
+            hide = true
+        )]
+        account_url: String,
+        /// Print the review URL without asking the OS to open it.
         #[arg(long)]
-        yes: bool,
+        no_open: bool,
     },
 }
 
@@ -2165,48 +2173,22 @@ async fn account_op(
                     Err(error) => print_failure(error),
                 }
             }
-            Some(AccountSpaceCommand::Delete { subject, yes }) => {
-                let subject_did = match subject.parse::<dialog_varsig::Did>() {
-                    Ok(did) => did,
-                    Err(error) => {
-                        return print_error(format!(
-                            "'{subject}' is not a valid space subject: {error}"
-                        ));
-                    }
-                };
-                // The typed confirmation the web UI asks for, asked
-                // here. Deleting a space needs no passkey — the
-                // invocation is signed with this device's own authority
-                // — so there is nothing a browser can do that a
-                // terminal cannot, and handing the person a URL was
-                // never the ceremony, only a detour around one.
-                if !yes {
-                    if !std::io::stdin().is_terminal() {
-                        return print_error(format!(
-                            "refusing to delete '{subject}': stdin is not a terminal, so the \
-                             confirmation cannot be answered. Pass --yes to delete without \
-                             confirming."
-                        ));
-                    }
-                    println!();
+            Some(AccountSpaceCommand::Delete {
+                subject,
+                account_url,
+                no_open,
+            }) => match account::open_space_deletion(&profile, &account_url, &subject, !no_open)
+                .await
+            {
+                Ok(url) => {
+                    println!("Review permanent deletion of {subject} in your browser:\n{url}");
                     println!(
-                        "This permanently deletes the space from Tonk services. Other members lose access."
+                        "No data has been deleted yet. Your account and every other space will remain; the browser requires an explicit typed confirmation."
                     );
-                    println!("Your account and every other space remain.");
-                    println!();
-                    if !confirm_by_name(&subject) {
-                        println!("Aborted; nothing was deleted.");
-                        return ExitCode::IoError;
-                    }
+                    ExitCode::Success
                 }
-                match tonk_cli::customer::deprovision(&profile, &subject_did).await {
-                    Ok(()) => {
-                        println!("Deleted {subject} from Tonk services.");
-                        ExitCode::Success
-                    }
-                    Err(error) => print_failure(error),
-                }
-            }
+                Err(error) => print_failure(error),
+            },
         },
         AccountCommand::Devices { json } => match account::devices_in(&profile, &store).await {
             Ok(rows) => {
@@ -5438,18 +5420,18 @@ mod account_spaces_parser_tests {
         assert_eq!(name.as_deref(), Some("garden"));
     }
 
-    /// Deleting a space is a terminal operation, not a browser errand.
-    /// The invocation is signed with this device's own authority — no
-    /// passkey — so the confirmation is typed here, and `--yes` is the
-    /// only way past it.
     #[test]
-    fn account_space_delete_confirms_in_the_terminal() {
+    fn account_space_delete_requires_an_exact_subject_and_browser_review() {
         let did = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
-        let cli = Cli::try_parse_from(["tonk", "account", "space", "delete", did]).unwrap();
+        let cli =
+            Cli::try_parse_from(["tonk", "account", "space", "delete", did, "--no-open"]).unwrap();
         let Some(Command::Account {
             command:
                 Some(AccountCommand::Space {
-                    command: Some(AccountSpaceCommand::Delete { subject, yes }),
+                    command:
+                        Some(AccountSpaceCommand::Delete {
+                            subject, no_open, ..
+                        }),
                     ..
                 }),
             ..
@@ -5458,22 +5440,7 @@ mod account_spaces_parser_tests {
             panic!("expected account space delete");
         };
         assert_eq!(subject, did);
-        assert!(!yes, "the typed confirmation stands unless --yes is given");
-
-        let cli =
-            Cli::try_parse_from(["tonk", "account", "space", "delete", did, "--yes"]).unwrap();
-        let Some(Command::Account {
-            command:
-                Some(AccountCommand::Space {
-                    command: Some(AccountSpaceCommand::Delete { yes, .. }),
-                    ..
-                }),
-            ..
-        }) = cli.command
-        else {
-            panic!("expected account space delete");
-        };
-        assert!(yes);
+        assert!(no_open);
     }
 
     #[test]
