@@ -1014,10 +1014,20 @@ mod tests {
                 wait_for_service_worker(driver).await?;
                 return Ok(());
             }
-            if let Ok(row) = driver.find(By::Css("#tonk-register-passkey-row .v")).await
-                && !row.text().await?.trim().is_empty()
-            {
-                let passkey = row.text().await?;
+            // One script, one read — see `run_cluster_login`: the row can
+            // go with the dialog between a `find` and a `text`, and the
+            // reads below must assert on the SAME text this poll saw.
+            let passkey = driver
+                .execute(
+                    "const v = document.querySelector('#tonk-register-passkey-row .v');
+                     return v ? v.textContent.trim() : '';",
+                    Vec::new(),
+                )
+                .await
+                .ok()
+                .and_then(|value| value.json().as_str().map(str::to_owned))
+                .unwrap_or_default();
+            if !passkey.is_empty() {
                 anyhow::ensure!(
                     passkey.contains(" on "),
                     "the passkey row names the device, got {passkey:?}",
@@ -1070,9 +1080,24 @@ mod tests {
                 wait_for_service_worker(driver).await?;
                 return Ok(());
             }
-            if let Ok(row) = driver.find(By::Css("#tonk-register-passkey-row .v")).await
-                && !row.text().await?.trim().is_empty()
-            {
+            // Read the row IN ONE SCRIPT rather than find-then-text.
+            // The ceremony takes the dialog down as it finishes, so a
+            // handle found on one poll could be gone before `text()`
+            // reached it, and `?` on a stale handle failed the whole
+            // test instead of simply polling again. Nothing here is
+            // worth failing on: the row is either readable now or it is
+            // not, and the deadline below is what gives up.
+            let settled = driver
+                .execute(
+                    "const v = document.querySelector('#tonk-register-passkey-row .v');
+                     return v ? v.textContent.trim() : '';",
+                    Vec::new(),
+                )
+                .await
+                .ok()
+                .and_then(|value| value.json().as_str().map(str::to_owned))
+                .is_some_and(|text| !text.is_empty());
+            if settled {
                 dismiss_register_dialog(driver).await?;
                 return Ok(());
             }
