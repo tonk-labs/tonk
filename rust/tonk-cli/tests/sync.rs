@@ -350,6 +350,7 @@ mod when_claiming_an_invite {
             .transaction()
             .assert(tonk_schema::MemberRole::founder(membership.this().clone()))
             .commit()
+            .publish()
             .perform(&joined.operator)
             .await?;
         drop(session);

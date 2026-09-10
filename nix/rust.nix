@@ -105,7 +105,7 @@ let
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli";
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";

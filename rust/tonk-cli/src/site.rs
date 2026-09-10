@@ -548,6 +548,7 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
         .assert(membership.clone())
         .assert(MemberRole::founder(membership.this().clone()))
         .commit()
+        .publish()
         .perform(&site.operator)
         .await
         .context("failed to record founder membership")?;
@@ -1346,6 +1347,7 @@ pub async fn transplant_at_with(
         })
         .assert(Transplant::new(&origin, head, tree))
         .commit()
+        .publish()
         .perform(&site.operator)
         .await
         .context("failed to record the transplant")?;

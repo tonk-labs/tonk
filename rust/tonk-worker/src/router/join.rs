@@ -746,6 +746,7 @@ async fn perform_join(
             .transaction()
             .assert(changes)
             .commit()
+            .publish()
             .perform(&tonk.operator)
             .await
             .map_err(|error| {
@@ -3244,6 +3245,7 @@ pub(crate) mod tests {
                     name: tonk_schema::domain::repo::Name("Untitled".to_string()),
                 })
                 .commit()
+                .publish()
                 .perform(&tonk.operator)
                 .await
                 .expect("the repository name commits");

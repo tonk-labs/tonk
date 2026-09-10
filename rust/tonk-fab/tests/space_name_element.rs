@@ -502,16 +502,31 @@ fn mount_switcher() -> web_sys::HtmlElement {
 }
 
 /// A single account-directory conclusion row, shaped like a real subscription
-/// result: `{ this, fields: { subject, name?, status } }`.
-fn directory_row(this_id: &str, subject: &str, name: Option<&str>, status: &str) -> JsValue {
+/// result: `{ this, fields: { subject, name?, presence } }`.
+fn directory_row(this_id: &str, subject: &str, name: Option<&str>, presence: &str) -> JsValue {
     let fields = js_sys::Object::new();
     js_sys::Reflect::set(&fields, &"subject".into(), &JsValue::from_str(subject))
         .expect("set subject");
     if let Some(name) = name {
         js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
     }
-    js_sys::Reflect::set(&fields, &"status".into(), &JsValue::from_str(status))
-        .expect("set status");
+    js_sys::Reflect::set(&fields, &"presence".into(), &JsValue::from_str(presence))
+        .expect("set presence");
+    let row = js_sys::Object::new();
+    js_sys::Reflect::set(&row, &"this".into(), &JsValue::from_str(this_id)).expect("set row this");
+    js_sys::Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
+    row.into()
+}
+
+/// An account-directory row with NO presence fact — the shape a space the
+/// account knows about but this device has not replicated arrives in.
+fn directory_row_without_presence(this_id: &str, subject: &str, name: Option<&str>) -> JsValue {
+    let fields = js_sys::Object::new();
+    js_sys::Reflect::set(&fields, &"subject".into(), &JsValue::from_str(subject))
+        .expect("set subject");
+    if let Some(name) = name {
+        js_sys::Reflect::set(&fields, &"name".into(), &JsValue::from_str(name)).expect("set name");
+    }
     let row = js_sys::Object::new();
     js_sys::Reflect::set(&row, &"this".into(), &JsValue::from_str(this_id)).expect("set row this");
     js_sys::Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
@@ -521,8 +536,8 @@ fn directory_row(this_id: &str, subject: &str, name: Option<&str>, status: &str)
 /// A `reset` snapshot payload: a bare array of account-directory rows.
 fn switcher_reset_payload(rows: &[(&str, &str, Option<&str>, &str)]) -> JsValue {
     let arr = js_sys::Array::new();
-    for (id, subject, name, status) in rows {
-        arr.push(&directory_row(id, subject, *name, status));
+    for (id, subject, name, presence) in rows {
+        arr.push(&directory_row(id, subject, *name, presence));
     }
     arr.into()
 }
@@ -534,8 +549,8 @@ fn switcher_update_payload(
     retracted: &[&str],
 ) -> JsValue {
     let asserted_arr = js_sys::Array::new();
-    for (id, subject, name, status) in asserted {
-        asserted_arr.push(&directory_row(id, subject, *name, status));
+    for (id, subject, name, presence) in asserted {
+        asserted_arr.push(&directory_row(id, subject, *name, presence));
     }
     let retracted_arr = js_sys::Array::new();
     for id in retracted {
@@ -651,9 +666,9 @@ async fn it_renders_every_other_account_directory_space() {
         .expect("query")
         .expect("surviving row rendered");
     assert_eq!(
-        row.get_attribute("data-status").as_deref(),
+        row.get_attribute("data-presence").as_deref(),
         Some("tonk:active"),
-        "row must stamp data-status from the directory status"
+        "row must stamp data-presence from the directory presence"
     );
     assert_eq!(
         row.text_content().as_deref(),
@@ -947,5 +962,36 @@ async fn it_carries_the_data_rename_marker_for_element_rs_delegation() {
     assert_eq!(
         editable.get_attribute("data-rename").as_deref(),
         Some("tonk:profile")
+    );
+}
+
+#[dialog_common::test]
+async fn it_renders_a_space_this_device_has_not_replicated() {
+    let el = mount_switcher();
+
+    let rows = js_sys::Array::new();
+    rows.push(&directory_row_without_presence(
+        OTHER_SPACE,
+        OTHER_SPACE,
+        Some("Other"),
+    ));
+    deliver_switcher(&el, "reset", &rows.into());
+
+    assert_eq!(
+        rendered_row_subjects(&el),
+        vec![OTHER_SPACE.to_string()],
+        "presence is optional in the query and its absence IS the remote case, so a space with no presence fact must still offer a row"
+    );
+
+    let row = el
+        .parent_element()
+        .expect("switcher menu")
+        .query_selector(&format!("tonk-mi[data-space=\"{OTHER_SPACE}\"]"))
+        .expect("query")
+        .expect("the unreplicated space renders");
+    assert_eq!(
+        row.get_attribute("data-presence").as_deref(),
+        Some(""),
+        "an unreplicated space carries an empty presence, which is what dims it"
     );
 }

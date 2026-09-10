@@ -745,15 +745,15 @@ view!:
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
 # branch (the synced branch, so the roster converges across the space).
-# `member` is the member profile's DID entity; `role` is `tonk:founder`
+# `member` is the member account's DID entity; `role` is `tonk:founder`
 # for the creator or `tonk:member` for invite claimers. Declaring both
 # attributes makes an instance resolve only once its role is stamped.
 concept!: &member
   this: tonk:member
-  description: A member of a space — a profile on the roster.
+  description: A member of a space — an account on the roster.
   with:
     member:
-      description: The member profile's DID (the `member` of the Membership)
+      description: The member account's DID (the `member` of the Membership)
       the: xyz.tonk.membership/member
       cardinality: one
       as: entity
@@ -1486,31 +1486,12 @@ concept!: &db/session:
       as: entity
       cardinality: many
 
-concept!: &db/origin:
-  this: concept:origin
-  description: |
-      Entity representing unique identifier for the active repository on this device.
-
-      It can be used to assert/query device specific information.
-  with:
-    subject:
-      description: |
-          The repository subject (as did:key) representing it's unique identifier
-      the: dialog.replica/subject
-      as: entity
-    profile:
-      description: |
-          Profile entity (as did:key) representing persistent identity on this device
-      the: dialog.replica/profile
-      as: entity
-
 concept!: &db/branch:
   this: concept:branch
   description: |
-      This represents a branch on some origin.
-       Note that individual replicas can create same named branches and they
-       likely going to be an different revisions, which is why branch is unique
-       per origin as opposed to per repository.
+      A branch on some replica (see `tonk:replica`). Individual replicas can
+      create same-named branches that sit at different revisions, which is
+      why a branch is unique per replica rather than per repository.
   with:
     name:
       description: The branch name
@@ -1696,6 +1677,88 @@ concept!: &route
       the: xyz.tonk.route/concept
       cardinality: one
       as: entity
+
+# A seed that EXISTS and where its bytes came from — global, durable,
+# and silent about whether anything installed it. The entity is the
+# content hash of the bytes, so two devices fetching the same library
+# converge on one entity without coordinating.
+#
+# `seed/installed` below adds the install-specific fields on this same
+# entity. Keeping them apart means a fetched-but-uninstalled seed can
+# never look half-installed, and `version` never has an absent case a
+# reader has to interpret.
+concept!: &seed/available
+  this: tonk:seed/available
+  description: A seed that exists, and where its bytes came from.
+  with:
+    source:
+      description: >
+        Where these bytes were fetched from. The entity is the content
+        hash alone, so the source rides alongside because a custom seed
+        is a different URL at the same shape.
+      the: xyz.tonk.seed/source
+      cardinality: one
+      as: text
+    replaces:
+      description: >
+        The installed seed this one would supersede — the backlink that
+        makes an available seed answerable on its own ("this is an
+        update to what you are running") rather than only by joining it
+        against the space's install record.
+      the: xyz.tonk.seed/replaces
+      cardinality: one
+      as: entity
+
+# The seed a space is RUNNING — the install-specific half, asserted on
+# the same entity as `seed/available`.
+concept!: &seed/installed
+  this: tonk:seed/installed
+  description: The seed a space is running — what an upgrade withdraws.
+  with:
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
+    version:
+      description: >
+        The version of the commit that installed this seed. A version,
+        not a revision: a revision includes the tree its commit produces,
+        so a fact inside a commit can never name it, while a version is
+        knowable before the batch is written — which is what lets this
+        record ride the same commit as the claims it describes.
+
+        This is the whole upgrade mechanism: nothing tags individual
+        definitions, so an upgrade reads THIS commit's history, inverts
+        its assertions into retractions, and applies them alongside the
+        new library in one atomic commit.
+      the: xyz.tonk.seed/version
+      cardinality: one
+      as: text
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
+    version:
+      description: >
+        The version of the commit that installed this seed. A version,
+        not a revision: a revision includes the tree its commit produces,
+        so a fact inside a commit can never name it, while a version is
+        knowable before the batch is written — which is what lets this
+        record ride the same commit as the claims it describes.
+
+        It is also the record of WHAT the seed installed, since a
+        commit's history lists every claim it wrote.
+      the: xyz.tonk.seed/version
+      cardinality: one
+      as: text
 
 
 

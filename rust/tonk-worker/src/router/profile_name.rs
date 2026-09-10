@@ -10,6 +10,9 @@ use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
 
+// Only `project_member_name` needs it now, and that is wasm-only: nothing
+// on the native target writes a name any more.
+#[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::{DefaultOperator, TonkState};
 use dialog_operator::Profile;
@@ -28,16 +31,23 @@ const CONTENT_BRANCH: &str = "main";
 
 /// The member's effective display name: stored override, else the
 /// deterministic default derived from the profile DID.
+///
+/// The petname here is for places that must put SOME name on a person for
+/// other people to read — a membership row, a roster entry projected into
+/// a space. Anything describing this profile to its own UI wants
+/// [`stored_display_name`] instead, so an unnamed profile reads as
+/// unnamed rather than as a generated word.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    resolve_display_name_from(&tonk.profile, &tonk.operator).await
+    stored_display_name_from(&tonk.profile, &tonk.operator)
+        .await
+        .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
-/// Resolve the effective display name for an explicit profile without
-/// booting it as the active worker state.
-pub(crate) async fn resolve_display_name_from(
+/// The stored name for an explicit profile, or `None` when none is set.
+pub(crate) async fn stored_display_name_from(
     profile: &Profile,
     operator: &DefaultOperator,
-) -> String {
+) -> Option<String> {
     let profile_entity = profile.did().this();
 
     let branch = match Repository::from(profile)
@@ -49,7 +59,7 @@ pub(crate) async fn resolve_display_name_from(
         Ok(branch) => branch,
         Err(e) => {
             log!("resolve_display_name: meta acquire failed: {e}");
-            return petname(&profile.did());
+            return None;
         }
     };
 
@@ -67,65 +77,7 @@ pub(crate) async fn resolve_display_name_from(
     rows.into_iter()
         .next()
         .map(|pn| pn.name.0)
-        .unwrap_or_else(|| petname(&profile.did()))
-}
-
-/// Ensure a durable `ProfileName` exists on the profile meta branch.
-///
-/// [`resolve_display_name`] falls back to the deterministic `petname` when
-/// no override is stored, but that fallback is computed, never persisted.
-/// The FAB chrome renders the member name through a sealed profile-branch
-/// `<tonk-display model="tonk:profile/name">`, which can only read the
-/// branch DB — it has no path to the petname fallback, so the name slot is
-/// blank until a rename writes a row. Stamping the petname once at bootstrap
-/// fills that slot for a never-renamed member.
-///
-/// Idempotent and rename-safe: skips the write whenever any `ProfileName`
-/// row already exists, so it never clobbers a user-chosen override (and a
-/// later rename overwrites the petname, `cardinality: one`).
-pub(crate) async fn ensure_display_name(tonk: &TonkState) -> Result<(), RepositoryError> {
-    let profile_entity = tonk.profile.did().this();
-
-    let session = tonk
-        .reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("ensure_display_name: meta acquire failed: {e}"))
-        })?;
-
-    let existing: Vec<ProfileName> = session
-        .handle()
-        .query()
-        .select(Query::<ProfileName> {
-            this: Term::from(profile_entity.clone()),
-            name: Term::var("name"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default();
-
-    if !existing.is_empty() {
-        return Ok(());
-    }
-
-    let name = petname(&tonk.profile.did());
-    tonk.reactor
-        .profile_repository()
-        .branch(PROFILE_BRANCH)
-        .transaction()
-        .assert(ProfileName::new(profile_entity, name))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("ensure_display_name: stamp petname failed: {e}"))
-        })?;
-
-    Ok(())
+        .filter(|name| !name.trim().is_empty())
 }
 
 /// The routing keys of every real space the profile belongs to.
@@ -296,6 +248,7 @@ mod tests {
             .expect("signing session opens");
         let reactor = crate::Reactor::new(profile.clone());
         TonkState {
+            seed_upgrades: Default::default(),
             profile,
             operator: session.operator,
             storage,
@@ -325,33 +278,6 @@ mod tests {
         let tonk = isolated_state("profile-name-test-default").await;
         let expected = petname(&tonk.profile.did());
         assert_eq!(resolve_display_name(&tonk).await, expected);
-    }
-
-    #[dialog_common::test]
-    async fn ensure_stamps_the_petname_when_absent() {
-        let tonk = isolated_state("profile-name-test-ensure-stamp").await;
-        let expected = petname(&tonk.profile.did());
-        // Nothing stored yet → the FAB read would be blank.
-        ensure_display_name(&tonk).await.unwrap();
-        // Now a durable row exists, so the branch read resolves the petname.
-        assert_eq!(resolve_display_name(&tonk).await, expected);
-    }
-
-    #[dialog_common::test]
-    async fn ensure_does_not_clobber_an_existing_override() {
-        let tonk = isolated_state("profile-name-test-ensure-keep").await;
-        let profile_entity = tonk.profile.did().this();
-        tonk.reactor
-            .profile_repository()
-            .branch(PROFILE_BRANCH)
-            .transaction()
-            .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        ensure_display_name(&tonk).await.unwrap();
-        assert_eq!(resolve_display_name(&tonk).await, "brave-lynx");
     }
 
     #[dialog_common::test]

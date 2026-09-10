@@ -221,6 +221,7 @@ mod tests {
                 message.this(),
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -270,6 +271,7 @@ mod tests {
             .assert(SecretMessage::new(&mine, vec![2]))
             .assert(SecretMessage::new(&theirs, vec![3]))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -308,6 +310,7 @@ mod tests {
             .assert(to_me.clone())
             .assert(to_admin.clone())
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
