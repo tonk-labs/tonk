@@ -810,7 +810,13 @@ fn lift_premise(
         )?;
         terms.insert("this".into(), term);
     } else {
-        terms.insert("this".into(), Term::<dialog_query::Any>::unique());
+        // Blank, not a fresh named variable, for the reason the loop
+        // below spells out: a premise's entity the author did not write
+        // is a wildcard, and `Negation::schema` marks every non-blank
+        // term REQUIRED. Minting `__N` here made an omitted `this:` in
+        // an `unless:` an unsatisfiable requirement named after a
+        // variable that appears nowhere in the source.
+        terms.insert("this".into(), Term::<dialog_query::Any>::blank());
     }
 
     // Per-field bindings declared by the user. A field the user
@@ -1280,6 +1286,7 @@ mod tests {
             txn = txn.assert(the!("db.name/referent").of(id_entity).is(concept_entity));
             txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
             txn.commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("concept assertion commits");
@@ -1309,6 +1316,7 @@ mod tests {
                 .transaction()
                 .assert(rule)
                 .commit()
+                .publish()
                 .perform(&self.operator)
                 .await
                 .expect("deductive rule commits");
@@ -2678,5 +2686,93 @@ rule!:
             ),
             "expected UnknownNameReference(nonexistent), got {err:?}"
         );
+    }
+
+    /// A premise that omits `this:` gets a BLANK entity, not a fresh
+    /// named variable.
+    ///
+    /// The distinction only bites inside `unless:`. A negation marks
+    /// every non-blank term of its premise REQUIRED — it cannot bind
+    /// anything itself — so a minted `__N` entity became a
+    /// required-but-unbound binding and the rule failed to compile,
+    /// naming a variable that appears nowhere in the author's source.
+    /// A blank is a wildcard and is skipped.
+    #[dialog_common::test]
+    async fn it_blanks_an_omitted_premise_entity_so_a_negation_compiles() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("flag", one_entity_field("xyz.test.flag", "owner"))
+            .await;
+        fixture
+            .declare("marked", one_entity_field("xyz.test.marked", "owner"))
+            .await;
+
+        // The `unless:` premise names only `owner`, leaving its own
+        // entity unwritten — the shape that used to fail.
+        let doc = r#"rule!:
+  description: An owner with no mark is flagged
+  assert: flag
+  when:
+    - assert: marked
+      where:
+        this: ?this
+        owner: ?owner
+  unless:
+    - assert: marked
+      where:
+        owner: ?owner
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("a negation whose premise omits `this:` must compile");
+    }
+
+    /// Re-declaring an attribute with a different cardinality supersedes
+    /// the stored descriptor: `db.attribute/cardinality` is
+    /// cardinality-one on the attribute's own entity, so the later
+    /// assert wins. A space seeded under an older declaration therefore
+    /// picks up the correction when its seed is re-run — no migration.
+    #[dialog_common::test]
+    async fn it_supersedes_a_stored_cardinality_on_redeclaration() {
+        use dialog_query::Cardinality as DialogCardinality;
+
+        let fixture = new_fixture().await;
+        let one = ConceptDescriptor::try_from(vec![(
+            "route",
+            AttributeDescriptor::new(
+                "xyz.test.seed/route".parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        fixture.declare("probe", one).await;
+
+        let many = ConceptDescriptor::try_from(vec![(
+            "route",
+            AttributeDescriptor::new(
+                "xyz.test.seed/route".parse().unwrap(),
+                "",
+                DialogCardinality::Many,
+                Some(Type::Entity),
+            ),
+        )])
+        .unwrap();
+        fixture.declare("probe", many).await;
+
+        // Two routes on one entity: only reachable if `many` took effect.
+        let doc = r#"probe!:
+  this: seed:x
+  route: id:a
+  route: id:b
+"#;
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("the re-declared cardinality must allow two routes");
     }
 }

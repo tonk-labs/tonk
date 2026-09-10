@@ -689,6 +689,7 @@ pub(crate) async fn retract_space_provider(
             .transaction()
             .retract(row)
             .commit()
+            .publish()
             .perform(&state.operator)
             .await
         {
@@ -994,7 +995,10 @@ pub(crate) async fn registration(state: &crate::worker::TonkState) -> Registrati
 /// What the account's registration facts say, read in one pass.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AccountRegistrationFacts {
-    /// The address enrollment named, when the account registered.
+    /// The address enrollment named. `None` when no registration row
+    /// exists — and ALSO when one exists carrying a blank address,
+    /// which is the same thing to every reader: an account with no
+    /// address to show, enroll with, or confirm a deletion against.
     pub email: Option<String>,
     /// Where the account syncs, named at enrollment.
     pub provider: Option<String>,
@@ -1041,7 +1045,14 @@ pub(crate) async fn account_registration(
     {
         let rows: Vec<AccountRegistered> = rows;
         if let Some(row) = rows.into_iter().next() {
-            facts.email = Some(row.email.0);
+            // Filtered like `provider` below, and for the same reason.
+            // `AccountRegistered.email` is required by the schema, so a
+            // blank one is a row that should not exist; admitting it as
+            // `Some("")` defeated every `None` guard downstream. The
+            // status probe's "no address, nothing to complete" check
+            // read `Some("")` as an address and wrote the blank back on
+            // every activation sweep, so the value re-created itself.
+            facts.email = Some(row.email.0).filter(|email| !email.trim().is_empty());
             facts.provider = Some(row.provider.0).filter(|address| !address.is_empty());
         }
     }
@@ -1092,6 +1103,17 @@ pub(crate) async fn record_customer_status(
     use tonk_schema::{AccountActive, AccountRegistered, AccountSuspended, prelude::DidExt as _};
 
     let account = super::identity::root_did(state).await?;
+    // A blank address is not an address. `AccountRegistered.email` is
+    // required, so writing "" produces a row the schema says cannot
+    // exist, and every reader then has to special-case it. Refuse here
+    // instead: the callers that have no address are the ones that must
+    // not be writing a registration at all.
+    let email = email.trim();
+    if email.is_empty() {
+        return Err(TonkWorkerError::Internal(
+            "refusing to record a registration with no email address".to_string(),
+        ));
+    }
     // An absent address means "unchanged", not "no provider": a receipt
     // that names none — every enrollment receipt does — must not blank
     // one a later activation already recorded.

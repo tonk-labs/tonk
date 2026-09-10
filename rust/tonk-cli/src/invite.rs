@@ -330,6 +330,7 @@ async fn mint_for(
         .assert(invitation)
         .assert(execution)
         .commit()
+        .publish()
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
@@ -637,6 +638,7 @@ async fn record_claim_roster(
     }
     transaction
         .commit()
+        .publish()
         .perform(&joined.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;

@@ -482,10 +482,19 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 
     match probe_remote_main(&remote, &tonk.operator).await {
         Ok(RemotePresence::Present(_)) => {
+            // Adopt the head and materialize the OPERATIONAL regions:
+            // the entity/attribute/value indexes and the blob index.
+            // That is every fact the branch holds — every delegation
+            // included — so authorization reads entirely locally, while
+            // history and coverage stay by reference. Those are the
+            // regions that grow with every edit ever made rather than
+            // with the live fact count, and no read path can reach
+            // them.
             session
                 .handle()
                 .pull()
                 .download()
+                .operational()
                 .perform(&tonk.operator)
                 .await
                 .map_err(|error| {
@@ -638,7 +647,15 @@ async fn observe_registration(
 
     // The address rides along because `record_customer_status` writes
     // the whole fact; it is not being changed here. No recorded address
-    // means no enrollment on this device, and nothing to complete.
+    // means no enrollment on this device, and nothing to complete — an
+    // account still on its onboarding standin has no registration to
+    // observe, and `tonk:account/onboarding` is what represents it.
+    //
+    // `account_registration` now reports a blank address as `None`, so
+    // this guard sees the state it was always written for: it used to
+    // read `Some("")` as an address and write the blank back on every
+    // sweep, which is how an emailless registration kept re-creating
+    // itself.
     let email = match super::customer::registration(tonk).await {
         super::customer::Registration::AwaitingActivation { email } => email,
         _ => match super::customer::account_registration(tonk).await.email {
@@ -660,15 +677,26 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
-    // Pull-and-materialize: profile main is also the access branch, and
-    // the authorization walk over it must read entirely locally at the
-    // next session open (see `adopt_account_upstream`). Downloading here,
-    // while this session can still authorize remote reads, is what keeps
-    // a bare adoption from bricking the next boot.
+    // Adopt the upstream head and materialize the OPERATIONAL regions.
+    //
+    // A plain `.download()` walked every block the revision references,
+    // history included — and history lives in the same tree as the
+    // data, so it dragged the branch's entire lineage down before
+    // anything could render. `.operational()` walks only the regions a
+    // read can reach: the three data orderings and the blob index.
+    //
+    // That is every fact the branch holds, so every delegation is local
+    // and the authorization walk at the next boot resolves with no
+    // network. It replaces proving capabilities one scope at a time,
+    // which could only ever cover the scopes it thought to ask for.
+    // The download is also ordered BEFORE the head advance, so a failed
+    // or offline download leaves the local revision untouched rather
+    // than pointing at blocks the store lacks.
     session
         .handle()
         .pull()
         .download()
+        .operational()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
@@ -1646,9 +1674,27 @@ pub(crate) mod tests {
         use tonk_schema::prelude::DidExt as _;
 
         let state = crate::router::tests::test_state().await;
-        crate::router::profile_name::ensure_display_name(&state)
-            .await
-            .unwrap();
+        // This test is about PROJECTING a name into each space, so it
+        // needs one to exist. Nothing writes a name at bootstrap any
+        // more (a derived placeholder was indistinguishable from a name
+        // the person chose), so the test stamps its own.
+        {
+            use tonk_schema::prelude::DidExt as _;
+            let profile_entity = state.profile.did().this();
+            state
+                .reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::ProfileName::new(
+                    profile_entity,
+                    tonk_schema::petname(&state.profile.did()),
+                ))
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
         let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let key_a = crate::router::tests::put_repo(&app, "account-project-a").await;
         let key_c = crate::router::tests::put_repo(&app, "account-project-c").await;
@@ -1876,6 +1922,7 @@ pub(crate) mod tests {
             sync_queue: Default::default(),
             commands: crate::router::command_providers(),
             clients: Default::default(),
+            seed_upgrades: Default::default(),
             account_keys: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
@@ -2335,6 +2382,7 @@ pub(crate) mod tests {
                 .transaction()
                 .retract(row)
                 .commit()
+                .publish()
                 .perform(&state.operator)
                 .await
                 .unwrap();

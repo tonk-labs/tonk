@@ -575,23 +575,108 @@ async fn complete_login(
     // that was just persisted. Posting the same link to a service was
     // keeping a second copy of a list that already syncs.
     //
-    link_account(
-        &tonk,
-        &link.provider,
-        &root.did().to_string(),
-        &custodian
-            .credential_id()
-            .map(hex::encode)
-            .unwrap_or_default(),
-        &ceremony.delegation_hex,
-        endpoint,
-        false,
-    )
-    .await?;
-    crate::router::account::finish_link(&tonk)
+    // Login is DONE here: custody is recovered, the account signer
+    // derived, the device link signed, and the root persisted. Everything
+    // above is local — none of it scales with how many spaces the account
+    // has or how fast the network is.
+    //
+    // What follows does: attaching the provider, pulling the account
+    // branch, and adopting spaces are all network work whose cost grows
+    // with the account. Awaiting it here put that cost inside the page's
+    // 30-second custody-handoff timeout, so a slow network or a large
+    // account failed a login that had already succeeded — and a reload
+    // then showed the account working, because it had.
+    //
+    // So the reply goes out now and the rest continues in the background.
+    // The page must therefore tolerate an account whose replication is
+    // still in flight; the Hub renders from directory rows that arrive
+    // with the account branch, and a space reports `case:replicating`
+    // while its content is on the way.
+    let deferred = state.clone();
+    let provider = link.provider.clone();
+    let root_did = root.did().to_string();
+    let credential_id = custodian
+        .credential_id()
+        .map(hex::encode)
+        .unwrap_or_default();
+    let delegation_hex = ceremony.delegation_hex.clone();
+    let endpoint = endpoint.to_owned();
+    let account_entity = {
+        use tonk_schema::prelude::DidExt as _;
+        root.did().this()
+    };
+    // Say what is happening BEFORE the reply goes out, so the Hub the
+    // page renders next already knows the account is on its way rather
+    // than showing an empty stack under a "link an account" door.
+    stamp_account_linking(&tonk, account_entity.clone(), true).await;
+    // Release the caller's read guard before the background task takes
+    // its own. Reads share, but a writer queued between the two would
+    // block behind this one while the task waits behind the writer.
+    drop(tonk);
+    wasm_bindgen_futures::spawn_local(async move {
+        // Re-acquire rather than carrying the caller's guard: the read
+        // lock must not be held across this work, and the profile the
+        // login just selected is the one a fresh read sees.
+        let deferred = deferred.read().await;
+        if let Err(error) = link_account(
+            &deferred,
+            &provider,
+            &root_did,
+            &credential_id,
+            &delegation_hex,
+            &endpoint,
+            false,
+        )
         .await
-        .map_err(|error| format!("the account link did not finish: {error}"))?;
+        {
+            log!("login: the account link did not attach: {error}");
+            stamp_account_linking(&deferred, account_entity, false).await;
+            return;
+        }
+        if let Err(error) = crate::router::account::finish_link(&deferred).await {
+            log!("login: the account link did not finish: {error}");
+        }
+        stamp_account_linking(&deferred, account_entity, false).await;
+    });
     Ok(profile_changed)
+}
+
+/// Assert or clear the "linking this account" marker on profile main.
+///
+/// Overlay: the window it describes is temporary, and a worker that dies
+/// mid-link should leave nothing behind. Cleared by dropping the
+/// entity's overlay facts rather than retracting — an overlay retract
+/// records a tombstone beside the assertion instead of removing it, so
+/// the marker would still read back.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn stamp_account_linking(
+    tonk: &crate::worker::TonkState,
+    account: dialog_artifacts::Entity,
+    linking: bool,
+) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("account linking stamp: open profile main: {error}");
+            return;
+        }
+    };
+    if linking {
+        main.state
+            .assert_overlay(tonk_schema::AccountLinking::new(account));
+    } else {
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &account);
+    }
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Seal a fresh account secret under this custodian.

@@ -104,6 +104,11 @@ const NAME_ROW: &str = "#tonk-register-name-row";
 /// to await a confirmation that had arrived.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
+/// The row recording that this device's passkey answered. Settled the
+/// moment the ceremony's own work is done, so what follows reads as the
+/// account arriving rather than as the passkey still being in question.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
@@ -1273,6 +1278,16 @@ const RETURN_TO_SPACE: &str = "return to space";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const RETURN_TO_HUB: &str = "return to hub";
 
+/// Custody: recovering this device's own credential. The step that can
+/// fail, and the only one the person is told about by name.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RECOVERING_CREDENTIAL: &str = "recovering account credential";
+
+/// Custody recovered. The account's own content is still arriving, which
+/// is what the remaining phases are reading — but the DEVICE is done.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEVICE_LINKED: &str = "device linked";
+
 /// Offer the destination the ceremony actually replaced.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn set_return_action() {
@@ -1366,7 +1381,12 @@ async fn await_invite_link(space: &str) -> Option<String> {
     None
 }
 
-/// Read the invite url off the space's `tonk:invite` row.
+/// Read the invite url off the `tonk:invite` row on PROFILE main.
+///
+/// Keyed by the space but read from the profile branch: the row is this
+/// device's view of a share it performed, and keeping it off the space
+/// is what stops a Hub full of share controls from querying — and so
+/// mounting — every space in the account.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn read_invite_link(space: &str) -> Option<String> {
     let body = serde_json::json!({
@@ -1385,11 +1405,7 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!(
-        "{}/api/repository/{}/branch/main/query",
-        crate::api::origin(),
-        space
-    );
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1400,6 +1416,53 @@ async fn read_invite_link(space: &str) -> Option<String> {
     rows.as_array()?
         .iter()
         .find_map(|row| row["fields"]["url"].as_str())
+        .map(str::to_owned)
+}
+
+/// The account's CHOSEN name, read once off the profile branch.
+///
+/// A query, not `/api/account/summary`: that route answers by reading
+/// this very attribute on this very branch, so fetching it was asking
+/// the worker for a second copy of what a query returns directly.
+///
+/// The chosen name, not the roster's — the roster falls back to a
+/// petname and so cannot tell a named account from a fresh one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_display_name() -> Option<String> {
+    // Bound to THIS account's subject, the way the worker's own read is
+    // (`Query::<AccountDisplayName> { this: account.this(), .. }`).
+    // Leaving `this` unbound matches any account named on the branch,
+    // and a browser that has held more than one would answer with
+    // whichever row came back first.
+    let root = match crate::api::root_status().await {
+        Ok(tonk_worker_api::RootStatus::Ready { root_did, .. }) => root_did,
+        _ => return None,
+    };
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "name": {
+                "the": "xyz.tonk.account/display-name",
+                "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": root,
+            "name": { "?": { "name": "name" } }
+        }
+    });
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    let rows: serde_json::Value = response.json().await.ok()?;
+    rows.as_array()?
+        .iter()
+        .find_map(|row| row["fields"]["name"].as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
         .map(str::to_owned)
 }
 
@@ -2017,8 +2080,18 @@ pub(crate) fn finish_ceremony() {
     {
         if pending_share().is_some() {
             conclude("Your account is ready.");
-        } else if let Some(window) = web_sys::window() {
-            let _ = window.location().assign("/");
+        } else {
+            // A route change, not a document load. `location.assign`
+            // here reloaded the whole app -- wasm bundle, service
+            // worker handshake and all -- to reach a page the router
+            // can already render in place.
+            //
+            // Close FIRST: the reload used to take the dialog down with
+            // the document, and a route change does not. Leaving it up
+            // parks a finished ceremony over the Hub.
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
         }
         return;
     }
@@ -2029,19 +2102,18 @@ pub(crate) fn finish_ceremony() {
         // back to a petname and so cannot tell a named account from a
         // fresh one. Best-effort: an unreadable summary only means the
         // record row is not shown.
-        let named = crate::api::account_summary()
-            .await
-            .ok()
-            .and_then(|summary| summary.display_name)
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty());
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let named = account_display_name().await;
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let named: Option<String> = None;
         if !host.is_connected() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            if let Some(window) = web_sys::window() {
-                let _ = window.location().assign("/");
-            }
+            // See above: close the ceremony, then route to the Hub.
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to("/");
             return;
         }
         match named {
@@ -2056,11 +2128,77 @@ pub(crate) fn finish_ceremony() {
                         &name,
                     );
                 }
-                conclude("Your account is ready.");
+                if signing_in {
+                    hand_over_to_the_hub(&host);
+                } else {
+                    conclude("Your account is ready.");
+                }
             }
-            None if signing_in => conclude("You're signed in."),
+            // Signing in: the passkey answered, so the ceremony's own
+            // work is done. What remains is the account arriving, and
+            // that is narrated rather than waited on behind one word.
+            None if signing_in => hand_over_to_the_hub(&host),
             None => ask_for_name(&host),
         }
+    });
+}
+
+/// Walk the post-passkey phases, then leave for the spaces stack.
+///
+/// The ceremony used to end here on "return to hub" — a button offering
+/// a destination the person had already asked for, in front of an
+/// account that had not arrived. It now states what is happening and
+/// leaves on its own once the Hub can actually render:
+///
+///   passkey (settled)         the ceremony's own result
+///   recovering credential     custody, the only step that can fail
+///   device linked             custody recovered; the name is queried
+///   (tab fills in)            the account name lands
+///   (spaces queried)          what the Hub list needs
+///   -> the spaces stack       nothing left to say
+///
+/// Per-space capabilities keep being claimed after the handover, in the
+/// background: they are what lets those spaces open offline, and none of
+/// them gate the screen.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hand_over_to_the_hub(host: &Element) {
+    // ADD, not settle: no passkey row was ever raised — the ceremony
+    // narrated the wait through the action row instead. `settle_named_row`
+    // silently no-ops on a row that does not exist, so this has to create
+    // it. Guarded, because a second activation frame reaches here too.
+    if host.query_selector(PASSKEY_ROW).ok().flatten().is_none() {
+        add_row(
+            host,
+            PASSKEY_ROW.trim_start_matches('#'),
+            "passkey",
+            "this device",
+        );
+    }
+    set_action(RECOVERING_CREDENTIAL, false);
+    let host = host.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        // Custody first: it is the step that can fail, and everything
+        // after it is a read that either answers or does not.
+        if !crate::api::await_custody().await {
+            set_status(
+                "Your passkey was approved, but this device could not recover its credential.",
+            );
+            set_return_action();
+            focus_action();
+            return;
+        }
+        set_action(DEVICE_LINKED, false);
+
+        // Custody was the last step with anything to narrate. The Hub
+        // fills itself: its account cell subscribes to
+        // `xyz.tonk.account/display-name` on this same branch and holds
+        // a skeleton until a frame arrives, and its stack subscribes to
+        // the space rows. Waiting here for either would be this dialog
+        // polling a route to watch facts another element is already
+        // subscribed to -- and an account nobody has named never
+        // answers, so the wait could only ever end in a timeout.
+        let _ = host;
+        return_to_previous();
     });
 }
 
@@ -2503,9 +2641,14 @@ fn return_to_previous() {
     let anchored = host.is_some_and(|host| host.has_attribute("data-anchored"));
     match path {
         Some(path) => {
-            if let Some(location) = web_sys::window().map(|window| window.location()) {
-                let _ = location.assign(&path);
-            }
+            // A route change: the space page the share left is one the
+            // router renders, and a document load would rebuild the
+            // whole app to get back to it.
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to(&path);
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = &path;
         }
         None if anchored => {
             close();

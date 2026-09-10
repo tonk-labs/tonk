@@ -113,18 +113,32 @@ pub(crate) async fn ensure_space_mounted(
                 log!("space adoption: directory reconcile for mounted '{subject}': {error}")
             }
         }
+        // Seed catch-up is NOT run here: it fetches the seed source over
+        // HTTP before its version compare can short-circuit, and this
+        // path sits on every data-plane request. The routes that mount
+        // call [`schedule_seed_upgrade`], which runs it detached, once
+        // per worker instance per space — a new worker is a new bundle,
+        // which is exactly when a shipped redesign can have appeared.
         return Ok(true);
     }
     let Some(configuration) = directory_configuration_strict(tonk, &subject).await? else {
         return Ok(false);
     };
     log!("space adoption: mounting '{subject}' from the account directory");
-    super::join::mount_replica_with_configuration(tonk, &subject, configuration).await?;
-    super::repository::record_initialized_replica_in_profile(tonk, &subject)
-        .await
-        .map_err(|error| {
-            crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
-        })?;
+
+    // Announce the pull BEFORE it starts, so the state is observable
+    // however the mount was triggered — the lazy first-use path included,
+    // not just an explicit `space/replicate`. Without this a large pull
+    // leaves the row looking remote until it abruptly becomes local.
+    stamp_space_replicating(tonk, &subject, true).await;
+
+    let mounted = mount_and_record(tonk, &subject, configuration).await;
+
+    // Settled either way: on failure the marker must go too, or the row
+    // stays "replicating" with no pull behind it.
+    stamp_space_replicating(tonk, &subject, false).await;
+    mounted?;
+
     stamp_space_locality(tonk, &subject).await;
     // The mount wires the upstream but the content arrives over a pull;
     // mark the repo dirty so the next drain (the page's own follow-up
@@ -134,6 +148,124 @@ pub(crate) async fn ensure_space_mounted(
     tonk.sync_queue
         .mark_dirty(subject.as_str(), js_sys::Date::now());
     Ok(true)
+}
+
+/// Mount the replica and record it, as one fallible step.
+///
+/// Split out so the in-flight marker above can be retracted on the way
+/// out whichever way this goes — a `?` in the caller would skip the
+/// retraction and strand the row.
+async fn mount_and_record(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+    configuration: crate::router::repository::RepositoryConfiguration,
+) -> Result<(), crate::TonkWorkerError> {
+    super::join::mount_replica_with_configuration(tonk, subject, configuration).await?;
+    super::repository::record_initialized_replica_in_profile(tonk, subject)
+        .await
+        .map_err(|error| {
+            crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
+        })
+}
+
+/// Pull a space this account has but this device does not.
+///
+/// The work is [`ensure_space_mounted`]'s — the same routine the lazy
+/// first-use path runs, so an explicit request and an implicit one take
+/// exactly one code path and report the same state. What the command
+/// adds is the ability to ASK, rather than tripping replication as a
+/// side effect of some unrelated query.
+///
+/// Target-agnostic: every host that can mount a space can run this, and
+/// the mount itself is already portable.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::ReplicateSpace) {
+        let key = command.space.0.to_string();
+        // A space may only ask for ITSELF; the profile may ask for any.
+        if !self.may_target_space(&key) {
+            log!("ReplicateSpace '{key}': refused from another space's branch");
+            return;
+        }
+        let tonk = self.state().read().await;
+        match ensure_space_mounted(&tonk, &key).await {
+            Ok(true) => {
+                schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
+                log!("ReplicateSpace '{key}': mounted");
+            }
+            // Not an error: the directory has no mount record for it, so
+            // there is nothing this device could pull.
+            Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
+            Err(error) => log!("ReplicateSpace '{key}': {error}"),
+        }
+    }
+}
+
+/// Spaces whose seed this worker instance has already checked, by full
+/// subject DID. In memory on purpose: a worker instance corresponds to
+/// one shipped bundle, so once-per-instance is once-per-bundle for any
+/// space that gets used — an upgrade lands with the SW upgrade rather
+/// than being re-verified on every load.
+#[derive(Default)]
+pub(crate) struct SeedUpgrades(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl SeedUpgrades {
+    /// Claim the once-per-instance check for `key`. `false` means some
+    /// earlier request already claimed it.
+    fn begin(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key.to_string())
+    }
+}
+
+/// Catch a mounted space's seed up with the shipped bundle, detached
+/// from the request that touched it.
+///
+/// Best-effort by design: the work runs off the request path (a load is
+/// never blocked on the seed source fetch), at most once per worker
+/// instance per space, and a failed attempt simply waits for the next
+/// worker to try again. On wasm the task is not tied to the fetch
+/// lifetime, so an idling worker may cut it short — the same next-boot
+/// retry covers that. Native (the single-threaded test and host builds,
+/// same as `spawn_dispatch`) runs it inline instead.
+pub(crate) async fn schedule_seed_upgrade(
+    tonk: &TonkState,
+    state: crate::router::AppState,
+    key: &str,
+) {
+    let Some(subject) = space_subject(key) else {
+        return;
+    };
+    let key = subject.to_string();
+    // Claim under the CALLER's guard, before anything is spawned: the
+    // detached task re-locks for itself, and taking a second read here
+    // while the caller holds one could park behind a queued writer.
+    if !tonk.seed_upgrades.begin(&key) {
+        return;
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(async move {
+        let tonk = state.read().await;
+        match super::repository::upgrade_seed(&tonk, &key).await {
+            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+            Ok(false) => {}
+            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
+        }
+    });
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = state;
+        match super::repository::upgrade_seed(tonk, &key).await {
+            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+            Ok(false) => {}
+            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
+        }
+    }
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
@@ -471,6 +603,70 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use super::*;
+
+    /// The in-flight marker is retracted even when the pull fails.
+    ///
+    /// The hazard this pins: the marker is asserted before the mount and
+    /// the mount can fail, so a `?` on the way out would leave the row
+    /// reading `case:replicating` with no pull behind it — stuck, and
+    /// with nothing to clear it, since the marker outlives the attempt
+    /// that wrote it. Only a worker restart would drop it.
+    #[dialog_common::test]
+    async fn it_clears_the_in_flight_marker_when_a_pull_fails() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+
+        // Directory facts naming a remote that cannot answer, so the
+        // mount is attempted and fails rather than being skipped.
+        let foreign = Ed25519Signer::generate().await.unwrap();
+        let subject: dialog_varsig::Did = foreign.did();
+        let address = dialog_repository::SiteAddress::from(
+            dialog_remote_ucan_s3::UcanAddress::new("https://unreachable.invalid/ucan/"),
+        );
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+
+        // Whether this attempt succeeds or fails is not the point; that
+        // no marker survives it is.
+        let _ = ensure_space_mounted(&tonk, subject.as_str()).await;
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main acquires");
+        let in_flight: Vec<tonk_schema::SpaceReplicating> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceReplicating> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                replicating: Term::var("replicating"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the in-flight query runs");
+        assert!(
+            in_flight.is_empty(),
+            "a settled pull leaves no in-flight marker: {in_flight:?}"
+        );
+    }
 
     #[dialog_common::test]
     async fn it_admits_without_content_projections() {
@@ -1211,6 +1407,48 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
     };
     main.state
         .assert_overlay(tonk_schema::SpaceLocal::new(subject, true));
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Assert or retract the in-flight replication marker for `subject`.
+///
+/// Overlay on profile main, beside the locality stamp: device-local and
+/// never replicated, because a pull running HERE says nothing about any
+/// other device. The fact's presence is the state, so settling retracts
+/// it rather than writing false.
+pub(crate) async fn stamp_space_replicating(
+    tonk: &TonkState,
+    subject: &dialog_varsig::Did,
+    replicating: bool,
+) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("replicating stamp: open profile main: {error}");
+            return;
+        }
+    };
+    let fact = tonk_schema::SpaceReplicating::new(tonk.profile.did(), subject.clone());
+    if replicating {
+        main.state.assert_overlay(fact);
+    } else {
+        // Cleared by DROPPING the entity's overlay facts, not by
+        // retracting: an overlay retract records a tombstone beside the
+        // assertion rather than removing it, so the fact would still
+        // read back. The marker owns its entity (the replica), so
+        // dropping the entity takes nothing else with it.
+        let entity = fact.this.clone();
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &entity);
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;

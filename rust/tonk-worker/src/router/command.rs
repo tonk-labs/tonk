@@ -228,6 +228,12 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
+        // Replication and update checks are the Hub's to ask for: it is
+        // the surface that lists spaces this device may not hold, and
+        // `ForgetInvite` clears a row that lives on this branch anyway.
+        .command::<tonk_schema::command::ReplicateSpace>()
+        .command::<tonk_schema::command::ForgetInvite>()
+        .command::<tonk_schema::command::CheckUpdate>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each
@@ -243,6 +249,12 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // cannot mint for another space. Profile-side is still the
         // destination once that surface moves.
         .command::<super::repository::InviteRequest>()
+        // A space may ask whether ITS OWN seed is behind: the check
+        // targets the origin, and `may_target_space` keeps it there.
+        // Replication is deliberately absent — a space cannot ask to be
+        // pulled onto a device that does not have it yet, because the
+        // request would have to arrive on the branch it is asking for.
+        .command::<tonk_schema::command::CheckUpdate>()
         .command::<tonk_schema::command::AgentHandoff>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
@@ -695,6 +707,7 @@ pub(crate) mod tests {
                 sync_queue: Default::default(),
                 commands: crate::router::command_providers(),
                 clients: Default::default(),
+                seed_upgrades: Default::default(),
                 account_keys: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),

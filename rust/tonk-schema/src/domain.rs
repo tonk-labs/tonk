@@ -82,6 +82,15 @@ pub mod space {
     #[cardinality(one)]
     pub struct Local(pub bool);
 
+    /// Whether a replication for this space is in flight on this device.
+    /// Overlay-only, like [`Local`]: the fact's PRESENCE is the state,
+    /// so it is retracted when the pull settles rather than set false,
+    /// and a worker that dies mid-pull leaves nothing to clear.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct Replicating(pub bool);
+
     /// The account providing this space with the access service. Its
     /// PRESENCE is the record that the space is provisioned; the sync
     /// engine retracts it when the service answers that the subject is
@@ -344,6 +353,109 @@ pub mod route {
     pub struct Concept(pub Entity);
 }
 
+/// Attributes describing a seed update this device has looked for —
+/// overlay-only, so they die with the worker rather than replicating a
+/// device-local observation.
+pub mod check {
+    use super::{Attribute, Entity};
+
+    /// The in-flight check's own transient entity, stamped on the
+    /// replica while a check runs.
+    ///
+    /// Presence is the state — the attribute is asserted before the
+    /// fetch and retracted when the check settles. It holds the
+    /// transient rather than a boolean so a marker stranded by a
+    /// crashed worker is identifiable, and a second check cannot
+    /// silently clobber the first's record.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.replica")]
+    #[cardinality(one)]
+    pub struct Checking(pub Entity);
+
+    /// When the last check completed on this device.
+    ///
+    /// Kept apart from [`Checking`] so it survives the next check
+    /// starting: one status field would have to overwrite the previous
+    /// result to say "pending".
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.replica")]
+    #[cardinality(one)]
+    pub struct Checked(pub f64);
+
+    /// Why the last check failed, asserted only on failure.
+    ///
+    /// Text rather than a case: an unreachable source and a malformed
+    /// document are different problems and the message is the useful
+    /// part.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.replica")]
+    #[cardinality(one)]
+    pub struct Failure(pub String);
+}
+
+/// Attributes recording what a seed version seeded, one per component
+/// kind, on the seed version's own entity.
+///
+/// The kinds are split rather than folded into one `component` attribute
+/// because retraction differs by kind — a `view!:` retracts from a pin, a
+/// `concept!:` needs the concept already on the branch, a `rule!:` wants
+/// its effect URI — and the order matters (a concept retracted before the
+/// views naming it would dangle). Separate attributes carry the kind in
+/// the data, so an upgrade never has to re-derive it.
+///
+/// Cardinality-many: one seed version seeds many components. The values
+/// are the component entities.
+pub mod seed {
+    use super::{Attribute, Entity};
+
+    /// Where this seed was fetched from.
+    ///
+    /// The entity is the content hash alone, so two devices installing
+    /// the same bytes converge; the source rides alongside because a
+    /// custom seed is a different URL at the same shape.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Source(pub String);
+
+    /// The seed this one replaced, or `seed:none` on a first install.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Prior(pub Entity);
+
+    /// The installed seed an available one would supersede.
+    ///
+    /// The backlink that makes an available seed answerable on its own
+    /// ("this is an update to what you are running") rather than only by
+    /// joining it against the space's install record.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Replaces(pub Entity);
+
+    /// The version of the commit that installed this seed.
+    ///
+    /// A version, not a revision: a revision includes the tree the commit
+    /// produces, so a fact inside a commit can never name it, while a
+    /// version — the issuer's line and a counter — is knowable before the
+    /// batch is written. That is what lets the record ride the same
+    /// commit as the claims it describes.
+    ///
+    /// It is also the record of WHAT the seed installed: a commit's
+    /// history lists every claim it wrote, so an upgrade inverts those
+    /// assertions and the router reads which of them were routes. Neither
+    /// needs a per-component tag, which could not name heads whose
+    /// identity is content-derived anyway.
+    ///
+    /// Base58 of the version's key bytes, which round-trip through
+    /// `Version::from_key_bytes` — its entity is a one-way hash.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Version(pub String);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers
@@ -583,7 +695,17 @@ pub mod command {
         pub struct Share(pub Entity);
     }
 
-    /// Attributes the `tonk:pause-sync` command carries.
+    /// Attributes the `tonk:check-update` command carries.
+    pub mod check_update {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The space to check, as its subject `did:key`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.check-update")]
+        pub struct Space(pub Entity);
+    }
+
     pub mod pause_sync {
         use super::super::Entity;
         use super::Attribute;
@@ -1046,6 +1168,46 @@ pub mod command {
             #[domain("xyz.tonk.command.add-passkey")]
             pub struct Account(pub Entity);
         }
+
+        /// `tonk/forget-invite` — drop a space's invite row once its
+        /// link has been copied.
+        pub mod forget_invite {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The copy's timestamp, so each one is a distinct transient.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.forget-invite")]
+            pub struct Time(pub f64);
+
+            /// The space whose invite row to drop.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.forget-invite")]
+            pub struct Space(pub Entity);
+        }
+
+        /// `space/replicate` — pull a space the account has but this
+        /// device does not.
+        pub mod replicate_space {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The space to pull, as its subject DID.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.replicate-space")]
+            pub struct Space(pub Entity);
+        }
+
+        /// `tonk/check-update` — ask whether a newer seed is waiting.
+        pub mod check_update {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so each ask re-fires rather than
+            /// decoding as the transient the previous one already made.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.check-update")]
+            pub struct Time(pub f64);
+        }
     }
 }
 
@@ -1165,6 +1327,15 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]
     pub struct DisplayName(pub String);
+
+    /// Whether this device is linking the account right now. Overlay-only:
+    /// the fact's PRESENCE is the state, so it is dropped when the link
+    /// settles rather than set false, and a worker that dies mid-link
+    /// leaves nothing to clear.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.account")]
+    #[cardinality(one)]
+    pub struct Linking(pub bool);
 
     /// The account's registration state with the access service, as one
     /// of `Registered`, `Active`, or `Suspended`.
