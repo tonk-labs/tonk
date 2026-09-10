@@ -1444,16 +1444,11 @@ view!:
 # subscription keeps in step with these facts. So editing a method is a
 # fact write, not a re-registration: `customElements.define` is never
 # called twice and no page reload is needed.
-# The concept itself is PINNED (`this: tonk:element`), like most of
-# this library. An unpinned `concept!:` is keyed by its own declaration
-# digest, so every edit to the shape below would mint a DIFFERENT
-# concept entity, and rows asserted against the previous one would stop
-# matching on any branch seeded from an earlier library. Pinning is
-# what lets this declaration grow while facts already on a branch keep
-# resolving — and it is why `component` below can go on working
-# alongside it rather than being migrated.
+# The concept is anchored, not pinned: its entity is content-addressed
+# from the declaration below (`declaration.rs:387`), the way the other
+# view-layer concepts here are. A pin is for a concept some code names
+# by URI; nothing names this one.
 concept!: &element
-  this: tonk:element
   description: A custom element definition carried as branch data
   with:
     method:
@@ -1480,12 +1475,12 @@ concept!: &element
 # but still fully supported — the two COEXIST on a branch and nothing
 # has to be migrated.
 #
-# They coexist because they share nothing. A component's facts are
-# `xyz.tonk.component/module`; an element's are
-# `xyz.tonk.element.method/<key>`. Neither concept's query can match
-# the other's rows, each has its own loader, and a branch can mount
-# both directories. `tonk element` lists both, naming the concept each
-# row came from.
+# They coexist because they share nothing — no pin or migration is
+# involved. A component's facts are `xyz.tonk.component/module`; an
+# element's are `xyz.tonk.element.method/<key>`. The two names are
+# distinct, so neither concept's query can match the other's rows, each
+# has its own loader, and a branch can mount both directories. `tonk
+# element` lists both, naming the concept each row came from.
 #
 # What `component` cannot offer is identity. An assertion that omits
 # `this:` is keyed by its own body digest, so editing the module writes
@@ -1495,7 +1490,6 @@ concept!: &element
 # prefer `element` for new work, not a reason `component` stops
 # working.
 concept!: &component
-  this: tonk:component
   description: A JS module defining web components for the branch's views
   with:
     module:

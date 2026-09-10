@@ -519,19 +519,23 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// The pin is what lets the `element` declaration grow later
-    /// without stranding rows: an unpinned concept is keyed by its own
-    /// declaration digest, so an edit would mint a different entity
-    /// and every existing row would stop matching.
+    /// Both concepts are anchored, not pinned — their entities are
+    /// content-addressed from their declarations. What coexistence
+    /// actually needs is only that the two are DISTINCT and that each
+    /// name resolves to its own, so neither can shadow the other.
     #[dialog_common::test]
-    async fn it_pins_both_concepts_so_a_later_declaration_keeps_its_rows() -> Result<()> {
+    async fn it_resolves_each_concept_name_to_its_own_entity() -> Result<()> {
         let test = TestSite::new().await?;
-        for (name, pinned) in [("element", "tonk:element"), ("component", "tonk:component")] {
-            let entity = tonk_cli::views::entity_for_name(&test.site, name)
-                .await?
-                .unwrap_or_else(|| panic!("{name} should resolve"));
-            assert_eq!(entity.to_string(), pinned, "{name} is not pinned");
-        }
+        let element = tonk_cli::views::entity_for_name(&test.site, "element")
+            .await?
+            .expect("element should resolve");
+        let component = tonk_cli::views::entity_for_name(&test.site, "component")
+            .await?
+            .expect("component should resolve");
+        assert_ne!(
+            element, component,
+            "the two concepts collapsed onto one entity"
+        );
         Ok(())
     }
 
