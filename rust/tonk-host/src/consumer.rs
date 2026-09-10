@@ -184,7 +184,7 @@ pub fn subscribe(
     subscribe_with_route(consumer, query_body, tag, None, None, false)
 }
 
-/// [`subscribe`], retrying while no host has claimed the event yet.
+/// [`subscribe`], retrying while no subscription has been established.
 ///
 /// A subscription is installed by dispatching a DOM event some host's
 /// document-level listener must claim, and boots race: a guest coming
@@ -194,6 +194,12 @@ pub fn subscribe(
 /// the element sat on its loading state forever while a calmer boot
 /// subscribed fine. Bounded, so a genuinely hostless document still
 /// fails, loudly, after a few seconds.
+///
+/// "Established" is the test, not "claimed" — see
+/// [`subscription_not_established`]. A host that claims the event and
+/// then bails without writing a handle leaves the consumer exactly as
+/// subscribed-to-nothing as one that never listened, and only the
+/// second was ever retried.
 pub async fn subscribe_claimed(
     consumer: &Element,
     query_body: &JsValue,
@@ -212,19 +218,45 @@ pub async fn subscribe_claimed_with_route(
     branch: Option<&str>,
     profile: bool,
 ) -> Result<Subscription, ErrorDetail> {
-    let mut unclaimed = None;
+    let mut not_established = None;
     for attempt in 0..12u32 {
         if attempt > 0 {
             crate::ops::wait_ms(250 * attempt.min(4) as i32).await;
         }
         match subscribe_with_route(consumer, query_body, tag, space, branch, profile) {
             Ok(subscription) => return Ok(subscription),
-            Err(error) if error.message.contains("no host claimed") => unclaimed = Some(error),
+            Err(error) if subscription_not_established(&error) => not_established = Some(error),
             Err(error) => return Err(error),
         }
     }
-    Err(unclaimed
-        .unwrap_or_else(|| ErrorDetail::new(ErrorKind::Network, "tonk-subscribe: never claimed")))
+    Err(not_established.unwrap_or_else(|| {
+        ErrorDetail::new(ErrorKind::Network, "tonk-subscribe: never established")
+    }))
+}
+
+/// Whether `error` means NO SUBSCRIPTION EXISTS YET — as opposed to a
+/// subscription that was established and then went wrong.
+///
+/// Both ways a dispatch can come back empty belong here, because a boot
+/// race produces either one depending on how far the host had got:
+///
+/// - nobody claimed the event: no host listener was installed yet;
+/// - a host claimed it and wrote no `detail.subscription`: the listener
+///   ran and bailed before installing a handle. `claim_event` calls
+///   `prevent_default()` at the TOP of the handler, so every early
+///   return below it — a malformed `with`, an unresolved routing
+///   context — lands here rather than looking unclaimed.
+///
+/// Only the first was retried, and the second is the one a space page
+/// hits: navigating client-side connects the display before its routing
+/// context is stamped, the host refuses a routeless subscription, and
+/// the view then waits on a subscription that was never opened. Nothing
+/// re-dispatches, so it waits forever — which is why a reload appeared
+/// to fix it. Both are transient in the same way, and both deserve the
+/// same bounded retry.
+fn subscription_not_established(error: &ErrorDetail) -> bool {
+    error.message.contains("no host claimed")
+        || error.message.contains("did not write detail.subscription")
 }
 
 /// Like [`subscribe`], but with an explicit cross-repo route (`space`/`branch`).
@@ -364,4 +396,52 @@ fn js_to_error(value: &JsValue) -> ErrorDetail {
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| format!("{value:?}"));
     ErrorDetail::new(ErrorKind::Network, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Both "no subscription exists" reports retry, and nothing else does.
+    ///
+    /// The second case is the one a space page hits: the host claims the
+    /// event, refuses a subscription whose routing context has not been
+    /// stamped yet, and writes no handle. It read as a permanent failure,
+    /// so the view waited on a subscription nobody had opened — the
+    /// "downloading" screen that only a reload cleared.
+    #[dialog_common::test]
+    fn it_retries_every_way_a_subscription_can_be_left_unopened() {
+        let unclaimed = ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk-subscribe: no host claimed the event (consumer=<tonk-display> connected=false)",
+        );
+        let no_handle = ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk-subscribe: host did not write detail.subscription",
+        );
+        assert!(
+            subscription_not_established(&unclaimed),
+            "a dispatch no host listened for has opened nothing, so it retries"
+        );
+        assert!(
+            subscription_not_established(&no_handle),
+            "a host that claimed the event and wrote no handle has equally opened nothing"
+        );
+
+        // Anything else is a real answer about an established subscription
+        // and must surface instead of being retried into a timeout.
+        for message in [
+            "tonk-subscribe event construction: JsValue(TypeError)",
+            "tonk-subscribe: malformed with= attribute",
+        ] {
+            assert!(
+                !subscription_not_established(&ErrorDetail::new(ErrorKind::Network, message)),
+                "{message:?} is not an unopened subscription, so it must not be retried"
+            );
+        }
+    }
 }
