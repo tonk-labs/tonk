@@ -1942,6 +1942,26 @@ describe("immutable generation caches", () => {
     assert.deepEqual(cache.mutations, [], "no old entry may be overwritten or deleted");
   });
 
+  test("Rust deferred imports read their sealed library generation offline", async () => {
+    let fetches = 0;
+    const { caches } = withGlobals({ fetchImpl: async () => {
+      fetches++;
+      throw new TypeError("offline");
+    }});
+    const mod = await loadWith({ exports: ["SHELL_CACHE"] });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    for (const path of ["/library/onboarding-demos.yaml", "/library/welcome-image.webp"]) {
+      await cache.put("https://tonk.test" + path, new Response("retained bytes"));
+      assert.equal(await (await self.tonkBundledAsset(path)).text(), "retained bytes");
+    }
+    assert.equal(fetches, 0);
+    const absent = await self.tonkBundledAsset("/library/missing.yaml");
+    assert.equal(absent.status, 503);
+    for (const path of ["/api/profile", "/library/../api/profile", "//evil.test/file", "/library/seed?other"]) {
+      await assert.rejects(self.tonkBundledAsset(path), /invalid bundled library path/);
+    }
+  });
+
   test("cached static assets stay byte-for-byte immutable online and offline", async () => {
     for (const online of [true, false]) {
       const pending = [];

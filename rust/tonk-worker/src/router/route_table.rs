@@ -57,6 +57,10 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/export",
     "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
     "/api/repository/{repo}/branch/{branch}/import",
+    // Device-local continuation of the bundled snapshot import: hydrates fixed
+    // data/schema bytes before the selected page can resolve its model. This
+    // is data-plane import, not a user-authored operation or command.
+    "/api/repository/{repo}/branch/{branch}/onboarding",
     "/api/repository/{repo}/branch/{branch}/query",
     "/api/repository/{repo}/branch/{branch}/site",
     "/api/repository/{repo}/branch/{branch}/sync",

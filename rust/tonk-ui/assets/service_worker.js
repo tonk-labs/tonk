@@ -1259,6 +1259,17 @@ async function serveAsset(event) {
     }
 }
 
+// Rust's own fetch bypasses this worker's fetch event. Deferred starter
+// imports use the same generation-pinned asset path as controlled documents,
+// so an interrupted import can resume offline and cannot mix deployments.
+self.tonkBundledAsset = async path => {
+    if (typeof path !== "string" || !path.startsWith("/library/") ||
+        path.includes("..") || path.includes("?") || path.includes("#")) {
+        throw new Error("invalid bundled library path");
+    }
+    return serveAsset({ request: new Request(new URL(path, self.location.origin)) });
+};
+
 async function rustFetch(event) {
     return (await activateWorker()).onfetch(event);
 }

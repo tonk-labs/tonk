@@ -3647,6 +3647,9 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
         "/library/onboarding-agent.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
         }
+        "/library/onboarding-demos.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
+        }
         "/library/onboarding.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
         }
