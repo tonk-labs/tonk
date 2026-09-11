@@ -402,6 +402,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
         )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/onboarding",
+            post(onboarding_space::prepare),
+        )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for

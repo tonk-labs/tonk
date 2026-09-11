@@ -177,7 +177,7 @@ LC_ALL=C sort "$ASSET_FILES_UNSORTED" > "$ASSET_FILES"
 while IFS= read -r FILE; do
     REL=${FILE#"$DIST"/}
     case "$REL" in
-        service_worker.js | worker.js | worker_bg.wasm | version.json | asset-manifest.json | _headers | \
+        *.map | service_worker.js | worker.js | worker_bg.wasm | version.json | asset-manifest.json | _headers | \
             .tonk-stamp.lock | .tonk-stamp.lock/* | *.tmp.* | *.stamp-backup.*)
             continue
             ;;

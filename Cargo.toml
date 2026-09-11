@@ -231,3 +231,14 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
+
+# Browser-specific release settings; native release and development stay unchanged.
+[profile.wasm-ui-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+
+[profile.wasm-worker-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"

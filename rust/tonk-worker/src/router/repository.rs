@@ -3355,6 +3355,17 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         }
     };
 
+    // Older onboarding builds recorded their composite inputs as core.yaml.
+    // Replaying that library over the imported app replaces its home alias.
+    // Snapshot spaces have no single replaceable library; preserve their
+    // authored state, including custom home aliases and agent-page changes.
+    if super::onboarding_space::has_welcome_snapshot(tonk, key)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
+    {
+        return Ok(false);
+    }
+
     let current = read_installed_seed(tonk, &session)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?;
@@ -3650,6 +3661,9 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
         "/library/onboarding-agent.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
         }
+        "/library/onboarding-demos.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
+        }
         "/library/onboarding.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
         }
@@ -3670,28 +3684,22 @@ pub(super) async fn seed_standard_library(
     branch: &str,
     library: &str,
 ) -> Result<(), TonkWorkerError> {
-    // Recorded, like every other seed: the record names the commit that
-    // installs the library, so route provenance and a later upgrade can
-    // both read which seed this branch carries. A fresh space has no
-    // predecessor and nothing to replace.
-    let version = seed_version(library);
-    let record = |minted: &dialog_artifacts::history::Version| {
-        seed_record_facts(
-            &version,
-            STANDARD_LIBRARY_URL,
-            SEED_NONE,
-            SEED_NONE,
-            &encode_seed_version(minted),
-        )
-    };
-    super::evaluate::evaluate_body_recording(tonk, repo, branch, library.to_owned(), &record)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to seed standard library on branch '{branch}': {e}"
-            ))
-        })
+    // Onboarding composes a scaffold, a named repository, an agent supplement,
+    // and an imported application snapshot. These bytes are not core.yaml and
+    // must not advertise it as an upgrade source. Ordinary space creation uses
+    // seed_and_initialize, which records the actual seed separately.
+    super::evaluate::seed_on_branch(
+        tonk,
+        tonk.reactor.repository(repo).branch(branch),
+        library.to_owned(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+        TonkWorkerError::Internal(format!(
+            "failed to seed standard library on branch '{branch}': {e}"
+        ))
+    })
 }
 
 /// Build the notation document asserting the repository's own

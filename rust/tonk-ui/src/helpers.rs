@@ -185,36 +185,6 @@ mod native {
         }
     }
 
-    fn copy_artifact_tree(source: &std::path::Path, destination: &std::path::Path) -> Result<()> {
-        std::fs::create_dir_all(destination)?;
-        for entry in std::fs::read_dir(source)? {
-            let entry = entry?;
-            let source_path = entry.path();
-            let destination_path = destination.join(entry.file_name());
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                copy_artifact_tree(&source_path, &destination_path)?;
-            } else if file_type.is_file() {
-                std::fs::copy(&source_path, &destination_path)?;
-                let mut permissions = std::fs::metadata(&destination_path)?.permissions();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    permissions.set_mode(permissions.mode() | 0o200);
-                }
-                #[cfg(not(unix))]
-                permissions.set_readonly(false);
-                std::fs::set_permissions(&destination_path, permissions)?;
-            } else {
-                return Err(anyhow!(
-                    "unsupported test artifact member {}",
-                    source_path.display()
-                ));
-            }
-        }
-        Ok(())
-    }
-
     impl TestEnvironment {
         fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
             let profile = tempfile::Builder::new()
@@ -261,6 +231,14 @@ mod native {
 
         /// Creates a new WebDriver instance connected to the test environment.
         pub async fn driver(&self) -> Result<WebDriver> {
+            let driver = self.blank_driver().await?;
+            goto(&driver, &self.tonk_web.to_string()).await?;
+            Ok(driver)
+        }
+
+        /// Creates an isolated browser session without visiting the application.
+        /// Profilers must install observation and start timing before navigating.
+        pub async fn blank_driver(&self) -> Result<WebDriver> {
             let started = std::time::Instant::now();
             let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
             let driver = if safari {
@@ -282,6 +260,7 @@ mod native {
             driver
                 .set_page_load_timeout(std::time::Duration::from_secs(60))
                 .await?;
+            driver.goto("about:blank").await?;
             #[cfg(test)]
             if !safari {
                 // Install before the first navigation so failures from the
@@ -323,7 +302,6 @@ mod native {
                     )
                     .await?;
             }
-            goto(&driver, &self.tonk_web.to_string()).await?;
             record_diagnostic(format!(
                 "phase=driver-ready elapsed_ms={}",
                 started.elapsed().as_millis()
@@ -607,12 +585,6 @@ mod native {
                 if line.contains("Test server live at") {
                     break;
                 }
-            }
-            if let Some(artifact) = std::env::var_os("TONK_UI_TEST_ARTIFACT") {
-                let artifact = std::path::PathBuf::from(artifact);
-                let generation_a = deployment_root.join("generation-a");
-                std::fs::remove_dir_all(&generation_a)?;
-                copy_artifact_tree(&artifact, &generation_a)?;
             }
             let mut listening = false;
             for _ in 0..100 {
