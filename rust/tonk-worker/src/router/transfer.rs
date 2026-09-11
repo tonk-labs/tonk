@@ -15,7 +15,7 @@
 use ::axum::{
     body::{Body, Bytes},
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use axum_wasm_macros::wasm_compat;
@@ -90,12 +90,117 @@ pub async fn export(
 pub async fn export_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileExportPath>,
+    headers: HeaderMap,
 ) -> Result<Response, TonkWorkerError> {
     log!("export profile branch={}", path.branch);
+    let wants_snapshot = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains(SNAPSHOT_MEDIA_TYPE));
+
     let tonk_state = state.write().await;
     let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
+
+    // CSV ships FACTS; the snapshot ships the tree itself -- every block
+    // and every blob the revision references, which is what a fixture
+    // needs to reproduce a real download (delegation envelopes are
+    // blobs, and they travel their own channel).
+    if wants_snapshot {
+        let body = export_branch_snapshot(&tonk_state, tonk_branch).await?;
+        return Ok(snapshot_response(
+            &format!("profile-{}.snapshot", path.branch),
+            body,
+        ));
+    }
+
     let csv = export_branch_csv(&tonk_state, tonk_branch).await?;
     Ok(csv_response(&format!("profile-{}.csv", path.branch), csv))
+}
+
+/// Media type selecting the whole-tree snapshot instead of CSV.
+pub const SNAPSHOT_MEDIA_TYPE: &str = "application/vnd.tonk.snapshot";
+
+/// Export a branch's whole revision -- blocks and blobs -- as a framed
+/// byte stream.
+///
+/// Framing, repeated until the input ends. All integers big-endian:
+///
+/// ```text
+/// u8   kind      0 = block, 1 = blob
+/// u32  digest_len
+/// ..   digest    (utf8, the address the content must hash to)
+/// u64  body_len
+/// ..   body      (the bytes)
+/// ```
+///
+/// Self-describing enough to rebuild `Item`s on the other side, and flat
+/// enough to write to a file and check in as a fixture.
+async fn export_branch_snapshot(
+    tonk_state: &crate::worker::TonkState,
+    tonk_branch: dialog_reactor::BranchReference<'_>,
+) -> Result<Vec<u8>, TonkWorkerError> {
+    use ::futures_util::StreamExt as _;
+    use dialog_repository::Item;
+
+    let branch = tonk_branch
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    let revision = branch
+        .handle()
+        .revision()
+        .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
+    let repository = dialog_repository::Repository::from(&tonk_state.profile);
+
+    let items = repository.snapshot(revision).export().perform(&tonk_state.operator);
+    ::futures_util::pin_mut!(items);
+
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(item) = items.next().await {
+        let item = item.map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+        match item {
+            Item::Block(block) => {
+                push_frame(&mut out, 0, &block.digest.to_string(), block.content.as_ref());
+            }
+            Item::Blob {
+                digest,
+                mut chunks,
+                ..
+            } => {
+                let mut bytes: Vec<u8> = Vec::new();
+                while let Some(chunk) = chunks
+                    .next()
+                    .await
+                    .map_err(|e| TonkWorkerError::Internal(e.to_string()))?
+                {
+                    bytes.extend_from_slice(&chunk);
+                }
+                push_frame(&mut out, 1, &digest.to_string(), &bytes);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Append one framed item; see [`export_branch_snapshot`].
+fn push_frame(out: &mut Vec<u8>, kind: u8, digest: &str, body: &[u8]) {
+    out.push(kind);
+    out.extend_from_slice(&(digest.len() as u32).to_be_bytes());
+    out.extend_from_slice(digest.as_bytes());
+    out.extend_from_slice(&(body.len() as u64).to_be_bytes());
+    out.extend_from_slice(body);
+}
+
+/// Wrap snapshot bytes as a downloadable response.
+fn snapshot_response(filename: &str, body: Vec<u8>) -> Response {
+    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, SNAPSHOT_MEDIA_TYPE.parse().unwrap());
+    if let Ok(value) = format!("attachment; filename=\"{filename}\"").parse::<header::HeaderValue>()
+    {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    response
 }
 
 /// Export one branch as CSV, minus governance rows. Shared by the
