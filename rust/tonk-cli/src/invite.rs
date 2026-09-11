@@ -645,6 +645,15 @@ async fn record_claim_roster(
     Ok(())
 }
 
+/// The per-leg timeout both mint paths honour.
+///
+/// The CLI has no client-side backstop the way the share control does,
+/// so an untimed leg here hangs `tonk invite` indefinitely rather than
+/// falling back to the long URL the caller already has.
+fn shortcut_timeout() -> std::time::Duration {
+    std::time::Duration::from_millis(tonk_invite::shortcut::TIMEOUT_MS.into())
+}
+
 /// Shorten a minted invite URL via the shortcut service on the link's
 /// origin: PUT the path + query, assemble `{origin}/@/{hash}` with the
 /// seed fragment re-attached (the fragment never goes on the wire).
@@ -659,7 +668,10 @@ async fn record_claim_roster(
 pub async fn shorten(url: &str) -> Result<String, InviteError> {
     let request = ShortcutRequest::new(url)
         .map_err(|e| InviteError::Io(format!("failed to derive shortcut: {e}")))?;
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(shortcut_timeout())
+        .build()
+        .map_err(|e| InviteError::Io(format!("shortcut PUT client: {e}")))?
         .put(request.endpoint.clone())
         .body(request.target.clone())
         .send()
@@ -685,6 +697,7 @@ pub async fn shorten(url: &str) -> Result<String, InviteError> {
         .map_err(|e| InviteError::Io(format!("shortcut probe URL: {e}")))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(shortcut_timeout())
         .build()
         .map_err(|e| InviteError::Io(format!("shortcut probe client: {e}")))?;
     let response = client

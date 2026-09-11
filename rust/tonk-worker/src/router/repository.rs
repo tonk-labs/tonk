@@ -1377,13 +1377,36 @@ async fn run_invite(
     )
     .await?;
 
+    // Attempt the shortcut HERE, before the credential overlay and the
+    // share control's row are written. Both are read for the first url
+    // they carry, and that url is what reaches the clipboard — a shorter
+    // one published afterwards arrives too late to be copied.
+    //
+    // Outside the state lock, which guards the whole worker (profile,
+    // operator, and the reactor's cached handles and subscriptions).
+    // Holding it across a network round-trip would stall every reader,
+    // not just a writer: the lock is write-preferring, so one queued
+    // writer parks every reader behind it. Nothing below the drop
+    // borrows from the guard — the rest of the mint reaches state
+    // through `tonk.reactor` and `tonk.operator`, both re-resolved from
+    // the guard taken back afterwards, which also means this picks up a
+    // session rotated while the shortcut was in flight rather than
+    // committing under a retired operator.
+    //
+    // Best effort, as the shortcut always was: a `PUT /@` that fails,
+    // answers non-conformingly, or stops answering at all (each leg
+    // carries its own timeout) leaves the long URL standing, which is
+    // fully functional. Minting never fails, or hangs, because a
+    // convenience did.
+    drop(tonk);
+    let link = shortened_or_full(link).await;
+    let tonk = env.state().read().await;
+
     let authorization = Authorization {
         this: subject_entity.clone(),
         proof: Proof(proof),
         remote: AuthorizationRemote(remote),
     };
-    let subject_entity_for_short = subject_entity.clone();
-    let subject_entity_for_short_state = subject_entity.clone();
 
     // Write the private seed and the assembled URL into the session overlay
     // and schedule a poll of this branch so the change propagates even
@@ -1400,7 +1423,7 @@ async fn run_invite(
         .overlay()
         .assert(Credential {
             this: subject_entity.clone(),
-            seed: Seed(seed.clone()),
+            seed: Seed(seed),
             link: Link(link.clone()),
         })
         .write()
@@ -1480,52 +1503,12 @@ async fn run_invite(
     );
     log!("Minted invitation for repo '{}'", repo_name);
 
-    // The mint is complete and the LONG link is what the share control
-    // copies — fan it out NOW, before any shortening network. Minting an
-    // invocation must never wait on a convenience round-trip.
+    // The mint is complete and the link it carries is final — already
+    // shortened, or the long URL a failed shortcut fell back to. Fan it
+    // out; there is no second, better url coming, so the control settles
+    // its clipboard write on this one.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-    drop(tonk);
 
-    // Best-effort shortening, off the critical path and outside the
-    // state lock: PUT the target and probe the stored shortcut (HEAD —
-    // the landing URL is the whole answer). A host that provides no
-    // shortening, or answers non-conformingly, leaves the long link
-    // standing; a conforming answer supersedes the overlay credential
-    // in place, and the dispatcher's drain broadcasts the update.
-    match super::create_invite::shorten(&link).await {
-        Ok(short) if short != link => {
-            let tonk = env.state().read().await;
-            if let Err(error) = tonk
-                .reactor
-                .repository(repo_name)
-                .branch(CONTENT_BRANCH)
-                .overlay()
-                .assert(Credential {
-                    this: subject_entity_for_short.clone(),
-                    seed: Seed(seed),
-                    link: Link(short.clone()),
-                })
-                .write()
-                .perform(&tonk.operator)
-                .await
-            {
-                log!("short link overlay update failed; the long link stands: {error}");
-            }
-            // And the row the share control actually reads, on profile
-            // main. Without this the clipboard settles on the long URL:
-            // the control resolves from the profile row, which would
-            // still carry the pre-shortening link.
-            publish_invite_state(
-                &tonk,
-                tonk_schema::command::InviteState::granted(subject_entity_for_short_state, short),
-            )
-            .await;
-        }
-        Ok(_) => {}
-        Err(error) => {
-            log!("invite shortcut failed; using the full URL: {error}");
-        }
-    }
     Ok(RunInvite::Settled)
 }
 
@@ -1630,8 +1613,29 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
-/// Assemble the invite URL a recipient opens, shortened when the
-/// shortcut service answers.
+/// The shortcut for `link`, or `link` itself when there isn't one.
+///
+/// Every way the attempt can end badly resolves to the full URL: an
+/// unreachable or unresolvable host, a request that times out, a non-2xx
+/// (a target over the service's size cap answers 400), a 200 carrying
+/// anything but the target's own content address, and a stored shortcut
+/// whose probe serves bytes instead of redirecting or redirects somewhere
+/// else. All of them mean the host does not provide shortening, and the
+/// long URL is fully functional, so none of them may fail a mint.
+///
+/// Named rather than inlined so the fallback is reachable from a test
+/// without standing up a misbehaving shortcut host.
+async fn shortened_or_full(link: String) -> String {
+    match super::create_invite::shorten(&link).await {
+        Ok(short) => short,
+        Err(error) => {
+            log!("invite shortcut failed; using the full URL: {error}");
+            link
+        }
+    }
+}
+
+/// Assemble the long invite URL a recipient opens.
 ///
 /// The long form is
 /// `{origin}/join?access={proof}{remote}&tonk_channel=reshare&tonk_space={hash}#{seed}`.
@@ -1641,10 +1645,10 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
 /// view used to concatenate from three overlay fields; building it here gives
 /// it one definition and lets it be shortened.
 ///
-/// Shortening is best-effort: a failed `PUT /@` (offline, no service
-/// deployed, a non-2xx, a non-conforming answer) logs and yields the long
-/// URL, which is fully functional. Minting must not fail because a
-/// convenience failed.
+/// Shortening is not done here — it is a network round-trip, and this
+/// runs while the URL is still being assembled. [`run_invite`] attempts it
+/// on the result, before the link is written anywhere, and falls back to
+/// this long form when the shortcut service does not answer.
 async fn invite_url(
     proof: &str,
     remote: &str,
@@ -1663,10 +1667,9 @@ async fn invite_url(
     // origin here is a bug worth failing on, not a case to paper over
     // with a link rooted somewhere the space is not served.
     //
-    // No network here, deliberately: this is on the mint's critical
-    // path, and the long URL is complete. Shortening is a later,
-    // best-effort pass (`run_invite` runs it after the link has been
-    // delivered, outside the state lock).
+    // No network here: this only assembles. `run_invite` attempts the
+    // shortcut on the result, before the link reaches the overlay or the
+    // share control's row, so what it delivers is already final.
     let base = tonk_invite::base_url_for_remote(access_url.as_str()).map_err(|error| {
         TonkWorkerError::Internal(format!(
             "the space's access endpoint yields no invite base: {error:#}"
@@ -6418,9 +6421,15 @@ mod invite_chain_tests {
                 "the minted link is rooted on the space's serving host"
             );
             // The fixture host provides conforming shortening (content
-            // hash + redirect), so the mint shortened; resolve the way a
-            // claimer does before parsing. A long link (a host without
-            // shortening) parses as-is — both arms are live behavior.
+            // hash + redirect), so the mint MUST have delivered a short
+            // link. Asserted rather than tolerated: the url the mint
+            // delivers is the one the share control copies, and a mint
+            // that quietly fell back to the long form is the regression
+            // this pins.
+            assert!(
+                tonk_invite::shortcut::is_shortcut(&link),
+                "the fixture shortens, so the minted link must be a shortcut, not {link}"
+            );
             let resolved = if tonk_invite::shortcut::is_shortcut(&link) {
                 let client = reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
@@ -6474,6 +6483,43 @@ mod invite_chain_tests {
             .into_inner();
         crate::router::account_state::tests::discard(tonk, &account_key);
         drop(service);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_fallback_tests {
+    /// A shortcut host that does not answer leaves the full URL standing.
+    ///
+    /// Shortening is a convenience, so every way it can fail has to end
+    /// with a link the recipient can still open: a 400 for a target over
+    /// the service's size cap, a 404 or 405 from a host serving no
+    /// shortcut route, a 200 from a blob store that stored the bytes
+    /// without understanding them, a probe that never redirects. Port 1
+    /// on loopback refuses immediately, which is the same `Err` arm all
+    /// of those land in.
+    ///
+    /// What this pins is the recovery, the part with no other coverage:
+    /// the fallback yields the url UNCHANGED — not an error that would
+    /// fail the mint, not an empty string, and with the seed fragment
+    /// still attached, since a link that lost its `#seed` would look
+    /// fine and redeem into nothing.
+    #[dialog_common::test]
+    async fn it_falls_back_to_the_full_url_when_the_shortcut_fails() {
+        let full = "http://127.0.0.1:1/join?access=PROOF&tonk_channel=reshare#SEED";
+        assert_eq!(
+            super::shortened_or_full(full.to_owned()).await,
+            full,
+            "a refused shortcut must yield the full URL, verbatim"
+        );
+
+        // A url no shortcut request can even be derived from must fall
+        // back rather than propagate.
+        let unshortenable = "not a url";
+        assert_eq!(
+            super::shortened_or_full(unshortenable.to_owned()).await,
+            unshortenable,
+            "a url the shortcut request cannot be derived from must yield itself"
+        );
     }
 }
 
