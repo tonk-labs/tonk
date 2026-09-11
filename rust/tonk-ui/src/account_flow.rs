@@ -1215,18 +1215,38 @@ mod tests {
             // test instead of simply polling again. Nothing here is
             // worth failing on: the row is either readable now or it is
             // not, and the deadline below is what gives up.
-            let settled = driver
+            let receipt = driver
                 .execute(
-                    "const v = document.querySelector('#tonk-register-passkey-row .v');
-                     return v ? v.textContent.trim() : '';",
+                    "const dialog = document.querySelector('#tonk-register-dialog');
+                     const v = document.querySelector('#tonk-register-passkey-row .v');
+                     return { present: !!dialog, passkey: v ? v.textContent.trim() : '' };",
                     Vec::new(),
                 )
                 .await
                 .ok()
-                .and_then(|value| value.json().as_str().map(str::to_owned))
+                .map(|value| value.json().clone());
+            let settled = receipt
+                .as_ref()
+                .and_then(|value| value["passkey"].as_str())
                 .is_some_and(|text| !text.is_empty());
             if settled {
                 dismiss_register_dialog(driver).await?;
+                return Ok(());
+            }
+            // Profile routing can finish without rebuilding the top document:
+            // in that case the ceremony removes its dialog and the account API
+            // is the durable receipt. Do not accept disappearance alone — a
+            // failed ceremony can also close — and only probe once it is gone.
+            if receipt
+                .as_ref()
+                .is_some_and(|value| value["present"] == false)
+                && let Ok(account) =
+                    tokio::time::timeout(Duration::from_secs(2), get_json(driver, "/api/account"))
+                        .await
+                && let Ok(account) = account
+                && account["status"] == 200
+                && account["body"]["accountState"] == "ready"
+            {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
