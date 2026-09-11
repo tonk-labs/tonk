@@ -107,6 +107,18 @@ impl AccountSecret {
         self.0.clone()
     }
 
+    /// TEMPORARY (#492 repro): the raw account secret, for capturing a
+    /// fixture account.
+    ///
+    /// The whole passkey ceremony exists to produce these 32 bytes, and
+    /// `from_bytes` adopts them back -- so a test can reconstitute a real
+    /// account without an authenticator, PRF, or a live CDP connection.
+    /// Capturing them is exactly as sensitive as it sounds: this is the
+    /// account. REMOVE with the probe that calls it.
+    pub fn probe_material(&self) -> Zeroizing<[u8; 32]> {
+        self.material()
+    }
+
     /// The Ed25519 signing seed, via [`SIGNING_CONTEXT`].
     ///
     /// Crate-private: [`Self::signer`] is what callers want, and it

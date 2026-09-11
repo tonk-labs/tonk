@@ -45,6 +45,12 @@ impl Account {
         &self.envelope
     }
 
+    /// TEMPORARY (#492 repro): the raw 32-byte account secret.
+    /// See [`crate::envelope::AccountSecret::probe_material`]. REMOVE.
+    pub fn probe_material(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        self.secret.probe_material()
+    }
+
     /// Give up the secret, to seal it under another custodian.
     ///
     /// Consuming, and the only way out: an account whose secret can be
