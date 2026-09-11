@@ -29,7 +29,7 @@ use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
 /// Remote name for the account's access branch in the profile repository.
-const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
+pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
