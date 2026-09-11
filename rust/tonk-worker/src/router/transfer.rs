@@ -169,9 +169,14 @@ async fn export_branch_snapshot(
     //
     // With no remote configured there is nothing to reach for; sparse is
     // then the honest answer.
+    // The profile repository tracks the account under "account-access"
+    // (see `router/account_state.rs`); "origin" is what SPACE
+    // repositories use, and loading that name here silently fell through
+    // to sparse -- an export that looked like it had reached for the
+    // missing blocks while quietly skipping them.
     let export = repository.snapshot(revision).export();
-    let export = match dialog_repository::Repository::from(&tonk_state.profile)
-        .remote(tonk_account::ORIGIN_REMOTE)
+    let export = match repository
+        .remote(super::account_state::ACCOUNT_ACCESS_REMOTE)
         .load()
         .perform(&tonk_state.operator)
         .await
