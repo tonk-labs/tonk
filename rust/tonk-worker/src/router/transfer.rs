@@ -155,17 +155,31 @@ async fn export_branch_snapshot(
         .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
     let repository = dialog_repository::Repository::from(&tonk_state.profile);
 
-    // `sparse`, not a plain export: the profile is a PARTIAL replica.
-    // Login materializes the operational regions only, so history and
-    // coverage stay by reference and a strict walk fails on the first
-    // absent block ("Revision references block ..., which is not
-    // present"). A fixture wants what this replica actually holds, which
-    // is exactly what sparse reports.
-    let items = repository
-        .snapshot(revision)
-        .export()
-        .sparse()
-        .perform(&tonk_state.operator);
+    // The profile is a PARTIAL replica: login materializes the
+    // operational regions and leaves history and coverage by reference,
+    // so a plain export dies on the first absent block ("Revision
+    // references block ..., which is not present").
+    //
+    // Reach for the rest rather than skipping it. `download` hydrates
+    // read-misses from the upstream as the walk proceeds and caches them
+    // locally, so the snapshot is COMPLETE -- which is what a fixture
+    // needs. `sparse` would succeed too, but by silently omitting
+    // whatever this replica happens not to hold, and a fixture with
+    // invisible holes is worse than one that fails loudly.
+    //
+    // With no remote configured there is nothing to reach for; sparse is
+    // then the honest answer.
+    let export = repository.snapshot(revision).export();
+    let export = match dialog_repository::Repository::from(&tonk_state.profile)
+        .remote(tonk_account::ORIGIN_REMOTE)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+    {
+        Ok(upstream) => export.download(upstream),
+        Err(_) => export.sparse(),
+    };
+    let items = export.perform(&tonk_state.operator);
     ::futures_util::pin_mut!(items);
 
     let mut out: Vec<u8> = Vec::new();
