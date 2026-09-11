@@ -104,7 +104,10 @@ pub async fn export_profile(
     // CSV ships FACTS; the snapshot ships the tree itself -- every block
     // and every blob the revision references, which is what a fixture
     // needs to reproduce a real download (delegation envelopes are
-    // blobs, and they travel their own channel).
+    // blobs, and they travel their own channel). The media type names
+    // dialog because the format is dialog's snapshot, not tonk's: the
+    // bytes are `dialog_repository::Item`s and anything speaking that
+    // format can read them.
     if wants_snapshot {
         let body = export_branch_snapshot(&tonk_state, tonk_branch).await?;
         return Ok(snapshot_response(
@@ -118,7 +121,7 @@ pub async fn export_profile(
 }
 
 /// Media type selecting the whole-tree snapshot instead of CSV.
-pub const SNAPSHOT_MEDIA_TYPE: &str = "application/vnd.tonk.snapshot";
+pub const SNAPSHOT_MEDIA_TYPE: &str = "application/vnd.dialog.snapshot";
 
 /// Export a branch's whole revision -- blocks and blobs -- as a framed
 /// byte stream.
