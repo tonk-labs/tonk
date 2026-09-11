@@ -869,26 +869,6 @@ async fn create(
     }
 
     let account = open(custodian).await?;
-
-    // TEMPORARY (#492 repro): print the account secret so a test can
-    // reconstitute this exact account without a passkey.
-    //
-    // The whole ceremony exists to produce these 32 bytes;
-    // `AccountSecret::from_bytes` adopts them back, deriving the same
-    // Ed25519 signer and X25519 key. Capturing them once means the
-    // login-recovery repro never has to replay WebAuthn again -- no
-    // virtual authenticator, no PRF, nothing that dies with a CDP
-    // connection. REMOVE THIS, and `probe_material` with it: the line
-    // prints the account itself.
-    log!(
-        "ACCOUNT-SECRET-PROBE {}",
-        account
-            .probe_material()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    );
-
     let root = account
         .signer()
         .await
