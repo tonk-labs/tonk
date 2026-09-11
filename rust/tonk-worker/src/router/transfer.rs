@@ -111,128 +111,13 @@ pub async fn export_profile(
     if wants_snapshot {
         let body = export_branch_snapshot(&tonk_state, tonk_branch).await?;
         return Ok(snapshot_response(
-            &format!("profile-{}.snapshot", path.branch),
+            &format!("profile-{}.car", path.branch),
             body,
         ));
     }
 
     let csv = export_branch_csv(&tonk_state, tonk_branch).await?;
     Ok(csv_response(&format!("profile-{}.csv", path.branch), csv))
-}
-
-/// Media type selecting the whole-tree snapshot instead of CSV.
-pub const SNAPSHOT_MEDIA_TYPE: &str = "application/vnd.dialog.snapshot";
-
-/// Export a branch's whole revision -- blocks and blobs -- as a framed
-/// byte stream.
-///
-/// Framing, repeated until the input ends. All integers big-endian:
-///
-/// ```text
-/// u8   kind      0 = block, 1 = blob
-/// u32  digest_len
-/// ..   digest    (utf8, the address the content must hash to)
-/// u64  body_len
-/// ..   body      (the bytes)
-/// ```
-///
-/// Self-describing enough to rebuild `Item`s on the other side, and flat
-/// enough to write to a file and check in as a fixture.
-async fn export_branch_snapshot(
-    tonk_state: &crate::worker::TonkState,
-    tonk_branch: dialog_reactor::BranchReference<'_>,
-) -> Result<Vec<u8>, TonkWorkerError> {
-    use ::futures_util::StreamExt as _;
-    use dialog_repository::Item;
-
-    let branch = tonk_branch
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-    let revision = branch
-        .handle()
-        .revision()
-        .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
-    let repository = dialog_repository::Repository::from(&tonk_state.profile);
-
-    // The profile is a PARTIAL replica: login materializes the
-    // operational regions and leaves history and coverage by reference,
-    // so a plain export dies on the first absent block ("Revision
-    // references block ..., which is not present").
-    //
-    // Reach for the rest rather than skipping it. `download` hydrates
-    // read-misses from the upstream as the walk proceeds and caches them
-    // locally, so the snapshot is COMPLETE -- which is what a fixture
-    // needs. `sparse` would succeed too, but by silently omitting
-    // whatever this replica happens not to hold, and a fixture with
-    // invisible holes is worse than one that fails loudly.
-    //
-    // With no remote configured there is nothing to reach for; sparse is
-    // then the honest answer.
-    // The profile repository tracks the account under "account-access"
-    // (see `router/account_state.rs`); "origin" is what SPACE
-    // repositories use, and loading that name here silently fell through
-    // to sparse -- an export that looked like it had reached for the
-    // missing blocks while quietly skipping them.
-    let export = repository.snapshot(revision).export();
-    let export = match repository
-        .remote(super::account_state::ACCOUNT_ACCESS_REMOTE)
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(upstream) => export.download(upstream),
-        Err(_) => export.sparse(),
-    };
-    let items = export.perform(&tonk_state.operator);
-    ::futures_util::pin_mut!(items);
-
-    let mut out: Vec<u8> = Vec::new();
-    while let Some(item) = items.next().await {
-        let item = item.map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
-        match item {
-            Item::Block(block) => {
-                push_frame(&mut out, 0, &block.digest.to_string(), block.content.as_ref());
-            }
-            Item::Blob {
-                digest,
-                mut chunks,
-                ..
-            } => {
-                let mut bytes: Vec<u8> = Vec::new();
-                while let Some(chunk) = chunks
-                    .next()
-                    .await
-                    .map_err(|e| TonkWorkerError::Internal(e.to_string()))?
-                {
-                    bytes.extend_from_slice(&chunk);
-                }
-                push_frame(&mut out, 1, &digest.to_string(), &bytes);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Append one framed item; see [`export_branch_snapshot`].
-fn push_frame(out: &mut Vec<u8>, kind: u8, digest: &str, body: &[u8]) {
-    out.push(kind);
-    out.extend_from_slice(&(digest.len() as u32).to_be_bytes());
-    out.extend_from_slice(digest.as_bytes());
-    out.extend_from_slice(&(body.len() as u64).to_be_bytes());
-    out.extend_from_slice(body);
-}
-
-/// Wrap snapshot bytes as a downloadable response.
-fn snapshot_response(filename: &str, body: Vec<u8>) -> Response {
-    let mut response = (StatusCode::OK, Body::from(body)).into_response();
-    let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, SNAPSHOT_MEDIA_TYPE.parse().unwrap());
-    if let Ok(value) = format!("attachment; filename=\"{filename}\"").parse::<header::HeaderValue>()
-    {
-        headers.insert(header::CONTENT_DISPOSITION, value);
-    }
-    response
 }
 
 /// Export one branch as CSV, minus governance rows. Shared by the
@@ -261,6 +146,70 @@ fn csv_response(filename: &str, csv: String) -> Response {
     let mut response = (StatusCode::OK, Body::from(csv)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, "text/csv".parse().unwrap());
+    if let Ok(value) = format!("attachment; filename=\"{filename}\"").parse::<header::HeaderValue>()
+    {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    response
+}
+
+/// Media type selecting the whole-tree snapshot instead of CSV.
+///
+/// The format is dialog's, and so is the codec: see
+/// [`dialog_repository::codec`]. Serving it from here rather
+/// than re-implementing the framing means the app and dialog's own tests
+/// read the same bytes.
+pub use dialog_repository::codec::MEDIA_TYPE as SNAPSHOT_MEDIA_TYPE;
+
+/// Export a branch's whole revision -- blocks and blobs -- as a CARv1.
+async fn export_branch_snapshot(
+    tonk_state: &crate::worker::TonkState,
+    tonk_branch: dialog_reactor::BranchReference<'_>,
+) -> Result<Vec<u8>, TonkWorkerError> {
+    let branch = tonk_branch
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    let revision = branch
+        .handle()
+        .revision()
+        .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
+    let root = dialog_common::Blake3Hash::from(*revision.tree.hash());
+    let repository = dialog_repository::Repository::from(&tonk_state.profile);
+
+    // The profile is a PARTIAL replica: login materializes the
+    // operational regions and leaves history and coverage by reference,
+    // so a plain export dies on the first absent block. Reach for the
+    // rest rather than skipping it -- `sparse` would succeed by silently
+    // omitting whatever this replica happens not to hold, and a snapshot
+    // with invisible holes is worse than one that fails loudly.
+    //
+    // With no remote configured there is nothing to reach for; sparse is
+    // then the honest answer.
+    let export = repository.snapshot(revision).export();
+    let export = match repository
+        .remote(super::account_state::ACCOUNT_ACCESS_REMOTE)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+    {
+        Ok(upstream) => export.download(upstream),
+        Err(_) => export.sparse(),
+    };
+
+    dialog_repository::codec::encode(
+        export.perform(&tonk_state.operator),
+        vec![root],
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+}
+
+/// Wrap snapshot bytes as a downloadable response.
+fn snapshot_response(filename: &str, body: Vec<u8>) -> Response {
+    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, SNAPSHOT_MEDIA_TYPE.parse().unwrap());
     if let Ok(value) = format!("attachment; filename=\"{filename}\"").parse::<header::HeaderValue>()
     {
         headers.insert(header::CONTENT_DISPOSITION, value);
