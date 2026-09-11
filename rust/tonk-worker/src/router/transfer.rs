@@ -155,7 +155,17 @@ async fn export_branch_snapshot(
         .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
     let repository = dialog_repository::Repository::from(&tonk_state.profile);
 
-    let items = repository.snapshot(revision).export().perform(&tonk_state.operator);
+    // `sparse`, not a plain export: the profile is a PARTIAL replica.
+    // Login materializes the operational regions only, so history and
+    // coverage stay by reference and a strict walk fails on the first
+    // absent block ("Revision references block ..., which is not
+    // present"). A fixture wants what this replica actually holds, which
+    // is exactly what sparse reports.
+    let items = repository
+        .snapshot(revision)
+        .export()
+        .sparse()
+        .perform(&tonk_state.operator);
     ::futures_util::pin_mut!(items);
 
     let mut out: Vec<u8> = Vec::new();
