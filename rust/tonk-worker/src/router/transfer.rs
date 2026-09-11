@@ -72,7 +72,38 @@ pub async fn export(
         .reactor
         .repository(&path.repo)
         .branch(&path.branch);
+    let csv = export_branch_csv(&tonk_state, tonk_branch).await?;
+    Ok(csv_response(&format!("{}-{}.csv", path.repo, path.branch), csv))
+}
 
+/// `GET /api/profile/branch/{branch}/export`
+///
+/// The profile's counterpart to [`export`]. The profile is a singleton,
+/// so there is no `repo` segment and the branch resolves through
+/// `profile_repository()` -- the same split `/query`, `/evaluate` and
+/// `/transact` already make.
+///
+/// This is what lets the profile branch be captured as a fixture: its
+/// content (delegations, device links, definitions) is otherwise
+/// reachable only one query at a time.
+#[wasm_compat]
+pub async fn export_profile(
+    State(state): State<AppState>,
+    Path(path): Path<ProfileExportPath>,
+) -> Result<Response, TonkWorkerError> {
+    log!("export profile branch={}", path.branch);
+    let tonk_state = state.write().await;
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
+    let csv = export_branch_csv(&tonk_state, tonk_branch).await?;
+    Ok(csv_response(&format!("profile-{}.csv", path.branch), csv))
+}
+
+/// Export one branch as CSV, minus governance rows. Shared by the
+/// repository and profile routes so the two cannot drift.
+async fn export_branch_csv(
+    tonk_state: &crate::worker::TonkState,
+    tonk_branch: dialog_reactor::BranchReference<'_>,
+) -> Result<String, TonkWorkerError> {
     let mut buf: Vec<u8> = Vec::new();
     tonk_branch
         .export(CsvExporter::from(&mut buf))
@@ -85,9 +116,11 @@ pub async fn export(
     // a content import on the other side. CSV is utf8.
     let csv = String::from_utf8(buf)
         .map_err(|e| TonkWorkerError::Internal(format!("export produced non-utf8 csv: {e}")))?;
-    let csv = strip_governance_rows(&csv);
+    Ok(strip_governance_rows(&csv))
+}
 
-    let filename = format!("{}-{}.csv", path.repo, path.branch);
+/// Wrap CSV bytes as a downloadable `text/csv` response.
+fn csv_response(filename: &str, csv: String) -> Response {
     let mut response = (StatusCode::OK, Body::from(csv)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, "text/csv".parse().unwrap());
@@ -95,7 +128,15 @@ pub async fn export(
     {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
-    Ok(response)
+    response
+}
+
+/// Path parameters for the profile export route. The profile is a
+/// singleton -- no `repo` segment.
+#[derive(Debug, Deserialize)]
+pub struct ProfileExportPath {
+    /// The branch name.
+    pub branch: String,
 }
 
 /// Wire-shape returned by `/import` — the post-commit revision.

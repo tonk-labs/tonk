@@ -273,6 +273,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
         )
+        // The profile's own CSV export, alongside `/query` and
+        // `/transact`. The repository route cannot serve the profile:
+        // the profile is a singleton reached through
+        // `profile_repository()`, not by name.
+        .route(
+            "/api/profile/branch/{branch}/export",
+            get(transfer::export_profile),
+        )
         // Register the requesting client's site (per-tab navigation state).
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
