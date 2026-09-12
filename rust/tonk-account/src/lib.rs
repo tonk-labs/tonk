@@ -27,7 +27,7 @@ use dialog_effects::archive::{Get, Put};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish as MemoryPublish, Resolve};
 use dialog_repository::{
-    Branch, FetchRemoteBranchError, PublishError, PublishRemoteBranchError, PushError,
+    Branch, FetchRemoteBranchError, Hydrate, PublishError, PublishRemoteBranchError, PushError,
     RemoteBranch, RemoteSite, ResolveError, Revision,
 };
 use thiserror::Error;
@@ -147,6 +147,7 @@ where
         + Provider<Resolve>
         + Provider<MemoryPublish>
         + Provider<BlobRead>
+        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Put>>
         + Provider<Fork<RemoteSite, Resolve>>
