@@ -14,11 +14,14 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
-    // Diagnostics must remain available even when worker/Wasm startup fails.
+    // Bare routes render without the app. Diagnostics must remain
+    // available even when worker/Wasm startup fails, and `/rtc` owns an
+    // `RTCPeerConnection` from plain JS — neither wants the portal, the
+    // element registry, or a service worker brought up underneath it.
     if web_sys::window().is_some_and(|window| {
         matches!(
             window.location().pathname().as_deref(),
-            Ok("/doctor" | "/doctor/")
+            Ok("/doctor" | "/doctor/" | "/rtc" | "/rtc/")
         )
     }) {
         return;

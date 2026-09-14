@@ -63,6 +63,8 @@ pub mod output;
 pub mod recovery;
 pub mod remote;
 pub mod render;
+#[cfg(feature = "rtc")]
+pub mod rtc;
 pub mod schema;
 pub mod site;
 pub mod space;

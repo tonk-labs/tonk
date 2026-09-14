@@ -23,11 +23,22 @@
         </script>
         <script>
             globalThis.tonkDoctorRoute = ["/doctor", "/doctor/"].includes(location.pathname);
+            globalThis.tonkRtcRoute = ["/rtc", "/rtc/"].includes(location.pathname);
+            // Routes that render without the app: no Wasm, no custom
+            // elements, no service worker. Doctor must observe a broken
+            // boot without touching it; /rtc holds an RTCPeerConnection,
+            // which the service worker could not own even if it were
+            // running (`RTCPeerConnection` is `[Exposed=Window]`).
+            globalThis.tonkBareRoute =
+                globalThis.tonkDoctorRoute || globalThis.tonkRtcRoute;
         </script>
         <script type="module">
             if (globalThis.tonkDoctorRoute) {
                 const { mountDoctor } = await import("/doctor.mjs");
                 mountDoctor();
+            } else if (globalThis.tonkRtcRoute) {
+                const { mountRtc } = await import("/rtc.mjs");
+                mountRtc();
             }
         </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
@@ -303,8 +314,9 @@
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
-            // Doctor observes the existing registration without starting or updating it.
-            if (!globalThis.tonkDoctorRoute) {
+            // A bare route observes the existing registration without
+            // starting or updating it.
+            if (!globalThis.tonkBareRoute) {
             const serviceWorkersSupported = "serviceWorker" in navigator;
 
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
@@ -772,7 +784,7 @@
          the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
-                if (globalThis.tonkDoctorRoute || !("serviceWorker" in navigator)) return;
+                if (globalThis.tonkBareRoute || !("serviceWorker" in navigator)) return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();
@@ -909,6 +921,7 @@
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
+        <link data-trunk rel="copy-file" href="./assets/rtc.mjs" />
         <link
             data-trunk
             rel="copy-file"

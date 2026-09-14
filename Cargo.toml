@@ -28,6 +28,7 @@ members = [
   "rust/tonk-prose",
   "rust/tonk-render",
   "rust/tonk-router",
+  "rust/tonk-rtc",
   "rust/tonk-schema",
   "rust/tonk-sigil",
   "rust/tonk-table",
@@ -72,6 +73,7 @@ tonk-portal = { path = "./rust/tonk-portal" }
 tonk-prose = { path = "./rust/tonk-prose" }
 tonk-render = { path = "./rust/tonk-render" }
 tonk-router = { path = "./rust/tonk-router" }
+tonk-rtc = { path = "./rust/tonk-rtc" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-table = { path = "./rust/tonk-table" }

@@ -1,0 +1,29 @@
+[package]
+name = "tonk-rtc"
+description = "WebRTC data-channel transport between the tonk CLI and a browser peer."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# The native peer and the loopback signalling listener are native-only:
+# `webrtc` pulls a UDP/ICE stack that does not build for wasm32, and the
+# browser half of this ceremony uses the platform's own
+# `RTCPeerConnection` rather than anything from this crate.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["form", "http1", "tokio"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time"] }
+webrtc = "0.20.5"
+
+# The test process drives the loopback listener over a raw socket, which
+# needs `io-util`. Target-gated for the same reason the runtime deps
+# above are: tokio's `net` pulls `mio`, which does not build for wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time", "io-util"] }

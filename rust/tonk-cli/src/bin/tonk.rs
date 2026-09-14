@@ -346,6 +346,22 @@ enum Command {
         switch_account: Option<String>,
     },
 
+    /// Open a WebRTC data channel to a browser tab (proof of concept)
+    ///
+    /// Creates an offer, opens a browser page that answers it, and
+    /// relays lines of text in both directions once the channel is up.
+    /// The page returns its answer through a short-lived loopback
+    /// listener, the same shape the account-login ceremony uses.
+    #[cfg(feature = "rtc")]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tonk rtc connect\n  tonk rtc connect --via http://127.0.0.1:8080/rtc"
+    )]
+    Rtc {
+        #[command(subcommand)]
+        command: RtcCommand,
+    },
+
     /// Push local main to its upstream
     #[command(after_help = "Examples:\n  tonk push")]
     Push,
@@ -633,6 +649,25 @@ enum AccountSpaceCommand {
         /// Delete without the typed confirmation.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[cfg(feature = "rtc")]
+#[derive(Subcommand, Debug)]
+enum RtcCommand {
+    /// Negotiate a channel with a browser tab and relay text over it.
+    Connect {
+        /// The page that answers the offer. Defaults to Tonk's own
+        /// `/rtc`; point it at a `dev:web` server for local work.
+        #[arg(long, value_name = "URL")]
+        via: Option<String>,
+        /// Print the URL instead of opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// STUN server for ICE. Unnecessary on one machine; repeat for
+        /// several.
+        #[arg(long, value_name = "URL")]
+        stun: Vec<String>,
     },
 }
 
@@ -1128,6 +1163,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Export { .. } => ("export", None),
         Command::Render { .. } => ("render", None),
         Command::Import { .. } => ("import", None),
+        #[cfg(feature = "rtc")]
+        Command::Rtc { command } => (
+            "rtc",
+            Some(match command {
+                RtcCommand::Connect { .. } => "connect",
+            }),
+        ),
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
         Command::Status { .. } => ("status", None),
@@ -1335,6 +1377,13 @@ async fn main() {
             branch,
             write,
         } => import_op(file, &branch, write, space.as_deref()).await,
+        #[cfg(feature = "rtc")]
+        Command::Rtc { command } => {
+            let RtcCommand::Connect { via, no_open, stun } = command;
+            tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun })
+                .await
+                .map_or_else(print_failure, |()| ExitCode::Success)
+        }
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,

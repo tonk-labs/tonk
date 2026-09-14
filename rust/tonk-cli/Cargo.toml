@@ -128,6 +128,11 @@ required-features = ["integration-tests"]
 
 [features]
 integration-tests = []
+# The WebRTC data-channel proof of concept (`tonk rtc connect`).
+# Off by default: `webrtc` pulls an ICE/DTLS/SCTP stack that roughly
+# doubles this crate's dependency graph, and a shipped `tonk` has no use
+# for it until the channel carries sync.
+rtc = ["dep:tonk-rtc"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
@@ -195,6 +200,7 @@ zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
+tonk-rtc = { workspace = true, optional = true }
 tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
 unicode-width = { workspace = true }
