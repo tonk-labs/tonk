@@ -58,13 +58,13 @@ test("the settings display name has visible input affordance", () => {
   assert.ok(rule, "the display-name input must have an authored style rule");
   assert.match(
     rule[1],
-    /border-bottom:\s*1px solid var\(--ink\)/,
-    "the editable value must keep the design system's visible field underline",
+    /background:\s*var\(--sep\)/,
+    "the editable value must sit on the design system's visible field surface",
   );
   assert.match(
     rule[1],
-    /flex:\s*0 1 18ch/,
-    "the underline must read as a bounded input rather than a row divider",
+    /flex:\s*0 1 28ch/,
+    "the surface must read as a bounded input rather than a row divider",
   );
 });
 
