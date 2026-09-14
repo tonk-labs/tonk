@@ -471,6 +471,30 @@ fn load_claim(site: &str, path: &str) -> wasm_bindgen::JsValue {
     JSON::parse(&body).unwrap_or(wasm_bindgen::JsValue::NULL)
 }
 
+/// Size a routed site's iframe to the surrounding viewport.
+fn style_site_iframe(iframe: &HtmlIFrameElement) {
+    let style = iframe.style();
+    // `<tonk-site>` itself is `display: contents` (a transparent routing
+    // element), so the iframe sizes against the surrounding layout, not the
+    // element. `100dvh`/`100%` are viewport-/parent-relative so the iframe
+    // fills regardless of nesting (top-level body child, or a flex slot in a
+    // space chrome) instead of collapsing to the iframe's intrinsic ~150px.
+    let _ = style.set_property("width", "100%");
+    let _ = style.set_property("height", "100dvh");
+    let _ = style.set_property("flex", "1 1 auto");
+    let _ = style.set_property("align-self", "stretch");
+    let _ = style.set_property("border", "0");
+    let _ = style.set_property("display", "block");
+    // The element is appended before its srcdoc is assigned, and a runtime
+    // guest receives its theme only after the bridge handshake. Paint behind
+    // both document states so a nested site cannot expose the browser's white
+    // iframe canvas while its dark guest is starting.
+    let _ = style.set_property(
+        "background-color",
+        "var(--wa-color-surface-default, light-dark(#e8e6e4, #161313))",
+    );
+}
+
 /// Build the guest content (the `tonk:site` display) and bring up the sealed
 /// iframe via [`connect_portal`]. The iframe always renders in `runtime` mode
 /// (the guest needs our element runtime). If an iframe already exists (a
@@ -503,26 +527,7 @@ fn render_in_iframe(
     // and reach: un-routed guest operations are pinned to `with`, and a
     // forwarded route is honored only if `allow` permits it (typed denial
     // otherwise).
-    connect_portal(
-        host,
-        cell.as_ref(),
-        Some(with),
-        allow,
-        |iframe: &HtmlIFrameElement| {
-            let style = iframe.style();
-            // `<tonk-site>` itself is `display: contents` (a transparent routing
-            // element), so the iframe sizes against the surrounding layout, not the
-            // element. `100dvh`/`100%` are viewport-/parent-relative so the iframe
-            // fills regardless of nesting (top-level body child, or a flex slot in a
-            // space chrome) instead of collapsing to the iframe's intrinsic ~150px.
-            let _ = style.set_property("width", "100%");
-            let _ = style.set_property("height", "100dvh");
-            let _ = style.set_property("flex", "1 1 auto");
-            let _ = style.set_property("align-self", "stretch");
-            let _ = style.set_property("border", "0");
-            let _ = style.set_property("display", "block");
-        },
-    );
+    connect_portal(host, cell.as_ref(), Some(with), allow, style_site_iframe);
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /
@@ -689,6 +694,26 @@ mod tests {
         assert!(
             claim.contains("/space/x") && claim.contains("site:test-heal"),
             "the re-claim carries the current path and site entity, got: {claim}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_paints_the_site_surface_before_the_guest_document_loads() {
+        let iframe = document()
+            .create_element("iframe")
+            .expect("iframe")
+            .dyn_into::<HtmlIFrameElement>()
+            .expect("iframe cast");
+
+        style_site_iframe(&iframe);
+
+        let background = iframe
+            .style()
+            .get_property_value("background-color")
+            .expect("background-color property");
+        assert!(
+            background.contains("--wa-color-surface-default"),
+            "the visible iframe must use the parent theme while about:blank and srcdoc bootstrap; got: {background:?}"
         );
     }
 }
