@@ -384,7 +384,44 @@ async fn evaluate_on_branch<'a>(
     body: Bytes,
     query: EvaluateQuery,
 ) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
-    evaluate_on_branch_with(tonk_state, tonk_branch, body, query, Vec::new(), None).await
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        body,
+        query,
+        Vec::new(),
+        None,
+        EvaluationMode::Interactive,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EvaluationMode {
+    Interactive,
+    LibrarySeed,
+    #[cfg(test)]
+    LibrarySeedWithRace,
+}
+
+/// Libraries are known mutation documents. Take the writer lock before their
+/// first evaluation, sharing the interactive path's commit, refresh and retry.
+pub(super) async fn seed_on_branch<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    tonk_branch: crate::reactor::BranchReference<'a>,
+    body: String,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        Bytes::from(body.into_bytes()),
+        EvaluateQuery { transact: true },
+        Vec::new(),
+        None,
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(response), _)| response)
 }
 
 /// [`evaluate_on_branch`], with `retract` folded into the same batch the
@@ -416,7 +453,10 @@ async fn evaluate_on_branch_with<'a>(
     query: EvaluateQuery,
     retract: Vec<crate::router::claim::RawClaim>,
     record: Option<SeedRecord<'_>>,
+    mode: EvaluationMode,
 ) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
+    let total_start = web_time::Instant::now();
+    let evaluation_passes = std::sync::atomic::AtomicUsize::new(0);
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
@@ -439,7 +479,8 @@ async fn evaluate_on_branch_with<'a>(
     // after evaluating, but the WILL-commit decision also governs locking, so a
     // committing document runs its whole evaluate+commit under the branch
     // transactor while a dry run takes no lock — hence the two arms below share
-    // the evaluation via a closure rather than a pre-check.
+    // the evaluation via a closure rather than a pre-check. Library seeds are
+    // known writers and bypass the speculative evaluation.
 
     // Evaluate against the current head. Kept as a closure so the committing
     // path can replay it after a refresh (the evaluated transaction borrows the
@@ -447,6 +488,7 @@ async fn evaluate_on_branch_with<'a>(
     // re-committing). Evaluation is pure over (document, head) and the
     // document's statements are idempotent asserts/retracts, so replay is safe.
     let evaluate_once = || async {
+        evaluation_passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let branch = session.handle();
         let revision_before = branch.revision();
         // The branch folds its session overlay into every read — the
@@ -490,29 +532,29 @@ async fn evaluate_on_branch_with<'a>(
     // lock. We can't know it's a dry run until after evaluating, so a peek: if
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
-    let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
-    if !(query.transact && evaluated.analysis.analysis.has_statements()) {
-        // Pure-query or dry-run: drop the transaction without committing. The
-        // pre-mutation matches double as "after". Zero out `claims` so the
-        // response reflects what *did* commit (nothing) — the editor's
-        // auto-evaluate relies on this to know the branch is untouched.
-        // Nothing committed means nothing dispatches either: a dry run's
-        // transients die with the dropped transaction.
-        let _ = matches_after;
-        let mut commits = evaluated.commits;
-        commits.claims = 0;
-        return Ok((
-            Json(EvaluateResponse {
-                revision_before: revision_before.clone(),
-                revision_after: revision_before,
-                matches_before: evaluated.matches.clone(),
-                matches_after: evaluated.matches,
-                commits,
-            }),
-            None,
-        ));
+    if mode == EvaluationMode::Interactive {
+        let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
+        if !(query.transact && evaluated.analysis.analysis.has_statements()) {
+            // Pure-query or dry-run: drop the transaction without committing. The
+            // pre-mutation matches double as "after". Zero out `claims` so the
+            // response reflects what *did* commit (nothing) — the editor's
+            // auto-evaluate relies on this to know the branch is untouched.
+            let _ = matches_after;
+            let mut commits = evaluated.commits;
+            commits.claims = 0;
+            return Ok((
+                Json(EvaluateResponse {
+                    revision_before: revision_before.clone(),
+                    revision_after: revision_before,
+                    matches_before: evaluated.matches.clone(),
+                    matches_after: evaluated.matches,
+                    commits,
+                }),
+                None,
+            ));
+        }
+        drop(evaluated);
     }
-    drop(evaluated);
 
     // Committing path. Serialize on the branch transactor — the same lock the
     // reactor's `Commit::perform` takes for `/transact`. This document's commit
@@ -548,6 +590,31 @@ async fn evaluate_on_branch_with<'a>(
         loop {
             let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
+            if mode != EvaluationMode::Interactive && !evaluated.analysis.analysis.has_statements()
+            {
+                return Err(TonkWorkerError::Internal(
+                    "library seed must contain mutation statements".to_owned(),
+                ));
+            }
+            // Model an external head advance after the snapshot, bypassing the
+            // transactor just as an in-flight sync can. Only compiled in tests.
+            #[cfg(test)]
+            if mode == EvaluationMode::LibrarySeedWithRace && attempt == 0 {
+                syntax
+                    .evaluate(session.handle().transaction())
+                    .perform(&tonk_state.operator)
+                    .await
+                    .map_err(map_evaluate_error)?
+                    .txn
+                    .commit()
+                    .perform(&tonk_state.operator)
+                    .await
+                    .map_err(|e| TonkWorkerError::Internal(format!("test race: {e}")))?
+                    .publish()
+                    .perform(&tonk_state.operator)
+                    .await
+                    .map_err(|e| TonkWorkerError::Internal(format!("test race: {e}")))?;
+            }
             // Extract what the response needs before the commit consumes the
             // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
             // by value). The transients mirror is what post-commit command
@@ -601,8 +668,10 @@ async fn evaluate_on_branch_with<'a>(
     let t_poll = web_time::Instant::now();
     session.poll(&tonk_state.operator).await;
     let poll_ms = t_poll.elapsed().as_millis();
+    let total_ms = total_start.elapsed().as_millis();
+    let passes = evaluation_passes.load(std::sync::atomic::Ordering::Relaxed);
     let timing = format!(
-        "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | matches {matches_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
+        "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | matches {matches_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms | total {total_ms}ms | passes {passes}"
     );
     log!("{timing}");
     // Tee timing onto a BroadcastChannel so a page (or DevTools listener) can
@@ -655,7 +724,7 @@ pub async fn evaluate_body(
 /// dispatch the same way the HTTP `/evaluate` route does; callers that
 /// evaluate authored documents with no commands (seeding, joins) keep
 /// using [`evaluate_body`].
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn evaluate_body_with_transients(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -696,6 +765,7 @@ pub async fn evaluate_body_recording(
         query,
         Vec::new(),
         Some(record),
+        EvaluationMode::LibrarySeed,
     )
     .await
     .map(|(Json(r), _)| r)
@@ -719,9 +789,17 @@ pub async fn evaluate_with_retractions(
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
     let query = EvaluateQuery { transact: true };
     let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch_with(tonk_state, tonk_branch, bytes, query, retract, Some(record))
-        .await
-        .map(|(Json(r), _)| r)
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        bytes,
+        query,
+        retract,
+        Some(record),
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(r), _)| r)
 }
 
 /// [`evaluate_profile_body`], with a second commit naming the first's
@@ -743,6 +821,7 @@ pub async fn evaluate_profile_body_recording(
         query,
         Vec::new(),
         Some(record),
+        EvaluationMode::LibrarySeed,
     )
     .await
     .map(|(Json(r), _)| r)
@@ -828,26 +907,32 @@ fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
 
 /// Route-level regression tests for `/evaluate`.
 ///
-/// These drive [`evaluate_body`] — the cfg-`wasm32` seam that runs
+/// These drive [`evaluate_body`] — the test wrapper that runs
 /// the *same* `evaluate_on_branch` logic the HTTP handler runs,
 /// including the commit guard. They guard the two bug classes that
 /// escaped to manual browser testing this session: a `rule!:`-only
 /// document silently not committing, and a rule never firing on a
 /// transient instance.
 ///
-/// wasm32-only — `evaluate_body` is cfg-`wasm32` and the worker's
-/// test `TonkState` is built from the service-worker harness.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+/// Runs natively and in the service-worker harness.
+#[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
+    #[cfg(target_arch = "wasm32")]
     use axum::body::Body;
+    #[cfg(target_arch = "wasm32")]
     use axum::http::{Request, StatusCode};
+    #[cfg(target_arch = "wasm32")]
     use tower::ServiceExt;
 
     use super::{EvaluateResponse, evaluate_body};
-    use crate::router::{AppState, RepositoryInfo, api_router_with_state, tests::test_state};
+    use crate::router::AppState;
+    #[cfg(target_arch = "wasm32")]
+    use crate::router::{RepositoryInfo, api_router_with_state, tests::test_state};
 
     /// Create the test repository via `PUT /api/repository/{name}`,
     /// then hand back the wrapped [`AppState`] so tests can call
@@ -859,6 +944,7 @@ mod tests {
     /// `label` is only a display name; the repository is created with a
     /// freshly minted identity and mounted at its routing key. Returns
     /// the state plus that key so callers address the repo by identity.
+    #[cfg(target_arch = "wasm32")]
     async fn state_with_repo(label: &str) -> (AppState, String) {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let response = app
@@ -883,6 +969,243 @@ mod tests {
             .unwrap();
         let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
         (state, info.name)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn state_with_repo(label: &str) -> (AppState, String) {
+        use crate::router::repository::{
+            BranchConfiguration, RepositoryConfiguration, create_repository,
+        };
+        use tonk_schema::prelude::DidExt;
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_repository(
+            &*state.read().await,
+            label,
+            &RepositoryConfiguration::default().branch("main", BranchConfiguration::default()),
+        )
+        .await
+        .unwrap()
+        .did()
+        .repo_key()
+        .to_owned();
+        (state, repo)
+    }
+
+    async fn seed(state: &AppState, repo: &str, body: &str) -> EvaluateResponse {
+        let tonk = state.read().await;
+        super::seed_on_branch(
+            &tonk,
+            tonk.reactor.repository(repo).branch("main"),
+            body.to_owned(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn facts(state: &AppState, repo: &str) -> std::collections::BTreeSet<String> {
+        use futures_util::StreamExt;
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let stream = session
+            .handle()
+            .claims()
+            .select(dialog_artifacts::ArtifactSelector::new().of_starting_with(""))
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        let mut artifacts = Vec::new();
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact.unwrap().to_owned().unwrap();
+            // Revision records encode the repository identity and signatures.
+            if artifact.the.to_string() != "dialog.db/revision" {
+                artifacts.push(artifact);
+            }
+        }
+        let mut rules = std::collections::BTreeMap::new();
+        for artifact in &artifacts {
+            if artifact.the.to_string() == "dialog.rule/source" {
+                let dialog_artifacts::Value::Bytes(bytes) = &artifact.is else {
+                    panic!("rule source must be bytes")
+                };
+                let mut rule = match dialog_query::rule::InductiveRule::decode(bytes) {
+                    Ok(rule) => serde_json::to_value(rule).unwrap(),
+                    Err(_) => serde_json::to_value(
+                        dialog_query::rule::DeductiveRule::decode(bytes).unwrap(),
+                    )
+                    .unwrap(),
+                };
+                normalize_generated_variables(&mut rule, &mut Default::default());
+                let source = serde_json::to_string(&rule).unwrap();
+                let identity = blake3::hash(source.as_bytes()).to_string();
+                rules.insert(artifact.of.to_string(), (identity, source));
+            }
+        }
+        let mut facts = std::collections::BTreeSet::new();
+        for artifact in artifacts {
+            let subject = artifact.of.to_string();
+            let subject = rules
+                .get(&subject)
+                .map(|r| r.0.as_str())
+                .unwrap_or(&subject);
+            let value = if artifact.the.to_string() == "dialog.rule/source" {
+                rules.get(&artifact.of.to_string()).unwrap().1.clone()
+            } else {
+                format!("{:?}", artifact.is)
+            };
+            facts.insert(format!("{} {subject} {value}", artifact.the));
+        }
+        facts
+    }
+
+    // The analyzer's fresh variable counter is process-global. Alpha-rename
+    // generated variables in first-use order, preserving repeated references,
+    // user variable names, constants and all rule structure.
+    fn normalize_generated_variables(
+        value: &mut serde_json::Value,
+        names: &mut std::collections::BTreeMap<String, String>,
+    ) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(serde_json::Value::Object(variable)) = object.get_mut("?")
+                    && let Some(serde_json::Value::String(name)) = variable.get_mut("name")
+                    && name.strip_prefix("__").is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_digit())
+                    })
+                {
+                    let next = format!("__{}", names.len());
+                    *name = names.entry(name.clone()).or_insert(next).clone();
+                }
+                for child in object.values_mut() {
+                    normalize_generated_variables(child, names);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array {
+                    normalize_generated_variables(child, names);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[dialog_common::test]
+    async fn library_seeds_match_interactive_facts_and_rules() {
+        let (single, single_repo) = state_with_repo("single-pass").await;
+        let (interactive, interactive_repo) = state_with_repo("interactive").await;
+        // Compare each real first-boot library, including the durable db.rule/*
+        // artifacts, without comparing identity-specific commit revisions.
+        for library in [
+            include_str!("../../../tonk-core/assets/library/core.yaml"),
+            include_str!("../../../tonk-core/assets/library/profile.yaml"),
+            include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml"),
+        ] {
+            let single_before = facts(&single, &single_repo).await;
+            let interactive_before = facts(&interactive, &interactive_repo).await;
+            let seeded = seed(&single, &single_repo, library).await;
+            let evaluated = evaluate(&interactive, &interactive_repo, library, true).await;
+            assert_eq!(seeded.commits.claims, evaluated.commits.claims);
+            let single_after = facts(&single, &single_repo).await;
+            let interactive_after = facts(&interactive, &interactive_repo).await;
+            let single_added = single_after
+                .difference(&single_before)
+                .collect::<std::collections::BTreeSet<_>>();
+            let interactive_added = interactive_after
+                .difference(&interactive_before)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(single_added.len(), interactive_added.len());
+            assert!(
+                single_added == interactive_added,
+                "single-only: {:?}; interactive-only: {:?}",
+                single_added
+                    .difference(&interactive_added)
+                    .collect::<Vec<_>>(),
+                interactive_added
+                    .difference(&single_added)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn seeded_rules_fire_and_concurrent_seeds_preserve_both_writes() {
+        let (state, repo) = state_with_repo("seed-rules").await;
+        seed(&state, &repo, CONCEPTS).await;
+        seed(&state, &repo, RULE).await;
+        let first = "person-entered!:\n  this: did:key:zFirst\n  name: First\n  age: 1\n";
+        let second = "person-entered!:\n  this: did:key:zSecond\n  name: Second\n  age: 2\n";
+        futures_util::future::join(seed(&state, &repo, first), seed(&state, &repo, second)).await;
+        let query = evaluate(&state, &repo, "person:\n", false).await;
+        assert_eq!(query.matches_after[0].results.len(), 2);
+    }
+
+    #[dialog_common::test]
+    async fn library_seed_retries_after_a_head_race() {
+        let (state, repo) = state_with_repo("seed-race").await;
+        let tonk = state.read().await;
+        let response = super::evaluate_on_branch_with(
+            &tonk,
+            tonk.reactor.repository(&repo).branch("main"),
+            CONCEPTS.to_owned().into(),
+            super::EvaluateQuery { transact: true },
+            Vec::new(),
+            None,
+            super::EvaluationMode::LibrarySeedWithRace,
+        )
+        .await
+        .unwrap()
+        .0
+        .0;
+        assert!(response.revision_after.is_some());
+        drop(tonk);
+        seed(&state, &repo, RULE).await;
+        seed(
+            &state,
+            &repo,
+            "person-entered!:\n  this: did:key:zRaced\n  name: Raced\n  age: 3\n",
+        )
+        .await;
+        assert_eq!(
+            evaluate(&state, &repo, "person:\n", false)
+                .await
+                .matches_after[0]
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn interactive_queries_and_dry_runs_do_not_wait_for_the_writer() {
+        let (state, repo) = state_with_repo("lock-free-preview").await;
+        seed(&state, &repo, CONCEPTS).await;
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let _writer = session.transactor().lock().await;
+        for (body, transact) in [("person:\n", true), (RULE, false)] {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                evaluate_body(&tonk, &repo, "main", body.to_owned(), transact),
+            )
+            .await
+            .expect("interactive preview must not wait for the held writer lock")
+            .unwrap();
+            assert_eq!(response.revision_before, response.revision_after);
+            assert_eq!(response.commits.claims, 0);
+        }
     }
 
     /// Run a document through [`evaluate_body`] against the test

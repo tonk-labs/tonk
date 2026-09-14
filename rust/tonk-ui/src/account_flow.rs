@@ -21,8 +21,32 @@ mod tests {
     // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
     #[dialog_common::test]
     async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
+        let driver = env.blank_driver().await?;
         driver.set_window_rect(0, 0, 1200, 900).await?;
+        // Hold optional preparation at the host fetch boundary: Welcome must
+        // remain usable, and an early page selection must wait for its content.
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({"source": r#"
+              if (window === top) {
+                const nativeFetch = window.fetch.bind(window);
+                window.__welcomeBlobRequests = [];
+                const gate = new Promise(resolve => window.__releaseOnboarding = resolve);
+                window.fetch = (input, init) => {
+                  const url = typeof input === 'string' ? input : input.url;
+                  if (/\/branch\/main\/onboarding$/.test(url)) {
+                    window.__onboardingRequested = true;
+                    return gate.then(() => nativeFetch(input, init));
+                  }
+                  if (/\/blob\/blob:/.test(url)) window.__welcomeBlobRequests.push(url);
+                  return nativeFetch(input, init);
+                };
+              }
+            "#}),
+            )
+            .await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_space_view(&driver).await?;
         let welcome = wait_for_displayed(&driver, ".wp-outer").await?;
         anyhow::ensure!(
@@ -32,6 +56,27 @@ mod tests {
         driver.enter_default_frame().await?;
         anyhow::ensure!(driver.current_url().await?.path().starts_with("/space/"));
 
+        anyhow::ensure!(
+            driver
+                .execute("return window.__welcomeBlobRequests.length", vec![])
+                .await?
+                .json()
+                == &serde_json::json!(0),
+            "below-fold images must not request branch bytes before scrolling"
+        );
+        enter_space_view(&driver).await?;
+        let images = driver.execute(r#"return (async () => {
+          const images = [...document.querySelectorAll('welcome-image img')];
+          for (const img of images) {
+            img.scrollIntoView();
+            for (let n=0; !img.hasAttribute('src') && n<1000; n++) await new Promise(r=>setTimeout(r,10));
+            await img.decode();
+          }
+          return images.map(img => [img.naturalWidth, img.naturalHeight]);
+        })()"#, vec![]).await?;
+        anyhow::ensure!(images.json() == &serde_json::json!([[1024, 604], [1024, 643]]));
+        driver.enter_default_frame().await?;
+
         let space_path = driver.current_url().await?.path().to_owned();
         let repo = space_path.strip_prefix("/space/").expect("space route");
         enter_space_view(&driver).await?;
@@ -40,6 +85,18 @@ mod tests {
             .await?
             .click()
             .await?;
+        anyhow::ensure!(
+            driver
+                .find_all(By::Css(".playground-agent"))
+                .await?
+                .is_empty(),
+            "the optional page must wait for its seed"
+        );
+        driver.enter_default_frame().await?;
+        driver
+            .execute("window.__releaseOnboarding(); return true", vec![])
+            .await?;
+        enter_space_view(&driver).await?;
         wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]").await?;
         driver.enter_default_frame().await?;
         // Supply a prompt fixture to test the page's actual copy value.
@@ -79,6 +136,77 @@ mod tests {
         wait_for_displayed(&driver, ".hub-page").await?;
         driver.enter_default_frame().await?;
         anyhow::ensure!(driver.current_url().await?.path() == "/");
+        // Full preparation means the authored pages and image bytes survive a
+        // real offline reload, in addition to the shell's cache adoption.
+        driver
+            .execute(
+                r#"return (async () => {
+          for (let n=0; n<3000; n++) {
+            for (const name of await caches.keys()) {
+              if (!name.startsWith('TONK_GENERATION_')) continue;
+              const cache = await caches.open(name);
+              for (const request of await cache.keys()) {
+                if ((await (await cache.match(request)).json()).state === 'adopted') return true;
+              }
+            }
+            await new Promise(r=>setTimeout(r,10));
+          }
+          throw Error('offline generation was not adopted');
+        })()"#,
+                vec![],
+            )
+            .await?;
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools.execute_cdp("Network.enable").await?;
+        devtools
+            .execute_cdp_with_params(
+                "Network.emulateNetworkConditions",
+                serde_json::json!({
+                    "offline": true, "latency": 0, "downloadThroughput": 0, "uploadThroughput": 0,
+                }),
+            )
+            .await?;
+        goto(
+            &driver,
+            &format!(
+                "{}{}",
+                env.tonk_web.as_str().trim_end_matches('/'),
+                space_path
+            ),
+        )
+        .await?;
+        driver
+            .execute("window.__releaseOnboarding(); return true", vec![])
+            .await?;
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".wp-outer").await?;
+        let offline_images = driver.execute(r#"return (async () => {
+          const images = [...document.querySelectorAll('welcome-image img')];
+          for (const img of images) {
+            img.scrollIntoView();
+            for (let n=0; !img.hasAttribute('src') && n<1000; n++) await new Promise(r=>setTimeout(r,10));
+            await img.decode();
+          }
+          return images.map(img => [img.naturalWidth, img.naturalHeight]);
+        })()"#, vec![]).await?;
+        anyhow::ensure!(offline_images.json() == &serde_json::json!([[1024, 604], [1024, 643]]));
+        let pages = driver.execute("const known = new Set([...document.querySelectorAll('.vault-node-row')].map(row => row.dataset.node)); return [...document.querySelectorAll('.vault-page-row')].map(row => row.dataset.node).filter(id => known.has(id))", vec![]).await?;
+        anyhow::ensure!(
+            pages.json().as_array().context("page directory")?.len() == 8,
+            "all eight navigable bundled pages must be present"
+        );
+        for page in pages.json().as_array().context("page directory")? {
+            let entity = page.as_str().context("page identity")?;
+            driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
+            wait_for_displayed(
+                &driver,
+                &format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view"),
+            )
+            .await?;
+        }
+        devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
+            "offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1,
+        })).await?;
         driver.quit().await?;
         Ok(())
     }
@@ -1087,18 +1215,38 @@ mod tests {
             // test instead of simply polling again. Nothing here is
             // worth failing on: the row is either readable now or it is
             // not, and the deadline below is what gives up.
-            let settled = driver
+            let receipt = driver
                 .execute(
-                    "const v = document.querySelector('#tonk-register-passkey-row .v');
-                     return v ? v.textContent.trim() : '';",
+                    "const dialog = document.querySelector('#tonk-register-dialog');
+                     const v = document.querySelector('#tonk-register-passkey-row .v');
+                     return { present: !!dialog, passkey: v ? v.textContent.trim() : '' };",
                     Vec::new(),
                 )
                 .await
                 .ok()
-                .and_then(|value| value.json().as_str().map(str::to_owned))
+                .map(|value| value.json().clone());
+            let settled = receipt
+                .as_ref()
+                .and_then(|value| value["passkey"].as_str())
                 .is_some_and(|text| !text.is_empty());
             if settled {
                 dismiss_register_dialog(driver).await?;
+                return Ok(());
+            }
+            // Profile routing can finish without rebuilding the top document:
+            // in that case the ceremony removes its dialog and the account API
+            // is the durable receipt. Do not accept disappearance alone — a
+            // failed ceremony can also close — and only probe once it is gone.
+            if receipt
+                .as_ref()
+                .is_some_and(|value| value["present"] == false)
+                && let Ok(account) =
+                    tokio::time::timeout(Duration::from_secs(2), get_json(driver, "/api/account"))
+                        .await
+                && let Ok(account) = account
+                && account["status"] == 200
+                && account["body"]["accountState"] == "ready"
+            {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {

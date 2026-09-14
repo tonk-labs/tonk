@@ -616,14 +616,20 @@
             with pkgs;
             writeScriptBin "tonk-ui-test-server" ''
               #!${bash}/bin/bash
+              set -euo pipefail
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
               DEPLOYMENT_FIXTURE_ROOT=''${3:-}
+              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-${self.packages.${system}.tonk-ui}}
+              if [ ! -f "$ARTIFACT_ROOT/index.html" ] || [ ! -f "$ARTIFACT_ROOT/service_worker.js" ]; then
+                  echo "Invalid Tonk test artifact: $ARTIFACT_ROOT" >&2
+                  exit 1
+              fi
 
               if [ -n "$DEPLOYMENT_FIXTURE_ROOT" ]; then
                   GENERATION_A="$DEPLOYMENT_FIXTURE_ROOT/generation-a"
                   mkdir -p "$GENERATION_A"
-                  cp -r ${self.packages.${system}.tonk-ui}/. "$GENERATION_A/"
+                  cp -r "$ARTIFACT_ROOT"/. "$GENERATION_A/"
                   # Integration tests publish a separately stamped generation
                   # and atomically repoint this symlink. The browser profile,
                   # registration, caches, and IndexedDB all survive the swap.
@@ -631,7 +637,7 @@
                   ln -s generation-a "$DEPLOYMENT_FIXTURE_ROOT/current"
                   TONK_UI_ROOT="$DEPLOYMENT_FIXTURE_ROOT/current"
               else
-                  TONK_UI_ROOT=${self.packages.${system}.tonk-ui}
+                  TONK_UI_ROOT="$ARTIFACT_ROOT"
               fi
 
               echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
