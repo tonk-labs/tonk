@@ -203,6 +203,24 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
         .expect("mount parent");
 
     set_parent_width(&parent, &fab, 375, true, true).await;
+    fab.style()
+        .set_property("transition", "none")
+        .expect("disable fixture docking transition");
+    fab.style()
+        .set_property("transform", "none")
+        .expect("clear fixture docking transform");
+    fab.style()
+        .set_property("left", "100px")
+        .expect("seat fixture from left");
+    fab.style()
+        .set_property("right", "auto")
+        .expect("clear right seat");
+    fab.style()
+        .set_property("top", "400px")
+        .expect("seat upward-opening fixture in viewport");
+    fab.style()
+        .set_property("bottom", "auto")
+        .expect("clear bottom seat");
     for selector in ["[data-cell=space]", "[data-cell=share]", "[data-cell=more]"] {
         let trigger = shadow_element(&fab, selector);
         assert!(
@@ -252,6 +270,112 @@ async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
     assert!(
         (bar_gap - internal_gap).abs() < 0.5,
         "bar gap {bar_gap}px must match the {internal_gap}px row gap"
+    );
+
+    let open_item = light_element(&fab, "[data-mi-open]");
+    click_item(&open_item);
+    yield_for(20).await;
+    let flyout = open_item
+        .shadow_root()
+        .expect("open row shadow")
+        .query_selector(".fly")
+        .expect("flyout selector")
+        .expect("open row flyout");
+    let spaces = light_element(&fab, "tonk-menu[slot=sub]");
+    let open_rect = open_row.get_bounding_client_rect();
+    let spaces_rect = spaces.get_bounding_client_rect();
+    let flyout_gap = if spaces_rect.left() >= open_rect.right() {
+        spaces_rect.left() - open_rect.right()
+    } else {
+        open_rect.left() - spaces_rect.right()
+    };
+    assert!(
+        (flyout_gap - internal_gap).abs() < 0.5,
+        "flyout gap {flyout_gap}px must match the {internal_gap}px row gap"
+    );
+    let corridor = window()
+        .expect("window")
+        .get_computed_style_with_pseudo_elt(&flyout, "::before")
+        .expect("computed pseudo style call")
+        .expect("computed pseudo style");
+    assert_eq!(
+        corridor.get_property_value("content").expect("content"),
+        "\"\"",
+        "the flyout gap needs an invisible hit corridor"
+    );
+    assert_eq!(
+        corridor.get_property_value("width").expect("width"),
+        "9px",
+        "the hit corridor must overlap both sides of the 7px visual gap"
+    );
+    assert_eq!(
+        corridor
+            .get_property_value("background-color")
+            .expect("background color"),
+        "rgba(0, 0, 0, 0)",
+        "the hit corridor must not paint the pure-page gap"
+    );
+    assert_eq!(
+        corridor
+            .get_property_value("backdrop-filter")
+            .expect("backdrop filter"),
+        "none",
+        "the hit corridor must not frost the pure-page gap"
+    );
+    assert_eq!(
+        corridor
+            .get_property_value("pointer-events")
+            .expect("pointer events"),
+        "auto",
+        "the invisible corridor must participate in hit testing"
+    );
+    let gap_x = if spaces_rect.left() >= open_rect.right() {
+        (open_rect.right() + spaces_rect.left()) / 2.0
+    } else {
+        (spaces_rect.right() + open_rect.left()) / 2.0
+    };
+    let gap_y = open_rect.top() + open_rect.height() / 2.0;
+    let document = window().expect("window").document().expect("document");
+    let element_from_point =
+        js_sys::Reflect::get(document.as_ref(), &JsValue::from_str("elementFromPoint"))
+            .expect("document hit-test method")
+            .dyn_into::<js_sys::Function>()
+            .expect("elementFromPoint function");
+    let gap_hit = element_from_point
+        .call2(
+            document.as_ref(),
+            &JsValue::from_f64(gap_x),
+            &JsValue::from_f64(gap_y),
+        )
+        .expect("gap hit test");
+    assert!(
+        !gap_hit.is_null(),
+        "gap hit returned null at ({gap_x}, {gap_y}); open=({}, {}, {}, {}), spaces=({}, {}, {}, {}), viewport=({}, {})",
+        open_rect.left(),
+        open_rect.top(),
+        open_rect.right(),
+        open_rect.bottom(),
+        spaces_rect.left(),
+        spaces_rect.top(),
+        spaces_rect.right(),
+        spaces_rect.bottom(),
+        window()
+            .expect("window")
+            .inner_width()
+            .expect("viewport width")
+            .as_f64()
+            .expect("numeric viewport width"),
+        window()
+            .expect("window")
+            .inner_height()
+            .expect("viewport height")
+            .as_f64()
+            .expect("numeric viewport height"),
+    );
+    let gap_hit = gap_hit.dyn_into::<Element>().expect("gap hit element");
+    assert!(
+        gap_hit.is_same_node(Some(&open_item)),
+        "the midpoint of the visible gap must hit the open item through its shadow corridor"
     );
 
     assert!(
