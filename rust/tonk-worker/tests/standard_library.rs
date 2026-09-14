@@ -93,6 +93,20 @@ fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
 
+#[test]
+fn it_titles_a_downloading_space_from_the_directory_name() {
+    let downloading = PROFILE_LIBRARY
+        .split("    downloading: |\n")
+        .nth(1)
+        .and_then(|tail| tail.split("\n\n# ===").next())
+        .expect("profile library downloading view");
+
+    assert!(
+        downloading.contains(r#"<tonk-title text="{name} — Tonk"></tonk-title>"#),
+        "the downloading view must use the available directory name for the browser tab",
+    );
+}
+
 /// Form controls expose their submitted value at `.value` (a
 /// `RadioNodeList` included). Nothing else on an `<input>` is a value
 /// slot, so a read path ending anywhere else resolves to `undefined`.
