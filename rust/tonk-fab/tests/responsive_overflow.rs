@@ -82,6 +82,55 @@ fn computed(element: &Element, property: &str) -> String {
         .unwrap_or_default()
 }
 
+#[dialog_common::test]
+async fn an_unsaved_fab_enters_from_a_dot_at_the_top_right() {
+    tonk_fab::register();
+    let win = window().expect("window");
+    let document = win.document().expect("document");
+    let parent = document
+        .create_element("div")
+        .expect("create parent")
+        .dyn_into::<HtmlElement>()
+        .expect("html parent");
+    parent
+        .style()
+        .set_property("width", "500px")
+        .expect("parent width");
+    let fab = document
+        .create_element("tonk-fab")
+        .expect("create fab")
+        .dyn_into::<HtmlElement>()
+        .expect("html fab");
+    parent.append_child(&fab).expect("mount fab");
+    document
+        .body()
+        .expect("body")
+        .append_child(&parent)
+        .expect("mount parent");
+
+    let bar = shadow_element(&fab, ".bar");
+    let run = shadow_element(&fab, ".run");
+    assert_eq!(computed(&run, "animation-name"), "fabb-enter-run");
+    assert!(
+        (width(&bar) - 36.0).abs() < 1.0,
+        "the first rendered geometry must be the closed 36px dot"
+    );
+
+    wait_for_width(&bar, 396.0).await;
+    assert!(fab.class_list().contains("fab-dock-top"));
+    assert!(fab.class_list().contains("fab-dock-right"));
+    let rect = fab.get_bounding_client_rect();
+    let viewport_width = win
+        .inner_width()
+        .expect("viewport width")
+        .as_f64()
+        .expect("numeric viewport width");
+    assert!((rect.top() - 16.0).abs() < 1.0);
+    assert!((viewport_width - rect.right() - 16.0).abs() < 1.0);
+
+    parent.remove();
+}
+
 fn escape_event() -> web_sys::Event {
     let init = js_sys::Object::new();
     js_sys::Reflect::set(&init, &"bubbles".into(), &JsValue::TRUE).expect("bubbles");
@@ -266,7 +315,7 @@ async fn the_action_partition_follows_usable_width_without_a_fold() {
     assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
     assert!(visible(&shadow_element(&fab, "[data-cell=share]")));
     assert!(!visible(&shadow_element(&fab, "[data-cell=more]")));
-    assert!((width(&shadow_element(&fab, ".bar")) - 396.0).abs() < 0.1);
+    wait_for_width(&shadow_element(&fab, ".bar"), 396.0).await;
     let full_label = shadow_element(&fab, ".fab")
         .get_attribute("aria-label")
         .expect("full disc label");
