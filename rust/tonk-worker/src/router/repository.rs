@@ -4994,14 +4994,14 @@ pub(crate) async fn reconcile_profile_library_from(
     }
 
     let installations = profile_library_installations(tonk, &session).await?;
-    if installations.len() == 1 && installations[0].installed.this.to_string() == target {
-        if let Ok(assertions) =
+    if installations.len() == 1
+        && installations[0].installed.this.to_string() == target
+        && let Ok(assertions) =
             assertions_at_version(tonk, &session, &installations[0].installed.version.0).await
-            && assertions_are_current(tonk, &session, &assertions).await?
-        {
-            tonk.profile_library.store(target, revision);
-            return Ok(ProfileLibraryOutcome::Unchanged);
-        }
+        && assertions_are_current(tonk, &session, &assertions).await?
+    {
+        tonk.profile_library.store(target, revision);
+        return Ok(ProfileLibraryOutcome::Unchanged);
     }
 
     let legacy = installations.is_empty() && has_legacy_profile_library(tonk, &session).await?;
