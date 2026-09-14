@@ -6,7 +6,8 @@
     prepare(root) {
       if (this.ready) return Promise.resolve();
       if (this.pending) return this.pending;
-      const scope = root.closest('[with]')?.getAttribute('with') || '';
+      const scope = root.closest('[with]')?.getAttribute('with')
+        || globalThis.tonk?.context?.with || '';
       const at = scope.indexOf('@');
       if (at < 1 || scope.includes('{')) return Promise.reject(Error('Space is not ready'));
       const url = '/api/repository/' + scope.slice(at + 1) +

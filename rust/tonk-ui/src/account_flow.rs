@@ -77,8 +77,13 @@ mod tests {
         anyhow::ensure!(images.json() == &serde_json::json!([[1024, 604], [1024, 643]]));
         driver.enter_default_frame().await?;
 
-        let space_path = driver.current_url().await?.path().to_owned();
-        let repo = space_path.strip_prefix("/space/").expect("space route");
+        let current_path = driver.current_url().await?.path().to_owned();
+        let repo = current_path
+            .strip_prefix("/space/")
+            .and_then(|path| path.split('/').next())
+            .expect("space route")
+            .to_owned();
+        let space_path = format!("/space/{repo}");
         enter_space_view(&driver).await?;
         driver
             .find(By::XPath("//*[text()='Agent playground']"))
@@ -97,8 +102,26 @@ mod tests {
             .execute("window.__releaseOnboarding(); return true", vec![])
             .await?;
         enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]").await?;
+        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]")
+            .await
+            .context("the focused playground page did not render before reload")?;
         driver.enter_default_frame().await?;
+        let playground = "did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo";
+        let focused_path = format!("{space_path}/open/{playground}");
+        await_url_path(&driver, &focused_path)
+            .await
+            .context("focusing a bundled page must route the top document")?;
+        driver.refresh().await?;
+        driver
+            .execute("window.__releaseOnboarding(); return true", vec![])
+            .await?;
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]")
+            .await
+            .context("the focused playground page did not render after reload")?;
+        await_url_path(&driver, &focused_path)
+            .await
+            .context("reloading a bundled page route must preserve its focus")?;
         // Supply a prompt fixture to test the page's actual copy value.
         // Account authorization and CLI confirmation have their own full-flow tests.
         let body = format!(
