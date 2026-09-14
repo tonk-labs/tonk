@@ -320,7 +320,7 @@ view!:
     # that has not replicated a space can still label it.
     downloading: |
       <div class="space-unknown">
-        <tonk-title text="Downloading — Tonk"></tonk-title>
+        <tonk-title text="{name} — Tonk"></tonk-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <div class="space-unknown-wall">
           <h1 class="space-unknown-statement">downloading {name}</h1>

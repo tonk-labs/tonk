@@ -48,9 +48,9 @@ use web_sys::{
 
 use crate::bar;
 use crate::logic::{
-    DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position, collapsed_claim_json,
-    collapsed_from_conclusions, dock_claim_json, dock_from_conclusions, nearest_dock,
-    pause_claim_json, repository_endpoint, snap_to_nearest_edge,
+    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position,
+    collapsed_claim_json, collapsed_from_conclusions, dock_claim_json, dock_from_conclusions,
+    nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -79,11 +79,6 @@ const UNKNOWN_SPACE_ATTR: &str = "data-unknown-space";
 
 /// Marks a local profile that has not created or logged into an account yet.
 const ACCOUNT_REQUIRED_ATTR: &str = "data-account-required";
-
-/// Where the bar sits until it is dragged: bottom-right, under the thumb on
-/// a phone and out of the way of page content on a desktop. A persisted dock
-/// overrides it.
-const DEFAULT_DOCK: Dock = Dock::BottomRight;
 
 /// The class marking a right-anchored bar mid-drag. The `flip` ATTRIBUTE is
 /// the resting truth (it reorders the bookends); this class is what survives
@@ -1163,7 +1158,7 @@ fn profile_query(query_body: serde_json::Value, then: impl FnOnce(Option<JsValue
     });
 }
 
-/// Restore the persisted dock, defaulting to bottom-right.
+/// Restore the persisted dock, defaulting to top-right.
 ///
 /// The default is queued for the first microtask so the bar is seated before
 /// first paint without recursively entering its connection callback; the

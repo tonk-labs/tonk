@@ -65,6 +65,39 @@ def main():
         if a['of']=='id:vault/component/active' and a['the']=='xyz.tonk.component/module':
             source = (HERE/'deferred.js').read_text()
             original = a['is'].split('\n// Welcome deferred content\n')[0]
+            # Page focus is URL state: route through the guest bridge so a reload
+            # remounts the same entity via the bundled `/open/{*entity}` route.
+            route_sync = """          // Keep the top-level route aligned with the focused page. The
+          // guest itself is `about:srcdoc`, so navigation must cross the bridge.
+          const ctx = (globalThis.tonk && globalThis.tonk.context) || {};
+          if (!this.__landingNavigation && ctx.repo && typeof globalThis.tonk?.navigate === 'function') {
+            globalThis.tonk.navigate('/space/' + ctx.repo + '/open/' + next);
+          }
+"""
+            original = original.replace(route_sync, '')
+            navigation = """          this.__navigated = true;
+"""
+            original = original.replace(navigation, navigation+route_sync)
+            landing_emit = """            lib.emit(tree, 'navigate', { open: id, deviceOpen: id });
+"""
+            routed_landing_emit = """            this.__landingNavigation = true;
+            try {
+              lib.emit(tree, 'navigate', { open: id, deviceOpen: id });
+            } finally {
+              this.__landingNavigation = false;
+            }
+"""
+            original = original.replace(routed_landing_emit, landing_emit)
+            original = original.replace(landing_emit, routed_landing_emit)
+            dom_scope = """      const scoped = root.closest('[with]');
+      const scope = scoped ? (scoped.getAttribute('with') || '') : '';
+"""
+            routed_scope = """      const scoped = root.closest('[with]');
+      const scope = (scoped && scoped.getAttribute('with'))
+        || globalThis.tonk?.context?.with || '';
+"""
+            original = original.replace(routed_scope, dom_scope)
+            original = original.replace(dom_scope, routed_scope)
             # Await optional preparation before exposing a demo's editable content.
             needle = "      const display = this.querySelector('tonk-display');"
             guard = """      if (id && id !== 'did:key:z6MkAMKLz5uDbduG95r9rQriwRit6DE4MAbBSmWqpUz8PxWB' &&

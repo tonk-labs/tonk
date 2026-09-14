@@ -26,12 +26,15 @@ pub const BAR_CSS: &str = r#"
 :host([hidden]){ display:none; }
 @media (prefers-reduced-motion: reduce){ :host{ transition:none; } }
 .w{ position:relative; }
+@keyframes fabb-enter-shell{ from{ border-radius:100px; } }
+@keyframes fabb-enter-run{ from{ max-width:0; opacity:0; } }
 /* the bar ends on a straight line — the single round cap belongs to the
    circle and swaps ends with it on the flip; collapsed, the circle alone
    rounds fully (the radius rides the telescope easing) */
 .bar{ position:relative; display:flex; align-items:stretch; height:36px;
   border-radius:18px 0 0 18px; overflow:hidden; user-select:none;
   transition:border-radius .4s var(--_ease);
+  animation:fabb-enter-shell .4s var(--_ease);
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   box-shadow:var(--_ring); }
 .w.flip .bar{ border-radius:0 18px 18px 0; }
@@ -39,7 +42,8 @@ pub const BAR_CSS: &str = r#"
 .run{ display:flex; align-items:stretch; max-width:378px; opacity:1; visibility:visible;
   overflow:hidden; transition-property:max-width,opacity,visibility;
   transition-duration:200ms,160ms,0s; transition-delay:0s,0s,0s;
-  transition-timing-function:var(--_ease); }
+  transition-timing-function:var(--_ease);
+  animation:fabb-enter-run .4s var(--_ease); }
 /* the hidden attribute must actually win: `.w.compact .more` sets a display
    of its own, which outranks the UA's `[hidden]` rule */
 .cell[hidden]{ display:none !important; }
@@ -78,7 +82,8 @@ pub const BAR_CSS: &str = r#"
    removes the share control because there is nothing local to share. */
 :host([data-unknown-space]) .share{ display:none; }
 .w.collapsed .run{ max-width:0; opacity:0; visibility:hidden;
-  pointer-events:none; transition-delay:0s,0s,200ms; }
+  pointer-events:none; transition-delay:0s,0s,200ms; animation:none; }
+.w.collapsed .bar{ animation:none; }
 /* stacks */
 .mw{ position:absolute; top:calc(100% + 7px); display:block; z-index:5;
   opacity:0; visibility:hidden; pointer-events:none;
@@ -91,7 +96,8 @@ pub const BAR_CSS: &str = r#"
 /* editable space — the terminal block cursor over the last character */
 .cell.editing{ gap:0; }
 @media (prefers-reduced-motion: reduce){
-  .run, .mw{ transition-duration:0s; transition-delay:0s; }
+  .bar, .run{ animation:none; }
+  .bar, .run, .mw{ transition-duration:0s; transition-delay:0s; }
 }
 "#;
 
@@ -329,6 +335,21 @@ mod tests {
         assert!(BAR_CSS.contains(":host([alert]) .disc.st{ animation:fabb-blink"));
         assert!(BAR_CSS.contains(":host([alert]) .share{ animation:fabb-wash"));
         assert!(BAR_CSS.contains(":host([alert]) .share:hover{ animation:none; }"));
+    }
+
+    #[test]
+    fn it_enters_by_telescoping_from_the_closed_dot() {
+        assert!(BAR_CSS.contains("@keyframes fabb-enter-run"));
+        assert!(BAR_CSS.contains("from{ max-width:0; opacity:0; }"));
+        assert!(BAR_CSS.contains("animation:fabb-enter-run .4s var(--_ease)"));
+        assert!(BAR_CSS.contains("@keyframes fabb-enter-shell"));
+        assert!(BAR_CSS.contains("from{ border-radius:100px; }"));
+        assert!(BAR_CSS.contains("animation:fabb-enter-shell .4s var(--_ease)"));
+        assert!(
+            BAR_CSS.contains("pointer-events:none; transition-delay:0s,0s,200ms; animation:none;")
+        );
+        assert!(BAR_CSS.contains(".w.collapsed .bar{ animation:none;"));
+        assert!(BAR_CSS.contains(".bar, .run{ animation:none;"));
     }
 
     #[test]

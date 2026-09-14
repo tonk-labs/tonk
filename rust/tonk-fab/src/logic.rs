@@ -150,6 +150,10 @@ pub enum Dock {
     BottomRight,
 }
 
+/// The seat used when the profile has no saved dock preference.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) const DEFAULT_DOCK: Dock = Dock::TopRight;
+
 /// The viewport edge a released FAB settles against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
@@ -763,6 +767,11 @@ mod corrected {
 #[cfg(test)]
 mod dock {
     use super::*;
+
+    #[test]
+    fn the_unsaved_fab_starts_at_the_top_right() {
+        assert_eq!(DEFAULT_DOCK, Dock::TopRight);
+    }
 
     // 1000x800 viewport: midlines at x=500, y=400.
     #[test]

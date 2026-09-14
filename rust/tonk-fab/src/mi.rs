@@ -74,14 +74,12 @@ const CSS: &str = r#"
 .fly{ display:none; position:absolute; left:calc(100% + 7px); top:0; z-index:6; }
 .fly.flip{ left:auto; right:calc(100% + 7px); }
 .fly.up{ top:auto; bottom:0; }
-/* a connected flyout bridges its gap — the parent row's surface spans the
-   7px so the pair reads as one piece, not neighbours */
-.fly.sub::before{ content:""; position:absolute; top:-1px; left:-8px; width:9px; height:38px;
-  background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
-  border-top:1px solid var(--_ringc); border-bottom:1px solid var(--_ringc); }
-.fly.flip.sub::before{ left:auto; right:-8px; }
-/* the bridge joins the row it came from, so it moves to the other end too */
-.fly.up.sub::before{ top:auto; bottom:-1px; }
+/* Keep the visual gap as pure page while making it safe to cross. The 9px
+   corridor spans the 7px gap and overlaps each adjacent surface by 1px. */
+.fly::before{ content:""; position:absolute; top:0; bottom:0; left:-8px; width:9px;
+  background:transparent; border:0; -webkit-backdrop-filter:none; backdrop-filter:none;
+  pointer-events:auto; }
+.fly.flip::before{ left:auto; right:-8px; }
 @media (hover:hover) and (pointer:fine){
   :host(:hover) .fly, :host(:focus-within) .fly{ display:block; }
 }
@@ -139,17 +137,16 @@ impl CustomElement for TonkMi {
         }
         sync_pressed(this);
 
-        // `.fly.sub` only applies when something is actually slotted —
-        // without the check the bridge would paint across an empty gap on
-        // every leaf row.
+        // A sub-stack is hidden while it is a menu the bar has closed. Once
+        // slotted here, the flyout owns its visibility instead.
         if let Ok(Some(sub_slot)) = root.query_selector("slot[name=sub]") {
             let host = this.clone();
             self.listeners
                 .push(shadow::bind(&sub_slot, "slotchange", move |_| {
-                    sync_sub(&host)
+                    unhide_subs(&host)
                 }));
         }
-        sync_sub(this);
+        unhide_subs(this);
 
         // Aim on approach rather than on a resize observer: the decision
         // depends on where the row is at the moment it opens, and a row that
@@ -259,24 +256,6 @@ fn toggle_open(this: &HtmlElement) {
         // and off the screen.
         aim_flyout(this);
     }
-}
-
-/// Toggle the `.sub` bridge according to whether anything is slotted.
-fn sync_sub(this: &HtmlElement) {
-    let Some(root) = this.shadow_root() else {
-        return;
-    };
-    let Ok(Some(fly)) = root.query_selector(".fly") else {
-        return;
-    };
-    // Ask the light tree rather than the slot: `assignedElements` is behind
-    // web-sys's unstable gate, and what the bridge actually depends on is a
-    // sub-stack existing as a child, which is exactly this query.
-    let assigned = matches!(this.query_selector("tonk-menu[slot=sub]"), Ok(Some(_)));
-    let _ = fly.class_list().toggle_with_force("sub", assigned);
-    // The un-hide used to ride the mode stamp; with the mode plumbing gone
-    // this is its home — the same signals (connect, slotchange) cover it.
-    unhide_subs(this);
 }
 
 /// Choose the side the flyout opens toward.

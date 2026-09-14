@@ -6,6 +6,7 @@ use tonk_analytics::account::{AccountOutcome, FailureKind, HttpStatusClass, Serv
 const CUSTODY_HANDOFF_TIMEOUT: &str =
     "the service worker did not answer the custody handoff in time";
 const CUSTODY_HANDOFF_RECOVERY: &str = "Your passkey was approved, but this browser did not finish the secure handoff. Reload the page and try again.";
+const PASSKEY_SECURITY_RECOVERY: &str = "Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.";
 
 /// One account failure projected into safe presentation and analytics fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,8 +166,11 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
             || detail.contains("prf output")
             || detail.contains("cannot unlock custody"))
     {
-        return "This passkey does not support the security feature Tonk needs. Try another passkey or device."
-            .to_owned();
+        return if action == AccountAction::DeleteAccount {
+            format!("Nothing was deleted. {PASSKEY_SECURITY_RECOVERY}")
+        } else {
+            PASSKEY_SECURITY_RECOVERY.to_owned()
+        };
     }
     if passkey_action
         && (detail.contains("identity ceremon")
@@ -432,7 +436,12 @@ mod tests {
             (
                 AccountAction::AddPasskey,
                 "identity ceremony failed: the authenticator returned no PRF outputs",
-                "This passkey does not support the security feature Tonk needs. Try another passkey or device.",
+                "Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.",
+            ),
+            (
+                AccountAction::DeleteAccount,
+                "identity ceremony failed: the authenticator returned no PRF outputs",
+                "Nothing was deleted. Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.",
             ),
             (
                 AccountAction::DeleteAccount,

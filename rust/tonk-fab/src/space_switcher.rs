@@ -65,6 +65,7 @@ pub struct UiSpaceSwitcherElement {
     scaffold: subscribing::Scaffold,
     /// The live directory, keyed by each row's entity `this`, so an `update`
     /// delta can upsert/retract individual rows without a full snapshot.
+    /// Rendering separately collapses legacy aliases that repeat one subject.
     /// Order is insertion order.
     rows: Rc<RefCell<Vec<(String, Row)>>>,
 }
@@ -223,10 +224,34 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
     stack_rows::clear_rows(host, SUB_TAG);
     let current = host.get_attribute("current").unwrap_or_default();
 
-    let mut cut: Vec<&(String, Row)> = rows.iter().take(MAX_ROWS).collect();
+    // The directory contract anchors a space on its own subject entity, but
+    // old account data can retain an earlier alias entity carrying the same
+    // subject. The UI boundary is the stable subject: render it once, and
+    // prefer the canonical subject-anchored row when both are present.
+    let mut unique: Vec<&(String, Row)> = Vec::new();
+    for candidate @ (candidate_id, candidate_row) in rows {
+        if let Some(index) = unique
+            .iter()
+            .position(|(_, row)| row.subject == candidate_row.subject)
+        {
+            let (existing_id, existing_row) = unique[index];
+            let candidate_is_canonical = candidate_id == &candidate_row.subject;
+            let existing_is_canonical = existing_id == &existing_row.subject;
+            if candidate_is_canonical || !existing_is_canonical {
+                unique[index] = candidate;
+            }
+        } else {
+            unique.push(candidate);
+        }
+    }
+
+    let mut cut: Vec<&(String, Row)> = unique.iter().copied().take(MAX_ROWS).collect();
     if !current.is_empty()
         && !cut.iter().any(|(_, row)| row.subject == current)
-        && let Some(active) = rows.iter().find(|(_, row)| row.subject == current)
+        && let Some(active) = unique
+            .iter()
+            .copied()
+            .find(|(_, row)| row.subject == current)
     {
         cut.pop();
         cut.push(active);
