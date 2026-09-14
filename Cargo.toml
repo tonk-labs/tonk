@@ -192,22 +192,22 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/rule-warm" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/eager-differential" }
 
 [profile.dev]
 opt-level = 1
