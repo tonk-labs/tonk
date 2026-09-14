@@ -84,6 +84,7 @@ pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
 mod repository;
+pub(crate) use repository::ProfileLibraryCache;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration, bootstrap_profile,
@@ -687,6 +688,7 @@ pub mod tests {
             commands: super::command_providers(),
             clients: Default::default(),
             account_keys: Default::default(),
+            profile_library: Default::default(),
             registry,
             profile_transition: Default::default(),
             context_generation: Default::default(),

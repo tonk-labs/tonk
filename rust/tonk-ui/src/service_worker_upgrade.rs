@@ -4,7 +4,7 @@
     not(target_arch = "wasm32"),
     any(feature = "integration-tests", feature = "web-integration-tests")
 ))]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::io::Write as _;
     use std::path::Path;
@@ -71,6 +71,24 @@ mod tests {
                     "timed out waiting for a different worker; health={last}, document={document_state}"
                 ));
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn wait_for_guest_selector(driver: &WebDriver, selector: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            driver.enter_default_frame().await?;
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && driver.find(By::Css(selector.to_owned())).await.is_ok()
+            {
+                return Ok(());
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for guest selector {selector:?}"
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -212,8 +230,8 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct GenerationContract {
-        build: String,
+    pub(crate) struct GenerationContract {
+        pub(crate) build: String,
         /// Digest prefix stamped into the worker glue and re-observed from the
         /// exact ArrayBuffer handed to wasm-bindgen initialization.
         worker_wasm: String,
@@ -514,8 +532,39 @@ mod tests {
         Ok((generation_a_contract, generation_b_contract))
     }
 
+    pub(crate) fn prepare_profile_library_generations(
+        env: &TestEnvironment,
+    ) -> Result<(GenerationContract, GenerationContract)> {
+        let (_, generation_b) = prepare_second_generation(env)?;
+        let generation_a_root = env.deployment_root.join("generation-a");
+        let profile_library = generation_a_root.join("library/profile.yaml");
+        let current = std::fs::read_to_string(&profile_library)
+            .with_context(|| format!("read {}", profile_library.display()))?;
+        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        // The sentence is reduced from profile.yaml at eff85b2ab^, the last
+        // revision before that historical empty-state row was removed.
+        let historical = current.replacen(
+            marker,
+            &format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>"),
+            1,
+        );
+        ensure!(
+            historical != current,
+            "the historical profile-library fixture must differ"
+        );
+        std::fs::write(&profile_library, historical)
+            .with_context(|| format!("write {}", profile_library.display()))?;
+        stamp_generation(&generation_a_root)?;
+        let generation_a = generation_contract(&generation_a_root)?;
+        ensure!(
+            generation_a.build != generation_b.build,
+            "the historical and current generations must have distinct build ids"
+        );
+        Ok((generation_a, generation_b))
+    }
+
     #[cfg(unix)]
-    fn promote_second_generation(env: &TestEnvironment) -> Result<()> {
+    pub(crate) fn promote_second_generation(env: &TestEnvironment) -> Result<()> {
         use std::os::unix::fs::symlink;
 
         let next = env.deployment_root.join("current-next");
@@ -621,7 +670,47 @@ mod tests {
         }
     }
 
-    async fn wait_for_complete_generation(
+    async fn wait_for_hub_snapshot(driver: &WebDriver) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last = Value::Null;
+        loop {
+            driver.enter_default_frame().await?;
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && driver.find(By::Css(".hub-page")).await.is_ok()
+            {
+                let snapshot = driver
+                    .execute(
+                        r#"
+                        return {
+                            text: document.body.innerText,
+                            spaces: [...document.querySelectorAll("a.srow.blk")].map(link => ({
+                                href: link.getAttribute("href"),
+                                name: link.textContent.trim(),
+                            })),
+                            createEnabled: !document.querySelector("button.snew")?.disabled,
+                        };
+                        "#,
+                        vec![],
+                    )
+                    .await?;
+                last = snapshot.json().clone();
+                if last["spaces"]
+                    .as_array()
+                    .is_some_and(|spaces| !spaces.is_empty())
+                {
+                    return Ok(last);
+                }
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for the populated Hub: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    pub(crate) async fn wait_for_complete_generation(
         driver: &WebDriver,
         generation: &GenerationContract,
         expected_documents: Option<u64>,
@@ -777,6 +866,133 @@ mod tests {
             result.json()
         );
         Ok(result.json().clone())
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_reconciles_across_a_persisted_worker_upgrade(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_profile_library_generations(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        create_state_sentinels(&driver).await?;
+
+        driver.goto(env.tonk_web.as_str()).await?;
+        let historical = wait_for_hub_snapshot(&driver).await?;
+        ensure!(
+            historical["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("no spaces yet")),
+            "generation A did not render the historical profile facet: {historical}"
+        );
+        let spaces = historical["spaces"].clone();
+
+        promote_second_generation(&env)?;
+        driver.enter_default_frame().await?;
+        driver.refresh().await?;
+        let current =
+            wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
+                .await?;
+        let current_started_at = current["health"]["startedAt"]
+            .as_u64()
+            .context("the current worker reported no start time")?;
+
+        driver.goto(env.tonk_web.as_str()).await?;
+        let repaired = wait_for_hub_snapshot(&driver).await?;
+        ensure!(
+            repaired["text"]
+                .as_str()
+                .is_some_and(|text| !text.contains("no spaces yet")),
+            "generation B retained the obsolete profile facet: {repaired}"
+        );
+        ensure!(repaired["createEnabled"] == true, "{repaired}");
+        ensure!(
+            repaired["spaces"] == spaces,
+            "the worker update changed the persisted space roster: before={spaces} after={repaired}"
+        );
+
+        driver.find(By::Css("a.srow.blk")).await?.click().await?;
+        driver.enter_default_frame().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if driver.current_url().await?.path().starts_with("/space/") {
+                break;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the retained Hub space link did not navigate"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_guest_selector(&driver, "ui-account-settings").await?;
+        driver.enter_default_frame().await?;
+
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools.execute_cdp("Network.enable").await?;
+        devtools.execute_cdp("ServiceWorker.enable").await?;
+        devtools
+            .execute_cdp_with_params(
+                "Network.emulateNetworkConditions",
+                serde_json::json!({
+                    "offline": true,
+                    "latency": 0,
+                    "downloadThroughput": 0,
+                    "uploadThroughput": 0,
+                }),
+            )
+            .await?;
+        devtools.execute_cdp("ServiceWorker.stopAllWorkers").await?;
+        let offline_result: Result<u64> = async {
+            driver.refresh().await?;
+            let restarted = wait_for_worker_started_at(&driver, Some(current_started_at)).await?;
+            wait_for_mounted_worker(&driver, restarted).await?;
+            driver.goto(env.tonk_web.as_str()).await?;
+            let offline = wait_for_hub_snapshot(&driver).await?;
+            ensure!(offline["spaces"] == spaces, "{offline}");
+            ensure!(
+                offline["text"]
+                    .as_str()
+                    .is_some_and(|text| !text.contains("no spaces yet")),
+                "the offline worker restart lost the repaired facet: {offline}"
+            );
+            Ok(restarted)
+        }
+        .await;
+        devtools
+            .execute_cdp_with_params(
+                "Network.emulateNetworkConditions",
+                serde_json::json!({
+                    "offline": false,
+                    "latency": 0,
+                    "downloadThroughput": -1,
+                    "uploadThroughput": -1,
+                }),
+            )
+            .await?;
+        let restarted = offline_result?;
+
+        driver.enter_default_frame().await?;
+        driver.refresh().await?;
+        wait_for_mounted_worker(&driver, restarted).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let reconnected = wait_for_hub_snapshot(&driver).await?;
+        ensure!(reconnected["spaces"] == spaces, "{reconnected}");
+        ensure!(
+            reconnected["text"]
+                .as_str()
+                .is_some_and(|text| !text.contains("no spaces yet")),
+            "the reconnected sweep did not preserve the repaired facet: {reconnected}"
+        );
+
+        driver.enter_default_frame().await?;
+        let sentinels = state_sentinels(&driver).await?;
+        ensure!(sentinels["indexedDb"] == "preserved", "{sentinels}");
+        ensure!(sentinels["cache"] == "preserved", "{sentinels}");
+
+        driver.quit().await?;
+        Ok(())
     }
 
     #[dialog_common::test]

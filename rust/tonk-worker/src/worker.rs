@@ -422,6 +422,9 @@ pub struct TonkState {
     /// HTTP surface, so it sits on the hot path for every repository request.
     /// See [`crate::router::AccountKeys`].
     pub account_keys: crate::router::AccountKeys,
+    /// The profile-library bytes and branch revision most recently validated
+    /// by this worker instance.
+    pub(crate) profile_library: crate::router::ProfileLibraryCache,
     /// Handle to the fixed registry profile recording which profile is
     /// active and the roster of every profile this browser knows. Held so
     /// the profile-switching routes can validate, repoint, and annotate
@@ -1737,6 +1740,7 @@ pub(crate) async fn boot_state(
         clients: Default::default(),
         seed_upgrades: Default::default(),
         account_keys: Default::default(),
+        profile_library: Default::default(),
         registry,
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),

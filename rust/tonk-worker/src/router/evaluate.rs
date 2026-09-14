@@ -389,7 +389,7 @@ async fn evaluate_on_branch<'a>(
         tonk_branch,
         body,
         query,
-        Vec::new(),
+        Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::Interactive,
     )
@@ -404,6 +404,35 @@ enum EvaluationMode {
     LibrarySeedWithRace,
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) type RetractionPlanner<'a> = &'a dyn Fn() -> futures_util::future::LocalBoxFuture<
+    'a,
+    Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError>,
+>;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) type RetractionPlanner<'a> = &'a (
+        dyn Fn() -> futures_util::future::BoxFuture<
+    'a,
+    Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError>,
+> + Send
+            + Sync
+    );
+
+enum Retractions<'a> {
+    Fixed(Vec<crate::router::claim::RawClaim>),
+    Planned(RetractionPlanner<'a>),
+}
+
+impl Retractions<'_> {
+    async fn resolve(&self) -> Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError> {
+        match self {
+            Self::Fixed(claims) => Ok(claims.clone()),
+            Self::Planned(plan) => plan().await,
+        }
+    }
+}
+
 /// Libraries are known mutation documents. Take the writer lock before their
 /// first evaluation, sharing the interactive path's commit, refresh and retry.
 pub(super) async fn seed_on_branch<'a>(
@@ -416,7 +445,7 @@ pub(super) async fn seed_on_branch<'a>(
         tonk_branch,
         Bytes::from(body.into_bytes()),
         EvaluateQuery { transact: true },
-        Vec::new(),
+        Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::LibrarySeed,
     )
@@ -451,7 +480,7 @@ async fn evaluate_on_branch_with<'a>(
     tonk_branch: crate::reactor::BranchReference<'a>,
     body: Bytes,
     query: EvaluateQuery,
-    retract: Vec<crate::router::claim::RawClaim>,
+    retract: Retractions<'a>,
     record: Option<SeedRecord<'_>>,
     mode: EvaluationMode,
 ) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
@@ -498,7 +527,7 @@ async fn evaluate_on_branch_with<'a>(
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
         let mut txn = branch.transaction();
-        for claim in retract.iter().cloned() {
+        for claim in retract.resolve().await? {
             txn = txn.retract(claim);
         }
         let t_eval = web_time::Instant::now();
@@ -600,12 +629,39 @@ async fn evaluate_on_branch_with<'a>(
             // transactor just as an in-flight sync can. Only compiled in tests.
             #[cfg(test)]
             if mode == EvaluationMode::LibrarySeedWithRace && attempt == 0 {
-                syntax
-                    .evaluate(session.handle().transaction())
+                use dialog_repository::RepositoryExt as _;
+
+                let name = match tonk_branch.repository {
+                    dialog_reactor::RepositoryReference::Named { name, .. } => name,
+                    dialog_reactor::RepositoryReference::Profile { .. } => {
+                        panic!("the test race hook requires a named repository")
+                    }
+                };
+                let repository = tonk_state
+                    .profile
+                    .repository(name)
+                    .load()
                     .perform(&tonk_state.operator)
                     .await
-                    .map_err(map_evaluate_error)?
-                    .txn
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!("test race repository: {error}"))
+                    })?;
+                let external = repository
+                    .branch(tonk_branch.name)
+                    .open()
+                    .perform(&tonk_state.operator)
+                    .await
+                    .map_err(|error| {
+                        TonkWorkerError::Internal(format!("test race branch: {error}"))
+                    })?;
+                external
+                    .transaction()
+                    .assert(crate::router::claim::RawClaim {
+                        the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
+                        of: "test:evaluate-race".parse().expect("test entity"),
+                        is: dialog_artifacts::Value::String("advanced".to_owned()),
+                        unique: false,
+                    })
                     .commit()
                     .perform(&tonk_state.operator)
                     .await
@@ -763,7 +819,7 @@ pub async fn evaluate_body_recording(
         tonk_branch,
         bytes,
         query,
-        Vec::new(),
+        Retractions::Fixed(Vec::new()),
         Some(record),
         EvaluationMode::LibrarySeed,
     )
@@ -794,7 +850,7 @@ pub async fn evaluate_with_retractions(
         tonk_branch,
         bytes,
         query,
-        retract,
+        Retractions::Fixed(retract),
         Some(record),
         EvaluationMode::LibrarySeed,
     )
@@ -805,32 +861,7 @@ pub async fn evaluate_with_retractions(
 /// [`evaluate_profile_body`], with a second commit naming the first's
 /// version — the profile branch's counterpart to
 /// [`evaluate_body_recording`].
-/// [`evaluate_with_retractions`] for the profile branch: the seed upgrade
-/// path, where the claims the previous seed installed are withdrawn in the
-/// same staged commit that installs the new library and records it.
-pub async fn evaluate_profile_with_retractions(
-    tonk_state: &crate::worker::TonkState,
-    branch: &str,
-    body: String,
-    retract: Vec<crate::router::claim::RawClaim>,
-    record: SeedRecord<'_>,
-) -> Result<EvaluateResponse, TonkWorkerError> {
-    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
-    let query = EvaluateQuery { transact: true };
-    let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch_with(
-        tonk_state,
-        tonk_branch,
-        bytes,
-        query,
-        retract,
-        Some(record),
-        EvaluationMode::LibrarySeed,
-    )
-    .await
-    .map(|(Json(r), _)| r)
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn evaluate_profile_body_recording(
     tonk_state: &crate::worker::TonkState,
     branch: &str,
@@ -845,12 +876,37 @@ pub async fn evaluate_profile_body_recording(
         tonk_branch,
         bytes,
         query,
-        Vec::new(),
+        Retractions::Fixed(Vec::new()),
         Some(record),
         EvaluationMode::LibrarySeed,
     )
     .await
     .map(|(Json(r), _)| r)
+}
+
+/// Profile-library evaluation whose retractions are recomputed for every CAS
+/// attempt. A pull can advance profile `main` after the first evaluation;
+/// replanning after refresh prevents the retry from publishing an ownership
+/// decision made against the stale head.
+pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    branch: &'a str,
+    body: String,
+    retract: RetractionPlanner<'a>,
+    record: SeedRecord<'a>,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        Bytes::from(body.into_bytes()),
+        EvaluateQuery { transact: true },
+        Retractions::Planned(retract),
+        Some(record),
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(response), _)| response)
 }
 
 /// Like [`evaluate_body`], but against the **profile** repository's
@@ -1175,12 +1231,27 @@ mod tests {
     async fn library_seed_retries_after_a_head_race() {
         let (state, repo) = state_with_repo("seed-race").await;
         let tonk = state.read().await;
+        let planned = std::sync::atomic::AtomicUsize::new(0);
+        #[cfg(target_arch = "wasm32")]
+        let retractions = || -> futures_util::future::LocalBoxFuture<'_, _> {
+            Box::pin(async {
+                planned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Vec::new())
+            })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let retractions = || -> futures_util::future::BoxFuture<'_, _> {
+            Box::pin(async {
+                planned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Vec::new())
+            })
+        };
         let response = super::evaluate_on_branch_with(
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
             CONCEPTS.to_owned().into(),
             super::EvaluateQuery { transact: true },
-            Vec::new(),
+            super::Retractions::Planned(&retractions),
             None,
             super::EvaluationMode::LibrarySeedWithRace,
         )
@@ -1189,6 +1260,11 @@ mod tests {
         .0
         .0;
         assert!(response.revision_after.is_some());
+        assert_eq!(
+            planned.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the retry recomputes its ownership plan against the refreshed head"
+        );
         drop(tonk);
         seed(&state, &repo, RULE).await;
         seed(
