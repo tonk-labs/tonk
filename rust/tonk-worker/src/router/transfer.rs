@@ -73,7 +73,10 @@ pub async fn export(
         .repository(&path.repo)
         .branch(&path.branch);
     let csv = export_branch_csv(&tonk_state, tonk_branch).await?;
-    Ok(csv_response(&format!("{}-{}.csv", path.repo, path.branch), csv))
+    Ok(csv_response(
+        &format!("{}-{}.csv", path.repo, path.branch),
+        csv,
+    ))
 }
 
 /// `GET /api/profile/branch/{branch}/export`
@@ -197,12 +200,9 @@ async fn export_branch_snapshot(
         Err(_) => export.sparse(),
     };
 
-    dialog_repository::codec::encode(
-        export.perform(&tonk_state.operator),
-        vec![root],
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+    dialog_repository::codec::encode(export.perform(&tonk_state.operator), vec![root])
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))
 }
 
 /// Wrap snapshot bytes as a downloadable response.
