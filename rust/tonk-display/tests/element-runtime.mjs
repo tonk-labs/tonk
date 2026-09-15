@@ -221,18 +221,25 @@ check('editing an element leaves a legacy neighbour alone', await page.evaluate(
 }));
 
 // --- on-demand resolution -------------------------------------------
-// The host's resolver is stubbed: these prove the DISCOVERY half (a tag
-// is asked about because it appeared, once, and upgrades when the
-// answer lands). The real resolver runs the name -> entity -> methods
-// query in wasm.
+// These drive the REAL protocol: discovery dispatches
+// `tonk-element-needed`, a document-level listener answers by calling
+// `defineTonkElement`. Only the listener is stubbed (the host's runs a
+// branch query in wasm) — the announcement, the bubbling, the
+// de-duplication and the upgrade are the shipped code.
 
-// 16. A tag nobody registered is resolved because it rendered.
-check('an unregistered tag is resolved on first render', await page.evaluate(async () => {
+// 16. A tag nobody registered is announced because it rendered, and a
+// document listener can register it from there.
+check('an unregistered tag announces itself and gets registered', await page.evaluate(async () => {
   globalThis.asked = [];
-  globalThis.tonkResolveElement = (tag) => {
+  document.addEventListener('tonk-element-needed', (event) => {
+    const { tag } = event.detail;
     globalThis.asked.push(tag);
+    // A listener that has no definition for a tag simply does not
+    // register it — the element stays inert, which is the same state
+    // it was in before it announced itself.
+    if (tag.endsWith('-missing')) return;
     defineTonkElement(tag, { connected: (self) => { self.textContent = `resolved ${tag}`; } });
-  };
+  });
   startTonkElements();
   const el = document.createElement('lazy-one');
   document.body.append(el);
@@ -240,18 +247,41 @@ check('an unregistered tag is resolved on first render', await page.evaluate(asy
   return globalThis.asked.includes('lazy-one') && el.textContent === 'resolved lazy-one';
 }));
 
-// 17. Asked once per tag, however many instances render.
-check('a tag is asked about once per realm', await page.evaluate(async () => {
+// 17. The event bubbles from the element, not from document — that is
+// what lets a listener read routing context off the element's
+// ancestors.
+check('the event bubbles from the element that needs it', await page.evaluate(async () => {
+  globalThis.seen = null;
+  document.addEventListener('tonk-element-needed', (event) => {
+    globalThis.seen = {
+      tag: event.detail.tag,
+      fromElement: event.target instanceof Element,
+      targetTag: event.target.tagName.toLowerCase(),
+      context: event.target.closest('[with]')?.getAttribute('with') ?? null,
+    };
+  }, { once: true });
+  const host = document.createElement('div');
+  host.setAttribute('with', 'main@repo');
+  host.innerHTML = '<lazy-ctx></lazy-ctx>';
+  document.body.append(host);
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.seen?.tag === 'lazy-ctx'
+      && globalThis.seen.fromElement
+      && globalThis.seen.targetTag === 'lazy-ctx'
+      && globalThis.seen.context === 'main@repo';
+}));
+
+// 18. Announced once per tag, however many instances render.
+check('a tag is announced once per realm', await page.evaluate(async () => {
   globalThis.asked = [];
   for (let i = 0; i < 3; i++) document.body.append(document.createElement('lazy-two'));
   await new Promise(r => setTimeout(r, 0));
   return globalThis.asked.filter(t => t === 'lazy-two').length === 1;
 }));
 
-// 18. A tag that resolves to nothing is not re-asked, and stays inert.
-check('an unknown tag is asked once and stays inert', await page.evaluate(async () => {
+// 19. A tag the listener declines is announced once and stays inert.
+check('an unanswerable tag is announced once and stays inert', await page.evaluate(async () => {
   globalThis.asked = [];
-  globalThis.tonkResolveElement = (tag) => { globalThis.asked.push(tag); };
   const el = document.createElement('lazy-missing');
   document.body.append(el);
   await new Promise(r => setTimeout(r, 0));
@@ -261,7 +291,7 @@ check('an unknown tag is asked once and stays inert', await page.evaluate(async 
       && !customElements.get('lazy-missing');
 }));
 
-// 19. Built-in and vendor prefixes are left to their own loaders.
+// 20. Built-in and vendor prefixes are left to their own loaders.
 check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
   globalThis.asked = [];
   document.body.append(document.createElement('tonk-whatever'));
@@ -270,20 +300,33 @@ check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
   return globalThis.asked.length === 0;
 }));
 
-// 20. A tag nested deep inside an added subtree is found too — a view
-// renders a fragment, not one element at a time.
-check('a tag deep in an added subtree is discovered', await page.evaluate(async () => {
+// 21. A tag deep in an added subtree is found — a view renders a
+// fragment, not one element at a time.
+check('a tag deep in an added subtree is announced', await page.evaluate(async () => {
   globalThis.asked = [];
-  globalThis.tonkResolveElement = (tag) => {
-    globalThis.asked.push(tag);
-    defineTonkElement(tag, { connected: (self) => { self.textContent = 'deep'; } });
-  };
   const wrapper = document.createElement('div');
   wrapper.innerHTML = '<section><p><lazy-deep></lazy-deep></p></section>';
   document.body.append(wrapper);
   await new Promise(r => setTimeout(r, 0));
   return globalThis.asked.includes('lazy-deep')
-      && wrapper.querySelector('lazy-deep').textContent === 'deep';
+      && wrapper.querySelector('lazy-deep').textContent === 'resolved lazy-deep';
+}));
+
+// 22. Somewhere the observer cannot see — a shadow root — can announce
+// its own tags by hand, and the same listener services them.
+check('a shadow root can announce its own tags', await page.evaluate(async () => {
+  globalThis.asked = [];
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = '<lazy-shadow></lazy-shadow>';
+  await new Promise(r => setTimeout(r, 0));
+  const unseenByObserver = !globalThis.asked.includes('lazy-shadow');
+  announceTonkElements(root);
+  await new Promise(r => setTimeout(r, 0));
+  return unseenByObserver
+      && globalThis.asked.includes('lazy-shadow')
+      && root.querySelector('lazy-shadow').textContent === 'resolved lazy-shadow';
 }));
 
 await browser.close();

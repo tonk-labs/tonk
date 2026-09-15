@@ -241,12 +241,13 @@ dispatches through a table. So editing a method is a fact write, not a
 re-registration — `customElements.define` is never called twice, and no
 page reload is needed.
 
-> **Partly wired.** Discovery, the table and the wrapper are built and
-> tested in a browser. What is not written is the host resolver that
-> answers a discovered tag by running the name → entity → methods query.
-> Until it lands, an `element` row is inert data: `tonk element add`
-> stores it and `tonk element` lists it, but nothing answers the
-> lookup. The `component` shape below is the one that currently loads.
+The two halves are separate on purpose. Noticing dispatches a
+`tonk-element-needed` event from the element that needs the definition;
+a listener installed once at guest bootstrap answers it by resolving the
+tag and registering it. Neither knows how the other works — so anywhere
+the observer cannot see (a shadow root, a detached fragment) can
+announce its own tags and get the same treatment, and the event bubbles
+from the element so `with="branch@repo"` context still applies.
 
 Rules of the road:
 

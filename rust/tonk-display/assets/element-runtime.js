@@ -213,72 +213,82 @@
     "attribute-changed",
   ]);
 
-  // Tags already asked about, so a tag that resolves to nothing is
-  // requested once per realm rather than once per occurrence.
-  const requested = new Set();
+  // Tags already announced, so a tag is asked about once per realm
+  // rather than once per occurrence. Realm-global because
+  // `customElements` is: one registration serves every instance.
+  const announced = new Set();
 
   /** Tag prefixes whose elements are registered by someone else. */
   const FOREIGN = ["tonk-", "wa-"];
+
+  /** The event announcing that an undefined custom element rendered. */
+  const NEEDED = "tonk-element-needed";
 
   const mine = (tag) =>
     tag.includes("-") && !FOREIGN.some((prefix) => tag.startsWith(prefix));
 
   /**
-   * Ask the host to resolve every undefined custom element under
-   * `root`, once per tag.
+   * Announce every undefined custom element under `root`, once per tag.
    *
    * `:not(:defined)` is the browser's own answer to "what is on this
    * page that nobody has registered", so nothing has to be declared,
    * mounted, or scanned ahead of time: a view renders `<tally-widget>`
-   * and the tag is looked up because it is THERE. An element stays
+   * and the tag is announced because it is THERE. An element stays
    * inert until its definition lands and then upgrades in place, which
-   * is what makes resolving after render safe.
+   * is what makes announcing after render safe.
    *
-   * The host installs `globalThis.tonkResolveElement`; until it does,
-   * discovery is a no-op and the tags are re-offered on the next
-   * mutation.
+   * The event is dispatched ON THE ELEMENT and bubbles, not on
+   * `document` directly. Two reasons: a handler reads routing context
+   * (`with="branch@repo"`) off the element's ancestors, which a
+   * document-level dispatch would have thrown away; and anything that
+   * renders into a corner of the DOM this observer cannot see -- a
+   * shadow root, a detached fragment -- can announce its own tags the
+   * same way, and the same listener services them.
    */
-  const discover = (root) => {
-    const resolve = globalThis.tonkResolveElement;
-    if (typeof resolve !== "function") return;
-    const tags = new Set();
-    if (root instanceof Element && mine(root.tagName.toLowerCase())
-        && !customElements.get(root.tagName.toLowerCase())) {
-      tags.add(root.tagName.toLowerCase());
-    }
-    for (const el of root.querySelectorAll?.(":not(:defined)") ?? []) {
+  const announce = (root) => {
+    const found = new Map();
+    const consider = (el) => {
       const tag = el.tagName.toLowerCase();
-      if (mine(tag)) tags.add(tag);
-    }
-    for (const tag of tags) {
-      if (requested.has(tag)) continue;
-      requested.add(tag);
-      try {
-        resolve(tag);
-      } catch (error) {
-        console.error(`resolving <${tag}> failed:`, error);
-      }
+      if (!mine(tag) || customElements.get(tag) || found.has(tag)) return;
+      found.set(tag, el);
+    };
+    if (root instanceof Element) consider(root);
+    for (const el of root.querySelectorAll?.(":not(:defined)") ?? []) consider(el);
+    for (const [tag, el] of found) {
+      if (announced.has(tag)) continue;
+      announced.add(tag);
+      el.dispatchEvent(
+        new CustomEvent(NEEDED, { bubbles: true, composed: true, detail: { tag } }),
+      );
     }
   };
 
   const observer = new MutationObserver((records) => {
     for (const record of records) {
       for (const node of record.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE) discover(node);
+        if (node.nodeType === Node.ELEMENT_NODE) announce(node);
       }
     }
   });
 
   /**
-   * Start watching the document for undefined custom elements. Called
-   * by the host once its resolver is installed; idempotent.
+   * Start watching the document for undefined custom elements.
+   * Idempotent.
+   *
+   * Nothing here knows how a tag is resolved -- it only says one is
+   * needed. Whatever listens for `tonk-element-needed` and calls
+   * `defineTonkElement` is a separate concern, installed once at
+   * bootstrap so no page can forget it.
    */
   globalThis.startTonkElements = () => {
-    discover(document);
+    announce(document);
     observer.observe(document.documentElement, { subtree: true, childList: true });
   };
 
+  /** Announce the tags under `root` by hand (a shadow root, say). */
+  globalThis.announceTonkElements = (root) => announce(root ?? document);
+
   // Exposed for tests and for the inspector; not part of the authoring
   // surface.
-  globalThis.__tonkElements = { table, live, defined, requested, discover };
+  globalThis.__tonkElements = { table, live, defined, announced, announce, NEEDED };
 })();

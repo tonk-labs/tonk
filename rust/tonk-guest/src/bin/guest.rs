@@ -35,6 +35,16 @@ pub fn start() {
     // host-relative URLs there), mint a same-origin blob URL, and install it
     // as the sigil default — re-rendering any sigils that already painted.
     load_sigil_sprite();
+    // Author elements: the runtime that ANNOUNCES an undefined custom
+    // element, and the listener that ANSWERS by resolving the tag and
+    // registering it. Installed here, at the one place every sealed
+    // guest boots through, so no view or page can forget it — a tag
+    // renders and is registered because it rendered, never because
+    // something was mounted ahead of time.
+    //
+    // `tonk_display::register()` installs it too (it is idempotent);
+    // naming it here is the guarantee that it happens.
+    tonk_display::registry::install();
     tonk_display::register();
     tonk_board::register();
     tonk_workspace::register();

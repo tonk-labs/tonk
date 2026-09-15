@@ -87,9 +87,62 @@ fn js_string(value: &str) -> String {
     out
 }
 
+/// Execute `source` in `document`'s realm, once per distinct source.
+///
+/// Appending a created `<script>` is the one insertion path the HTML
+/// spec runs — `innerHTML` and cloned fragments never do, which is why
+/// a `<script>` in a view template is inert and why author JS has to
+/// come through here. De-duplicated by a content hash keyed in
+/// `<head>`, so the same module offered twice (two announcements of a
+/// tag, a re-install) executes once.
+#[cfg(target_arch = "wasm32")]
+pub fn execute(document: &web_sys::Document, source: &str) {
+    use wasm_bindgen::JsCast;
+
+    let Some(head) = document.head() else {
+        return;
+    };
+    let hash = format!("{:016x}", fnv1a64(source));
+    let marker = format!("script[data-tonk-element=\"{hash}\"]");
+    if document.query_selector(&marker).ok().flatten().is_some() {
+        return;
+    }
+    let Ok(script) = document.create_element("script") else {
+        return;
+    };
+    let _ = script.set_attribute("type", "module");
+    let _ = script.set_attribute("data-tonk-element", &hash);
+    script.set_text_content(Some(source));
+    // Dynamically inserted scripts default to `async`; force document
+    // order so the runtime asset is evaluated before the element
+    // modules that call into it.
+    if let Some(script) = script.dyn_ref::<web_sys::HtmlScriptElement>() {
+        script.set_async(false);
+    }
+    let _ = head.append_child(&script);
+}
+
+/// FNV-1a 64-bit over the source — stable, dependency-free, and
+/// collision-safe enough for "have I run this exact text".
+#[cfg(any(target_arch = "wasm32", test))]
+fn fnv1a64(source: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_hashes_distinct_sources_distinctly() {
+        assert_ne!(fnv1a64("a"), fnv1a64("b"));
+        assert_eq!(fnv1a64("same"), fnv1a64("same"));
+    }
 
     fn methods(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
