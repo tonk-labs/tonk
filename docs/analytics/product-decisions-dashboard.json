@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "project_id": 70116,
+  "dashboard": {
+    "name": "Product decisions",
+    "description": "Product-owned attempts, abandonment, failures, readiness, and latency. Filter by environment and version; identity is profile-level.",
+    "pinned": true,
+    "tags": [
+      "product",
+      "analytics-v1",
+      "privacy-reviewed"
+    ]
+  },
+  "related_dashboards": [
+    {
+      "id": 928106,
+      "description": "Registration, login, activation, custody, and native account lifecycle. Settings, profile, and terminal-link interactions are on Product decisions (dashboard 954308)."
+    },
+    {
+      "id": 929973,
+      "description": "Acquisition and launch conversion using the compatibility events. Readiness, errors, and interaction abandonment are on Product decisions (dashboard 954308)."
+    },
+    {
+      "id": 816712,
+      "description": "Production shell traffic and legacy engagement metrics. Current product interactions, readiness, errors, and abandonment are on Product decisions (dashboard 954308)."
+    },
+    {
+      "id": 816709,
+      "description": "Stable production shell traffic and legacy engagement metrics. Current product interactions, readiness, errors, and abandonment are on Product decisions (dashboard 954308)."
+    },
+    {
+      "id": 816708,
+      "description": "Staging shell traffic and legacy engagement metrics. Current product interactions, readiness, errors, and abandonment are on Product decisions (dashboard 954308)."
+    },
+    {
+      "id": 795317,
+      "description": "Development shell traffic and legacy engagement metrics. Current product interactions, readiness, errors, and abandonment are on Product decisions (dashboard 954308)."
+    }
+  ],
+  "insights": [
+    {
+      "name": "Product interaction attempts",
+      "description": "Unique started attempts by environment, surface, journey, and action over 30 days.",
+      "display": "ActionsTable",
+      "query": "SELECT properties.environment AS environment, properties.surface AS surface, properties.journey AS journey, properties.action AS action, uniq(properties.attempt_id) AS attempts, uniq(distinct_id) AS profiles FROM events WHERE event = 'product_event' AND properties.phase = 'started' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, surface, journey, action ORDER BY attempts DESC"
+    },
+    {
+      "name": "Product terminal outcomes",
+      "description": "Finished attempts split by result, action, surface, and environment over 30 days.",
+      "display": "ActionsStackedBar",
+      "query": "SELECT properties.environment AS environment, properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS attempts FROM events WHERE event = 'product_event' AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, surface, action, result ORDER BY attempts DESC"
+    },
+    {
+      "name": "Product completion, failure, and abandonment",
+      "description": "Started-at cohort older than 10 minutes, matched by attempt ID. Shows sample size beside completion, hard-failure, and missing-terminal rates.",
+      "display": "ActionsTable",
+      "query": "SELECT environment, surface, journey, action, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, finished / starts) AS completion_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(properties.environment, properties.phase = 'started') AS environment, anyIf(properties.surface, properties.phase = 'started') AS surface, anyIf(properties.journey, properties.phase = 'started') AS journey, anyIf(properties.action, properties.phase = 'started') AS action, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY environment, surface, journey, action ORDER BY starts DESC"
+    },
+    {
+      "name": "Product journey stopping points",
+      "description": "Last observed stage and phase per attempt, grouped to show where users stop.",
+      "display": "ActionsTable",
+      "query": "SELECT journey, action, surface, last_stage, last_phase, last_result, count() AS attempts FROM (SELECT properties.attempt_id AS attempt_id, any(properties.journey) AS journey, any(properties.action) AS action, any(properties.surface) AS surface, argMax(properties.stage, timestamp) AS last_stage, argMax(properties.phase, timestamp) AS last_phase, argMax(properties.result, timestamp) AS last_result FROM events WHERE event = 'product_event' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY attempt_id) GROUP BY journey, action, surface, last_stage, last_phase, last_result ORDER BY attempts DESC"
+    },
+    {
+      "name": "Product failures by stage and release",
+      "description": "Closed failure classes by action, stage, environment, and version over 30 days.",
+      "display": "ActionsTable",
+      "query": "SELECT properties.environment AS environment, properties.version AS version, properties.action AS action, properties.stage AS stage, properties.failure_kind AS failure_kind, uniq(properties.attempt_id) AS failures, uniq(distinct_id) AS impacted_profiles FROM events WHERE event = 'product_event' AND properties.phase = 'finished' AND properties.result IN ('blocked','retryable_failure','terminal_failure','unknown_commit') AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, version, action, stage, failure_kind ORDER BY failures DESC"
+    },
+    {
+      "name": "Product terminal latency",
+      "description": "Median and p95 elapsed time by action, result, surface, and environment, with sample size.",
+      "display": "ActionsTable",
+      "query": "SELECT properties.environment AS environment, properties.surface AS surface, properties.action AS action, properties.result AS result, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms, uniq(properties.attempt_id) AS outcomes FROM events WHERE event = 'product_event' AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, surface, action, result ORDER BY p95_ms DESC"
+    },
+    {
+      "name": "Startup readiness and failure stage",
+      "description": "Product-ready attempts and terminal results by environment, version, and last stage.",
+      "display": "ActionsTable",
+      "query": "SELECT properties.environment AS environment, properties.version AS version, properties.phase AS phase, properties.stage AS stage, properties.result AS result, uniq(properties.attempt_id) AS attempts, quantileIf(0.95)(toFloat(properties.duration_ms), properties.phase = 'finished') AS p95_ms FROM events WHERE event = 'product_event' AND properties.action = 'product_ready' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, version, phase, stage, result ORDER BY attempts DESC"
+    },
+    {
+      "name": "CLI command health",
+      "description": "Current CLI command volume and coarse exits by version over 30 days; account lifecycle remains in Account health.",
+      "display": "ActionsTable",
+      "query": "SELECT properties.version AS version, properties.command AS command, properties.subcommand AS subcommand, properties.exit AS exit, count() AS runs, uniq(distinct_id) AS profiles, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'cli_command_run' AND properties.environment = 'cli' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY version, command, subcommand, exit ORDER BY runs DESC"
+    }
+  ],
+  "published": {
+    "dashboard_id": 954308,
+    "verified_at": "2026-09-15T12:53:09.695816+00:00",
+    "insights": [
+      {
+        "name": "Product interaction attempts",
+        "id": 5963613,
+        "short_id": "dTZJAr1L"
+      },
+      {
+        "name": "Product terminal outcomes",
+        "id": 5963614,
+        "short_id": "49COiaci"
+      },
+      {
+        "name": "Product completion, failure, and abandonment",
+        "id": 5963615,
+        "short_id": "Uf9kVjZn"
+      },
+      {
+        "name": "Product journey stopping points",
+        "id": 5963624,
+        "short_id": "1DsnEyNS"
+      },
+      {
+        "name": "Product failures by stage and release",
+        "id": 5963625,
+        "short_id": "mKi9kX8d"
+      },
+      {
+        "name": "Product terminal latency",
+        "id": 5963627,
+        "short_id": "28sof5Xp"
+      },
+      {
+        "name": "Startup readiness and failure stage",
+        "id": 5963629,
+        "short_id": "xZL9r765"
+      },
+      {
+        "name": "CLI command health",
+        "id": 5963630,
+        "short_id": "3IpJCuRw"
+      }
+    ]
+  }
+}

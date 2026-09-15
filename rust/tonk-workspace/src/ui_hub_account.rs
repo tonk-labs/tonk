@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::{JSON, Reflect};
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
 use tonk_host::consumer::{self, Subscription};
 use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
 use wasm_bindgen::closure::Closure;
@@ -525,11 +526,22 @@ impl CustomElement for UiHubAccount {
                 let host = host.clone();
                 let action_pending = action_pending.clone();
                 spawn_local(async move {
+                    let mut attempt = crate::analytics::Attempt::start(
+                        Journey::Account,
+                        ProductAction::AddProfile,
+                        Surface::Hub,
+                        Trigger::User,
+                        Stage::Intent,
+                    );
                     let added = tonk_host::post_json("/api/profiles/add", "{}").await;
                     action_pending.set(false);
                     set_action_pending(&host, false);
-                    if added.is_err() {
-                        return;
+                    match added {
+                        Ok(_) => attempt.finish(Stage::LocalCommit, ProductResult::Success, None),
+                        Err(error) => {
+                            attempt.finish_error(Stage::LocalCommit, &error);
+                            return;
+                        }
                     }
                     close_menu(&host, false);
                     enter_linking(&host);
@@ -657,6 +669,13 @@ fn show_error(this: &HtmlElement, selector: &str, message: &str) {
 
 fn load_profiles(this: HtmlElement, generation: Rc<Cell<u64>>, token: u64) {
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::LoadProfiles,
+            Surface::Hub,
+            Trigger::Automatic,
+            Stage::Intent,
+        );
         let result = tonk_host::get_json("/api/profiles").await.and_then(|body| {
             serde_json::from_str::<ProfilesResponse>(&body).map_err(|error| {
                 tonk_host::error::ErrorDetail::new(
@@ -670,10 +689,14 @@ fn load_profiles(this: HtmlElement, generation: Rc<Cell<u64>>, token: u64) {
         }
         match result {
             Ok(response) => {
+                attempt.finish(Stage::Ready, ProductResult::Success, None);
                 render_profiles(&this, &response);
                 set_hidden(&this, "[data-account-error]", true);
             }
-            Err(error) => show_error(&this, "[data-account-error]", &error.message),
+            Err(error) => {
+                attempt.finish_error(Stage::Ready, &error);
+                show_error(&this, "[data-account-error]", &error.message);
+            }
         }
     });
 }
@@ -709,6 +732,13 @@ fn activate_profile(
     set_action_pending(&this, true);
     set_hidden(&this, "[data-account-error]", true);
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::SwitchProfile,
+            Surface::Hub,
+            Trigger::User,
+            Stage::Intent,
+        );
         let request = tonk_worker_api::ActivateProfileRequest {
             profile: profile_name,
         };
@@ -724,8 +754,18 @@ fn activate_profile(
         pending.set(false);
         set_action_pending(&this, false);
         match result {
-            Ok(_) => tonk_host::reload_page(),
-            Err(message) => show_error(&this, "[data-account-error]", &message),
+            Ok(_) => {
+                attempt.finish(Stage::LocalCommit, ProductResult::Success, None);
+                tonk_host::reload_page();
+            }
+            Err(message) => {
+                attempt.finish(
+                    Stage::LocalCommit,
+                    ProductResult::RetryableFailure,
+                    Some(tonk_analytics::product::FailureKind::Unknown),
+                );
+                show_error(&this, "[data-account-error]", &message);
+            }
         }
     });
 }

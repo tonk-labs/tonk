@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{Event, HtmlElement, window};
@@ -125,6 +126,13 @@ impl CustomElement for TonkInviteLink {
 /// form, the form speaks the shape the existing command already reads,
 /// and one handler serves both the pasted link and the visited one.
 async fn submit(this: &HtmlElement) {
+    let mut attempt = crate::analytics::Attempt::start(
+        Journey::Collaboration,
+        ProductAction::ResolveInvite,
+        Surface::Join,
+        Trigger::User,
+        Stage::Intent,
+    );
     let field = this
         .get_attribute("field")
         .unwrap_or_else(|| DEFAULT_FIELD.to_string());
@@ -132,11 +140,31 @@ async fn submit(this: &HtmlElement) {
     let _ = this.set_attribute(STATE_ATTR, "resolving");
     match local_join_href(pasted.trim()).await {
         Ok(href) => {
+            attempt.finish(Stage::Validation, ProductResult::Success, None);
+            let _join_attempt = crate::analytics::Attempt::start(
+                Journey::Collaboration,
+                ProductAction::JoinSpace,
+                Surface::Join,
+                Trigger::User,
+                Stage::Worker,
+            );
             let _ = this.remove_attribute(STATE_ATTR);
             let _ = this.remove_attribute("data-refusal");
             dispatch_mount(this, &href);
         }
         Err(refusal) => {
+            let failure = match refusal {
+                InviteLinkRefusal::Empty | InviteLinkRefusal::Malformed => {
+                    tonk_analytics::product::FailureKind::InvalidInput
+                }
+                InviteLinkRefusal::Unresolvable => tonk_analytics::product::FailureKind::Network,
+            };
+            let result = if refusal == InviteLinkRefusal::Unresolvable {
+                ProductResult::RetryableFailure
+            } else {
+                ProductResult::Blocked
+            };
+            attempt.finish(Stage::Validation, result, Some(failure));
             let _ = this.set_attribute(STATE_ATTR, "invalid");
             let _ = this.set_attribute("data-refusal", refusal.as_attr());
         }

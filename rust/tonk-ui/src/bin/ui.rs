@@ -130,16 +130,40 @@ async fn main() {
     inject_hot_swap();
 
     if let Err(error) = tonk_host::ready::require().await {
+        tonk_ui::analytics::finish_startup(
+            tonk_analytics::product::Stage::Worker,
+            tonk_analytics::product::ProductResult::RetryableFailure,
+            Some(tonk_analytics::product::FailureKind::ServiceUnavailable),
+        );
         web_sys::console::error_1(&error);
         show_readiness_failure();
         return;
     }
+    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Worker);
     if let Err(error) = open_welcome_space().await {
+        tonk_ui::analytics::finish_startup(
+            tonk_analytics::product::Stage::Welcome,
+            tonk_analytics::product::ProductResult::RetryableFailure,
+            Some(tonk_analytics::product::FailureKind::Network),
+        );
         web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
         show_readiness_failure();
         return;
     }
+    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Welcome);
     mount_root();
+    if web_sys::window().is_some_and(|window| {
+        matches!(
+            window.location().pathname().as_deref(),
+            Ok("/activate" | "/activate/")
+        )
+    }) {
+        tonk_ui::analytics::finish_startup(
+            tonk_analytics::product::Stage::Ready,
+            tonk_analytics::product::ProductResult::Success,
+            None,
+        );
+    }
     if let Some(request) = tonk_ui::register_dialog::take_reopen() {
         tonk_ui::register_dialog::open();
         tonk_ui::register_dialog::describe(&request);
