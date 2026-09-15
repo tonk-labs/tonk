@@ -161,11 +161,44 @@ async fn mount_and_record(
     configuration: crate::router::repository::RepositoryConfiguration,
 ) -> Result<(), crate::TonkWorkerError> {
     super::join::mount_replica_with_configuration(tonk, subject, configuration).await?;
+    pull_content_on_mount(tonk, subject).await;
     super::repository::record_initialized_replica_in_profile(tonk, subject)
         .await
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
         })
+}
+
+/// Pull the content branch of a space that was just mounted, before the
+/// mount is reported complete.
+///
+/// Mounting records the replica and configures its remote; the content
+/// itself used to arrive with the next background sync drain. The page
+/// that triggered the mount does not wait for that: its site stamp ran
+/// against the still-empty branch, found no route table, logged
+/// `SKIPPED: no route match`, and nothing re-ran it when the pull landed
+/// a second later. The "downloading" placeholder then stayed up for
+/// good. Pulling here, while the replicating marker is still asserted,
+/// makes "it opens as soon as enough of it has arrived" literally what
+/// happens: the stamp that follows the mount sees the routes.
+///
+/// Best-effort: a failed pull is logged and the mount still completes,
+/// since the background drain retries the pull and a mount without
+/// content is what it was before.
+async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
+    let key = subject.as_str();
+    match tonk
+        .reactor
+        .repository(key)
+        .branch(super::repository::CONTENT_BRANCH)
+        .pull()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(_) => log!("space adoption: pulled '{subject}' content"),
+        Err(error) => log!("space adoption: content pull for '{subject}' failed: {error}"),
+    }
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Pull a space this account has but this device does not.

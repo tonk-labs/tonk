@@ -4887,7 +4887,7 @@ pub async fn get_profile_repository(
 /// The branch a repository's own `tonk/repository` name is seeded onto.
 /// Spaces have a single content branch (`main`); the seed writes the
 /// name there (see `repository_name_body`).
-const CONTENT_BRANCH: &str = "main";
+pub(super) const CONTENT_BRANCH: &str = "main";
 
 /// Read a repository's display label from its own `tonk/repository`
 /// concept on its content branch, keyed by the subject DID.
