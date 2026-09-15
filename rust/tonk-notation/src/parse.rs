@@ -102,12 +102,13 @@ struct TopLevelDoc<'input> {
     /// so we have to remember the events ourselves to surface them
     /// as diagnostics.
     alias_spans: Vec<Span>,
-    /// Keys repeated within one nested mapping, with their spans.
+    /// Field names declared twice under one `with:`, with their spans.
     /// saphyr's loader keeps the last value and drops the rest without
     /// a word; a definition that declares a field twice (a merge that
     /// kept both sides, say) would otherwise ship whichever copy came
-    /// last. Root-level repeats are the notation's own multi-block
-    /// form and are not recorded here.
+    /// last. Only field declarations are checked: a repeated key in an
+    /// assertion body writes several values of a cardinality-many field,
+    /// and root-level repeats are the notation's own multi-block form.
     duplicate_keys: Vec<(Span, String)>,
 }
 
@@ -305,11 +306,23 @@ fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYa
 struct OpenMapping {
     keys: Option<std::collections::HashMap<String, Span>>,
     expecting_key: bool,
+    /// The key whose value is being loaded, so a child mapping knows
+    /// what it is the value of.
+    last_key: Option<String>,
+    /// Whether a repeated key in THIS mapping is reported. Only the
+    /// field declarations under a `with:` are: there a repeat can only
+    /// be a mistake. In an assertion body a repeated key is how a
+    /// cardinality-many field takes several values, and in a query a
+    /// repeat has always been last-wins.
+    checked: bool,
 }
 
+/// The key whose value mapping holds field declarations.
+const FIELDS_KEY: &str = "with";
+
 /// Feed one event to the duplicate-key check: a scalar arriving where a
-/// mapping expects a key is compared against that mapping's earlier keys,
-/// and a repeat is recorded with its span.
+/// checked mapping expects a key is compared against that mapping's
+/// earlier keys, and a repeat is recorded with its span.
 fn note_key_event(
     open: &mut Vec<OpenMapping>,
     event: &Event<'_>,
@@ -318,17 +331,22 @@ fn note_key_event(
 ) {
     match event {
         Event::MappingStart(_, _) | Event::SequenceStart(_, _) => {
+            let mut checked = false;
             if let Some(parent) = open.last_mut()
                 && parent.keys.is_some()
             {
                 // A nested node in key position is a complex key; it is
                 // not compared, and the node after it is the value.
+                let is_value = !parent.expecting_key;
+                checked = is_value && parent.last_key.as_deref() == Some(FIELDS_KEY);
                 parent.expecting_key = !parent.expecting_key;
             }
             open.push(OpenMapping {
                 keys: matches!(event, Event::MappingStart(_, _))
                     .then(std::collections::HashMap::new),
                 expecting_key: true,
+                last_key: None,
+                checked,
             });
         }
         Event::MappingEnd | Event::SequenceEnd => {
@@ -343,12 +361,15 @@ fn note_key_event(
                 && let Event::Scalar(text, _, _, _) = event
             {
                 let key = text.to_string();
-                match keys.entry(key) {
-                    std::collections::hash_map::Entry::Occupied(seen) => {
-                        duplicates.push((span, seen.key().clone()));
-                    }
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(span);
+                frame.last_key = Some(key.clone());
+                if frame.checked {
+                    match keys.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(seen) => {
+                            duplicates.push((span, seen.key().clone()));
+                        }
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(span);
+                        }
                     }
                 }
             }
@@ -452,7 +473,7 @@ fn walk_document(
         out.push(error(
             range_from_span(*span),
             format!(
-                "`{key}` is declared twice in this mapping; only one of the two \
+                "field `{key}` is declared twice; only one of the two declarations \
                  would take effect, so remove the copy that is not meant"
             ),
         ));
@@ -1882,18 +1903,10 @@ person:
         assert_eq!(q2.fields.len(), 2);
     }
 
-    /// A field declared twice is an error, not a silent last-wins.
-    ///
-    /// The loader keeps the last value and drops the rest without a
-    /// word, which is how a shipped library came to declare
-    /// `seed/installed`'s `prior` and `version` twice after a merge kept
-    /// both sides: it parsed, evaluated, and shipped whichever copy came
-    /// last. Root-level repeats stay legal (the multi-block form pinned
-    /// above); a repeat inside any nested mapping is reported at the
-    /// second occurrence.
+    /// A query's repeated field key stays last-wins, as it always was.
     #[dialog_common::test]
-    fn it_rejects_duplicate_field_keys() {
-        let parsed = parse(
+    fn it_collapses_duplicate_query_field_keys() {
+        let syntax = parse_clean(
             r#"
 person:
   this: ?alice
@@ -1901,16 +1914,29 @@ person:
   age: 29
 "#,
         );
-        assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
-        let diagnostic = &parsed.diagnostics[0];
-        assert!(diagnostic.message.contains("`age` is declared twice"));
-        assert_eq!(
-            diagnostic.range.start.line, 4,
-            "reported at the second copy"
-        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let age = q.fields.iter().find(|f| f.name == "age").unwrap();
+        assert!(matches!(
+            &age.value,
+            FieldValue::Literal(Scalar::UnsignedInteger(29))
+        ));
+    }
 
-        // Deeper mappings are checked too: a concept's `with:` block is
-        // where the shipped duplicate lived.
+    /// A field declared twice under a definition's `with:` is an error,
+    /// not a silent last-wins.
+    ///
+    /// The loader keeps the last value and drops the rest without a
+    /// word, which is how a shipped library came to declare
+    /// `seed/installed`'s `prior` and `version` twice after a merge kept
+    /// both sides: it parsed, evaluated, and shipped whichever copy came
+    /// last. The check is scoped to field declarations: a repeated key
+    /// in an assertion body is how a cardinality-many field takes several
+    /// values, and root-level repeats are the multi-block form pinned
+    /// above.
+    #[dialog_common::test]
+    fn it_rejects_a_field_declared_twice() {
         let parsed = parse(
             r#"
 concept!:
@@ -1925,21 +1951,26 @@ concept!:
 "#,
         );
         assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+        let diagnostic = &parsed.diagnostics[0];
         assert!(
-            parsed.diagnostics[0]
+            diagnostic
                 .message
-                .contains("`prior` is declared twice")
+                .contains("field `prior` is declared twice")
+        );
+        assert_eq!(
+            diagnostic.range.start.line, 8,
+            "reported at the second copy"
         );
 
-        // The same key in two sibling mappings is two different mappings.
+        // Inside a declaration, a repeat of a declaration's OWN keys is
+        // not what is checked; the walker reports those on its own terms.
+        // And an assertion body's repeated key is several values.
         parse_clean(
             r#"
-person:
-  this: ?alice
-  home:
-    city: x
-  work:
-    city: y
+note!: &n2
+  body: "hello"
+  tag: "a"
+  tag: "b"
 "#,
         );
     }
