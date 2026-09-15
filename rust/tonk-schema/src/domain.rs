@@ -943,6 +943,21 @@ pub mod command {
         pub struct At(pub u64);
     }
 
+    /// Attributes of the `diagnose:expand` command — the search-tree
+    /// inspector's one interaction.
+    pub mod diagnose_expand {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The node to reveal the contents of, as the `tree:<base58>`
+        /// entity the tree resolvers name it with. Derived attribute:
+        /// `xyz.tonk.diagnose.expand/node`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.diagnose.expand")]
+        #[cardinality(one)]
+        pub struct Node(pub Entity);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -1861,4 +1876,40 @@ pub mod agent_handoff {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.agent-handoff")]
     pub struct Account(pub Entity);
+}
+
+/// Attributes of the search-tree inspector's OWN facts — the two things
+/// the tree resolvers cannot answer.
+///
+/// Everything else the inspector shows is derived from dialog's `tree/*`
+/// resolvers at query time (see `tonk-core/assets/library/diagnose.yaml`,
+/// the schema of record). These two are published into the branch's
+/// session overlay instead, because neither describes an immutable block:
+/// expansion is what this viewer chose to look at, and locality is where
+/// the bytes happen to be right now.
+pub mod diagnose {
+    use super::{Attribute, Entity};
+
+    /// A node whose contents the outline is showing. Cardinality-many on
+    /// the singleton outline entity, so expanding accumulates and the
+    /// children rule reads expansion as an ordinary premise.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.diagnose.outline")]
+    #[cardinality(many)]
+    pub struct Expanded(pub Entity);
+
+    /// Whether the node's block is held in this device's archive. False
+    /// means reading it costs a round trip to the remote.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.diagnose.status")]
+    #[cardinality(one)]
+    pub struct Local(pub bool);
+
+    /// When the locality probe ran — seconds since the Unix epoch, as
+    /// text. Locality changes with no commit behind it, so a status is
+    /// only ever as true as its stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.diagnose.status")]
+    #[cardinality(one)]
+    pub struct Probed(pub String);
 }

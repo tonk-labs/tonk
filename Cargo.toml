@@ -242,3 +242,36 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# PROOF OF CONCEPT ONLY — do not merge this section.
+#
+# The declarative diagnose page needs dialog's tree resolvers to name their
+# rows (`this`) and to take an entity as a reference. That change is on
+# dialog-db's `worker/clever-hypatia-e7oaxk`, which is based on dialog HEAD
+# — and tonk does not build against dialog HEAD (it has moved on from the
+# pinned tag; `Push::perform` gained a `Provider<Hydrate>` bound, among
+# others). What this PoC was verified against is the pinned tag PLUS that
+# change, i.e.:
+#
+#   git worktree add ../dialog-db-pin tonk-2026-09-09b
+#   cd ../dialog-db-pin && git cherry-pick <the resolver-subject commit>
+#
+# Point the paths below at that checkout. The real fix is to release the
+# dialog change and move the tag; this section goes away then.
+[patch."https://github.com/dialog-db/dialog-db.git"]
+dialog-artifacts = { path = "../dialog-db-pin/rust/dialog-artifacts" }
+dialog-capability = { path = "../dialog-db-pin/rust/dialog-capability" }
+dialog-common = { path = "../dialog-db-pin/rust/dialog-common" }
+dialog-credentials = { path = "../dialog-db-pin/rust/dialog-credentials" }
+dialog-csv = { path = "../dialog-db-pin/rust/dialog-csv" }
+dialog-effects = { path = "../dialog-db-pin/rust/dialog-effects" }
+dialog-operator = { path = "../dialog-db-pin/rust/dialog-operator" }
+dialog-query = { path = "../dialog-db-pin/rust/dialog-query" }
+dialog-remote-s3 = { path = "../dialog-db-pin/rust/dialog-remote-s3" }
+dialog-remote-ucan-s3 = { path = "../dialog-db-pin/rust/dialog-remote-ucan-s3" }
+dialog-repository = { path = "../dialog-db-pin/rust/dialog-repository" }
+dialog-search-tree = { path = "../dialog-db-pin/rust/dialog-search-tree" }
+dialog-storage = { path = "../dialog-db-pin/rust/dialog-storage" }
+dialog-ucan = { path = "../dialog-db-pin/rust/dialog-ucan" }
+dialog-ucan-core = { path = "../dialog-db-pin/rust/dialog-ucan-core" }
+dialog-varsig = { path = "../dialog-db-pin/rust/dialog-varsig" }

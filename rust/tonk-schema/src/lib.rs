@@ -72,6 +72,9 @@ pub use account::{
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
+pub mod diagnose;
+pub use diagnose::{DiagnoseOutline, DiagnoseStatus};
+
 pub mod device_link;
 pub mod replica;
 pub use device_link::*;

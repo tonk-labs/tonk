@@ -78,6 +78,8 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
+/// The search-tree inspector's expand command.
+mod diagnose;
 mod members;
 
 pub mod inspect;

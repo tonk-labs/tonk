@@ -214,6 +214,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::AgentHandoff>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
+        .command::<tonk_schema::command::DiagnoseExpand>()
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()

@@ -535,6 +535,28 @@ impl Command for RemoveSpace {
 
 /// Promote a member of a space to admin.
 ///
+/// Reveal what is under a node in the search-tree inspector's outline.
+///
+/// The inspector's one interaction, and the only reason it needs a command
+/// at all: everything it displays is derived from dialog's tree resolvers,
+/// but WHICH nodes it displays is a choice, and the two things that follow
+/// from that choice — the expansion itself and the locality of what it
+/// reveals — are facts no resolver can answer. Both land in the branch's
+/// session overlay, so browsing the tree neither persists nor replicates.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DiagnoseExpand {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The node to reveal, as the `tree:<base58>` entity the resolvers
+    /// name it with.
+    pub node: crate::domain::command::diagnose_expand::Node,
+}
+
+impl Command for DiagnoseExpand {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Dispatched by the FAB's roster after the page minted the admin hop
 /// under the passkey: the guest asks the outer page to delegate `/` on
 /// the space to the member's account, and the page answers with the hop

@@ -39,6 +39,12 @@ const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/note
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 
+/// The diagnose library. Installed on demand rather than seeded (a page
+/// most sessions never open), which means nothing else would catch a
+/// document that stopped lowering — the install is best-effort and simply
+/// leaves the page unrendered. So it belongs in this gate.
+const DIAGNOSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/diagnose.yaml");
+
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
@@ -91,6 +97,19 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+/// The diagnose library lowers, resolver premises and all.
+///
+/// Its rules read through dialog's `tree/*` resolvers and `dialog/key-part`
+/// rather than through facts on the branch, so this also pins that a
+/// resolver premise lifts from a library document — the analyzer validates
+/// each premise's operands against dialog's own schema, so a resolver that
+/// changes shape upstream fails here rather than at install time on a page
+/// nobody watches.
+#[test]
+fn it_lowers_the_diagnose_library() {
+    assert_library_lowers("diagnose library (diagnose.yaml)", DIAGNOSE_LIBRARY);
 }
 
 #[test]

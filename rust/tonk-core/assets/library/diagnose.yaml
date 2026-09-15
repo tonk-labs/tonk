@@ -1,0 +1,680 @@
+# ===========================================================================
+# diagnose — the search-tree inspector, as concepts and views.
+# ===========================================================================
+# A window onto the dialog-search-tree index behind a branch: the nodes it is
+# built from, the ranges they delegate, and the entries at the leaves.
+#
+# This document is NOT seeded. It is fetched and evaluated onto the branch
+# the FIRST TIME a tab asks for `dialog:diagnose`, the same way `console.yaml`
+# installs on the first `/console` — a page most sessions never open costs
+# them nothing.
+#
+# Everything below reads through dialog's own TREE RESOLVERS (`tree/node`,
+# `tree/span`, `tree/key`, `tree/entry`, `tree/blob`, `tree/manifest`) and its
+# key-decomposition formulas (`dialog/key-part`). A resolver selects by
+# content address over immutable blocks, so these rows are derived at query
+# time from the tree itself — nothing here is stored, and nothing needs a
+# worker to publish it.
+#
+# The one exception is NODE STATUS (see the bottom): whether a block is held
+# locally or would have to be fetched is a fact about this device at this
+# moment, not about the immutable block. It cannot come from a resolver and
+# is published into the session overlay instead.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Where the tree starts
+# ---------------------------------------------------------------------------
+
+# The branch's own metadata. `dialog.branch/tree` is injected into every
+# query's overlay by the repository (see `BranchMetadata`), so this resolves
+# on ANY branch — no seeding, no worker, nothing to keep in step.
+concept!: &diagnose/head
+  this: diagnose:head
+  description: A branch and the base58 reference of the tree root it points at.
+  with:
+    tree:
+      description: >
+        Base58 reference of the branch's current tree root. Changes on every
+        commit, which is what makes the inspector live rather than a snapshot.
+      the: dialog.branch/tree
+      cardinality: one
+      as: text
+
+# The page's own row: the branch, plus the root as an ENTITY the node views
+# can address. The reference and the entity are the same 32 bytes — the
+# resolver puts the `tree:` scheme on it (`tree/node`'s `this`), which is
+# what lets a node be the subject of a fact at all.
+concept!: &diagnose/branch
+  this: diagnose:branch
+  description: The branch under inspection, and the node its tree is rooted at.
+  with:
+    tree:
+      description: Base58 reference of the branch's current tree root.
+      the: dialog.branch/tree
+      cardinality: one
+      as: text
+  maybe:
+    root:
+      description: >
+        The root node, as the entity `tree:<base58>`. Absent only while the
+        root block is unavailable — an empty branch, or one whose root has
+        not replicated here yet.
+      the: xyz.tonk.diagnose.branch/root
+      cardinality: one
+      as: entity
+
+rule!:
+  description: Resolve the branch's tree reference to the node it names.
+  assert: diagnose/branch
+  when:
+    - assert: diagnose/head
+      where:
+        this: ?this
+        tree: ?tree
+    - assert: tree/node
+      where:
+        of: ?tree
+        this: ?root
+
+# ---------------------------------------------------------------------------
+# Nodes
+# ---------------------------------------------------------------------------
+
+# One node of the tree. An index node delegates key ranges to children; a
+# segment holds entries. Both carry the two numbers that explain the tree's
+# SHAPE rather than its contents: `scale` (a log-scale estimate of what sits
+# beneath) and `novelty` (ops buffered here rather than written down).
+concept!: &diagnose/node
+  this: diagnose:node
+  description: One node of the branch's search tree.
+  with:
+    kind:
+      description: >
+        `index` (a table of spans) or `segment` (a run of entries).
+
+        The one REQUIRED field, and deliberately the cheapest one: a rule
+        concludes a whole concept, so every rule below has to bind every
+        required field. Keeping the set to `kind` lets each rule contribute
+        what it knows — the shape, the children, the entries — without
+        re-deriving the rest.
+      the: xyz.tonk.diagnose.node/kind
+      cardinality: one
+      as: text
+  maybe:
+    size:
+      description: Serialized block size in bytes — what a fetch of this node costs.
+      the: xyz.tonk.diagnose.node/size
+      cardinality: one
+      as: unsigned-integer
+    count:
+      description: Span count for an index, entry count for a segment.
+      the: xyz.tonk.diagnose.node/count
+      cardinality: one
+      as: unsigned-integer
+    scale:
+      description: >
+        Advisory log-scale estimate of how many entries sit beneath this
+        node. An upper bound that excludes ops still pending in buffers.
+      the: xyz.tonk.diagnose.node/scale
+      cardinality: one
+      as: unsigned-integer
+    novelty:
+      description: >
+        Hitchhiker ops buffered on this node, awaiting a write down into its
+        children. Always 0 for a segment.
+      the: xyz.tonk.diagnose.node/novelty
+      cardinality: one
+      as: unsigned-integer
+    child:
+      description: >
+        The nodes this one delegates to, present only once the node is
+        expanded. This is what makes the outline lazy: a node's children are
+        DERIVED from its expansion, so an unexpanded subtree is never walked,
+        never fetched, and never rendered.
+      the: xyz.tonk.diagnose.node/child
+      cardinality: many
+      as: entity
+    entry:
+      description: The entries of an expanded segment.
+      the: xyz.tonk.diagnose.node/entry
+      cardinality: many
+      as: entity
+
+# The expansion state of the outline: which nodes show what is under them.
+#
+# Expansion is a FACT rather than a UI callback, which is what keeps the
+# lazy tree declarative — the children rule reads it as an ordinary premise,
+# so revealing a subtree is a write and the view follows.
+concept!: &diagnose/outline
+  this: diagnose:outline
+  description: The inspector's expansion state.
+  with:
+    expanded:
+      description: A node whose contents are shown.
+      the: xyz.tonk.diagnose.outline/expanded
+      cardinality: many
+      as: entity
+
+rule!:
+  description: An expanded index node lists the nodes it delegates to.
+  assert: diagnose/node
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?this
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+    - assert: tree/span
+      where:
+        of: ?this
+        node: ?reference
+    - assert: tree/node
+      where:
+        of: ?reference
+        this: ?child
+
+rule!:
+  description: An expanded segment lists its entries.
+  assert: diagnose/node
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?this
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+    - assert: tree/key
+      where:
+        of: ?this
+        this: ?entry
+
+# A node an expanded parent reveals describes itself. Derived from the
+# parent's SPAN rather than from the parent's derived `child` field, so a
+# node's description never depends on another `diagnose/node` row — the
+# outline grows from expansion alone.
+rule!:
+  description: Describe a node that an expanded parent delegates to.
+  assert: diagnose/node
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?parent
+    - assert: tree/span
+      where:
+        of: ?parent
+        node: ?reference
+    - assert: tree/node
+      where:
+        of: ?reference
+        this: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+
+rule!:
+  description: Describe the root node.
+  assert: diagnose/node
+  when:
+    - assert: diagnose/branch
+      where:
+        root: ?this
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+
+# ---------------------------------------------------------------------------
+# Spans — the ranges an index delegates
+# ---------------------------------------------------------------------------
+
+# One span of an index node: the key range `[separator, until)` it hands to
+# one child, and everything pending against it.
+#
+# The span is its own subject rather than the child's, because it describes
+# a different thing: what the PARENT says about a range — where it starts,
+# the seam rank that made the boundary, the ops still buffered for it —
+# while `diagnose/node` says what the child IS. Hanging the parent's
+# bookkeeping on the child would conflate the two. (A node appears exactly
+# once in a tree; this is about keeping two subjects apart, not about
+# disambiguating a repeat.)
+concept!: &diagnose/span
+  this: diagnose:span
+  description: One span of an index node — a key range delegated to a child.
+  with:
+    at:
+      description: Position among the node's spans.
+      the: xyz.tonk.diagnose.span/at
+      cardinality: one
+      as: unsigned-integer
+    child:
+      description: The node rooting this span's subtree.
+      the: xyz.tonk.diagnose.span/child
+      cardinality: one
+      as: entity
+    rank:
+      description: >
+        Seam rank of the separator: the level coin that made this boundary
+        exist. 0 for the leftmost span and for forced backstop seams.
+      the: xyz.tonk.diagnose.span/rank
+      cardinality: one
+      as: unsigned-integer
+    pending:
+      description: >
+        Ops buffered against this span in its PARENT — work headed for this
+        subtree that has not been written down into it yet. A different
+        number from the child's own novelty, and the one an unfetched child
+        can still report.
+      the: xyz.tonk.diagnose.span/pending
+      cardinality: one
+      as: unsigned-integer
+
+rule!:
+  description: The spans of an expanded index node.
+  assert: diagnose/span
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?parent
+    - assert: tree/span
+      where:
+        of: ?parent
+        this: ?this
+        at: ?at
+        node: ?reference
+        rank: ?rank
+        novelty: ?pending
+    - assert: tree/node
+      where:
+        of: ?reference
+        this: ?child
+
+# ---------------------------------------------------------------------------
+# Entries — what a segment actually holds
+# ---------------------------------------------------------------------------
+
+# One entry of a segment.
+#
+# A segment holds more than entity-attribute-value facts: history and
+# coverage records, blob references. Every one of them carries its content in
+# its KEY, which `dialog/key-part` decomposes into self-describing
+# components — so each column below is a rule selecting the component of one
+# kind. A history record's entity and value fall out of exactly the same
+# rules the fact's do, because the key decoder already knows both layouts.
+concept!: &diagnose/entry
+  this: diagnose:entry
+  description: One entry of a segment node.
+  with:
+    at:
+      description: Position within the segment.
+      the: xyz.tonk.diagnose.entry/at
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    ordering:
+      description: >
+        Which index the key belongs to — `entity`, `attribute`, `value`,
+        `history`, `coverage` or `blob`. Read off the key's leading tag, so
+        a mixed segment says what each row IS instead of trying to read
+        every row as a fact.
+      the: xyz.tonk.diagnose.entry/ordering
+      cardinality: one
+      as: text
+    entity:
+      description: The fact's entity, when the key carries one.
+      the: xyz.tonk.diagnose.entry/entity
+      cardinality: one
+      as: text
+    attribute:
+      description: The fact's attribute, when the key carries one.
+      the: xyz.tonk.diagnose.entry/attribute
+      cardinality: one
+      as: text
+    value:
+      description: The fact's value, rendered by its type, when it is inline in the key.
+      the: xyz.tonk.diagnose.entry/value
+      cardinality: one
+      as: text
+    origin:
+      description: >
+        The replica half of the revision that wrote this record — history and
+        coverage keys only. Two records at the same edition under different
+        origins are concurrent writes, which the edition alone cannot show.
+      the: xyz.tonk.diagnose.entry/origin
+      cardinality: one
+      as: text
+    edition:
+      description: The causal-depth half of the revision that wrote this record.
+      the: xyz.tonk.diagnose.entry/edition
+      cardinality: one
+      as: text
+    blob:
+      description: The referenced blob, for a blob-index row.
+      the: xyz.tonk.diagnose.entry/blob
+      cardinality: one
+      as: text
+    state:
+      description: '`asserted` for a stored datum, `removed` for a tombstone.'
+      the: xyz.tonk.diagnose.entry/state
+      cardinality: one
+      as: text
+    supersedes:
+      description: How many prior versions a covering record supersedes.
+      the: xyz.tonk.diagnose.entry/supersedes
+      cardinality: one
+      as: unsigned-integer
+
+rule!:
+  description: An entry's position and the index its key belongs to.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "index"
+        text: ?ordering
+
+rule!:
+  description: An entry's claim metadata — the value side of the entry.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/entry
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        state: ?state
+        supersedes: ?supersedes
+
+rule!:
+  description: The entity a key names.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "entity"
+        text: ?entity
+
+rule!:
+  description: The attribute a key names.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "attribute"
+        text: ?attribute
+
+rule!:
+  description: The value a key carries inline.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "value"
+        text: ?value
+
+rule!:
+  description: The revision origin a history or coverage key carries.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "origin"
+        text: ?origin
+
+rule!:
+  description: The revision edition a history or coverage key carries.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "edition"
+        text: ?edition
+
+rule!:
+  description: The blob a blob-index key references.
+  assert: diagnose/entry
+  when:
+    - assert: diagnose/outline
+      where:
+        expanded: ?segment
+    - assert: tree/key
+      where:
+        of: ?segment
+        this: ?this
+        at: ?at
+        key: ?key
+    - assert: dialog/key-part
+      where:
+        of: ?key
+        kind: "blob"
+        text: ?blob
+
+# ---------------------------------------------------------------------------
+# Node status — the one thing a resolver cannot answer
+# ---------------------------------------------------------------------------
+
+# Whether a node's block is held on THIS device, or would have to be fetched
+# from the remote to read it.
+#
+# This deliberately does not come from a resolver. A resolver selects by
+# content address over immutable blocks, so its rows can never go stale;
+# locality is the opposite — it is about this device at this moment and
+# changes with no commit behind it. `dialog_artifacts::inspect` refuses to
+# serve it through `Load` for exactly that reason.
+#
+# So it arrives the way the console's reactor state does: published into the
+# branch's SESSION OVERLAY, folded into every read, never committed and never
+# replicated. Like the console's rows it is a snapshot — true when it was
+# taken, and re-taken when the outline reveals more of the tree.
+concept!: &diagnose/status
+  this: diagnose:status
+  description: Whether a node's block is held locally on this device.
+  with:
+    local:
+      description: >
+        True when the block is in this device's archive. False means reading
+        it costs a round trip to the remote — which is what the outline's
+        hollow marker is telling you.
+      the: xyz.tonk.diagnose.status/local
+      cardinality: one
+      as: boolean
+    probed:
+      description: >
+        When the probe ran — seconds since the Unix epoch, as text.
+        Locality changes without a commit, so a status is only ever as true
+        as its timestamp.
+      the: xyz.tonk.diagnose.status/probed
+      cardinality: one
+      as: text
+
+# ---------------------------------------------------------------------------
+# Expanding
+# ---------------------------------------------------------------------------
+
+command!: &diagnose/expand
+  this: diagnose:expand
+  description: Reveal what is under a node in the outline, and probe its locality.
+  with:
+    node:
+      description: The node to expand.
+      the: xyz.tonk.diagnose.expand/node
+      cardinality: one
+      as: entity
+
+# Clicking a node reveals it. The declaration is this document's own rather
+# than core.yaml's `on/click`, because the library installs on demand onto
+# whatever branch the page opens against — a page that depends on another
+# document having been seeded first is a page that breaks on an older space.
+event!: &on/expand
+  type: "click"
+  where:
+    node: "{this}"
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
+
+# The page. `dialog:diagnose` carries no entity — it inspects the whole
+# branch — so this is a directory view, and it renders the branch row.
+view!:
+  this: dialog:diagnose
+  show:
+    directory: |
+      <div class="diagnose">
+        <style>
+          .diagnose { padding: var(--wa-space-l); font-family: var(--wa-font-family-body); }
+          .diagnose__head { margin: 0 0 var(--wa-space-2xs); padding: 0; background: none;
+            font-size: var(--wa-font-size-l); font-weight: var(--wa-font-weight-semibold); }
+          .diagnose__note { margin: 0 0 var(--wa-space-l); font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-quiet); }
+        </style>
+        <h1 class="diagnose__head">search tree</h1>
+        <p class="diagnose__note">
+          The index behind this branch, read through dialog's tree resolvers.
+          Click a node to reveal what is under it.
+        </p>
+        <tonk-display model="diagnose:branch"></tonk-display>
+      </div>
+
+view!:
+  this: diagnose:branch
+  show:
+    ui: |
+      <div class="tree-root">
+        <tonk-display entity={root} model="diagnose:node"></tonk-display>
+      </div>
+
+# One node: its own line, then whatever it was expanded to show. The nested
+# display resolves this same view for each child, so the outline is recursive
+# by view resolution rather than by a walk — and it stops where expansion
+# stops, because an unexpanded node derives no children.
+view!:
+  this: diagnose:node
+  show:
+    ui: |
+      <div class="node">
+        <style>
+          .node { font-family: var(--wa-font-family-code, ui-monospace, monospace);
+            font-size: var(--wa-font-size-xs); }
+          .node__line { display: flex; gap: var(--wa-space-s); align-items: baseline;
+            padding: 2px 0; cursor: pointer; }
+          .node__line:hover { background: var(--wa-color-surface-raised, rgba(128,128,128,0.08)); }
+          .node__kind { font-weight: var(--wa-font-weight-semibold); }
+          .node__num { color: var(--wa-color-text-quiet); }
+          .node__novelty { color: var(--tonk-triangle, #c89a2b); }
+          .node__under { margin-left: var(--wa-space-m); padding-left: var(--wa-space-s);
+            border-left: 1px solid var(--wa-color-surface-border); }
+          .node__under tonk-display, .node__under tonk-display > tonk-view { display: block; }
+        </style>
+        <div class="node__line" on:expand=diagnose:expand>
+          <span class="node__kind">{kind}</span>
+          <span class="node__num">{count}</span>
+          <span class="node__num">{size}B</span>
+          <span class="node__num">scale {scale}</span>
+          <span class="node__novelty">novelty {novelty}</span>
+        </div>
+        <div class="node__under">
+          <tonk-display entity={child} model="diagnose:node"></tonk-display>
+          <tonk-display entity={entry} model="diagnose:entry"></tonk-display>
+        </div>
+      </div>
+
+# One entry, as a row of the columns the key decodes to. A history record
+# fills the same columns a fact does — its entity, attribute and value are in
+# its key behind a version prefix, and the decoder reads both layouts.
+view!:
+  this: diagnose:entry
+  show:
+    ui: |
+      <div class="entry">
+        <style>
+          .entry { display: flex; gap: var(--wa-space-s); align-items: baseline;
+            font-family: var(--wa-font-family-code, ui-monospace, monospace);
+            font-size: var(--wa-font-size-xs); padding: 1px 0; }
+          .entry__ordering { padding: 0 5px; border-radius: 4px;
+            background: var(--wa-color-neutral-fill-quiet, rgba(128,128,128,0.15));
+            color: var(--wa-color-text-quiet); }
+          .entry__entity { color: var(--tonk-circle, #3d6da8); text-decoration: underline; }
+          .entry__attribute { color: var(--tonk-triangle, #c89a2b); }
+          .entry__value { color: var(--tonk-square, #b94a3d); }
+          .entry__version { color: var(--wa-color-text-quiet); }
+        </style>
+        <span class="entry__ordering">{ordering}</span>
+        <span class="entry__version">{origin}@{edition}</span>
+        <span class="entry__entity">{entity}</span>
+        <span class="entry__attribute">{attribute}</span>
+        <span class="entry__value">{value}</span>
+        <span class="entry__blob">{blob}</span>
+      </div>
