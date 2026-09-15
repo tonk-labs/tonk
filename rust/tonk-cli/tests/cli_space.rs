@@ -267,15 +267,7 @@ mod when_a_signed_in_space_creation_is_interrupted {
             common::authorizing_page(fixture.root_signer().await?, remote.to_owned()).await?;
         let mut child = production_cmd(
             state,
-            &[
-                "account",
-                "login",
-                "--no-open",
-                "--via",
-                &page.url,
-                "--service-url",
-                &fixture.server.endpoint,
-            ],
+            &["account", "login", "--no-open", "--via", &page.url],
             &[],
         )
         .stdout(Stdio::piped())
