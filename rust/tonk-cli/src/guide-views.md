@@ -227,10 +227,18 @@ element on the branch:
 ```
 
 The runtime registers each tag ONCE, with a generated wrapper that
-dispatches through a live table (tag → method → function) kept in step
-with these facts by a subscription. So editing a method is a fact
-write, not a re-registration — `customElements.define` is never called
-twice, and no page reload is needed. Rules of the road:
+dispatches through a live table (tag → method → function). So editing a
+method is a fact write, not a re-registration — `customElements.define`
+is never called twice, and no page reload is needed.
+
+> **Not wired up yet.** The table and the wrapper exist and are tested;
+> what does not exist is the subscription that reads `element` rows off
+> the branch and fills the table. Until it lands, an `element` row is
+> inert data: `tonk element add` stores it and `tonk element` lists it,
+> but no browser registers it. The `component` shape below is the one
+> that currently loads.
+
+Rules of the road:
 
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the

@@ -996,13 +996,14 @@ impl From<ViewKindArg> for tonk_cli::authoring::ViewKind {
 
 #[derive(Debug, Subcommand)]
 enum ElementCommand {
-    /// Define a custom element from a JS module
+    /// Define a custom element's methods
     ///
-    /// The tag is the definition's identity, so re-running this
-    /// against the same tag replaces its module rather than adding a
-    /// second definition beside the first.
+    /// The tag is the definition's identity, and methods are stored
+    /// one fact per key, so re-running this against the same tag
+    /// supersedes only the methods it names and leaves the rest
+    /// standing.
     #[command(
-        after_help = "Examples:\n  tonk element add tally-widget --module-file tally.js\n  tonk element add tally-widget --module 'customElements.define(...)' --notation"
+        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --method-file connected=tally.js\n  tonk element add tally-widget --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --method 'bump=(self) => 1' --notation"
     )]
     Add {
         /// The custom element name to define (must contain a hyphen).
