@@ -3038,7 +3038,7 @@ impl ProfileLibraryCache {
                 "injected profile library acquisition failure".to_owned(),
             ));
         }
-        let library = fetch_standard_library(PROFILE_LIBRARY_URL)
+        let library = fetch_profile_library()
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
         let prepared = prepare_profile_library(library)?;
@@ -3782,7 +3782,7 @@ const SEED_NONE: &str = "seed:none";
 /// A missing or unreadable library is a deployment fault, not a
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -3823,13 +3823,18 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
         .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
 }
 
-/// Wasm unit tests run in the pooled browser harness rather than the installed
-/// Tonk service-worker scope. Keep acquisition and reconciliation under test
-/// while supplying the same checked-in bytes as native tests; real browser
-/// builds above still exercise generation-cache acquisition.
+/// Wasm profile-library tests run in the pooled browser harness rather than the
+/// installed Tonk service-worker scope. Supply the checked-in profile bytes for
+/// this acquisition only, leaving ordinary library fetches to exercise their
+/// existing failure behavior in that harness.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown", test))]
-pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
-    embedded_standard_library(url)
+async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
+    embedded_standard_library(PROFILE_LIBRARY_URL)
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown", test)))]
+async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
+    fetch_standard_library(PROFILE_LIBRARY_URL).await
 }
 
 /// The native sibling of the fetch above: the same documents the
