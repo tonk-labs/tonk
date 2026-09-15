@@ -213,7 +213,72 @@
     "attribute-changed",
   ]);
 
+  // Tags already asked about, so a tag that resolves to nothing is
+  // requested once per realm rather than once per occurrence.
+  const requested = new Set();
+
+  /** Tag prefixes whose elements are registered by someone else. */
+  const FOREIGN = ["tonk-", "wa-"];
+
+  const mine = (tag) =>
+    tag.includes("-") && !FOREIGN.some((prefix) => tag.startsWith(prefix));
+
+  /**
+   * Ask the host to resolve every undefined custom element under
+   * `root`, once per tag.
+   *
+   * `:not(:defined)` is the browser's own answer to "what is on this
+   * page that nobody has registered", so nothing has to be declared,
+   * mounted, or scanned ahead of time: a view renders `<tally-widget>`
+   * and the tag is looked up because it is THERE. An element stays
+   * inert until its definition lands and then upgrades in place, which
+   * is what makes resolving after render safe.
+   *
+   * The host installs `globalThis.tonkResolveElement`; until it does,
+   * discovery is a no-op and the tags are re-offered on the next
+   * mutation.
+   */
+  const discover = (root) => {
+    const resolve = globalThis.tonkResolveElement;
+    if (typeof resolve !== "function") return;
+    const tags = new Set();
+    if (root instanceof Element && mine(root.tagName.toLowerCase())
+        && !customElements.get(root.tagName.toLowerCase())) {
+      tags.add(root.tagName.toLowerCase());
+    }
+    for (const el of root.querySelectorAll?.(":not(:defined)") ?? []) {
+      const tag = el.tagName.toLowerCase();
+      if (mine(tag)) tags.add(tag);
+    }
+    for (const tag of tags) {
+      if (requested.has(tag)) continue;
+      requested.add(tag);
+      try {
+        resolve(tag);
+      } catch (error) {
+        console.error(`resolving <${tag}> failed:`, error);
+      }
+    }
+  };
+
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE) discover(node);
+      }
+    }
+  });
+
+  /**
+   * Start watching the document for undefined custom elements. Called
+   * by the host once its resolver is installed; idempotent.
+   */
+  globalThis.startTonkElements = () => {
+    discover(document);
+    observer.observe(document.documentElement, { subtree: true, childList: true });
+  };
+
   // Exposed for tests and for the inspector; not part of the authoring
   // surface.
-  globalThis.__tonkElements = { table, live, defined };
+  globalThis.__tonkElements = { table, live, defined, requested, discover };
 })();

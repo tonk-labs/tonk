@@ -220,6 +220,72 @@ check('editing an element leaves a legacy neighbour alone', await page.evaluate(
       && document.querySelector('legacy-widget').textContent === 'legacy';
 }));
 
+// --- on-demand resolution -------------------------------------------
+// The host's resolver is stubbed: these prove the DISCOVERY half (a tag
+// is asked about because it appeared, once, and upgrades when the
+// answer lands). The real resolver runs the name -> entity -> methods
+// query in wasm.
+
+// 16. A tag nobody registered is resolved because it rendered.
+check('an unregistered tag is resolved on first render', await page.evaluate(async () => {
+  globalThis.asked = [];
+  globalThis.tonkResolveElement = (tag) => {
+    globalThis.asked.push(tag);
+    defineTonkElement(tag, { connected: (self) => { self.textContent = `resolved ${tag}`; } });
+  };
+  startTonkElements();
+  const el = document.createElement('lazy-one');
+  document.body.append(el);
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.asked.includes('lazy-one') && el.textContent === 'resolved lazy-one';
+}));
+
+// 17. Asked once per tag, however many instances render.
+check('a tag is asked about once per realm', await page.evaluate(async () => {
+  globalThis.asked = [];
+  for (let i = 0; i < 3; i++) document.body.append(document.createElement('lazy-two'));
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.asked.filter(t => t === 'lazy-two').length === 1;
+}));
+
+// 18. A tag that resolves to nothing is not re-asked, and stays inert.
+check('an unknown tag is asked once and stays inert', await page.evaluate(async () => {
+  globalThis.asked = [];
+  globalThis.tonkResolveElement = (tag) => { globalThis.asked.push(tag); };
+  const el = document.createElement('lazy-missing');
+  document.body.append(el);
+  await new Promise(r => setTimeout(r, 0));
+  document.body.append(document.createElement('lazy-missing'));
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.asked.filter(t => t === 'lazy-missing').length === 1
+      && !customElements.get('lazy-missing');
+}));
+
+// 19. Built-in and vendor prefixes are left to their own loaders.
+check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
+  globalThis.asked = [];
+  document.body.append(document.createElement('tonk-whatever'));
+  document.body.append(document.createElement('wa-whatever'));
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.asked.length === 0;
+}));
+
+// 20. A tag nested deep inside an added subtree is found too — a view
+// renders a fragment, not one element at a time.
+check('a tag deep in an added subtree is discovered', await page.evaluate(async () => {
+  globalThis.asked = [];
+  globalThis.tonkResolveElement = (tag) => {
+    globalThis.asked.push(tag);
+    defineTonkElement(tag, { connected: (self) => { self.textContent = 'deep'; } });
+  };
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = '<section><p><lazy-deep></lazy-deep></p></section>';
+  document.body.append(wrapper);
+  await new Promise(r => setTimeout(r, 0));
+  return globalThis.asked.includes('lazy-deep')
+      && wrapper.querySelector('lazy-deep').textContent === 'deep';
+}));
+
 await browser.close();
 let failed = 0;
 for (const r of results) {

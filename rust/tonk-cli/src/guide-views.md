@@ -226,17 +226,27 @@ key; `el['my-method']()` is not callable JS but `el.myMethod()` is. A
 key that would shadow a member every element already has (`remove`,
 `click`, `id`, `text-content`) is refused at authoring time.
 
-The runtime registers each tag ONCE, with a generated wrapper that
-dispatches through a live table (tag → method → function). So editing a
-method is a fact write, not a re-registration — `customElements.define`
-is never called twice, and no page reload is needed.
+Nothing registers your element ahead of time. The runtime watches the
+document for custom elements nobody has defined (`:not(:defined)`, the
+browser's own answer to that question) and looks each tag up by name the
+first time it appears — so a view that renders `<tally-widget>` is the
+whole trigger. An undefined element is inert until its definition lands
+and then upgrades in place, which is what makes resolving after render
+safe. Each tag is asked about once per page, whether it renders once or
+a hundred times, and a tag with no definition on the branch is asked
+about once and left alone.
 
-> **Not wired up yet.** The table and the wrapper exist and are tested;
-> what does not exist is the subscription that reads `element` rows off
-> the branch and fills the table. Until it lands, an `element` row is
-> inert data: `tonk element add` stores it and `tonk element` lists it,
-> but no browser registers it. The `component` shape below is the one
-> that currently loads.
+Once resolved, the tag is registered ONCE, with a generated wrapper that
+dispatches through a table. So editing a method is a fact write, not a
+re-registration — `customElements.define` is never called twice, and no
+page reload is needed.
+
+> **Partly wired.** Discovery, the table and the wrapper are built and
+> tested in a browser. What is not written is the host resolver that
+> answers a discovered tag by running the name → entity → methods query.
+> Until it lands, an `element` row is inert data: `tonk element add`
+> stores it and `tonk element` lists it, but nothing answers the
+> lookup. The `component` shape below is the one that currently loads.
 
 Rules of the road:
 
