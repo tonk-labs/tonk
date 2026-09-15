@@ -271,6 +271,106 @@ round trip. Same machine and same LAN, yes; anything wider needs the
 offer/answer path as a fallback. One address record, two dial methods.
 
 
+## Why the DB is a discovery channel, not a handshake channel
+
+There is an apparent circularity in "bootstrap WebRTC over the space":
+the reason for WebRTC is that sync is not real time, so a handshake that
+waits on sync inherits the very latency it exists to escape. ICE gives
+up on failed checks after roughly thirty seconds, so if a description
+has to travel through sync inside that window, the design is betting on
+a number it does not control.
+
+That bet only exists in one of the two designs:
+
+| | space in the handshake? | exposed to the ICE window |
+| --- | --- | --- |
+| Offer/answer through the space | yes — the dialer's description must arrive while ICE retries | yes, fatally if sync is slow |
+| Direct dial (above) | no — the space carries a long-lived address, the handshake is pure WebRTC | no |
+
+And the CLI's sync is worse than "not real time". `tonk-cli/src/auto_sync.rs`
+pulls before and pushes after a *mutating* `tonk eval`: command-triggered,
+with no background poller. An idle CLI never learns anything from the
+remote, so a per-dial fact would sit in S3 until someone happened to run
+a command. Latency there is unbounded, not merely long.
+
+Direct dial is unaffected because discovery tolerates unbounded latency:
+the address only has to have arrived at *some* point, and it stays valid
+for the life of the process. The residual failure is a dialer holding a
+stale address after a restart — it fails fast and retries once the record
+refreshes, and pinning the port and persisting the certificate removes
+most of that.
+
+**So: the space carries addresses, never descriptions.**
+
+## Reaching a peer on another network
+
+Direct dial needs the CLI reachable by UDP at a published address. How
+far that goes without any real-time coordination:
+
+1. **Same machine or LAN** — host candidates. No coordination. This is
+   what the current work covers.
+2. **An explicit port mapping (UPnP / NAT-PMP / PCP), or a genuinely
+   public host** — the CLI creates a real inbound rule and is reachable
+   like a server. Direct dial across networks with zero coordination.
+   The strongest unassisted option, and why `iroh` carries a
+   `portmapper` dependency.
+3. **Everything else** — where it stops, for a structural reason rather
+   than a latency one.
+
+Publishing a STUN-derived reflexive address is not the general fix it
+looks like:
+
+- **Full-cone NAT** — works unassisted, given keepalives to hold the
+  mapping. Uncommon.
+- **Restricted-cone / port-restricted** — the inbound packet is dropped
+  unless the CLI has already sent outbound *to that particular dialer*,
+  so the CLI must learn the dialer's address first.
+- **Symmetric NAT** — requires both sides to transmit simultaneously.
+  That is inherently real time; a store-and-forward channel cannot do it
+  at any latency.
+
+So hole punching needs a real-time channel or a relay, and no amount of
+tuning makes the space into one. That is exactly why `iroh` has relays
+rather than being clever about it.
+
+The place to put that rung, when it is wanted, is the worker / access
+service: already online, already reachable, already in the trust path. A
+small signalling endpoint there — used *only* when an address-record
+dial fails — buys coordinated hole punching without adopting a second
+identity system, a QUIC stack, or a relay network.
+
+## Evaluated and set aside: `iroh-webrtc-transport`
+
+The crate bootstraps a WebRTC session over an *iroh* stream (ALPN
+`noop/iroh/webrtc/bootstrap/1`), exchanges SDP over it, then promotes
+the resulting `RTCDataChannel` into an iroh custom transport so callers
+see ordinary iroh connections. `BootstrapTransportIntent` is
+`IrohRelay | WebRtcPreferred | WebRtcOnly`, and TURN is deliberately
+refused — the fallback is iroh's own relay. Architecturally it is the
+same bootstrap-then-upgrade shape described above, with iroh's relay
+where this design has the space.
+
+Set aside for now, chiefly because **a browser's iroh connection is
+always relayed** (browsers cannot open UDP sockets), so two processes on
+one laptop could not connect without reaching the internet — the
+opposite of the goal. The obvious escape fails too: a local iroh relay
+would have the browser open a WebSocket to `http://127.0.0.1`, which is
+the Safari-blocked case this whole feature exists to avoid.
+
+Also: a second identity system beside DIDs and UCANs; pinned to
+`iroh ^0.98.2` while iroh is at 1.2.0; `0.1.0-alpha.2` from an
+individual's repository rather than n0's, whose README still describes
+itself as `publish = false`; shipped tests cover only the native path;
+`browser-main-thread` only, so the page/worker bridge is still needed;
+and iroh + noq + webrtc added to a wasm bundle that was recently
+slimmed.
+
+Worth keeping for two things. Its `src/native.rs` (webrtc 0.17) and
+`src/browser/rtc.rs` (web-sys) are a reference implementation of exactly
+the cross-target session layer the 0.17 port needs. And if CLI-to-CLI
+mesh with discovery ever becomes a product feature rather than a
+workaround, this is how a browser joins that mesh.
+
 ## Running it
 
 Against a dev server:
