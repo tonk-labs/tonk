@@ -15,14 +15,14 @@ use crate::prelude::DidExt as _;
 use crate::{
     Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
 };
-use dialog_artifacts::Entity;
+use dialog_artifacts::{Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::{EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, CommitError, RemoteSite, SiteAddress};
+use dialog_repository::{Branch, CommitError, Hydrate, RemoteSite, SiteAddress};
 use dialog_varsig::Did;
 
 /// One directory row, as the Hub and the CLI list it.
@@ -107,6 +107,9 @@ where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -161,6 +164,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -243,6 +249,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -282,6 +291,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -302,6 +314,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -321,6 +336,9 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
