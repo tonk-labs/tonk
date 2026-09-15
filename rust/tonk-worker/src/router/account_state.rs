@@ -433,6 +433,15 @@ async fn record_account_replica(
     let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject.clone(), address);
     let tracked = remote.branch(tonk_account::MAIN_BRANCH);
 
+    // Written once, not on every sweep. This runs on every sync drain,
+    // and re-asserting rows already present costs a reactor transaction
+    // (the per-branch transactor lock, an integrate, a commit that dialog
+    // then finds to be a no-op) and a subscription poll on profile main,
+    // every few seconds for as long as a tab is open, for nothing.
+    if account_replica_indexed(tonk, &remote, &tracked).await? {
+        return Ok(());
+    }
+
     tonk.reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
@@ -458,6 +467,60 @@ async fn record_account_replica(
     tonk.account_keys.invalidate();
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     Ok(())
+}
+
+/// Whether profile main already indexes the account replica exactly as
+/// [`record_account_replica`] would write it: the remote at this address
+/// and subject, and main tracking that remote's main.
+async fn account_replica_indexed(
+    tonk: &TonkState,
+    remote: &tonk_schema::Remote,
+    tracked: &tonk_schema::Branch,
+) -> Result<bool, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::TrackingBranch;
+
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(tonk_account::MAIN_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
+    let read = |what: &str, error: String| {
+        TonkWorkerError::Internal(format!("read the account replica index ({what}): {error}"))
+    };
+    let remotes: Vec<tonk_schema::Remote> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Remote> {
+            this: Term::from(remote.this.clone()),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| read("remote", format!("{error:?}")))?;
+    if !remotes.iter().any(|row| row == remote) {
+        return Ok(false);
+    }
+    let local = tracked.this.clone();
+    let tracking: Vec<TrackingBranch> = session
+        .handle()
+        .query()
+        .select(Query::<TrackingBranch> {
+            this: Term::var("this"),
+            upstream: Term::from(local),
+            origin: Term::from(remote.origin.0.clone()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| read("tracking", format!("{error:?}")))?;
+    Ok(!tracking.is_empty())
 }
 
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
