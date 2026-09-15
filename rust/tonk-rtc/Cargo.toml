@@ -8,6 +8,13 @@ edition.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+# The iroh transport builds for BOTH targets: that is the point of it —
+# the browser gets QUIC streams over a data channel with no relay.
+bytes = { workspace = true, optional = true }
+iroh = { version = "=1.2.0", features = ["unstable-custom-transports"], optional = true }
+iroh-base = { version = "1.2", optional = true }
+n0-watcher = { version = "1.0", optional = true }
+noq-udp = { version = "1.3", optional = true }
 # The dial credential is a bearer secret — possession of it plus the
 # address is what lets a peer open a channel — so it comes from the OS
 # entropy source, not from a clock or a counter.
@@ -26,14 +33,19 @@ tracing = { workspace = true }
 # instead of 64 KiB messages and one endpoint address can hold a local
 # WebRTC route beside a relay and an IP one. `unstable-custom-transports`
 # is unstable by name, so iroh is pinned exactly.
-iroh = ["dep:iroh", "dep:iroh-base", "dep:noq-udp", "dep:bytes", "dep:n0-watcher"]
+iroh = [
+  "dep:iroh",
+  "dep:iroh-base",
+  "dep:noq-udp",
+  "dep:bytes",
+  "dep:n0-watcher",
+  "dep:js-sys",
+  "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
+  "dep:web-sys",
+]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bytes = { workspace = true, optional = true }
-iroh = { version = "=1.2.0", features = ["unstable-custom-transports"], optional = true }
-iroh-base = { version = "1.2", optional = true }
-n0-watcher = { version = "1.0", optional = true }
-noq-udp = { version = "1.3", optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["form", "http1", "tokio"] }
 tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time"] }
@@ -62,3 +74,18 @@ anyhow = { workspace = true }
 # from "never received one".
 env_logger = "0.11"
 tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time", "io-util"] }
+
+# The browser half of the iroh transport. Optional so a native build
+# never pulls them.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+  "MessageEvent",
+  "RtcDataChannel",
+  "RtcDataChannelInit",
+  "RtcDataChannelState",
+  "RtcDataChannelType",
+  "RtcPeerConnection",
+] }

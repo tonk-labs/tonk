@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::Result;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr};
-use tonk_rtc::transport::{WebRtcTransport, datagram_channel};
+use tonk_rtc::transport::{WebRtcTransport, attach, datagram_channel};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
@@ -109,8 +109,8 @@ async fn iroh_streams_ride_a_webrtc_data_channel() -> Result<()> {
     let accepting: Arc<RTCDataChannel> = tokio::time::timeout(PATIENCE, inbound).await??;
     opened(&dialing).await?;
 
-    dialer_rtc.attach(listener_rtc.local_addr(), dialing);
-    listener_rtc.attach(dialer_rtc.local_addr(), accepting);
+    attach(&dialer_rtc, listener_rtc.local_addr(), dialing);
+    attach(&listener_rtc, dialer_rtc.local_addr(), accepting);
 
     // Endpoints whose ONLY transport is that channel: no UDP between
     // them, no relay, no discovery. `presets::Empty` means empty, which

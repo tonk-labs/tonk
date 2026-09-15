@@ -7032,6 +7032,7 @@ dependencies = [
  "getrandom 0.4.3",
  "iroh",
  "iroh-base",
+ "js-sys",
  "n0-watcher",
  "noq-udp",
  "rcgen",
@@ -7040,6 +7041,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "webrtc",
 ]
 

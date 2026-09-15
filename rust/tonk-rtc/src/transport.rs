@@ -30,9 +30,22 @@
 //! `max_retransmits: 0`. [`datagram_channel`] is the only way this
 //! module accepts one.
 //!
-//! Proven by `tests/iroh_over_webrtc.rs`, which is native-only: the
-//! browser half is the same transport with `web-sys` channels
-//! underneath, a port rather than a redesign.
+//! # Both targets, one core
+//!
+//! The transport never holds a data channel. It hands out a [`Port`] —
+//! a queue of datagrams to send and an [`Inbound`] to deliver received
+//! ones to — and the platform glue owns the channel: [`native`] for
+//! `webrtc-rs`, [`web`] for a browser's `RtcDataChannel`.
+//!
+//! That is not tidiness. `CustomTransport` demands `Send + Sync`, and a
+//! browser `RtcDataChannel` is neither. Keeping it outside satisfies
+//! the bound honestly, rather than wrapping a JS handle in a
+//! `SendWrapper` and asserting a thread-safety that is not there.
+//!
+//! `tests/iroh_over_webrtc.rs` proves the native path end to end. The
+//! browser path compiles for `wasm32-unknown-unknown` but is not yet
+//! exercised in a browser — the glue is small and mirrors the native
+//! one, but "compiles" is not "works".
 //!
 //! # What it took
 //!
@@ -77,12 +90,16 @@ use iroh::endpoint::transports::{
 };
 use iroh_base::CustomAddr;
 use tokio::sync::mpsc;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::peer_connection::RTCPeerConnection;
 
-use crate::peer::PeerError;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native;
+#[cfg(target_arch = "wasm32")]
+pub mod web;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{attach, datagram_channel};
+#[cfg(target_arch = "wasm32")]
+pub use web::{attach, datagram_channel};
 
 /// Identifies this transport's address namespace.
 ///
@@ -98,28 +115,6 @@ pub const TRANSPORT_ID: u64 = u64::from_be_bytes(*b"tonkrtc1");
 /// drops too, and QUIC is built to notice and retransmit. Blocking
 /// would instead stall iroh's driver behind one slow peer.
 const OUTBOUND_QUEUE: usize = 256;
-
-/// Build a data channel suited to carrying QUIC.
-///
-/// Unreliable and unordered — see the module note on why a reliable
-/// ordered channel is actively harmful here rather than merely
-/// wasteful.
-pub async fn datagram_channel(
-    connection: &Arc<RTCPeerConnection>,
-    label: &str,
-) -> Result<Arc<RTCDataChannel>, PeerError> {
-    let channel = connection
-        .create_data_channel(
-            label,
-            Some(RTCDataChannelInit {
-                ordered: Some(false),
-                max_retransmits: Some(0),
-                ..Default::default()
-            }),
-        )
-        .await?;
-    Ok(channel)
-}
 
 /// One peer's channel, and the queue feeding it.
 #[derive(Debug)]
@@ -167,54 +162,65 @@ impl WebRtcTransport {
         self.local.clone()
     }
 
-    /// Route datagrams for `peer` over this channel.
+    /// Open a route to `peer`, returning the two ends the caller wires
+    /// to an actual data channel.
     ///
-    /// The channel must have come from [`datagram_channel`] or have been
-    /// negotiated with the same settings; a reliable ordered one will
-    /// appear to work and degrade badly under loss.
-    pub fn attach(&self, peer: CustomAddr, channel: Arc<RTCDataChannel>) {
-        let (outbound, mut queued) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
-
-        // Inbound: every message becomes a datagram tagged with the peer
-        // it came from, which is what `poll_recv` hands to iroh.
-        let announce = self.announce.clone();
-        let source = peer.clone();
-        channel.on_message(Box::new(move |message: DataChannelMessage| {
-            let announce = announce.clone();
-            let source = source.clone();
-            Box::pin(async move {
-                // A full queue means iroh is not draining; dropping is
-                // what a socket would do.
-                let _ = announce.try_send((source, message.data));
-            })
-        }));
-
-        // Outbound: a pump, because `poll_send` is synchronous and the
-        // data channel's send is not.
-        let sending = channel.clone();
-        tokio::spawn(async move {
-            while let Some(datagram) = queued.recv().await {
-                if sending.send(&datagram).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let dropped = peer.clone();
-        let routes = self.routes.clone();
-        channel.on_close(Box::new(move || {
-            let routes = routes.clone();
-            let dropped = dropped.clone();
-            Box::pin(async move {
-                if let Ok(mut peers) = routes.peers.lock() {
-                    peers.remove(&dropped);
-                }
-            })
-        }));
-
+    /// The transport deliberately never holds the channel. That keeps
+    /// this type `Send + Sync` — which `CustomTransport` demands and a
+    /// browser's `RtcDataChannel` is not — so the platform object stays
+    /// in the glue that owns it, and no `SendWrapper` is needed here.
+    ///
+    /// The channel the caller wires up must be **unreliable and
+    /// unordered**; see the module note on why a reliable one is
+    /// actively harmful rather than merely wasteful.
+    pub fn attach(&self, peer: CustomAddr) -> Port {
+        let (outbound, queued) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
         if let Ok(mut peers) = self.routes.peers.lock() {
-            peers.insert(peer, Peer { outbound });
+            peers.insert(peer.clone(), Peer { outbound });
         }
+        Port {
+            outbound: queued,
+            inbound: Inbound {
+                peer,
+                announce: self.announce.clone(),
+            },
+        }
+    }
+
+    /// Forget a peer, because its channel closed.
+    pub fn detach(&self, peer: &CustomAddr) {
+        if let Ok(mut peers) = self.routes.peers.lock() {
+            peers.remove(peer);
+        }
+    }
+}
+
+/// The two ends of one peer's route.
+///
+/// The caller pumps [`Port::outbound`] into its data channel and calls
+/// [`Inbound::deliver`] for every message that arrives on it.
+#[derive(Debug)]
+pub struct Port {
+    /// Datagrams iroh wants sent to this peer.
+    pub outbound: mpsc::Receiver<Bytes>,
+    /// Where datagrams from this peer go.
+    pub inbound: Inbound,
+}
+
+/// Hands datagrams from one peer to iroh.
+#[derive(Debug, Clone)]
+pub struct Inbound {
+    peer: CustomAddr,
+    announce: mpsc::Sender<(CustomAddr, Bytes)>,
+}
+
+impl Inbound {
+    /// Deliver one datagram received from this peer.
+    ///
+    /// Dropped when iroh is not draining, which is what a socket does
+    /// and what QUIC is built to notice.
+    pub fn deliver(&self, datagram: Bytes) {
+        let _ = self.announce.try_send((self.peer.clone(), datagram));
     }
 }
 
