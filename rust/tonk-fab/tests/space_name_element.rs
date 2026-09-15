@@ -21,7 +21,7 @@
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, window};
+use web_sys::{CustomEvent, Element, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -758,6 +758,57 @@ async fn it_renders_each_directory_entry_once_when_a_reset_repeats_a_conclusion(
         vec![OTHER_SPACE.to_string()],
         "a reset may repeat a query conclusion, but the switcher must render one row per directory entry"
     );
+}
+
+#[dialog_common::test]
+async fn it_renders_and_marks_a_space_once_when_legacy_rows_repeat_its_subject() {
+    let el = mount_switcher();
+
+    deliver_switcher(
+        &el,
+        "reset",
+        &switcher_reset_payload(&[
+            (
+                "legacy:active-space",
+                ACTIVE_SPACE,
+                Some("Stale name"),
+                "tonk:active",
+            ),
+            (
+                ACTIVE_SPACE,
+                ACTIVE_SPACE,
+                Some("Current name"),
+                "tonk:active",
+            ),
+            (OTHER_SPACE, OTHER_SPACE, Some("Other"), "tonk:active"),
+        ]),
+    );
+
+    let menu = el.parent_element().expect("switcher menu");
+    let active_rows = menu
+        .query_selector_all(&format!("tonk-mi[data-space=\"{ACTIVE_SPACE}\"]"))
+        .expect("active row selector");
+    assert_eq!(
+        active_rows.length(),
+        1,
+        "one space subject must produce one switcher row even when a legacy directory entity repeats it"
+    );
+    let active_row = active_rows.item(0).expect("one active row");
+    assert_eq!(active_row.text_content().as_deref(), Some("Current name"));
+    assert!(
+        active_row
+            .unchecked_ref::<Element>()
+            .has_attribute("current")
+    );
+    assert_eq!(
+        menu.query_selector_all("tonk-mi[current]")
+            .expect("current row selector")
+            .length(),
+        1,
+        "only one row may be highlighted as the current space"
+    );
+
+    menu.remove();
 }
 
 #[dialog_common::test]
