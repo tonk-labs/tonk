@@ -469,37 +469,67 @@ native, both can open UDP sockets, real hole punching, no relay in the
 data path. WebRTC is in this design only because browsers cannot do
 that.
 
-### Rebuilding `iroh-webrtc-transport` is not the job
+### The custom transport is the design
 
-Most of that crate's bulk goes on promoting a data channel into an iroh
-**custom transport**, so callers see ordinary iroh connections and
-streams. That is not needed here: `tonk-rtc::Session` is already the
-channel abstraction, and iroh does not have to carry the bytes.
+An earlier draft of this note argued that iroh need only be a
+signalling channel, because `tonk-rtc::Session` was already "the channel
+abstraction". That was wrong, and worth recording as wrong.
 
-What iroh is needed for is the one thing the local case cannot do — a
-rendezvous by public key when the peer's location is unknown. That is
-`Endpoint::connect(addr, ALPN)` and a bi-stream carrying the
-descriptions. On iroh 1.2 those are **stable API**: only running iroh's
-own QUIC *over* a custom transport needs `unstable-custom-transports`,
-which this does not. `Endpoint` exists under `wasm_browser` too — what
-is gated off there is DNS discovery and the native socket paths, not
-connecting.
+`Session` is 64 KiB messages with no framing. iroh's abstraction is
+QUIC: multiplexed concurrent streams, flow control and backpressure,
+cancelling one stream without killing the connection, timeouts and
+keepalives — and **streams rather than messages, which removes the
+chunking problem entirely** rather than leaving it as work. Building
+that well is a great deal of subtle effort, and a session's worth of
+proof of concept is not a substitute for it.
 
-So the remote tier is on the order of a couple of hundred lines against
-a stable API, rather than sixteen thousand against an alpha pinned to a
-pre-1.0 iroh.
+So the shape is the one `iroh-webrtc-transport` uses: keep iroh's
+`Connection` and stream API, and change what carries the bytes. Locally
+a WebRTC data channel, remotely iroh's own QUIC over relay or a punched
+hole. One abstraction, several transports, all addressed by the same
+key.
 
-### What to settle before taking the browser tier
+**A browser can do this.** In `iroh` 1.2's `socket/transports.rs` the IP
+transports are `#[cfg(not(wasm_browser))]` while `mod custom` is
+ungated, as is `custom: Vec<Box<dyn CustomEndpoint>>` on `Transports`.
+So a browser endpoint has no UDP but *can* carry a custom transport —
+which is exactly the offline case, with no relay in it.
 
-WebRTC already performs its own NAT traversal through ICE, so for
-browser-to-CLI iroh adds a discoverable authenticated rendezvous by
-public key *without running a service of your own* — real, but it puts
-iroh in the browser bundle, shortly after that bundle was deliberately
-slimmed.
+The extension point is three traits — `CustomTransport` (a factory),
+`CustomEndpoint` (`bind`, `poll_recv`, local addresses) and
+`CustomSender` (`poll_send`) — behind
+`Builder::add_custom_transport`. The interface is datagram-shaped:
+fill `bufs`, `metas` and `recv_infos`, essentially "be a UDP socket".
 
-The CLI-to-CLI tier needs no browser iroh at all. Taking it first gets
-that win cheaply and leaves the browser tier to be decided on a
-measured bundle delta rather than in advance.
+Two details that are easy to get wrong and expensive to debug:
+
+- **The data channel must be unreliable and unordered** —
+  `{ ordered: false, maxRetransmits: 0 }`. QUIC supplies its own
+  reliability and ordering; carrying it over a reliable ordered channel
+  produces head-of-line blocking and retransmission fighting
+  retransmission. The channel this crate opens today is the default
+  reliable, ordered one, which would work in a quiet test and come
+  apart under loss.
+
+- **`CustomTransport` is `Send + Sync + 'static`, an `RTCDataChannel`
+  in wasm is neither.** `SendWrapper` is the established answer here —
+  `tonk-worker/src/router/bridge.rs` already does it for `MessagePort`,
+  on the same single-threaded reasoning.
+
+The risk to carry: `unstable-custom-transports` is unstable by name, so
+pin the iroh version exactly and expect to follow it.
+
+### Where the work already done fits
+
+None of it is wasted, but its role changes. The direct dial — address
+record, fixed port, persisted identity, the mux — stops being the
+transport and becomes the **local dial**: how two peers on one machine
+find each other and open a data channel with no network at all. That
+channel is then handed to the custom transport, and everything above it
+is iroh.
+
+`dispatch.rs` is unaffected: the worker still cannot hold a connection,
+and something still has to choose a page and fail over.
 
 ## Evaluated: `iroh-webrtc-transport`
 
