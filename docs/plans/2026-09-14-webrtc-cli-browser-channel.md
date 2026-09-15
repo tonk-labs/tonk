@@ -400,36 +400,36 @@ round trip. Same machine and same LAN, yes; anything wider needs the
 offer/answer path as a fallback. One address record, two dial methods.
 
 
-## Why the DB is a discovery channel, not a handshake channel
+## Why the DB carries neither descriptions nor addresses
 
-There is an apparent circularity in "bootstrap WebRTC over the space":
-the reason for WebRTC is that sync is not real time, so a handshake that
-waits on sync inherits the very latency it exists to escape. ICE gives
-up on failed checks after roughly thirty seconds, so if a description
-has to travel through sync inside that window, the design is betting on
-a number it does not control.
+An earlier draft argued the space should carry long-lived *addresses*
+while never carrying *descriptions*. Half of that reasoning survives.
+The conclusion does not: the space carries neither, and is not part of
+this design at all.
 
-That bet only exists in one of the two designs:
+**What rules out descriptions is timing.** ICE gives up on failed checks
+after roughly thirty seconds, so a handshake that waits on sync bets on
+a number it does not control. And the CLI's sync is worse than "not real
+time": `tonk-cli/src/auto_sync.rs` pulls before and pushes after a
+*mutating* `tonk eval` — command-triggered, with no background poller.
+An idle CLI never learns anything from the remote, so a per-dial fact
+would sit in S3 until someone happened to run a command. That latency is
+unbounded, not merely long.
 
-| | space in the handshake? | exposed to the ICE window |
-| --- | --- | --- |
-| Offer/answer through the space | yes — the dialer's description must arrive while ICE retries | yes, fatally if sync is slow |
-| Direct dial (above) | no — the space carries a long-lived address, the handshake is pure WebRTC | no |
+**What rules out addresses is circularity.** To read a peer's address
+out of the space you must first have synced the space — and when that
+peer *is* the sync remote, syncing required connecting to it. The loop
+only opens if some third always-reachable remote mediates, at which
+point you are online anyway and a discovery service does the job better.
 
-And the CLI's sync is worse than "not real time". `tonk-cli/src/auto_sync.rs`
-pulls before and pushes after a *mutating* `tonk eval`: command-triggered,
-with no background poller. An idle CLI never learns anything from the
-remote, so a per-dial fact would sit in S3 until someone happened to run
-a command. Latency there is unbounded, not merely long.
+**And the case it was meant to cover is empty.** If the DB cannot reach
+a mediating remote there is no internet; with no internet a remote peer
+is unreachable whatever the DB says. The DB could never have helped,
+because syncing it needs the same network the dial needs.
 
-Direct dial is unaffected because discovery tolerates unbounded latency:
-the address only has to have arrived at *some* point, and it stays valid
-for the life of the process. The residual failure is a dialer holding a
-stale address after a restart — it fails fast and retries once the record
-refreshes, and pinning the port and persisting the certificate removes
-most of that.
-
-**So: the space carries addresses, never descriptions.**
+So the space is not a rendezvous. Addressing is iroh's job, and the
+sections below are how — including offline, where the answer turns out
+not to need a rendezvous either.
 
 ## Reaching a peer on another network
 
@@ -462,11 +462,13 @@ So hole punching needs a real-time channel or a relay, and no amount of
 tuning makes the space into one. That is exactly why `iroh` has relays
 rather than being clever about it.
 
-The place to put that rung, when it is wanted, is the worker / access
-service: already online, already reachable, already in the trust path. A
-small signalling endpoint there — used *only* when an address-record
-dial fails — buys coordinated hole punching without adopting a second
-identity system, a QUIC stack, or a relay network.
+An earlier draft proposed building that rung in the worker / access
+service: a small signalling endpoint, used only when a dial fails. That
+is no longer the plan. Taking iroh means taking its relays and its
+address lookup, which is that rung already built, maintained, and with
+NAT traversal we would otherwise be writing ourselves. The cost is a
+dependency on n0's infrastructure for the online case; the offline case
+does not touch it.
 
 ## Addressing a remote by its key
 
@@ -497,10 +499,10 @@ Worth separating two things that arrive together:
   (built) when there is a local address record or the peers share a
   LAN; something with discovery and NAT traversal when they do not.
 
-Under that split the address record stops being the only path and
-becomes a local hint. And the fingerprint problem resolves itself for
-the remote case: a bootstrap channel carries the SDP **in band**, so
-nothing has to be published at all.
+That split is now the design. A remote is an `EndpointId`, stored once;
+routes are resolved rather than recorded. And the remote case needs no
+bootstrap channel to carry SDP in band, because iroh's own address
+lookup carries the WebRTC route directly — see below.
 
 ## Offline is the primary case, so the tiers are
 
@@ -508,18 +510,78 @@ Browser-to-CLI must work with no internet — same machine, no relay
 reachable — which settles the earlier question. The direct dial stays,
 and anything with discovery sits above it rather than replacing it.
 
-| | How the peer is found | What carries the data |
+| | How the route is found | What carries the data |
 | --- | --- | --- |
-| Browser ↔ CLI, same machine or LAN, offline | address record, no network | direct WebRTC — built |
-| Browser ↔ CLI, remote | signalled by DID | WebRTC data channel |
-| CLI ↔ CLI, remote | by DID | plain iroh, no WebRTC |
+| Browser ↔ CLI, same machine, offline | derived: fixed port on loopback | direct WebRTC — built |
+| Browser ↔ CLI, same LAN, offline | configured by the operator | direct WebRTC |
+| Browser ↔ CLI, remote | pkarr over HTTPS | WebRTC data channel |
+| CLI ↔ CLI, same LAN, offline | mDNS | plain iroh, no WebRTC |
+| CLI ↔ CLI, remote | pkarr, DNS | plain iroh, no WebRTC |
 
-The third row is where iroh is unambiguously right: both peers are
+The last two rows are where iroh is unambiguously right: both peers are
 native, both can open UDP sockets, real hole punching, no relay in the
 data path. WebRTC is in this design only because browsers cannot do
 that.
 
-### The custom transport is the design
+Row one is the primary case and it is the one that needs **no
+rendezvous at all**. The port is fixed, so the browser synthesizes the
+route rather than learning it, and a wrong guess is refused rather than
+trusted: iroh's TLS authenticates by endpoint key, so an unrelated
+process on that port cannot complete a connection. Guessing is safe
+precisely because the fingerprint stopped being a security boundary.
+
+Row two is configuration, not discovery — the operator supplies an
+address, exactly as they would for a non-default port. Browsers cannot
+speak mDNS, so there is nothing to automate here, and pretending
+otherwise would mean building the rendezvous this design just removed.
+
+## How a route is found
+
+iroh resolves an `EndpointId` through *address lookups*, several at
+once, and the interesting part is that they do not all carry the same
+thing. Measured against iroh 1.2 and `iroh-mdns-address-lookup` 0.5:
+
+| lookup | works in a browser | carries `TransportAddr::Custom` |
+| --- | --- | --- |
+| pkarr over HTTPS | yes | yes |
+| DNS | no — native only | yes |
+| mDNS (separate crate) | no — native only | **no** |
+| `MemoryLookup` | yes | yes — the application supplies it |
+
+Two consequences.
+
+**The WebRTC route is publishable.** `iroh-dns` encodes custom
+addresses into the pkarr record —
+`TransportAddr::Custom(addr) => attrs.push((IrohAttr::Addr, addr.to_string()))`
+— with round-trip tests for Bluetooth and Tor transports. So the CLI
+publishes its WebRTC route the same way it publishes a relay URL, the
+browser resolves it over HTTPS, and the remote case needs nothing
+bespoke. Publishing is world-readable, though: a signed pkarr record
+keyed by endpoint id discloses the machine's addresses to anyone who
+knows the id. That is a different question from whether a dial is
+*authorized* — every invocation is UCAN-verified regardless.
+`iroh-dns` exposes an `AddrFilter` as the knob; its shape is unread.
+
+**mDNS does not help the browser, twice over.** It is native-only, and
+its publisher writes only a relay-URL attribute, the IP list and user
+data — there is no custom-address attribute, so it would not advertise a
+WebRTC route even if a browser could listen. It belongs to the CLI ↔ CLI
+row and nowhere else.
+
+**The local route is registered, not special-cased.** `MemoryLookup`
+"allows application to add and remove out-of-band addressing
+information" and is not gated out of wasm. So the derived loopback route
+and any operator-configured address go in there, and iroh resolves them
+beside pkarr like any other route. Preferring them is
+`Builder::path_selector`, whose own documentation names this case:
+
+> Pass a custom `PathSelector` here to override that policy — for
+> example, **to make a custom transport always win over IP**.
+
+So "prefer the local dial" is two supported APIs rather than a branch,
+and `endpoint.connect(id, ALPN)` still has no code path in it.
+
+## The custom transport is the design
 
 An earlier draft of this note argued that iroh need only be a
 signalling channel, because `tonk-rtc::Session` was already "the channel
@@ -628,8 +690,10 @@ find each other and open a data channel with no network at all. That
 channel is then handed to the custom transport, and everything above it
 is iroh.
 
-`dispatch.rs` is unaffected: the worker still cannot hold a connection,
-and something still has to choose a page and fail over.
+`dispatch.rs` was claimed here to be unaffected, on the grounds that the
+worker cannot hold a connection. That reasoning was wrong, and what
+replaces it is below under *Which side of the worker boundary iroh sits
+on*.
 
 ### Measured: iroh runs over a browser data channel
 
@@ -649,6 +713,11 @@ data channel, because there was nothing else.
 It completes. **Chromium, WebKit and Firefox all pass**, first run, no
 per-engine accommodation — three independent SCTP implementations under
 the same code.
+
+`presets::Empty` is the *test's* preset, not the product's: a shipped
+browser endpoint uses `presets::N0` so pkarr can resolve routes. The
+test must keep `Empty`, though — under `N0` a green run would no longer
+prove the data channel carried anything, because a relay could have.
 
 Browser-to-browser rather than browser-to-CLI on purpose: it isolates
 transport from signalling. With this, the remaining work between a
@@ -709,12 +778,115 @@ the cross-target session layer the 0.17 port needs. And if CLI-to-CLI
 mesh with discovery ever becomes a product feature rather than a
 workaround, this is how a browser joins that mesh.
 
-## Choosing which tab carries an operation
+## Where this lives: `dialog-iroh-remote`
 
-`RTCPeerConnection` is `[Exposed=Window]`, so the worker cannot hold a
-channel. The replica and the sync engine are in the worker, the channels
-are in the pages, and every operation crosses worker → page → CLI and
-back. The worker has to pick a page.
+dialog-db gets a new site, and the point of the shape below is that it
+holds no opinion about browsers, workers or tabs.
+
+**The address is `EndpointAddr`**, which already derives `Serialize,
+Deserialize, Clone, PartialEq, Eq, Hash, Ord` — so it satisfies
+`SiteAddress` as it stands. A ticket from the CLI is the transfer
+format; what gets *stored* is smaller, because iroh's own guidance is:
+
+> Tickets can go stale: the dialing information in a ticket (especially
+> IP addresses) can become outdated as network conditions change. For
+> long-lived connections, prefer caching `EndpointID`s and letting iroh
+> resolve current dialing details.
+
+So `SiteId` — the credential-store key — is the `EndpointId` alone, not
+the whole address. Routes churn; identity does not, and keying on the
+whole thing would orphan a credential every time a route moved.
+
+**The effect surface is closed**: `archive::{Get, Put, Import}`,
+`blob::{Read, Import}`, `memory::{Resolve, Publish, Retract}` — seven,
+the same set `S3` and `Fs` implement. If they reduce to a request shape
+the way `UcanSite` does, one blanket impl covers all seven instead of
+seven impls; `UcanSite` is the precedent.
+
+**It needs both halves.** A client site that turns effects into iroh
+streams, and the responder that accepts a connection and performs them
+against a local repository — the CLI is the server here. One wire
+protocol, so one crate.
+
+**Cross-target is nearly free.** `iroh::Endpoint` is already
+cross-target and the transport core is already target-agnostic, so this
+crate needs almost no `cfg`.
+
+Two constraints worth knowing before writing it:
+
+- **`add_custom_transport` is a builder method.** There is no post-bind
+  registration anywhere in the endpoint API, so the transport set is
+  fixed at `bind()` — and in a browser the transport is tonk's. The
+  crate therefore does not build its own endpoint; it takes one,
+  registered once at process init the way `http_client()` is. That is
+  one-time platform setup, not per-remote configuration, so it never
+  reaches the address or the site.
+- **`#[derive(Site)]` rejects `#[cfg]`-gated fields** outright
+  (`rust/dialog-macros/src/site.rs`), because the generated impls need
+  per-variant bounds in a `where` clause and attributes there are still
+  unstable (rust#115590). Feature-gating the variant means declaring
+  `Network` twice under `#[cfg]`. Cheap in lines, but it splits
+  `NetworkAddress`'s variant set per build, and addresses are persisted
+  — so an address written by one build will not load in the other.
+
+A `Dynamic` variant wrapping `dyn Site` was considered and is not
+expressible: `Site` has a generic associated type (`type Fork<Fx:
+Effect>`), which is not object-safe, and `Address: DeserializeOwned`
+cannot be produced through a trait object without a registry.
+
+## Which side of the worker boundary iroh sits on
+
+`RTCPeerConnection` is `[Exposed=Window]`, so a *peer connection* cannot
+live in the worker. It does not follow that the *iroh endpoint* cannot,
+and that distinction decides how much of the section after this one is
+needed at all.
+
+**(a) iroh in the page.** The worker hands a tab an effect invocation;
+the tab runs the endpoint and the peer connection and hands back a
+result. The boundary carries dialog effects, so it needs request/response
+bracketing, ack deadlines, failover and session pinning — everything
+`dispatch.rs` does — and dialog-db would have to know the ceremony
+exists.
+
+**(b) iroh in the worker, WebRTC in the page.** The boundary carries
+datagrams. The page owns an `RTCPeerConnection` and relays bytes; it
+links neither iroh nor dialog-db.
+
+**(b) is the intent**, and it is the shape the transport was already
+built for: `WebRtcTransport` holds no data channel, it hands out a
+`Port { outbound, inbound }` and platform glue owns the carrier.
+`native.rs` and `web.rs` are two pieces of that glue; a `MessagePort`
+relay is a third, and the page-side shim that moves `ArrayBuffer`s
+between a port and a data channel is the fourth. None of it reaches
+dialog-db.
+
+Two things follow that (a) does not give. `index.html` builds `ui` and
+`worker` as separate wasm binaries, so under (b) iroh's ~214 KB gzipped
+lands only in the worker bundle, not the page one that was recently
+slimmed. And QUIC absorbs most of what `dispatch.rs` hand-rolls: session
+pinning exists because a half-finished push through a dying tab left a
+remote in an unsafe state, but an interrupted QUIC stream is only an
+interrupted stream, and the two deadlines are loss detection. What
+survives is "pick a live tab, pick another when it dies".
+
+**What could still overturn (b), and is unmeasured:** every QUIC datagram
+crosses a `postMessage`. Under (a) that is one message per effect; under
+(b) one per packet — plausibly thousands per second during a bulk sync.
+Transferring the `ArrayBuffer` rather than cloning it is what makes that
+survivable or not, and nobody has counted. The spike is small and
+independent of everything else here: a worker, a page, transferable
+buffers at datagram size, round trips per second against what sync
+actually demands.
+
+The section that follows is written for (a). It is kept because the
+policy in it is real and tested, and because it is what is needed if the
+measurement comes back badly.
+
+### The decision it was written for
+
+The replica and the sync engine are in the worker, the channels are in
+the pages, and every operation crosses worker → page → CLI and back. The
+worker has to pick a page.
 
 `rust/tonk-rtc/src/dispatch.rs` is that decision and nothing else — no
 worker, no `postMessage`, no WebRTC — so every failure path is reachable
