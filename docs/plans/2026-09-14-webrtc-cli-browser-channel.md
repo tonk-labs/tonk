@@ -418,7 +418,41 @@ small signalling endpoint there — used *only* when an address-record
 dial fails — buys coordinated hole punching without adopting a second
 identity system, a QUIC stack, or a relay network.
 
-## Evaluated and set aside: `iroh-webrtc-transport`
+## Addressing a remote by its key
+
+The published address is `{ candidates, fingerprint }`, and keeping it
+stable took work: persist the certificate so the fingerprint does not
+move, pin the port so it does not either. Both are now done, and a peer
+that reads the record once can cache it. But the record is still a
+*location*, and locations churn — a new network, a different machine, a
+port already taken.
+
+The alternative is to address a remote by its **identity** and let
+something else find it. That is iroh's model: a node is an ed25519
+public key, and discovery resolves it to wherever it currently is.
+
+This fits tonk unusually well, because the key already exists. The root
+identity is an `Ed25519Signer` and dialog's credentials are ed25519 —
+the same curve iroh uses for a `SecretKey`. A DID and an iroh
+`EndpointId` would be two encodings of one public key, so `tonk remote
+add <did>` could name a remote that is dialable forever, with no record
+to publish and nothing to keep in step. That also matches how remotes
+already work, rather than inventing a parallel notion.
+
+Worth separating two things that arrive together:
+
+- **The addressing model** — a remote is a DID, configured once. This
+  stands on its own and can be adopted without iroh.
+- **The transport** — given a DID, how is it reached. Direct WebRTC
+  (built) when there is a local address record or the peers share a
+  LAN; something with discovery and NAT traversal when they do not.
+
+Under that split the address record stops being the only path and
+becomes a local hint. And the fingerprint problem resolves itself for
+the remote case: a bootstrap channel carries the SDP **in band**, so
+nothing has to be published at all.
+
+## Evaluated: `iroh-webrtc-transport`
 
 The crate bootstraps a WebRTC session over an *iroh* stream (ALPN
 `noop/iroh/webrtc/bootstrap/1`), exchanges SDP over it, then promotes
@@ -429,14 +463,27 @@ refused — the fallback is iroh's own relay. Architecturally it is the
 same bootstrap-then-upgrade shape described above, with iroh's relay
 where this design has the space.
 
-Set aside for now, chiefly because **a browser's iroh connection is
-always relayed** (browsers cannot open UDP sockets), so two processes on
-one laptop could not connect without reaching the internet — the
-opposite of the goal. The obvious escape fails too: a local iroh relay
-would have the browser open a WebSocket to `http://127.0.0.1`, which is
-the Safari-blocked case this whole feature exists to avoid.
+Read against the addressing model above, this is not an alternative to
+the direct dial but the **remote-case bootstrap for it**: connect over
+iroh, exchange SDP on that stream, upgrade to a direct data channel.
+Nothing needs publishing, because the description travels in band.
 
-Also: a second identity system beside DIDs and UCANs; pinned to
+What does not change is that **a browser's iroh connection is always
+relayed** — browsers cannot open UDP sockets — so two processes on one
+laptop could not connect without reaching the internet. The obvious
+escape fails too: a local iroh relay would have the browser open a
+WebSocket to `http://127.0.0.1`, the Safari-blocked case this whole
+feature exists to avoid.
+
+So it does not replace the direct path; it sits above it. **The question
+that decides how much of iroh to take is whether browser-to-CLI must
+work with no internet at all.** If it must, the direct dial stays and
+iroh is the remote tier. If it need not, iroh alone is simpler and the
+direct dial is an optimisation.
+
+The "second identity system" objection does not survive contact with
+the profile keypair: both are ed25519, so one key can serve as both DID
+and `EndpointId`. What remains: pinned to
 `iroh ^0.98.2` while iroh is at 1.2.0; `0.1.0-alpha.2` from an
 individual's repository rather than n0's, whose README still describes
 itself as `publish = false`; shipped tests cover only the native path;
