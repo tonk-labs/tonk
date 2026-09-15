@@ -167,6 +167,18 @@ pub async fn register_site_on_repo(
     let (site, client) = client_site(&request)?;
     let body = read_site_request(request).await?;
     let tonk = state.read().await;
+    // The stamp acquires the branch; a directory-listed space this
+    // device has not pulled yet is mounted first, as on every other
+    // route that addresses a space by key.
+    match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
+        Ok(true) => {
+            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
+        }
+    }
     stamp_site_on(
         &tonk,
         &site,

@@ -29,7 +29,7 @@ use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
 /// Remote name for the account's access branch in the profile repository.
-const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
+pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
@@ -432,6 +432,13 @@ async fn record_account_replica(
     let replica = Replica::account(tonk.profile.did(), subject.clone());
     let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject.clone(), address);
     let tracked = remote.branch(tonk_account::MAIN_BRANCH);
+
+    // Re-asserted on every sweep, on purpose. A guard that skipped the
+    // write when the rows were already present cost a real-browser
+    // regression (the Hub's account label no longer followed a rename
+    // on a second account) and saved only a reactor transaction dialog
+    // finds to be a no-op. What the write path does besides writing,
+    // the cache invalidation and the poll drain below, is load-bearing.
 
     tonk.reactor
         .profile_repository()

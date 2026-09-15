@@ -34,7 +34,7 @@ const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 // `GET /api/health` answers from this glue WITHOUT the wasm worker —
 // so a worker that fails to initialize is still diagnosable with one
 // fetch from any page, instead of spelunking serviceworker-internals.
-const LOG_RING_CAPACITY = 400;
+const LOG_RING_CAPACITY = 5000;
 const logRing = [];
 const ringify = level => {
     const original = console[level].bind(console);
@@ -88,7 +88,10 @@ function healthResponse() {
             attempts: workerHealth.attempts,
             lastAttemptAt: workerHealth.lastAttemptAt,
             startedAt: workerHealth.startedAt,
-            log: logRing.slice(-200),
+            // The whole ring: a sync's worth of request lines runs to
+            // thousands, and a diagnostic that keeps only the tail has
+            // already lost the phase it was asked about.
+            log: logRing.slice(),
         }),
         {
             status: 200,
@@ -907,7 +910,11 @@ async function activateWorker() {
                 log("Worker initialization failed:", error);
                 throw error;
             });
-        log("Worker initialized");
+        // Name the build in the log: a stale service worker is
+        // otherwise indistinguishable from a fresh one, and reading a
+        // rebuilt binary's behaviour off a stale worker's output has
+        // cost real debugging days.
+        log(`Worker initialized (build ${BUILD_ID})`);
     }
 
     return tonkServiceWorkerResolves;
@@ -931,7 +938,7 @@ self.oninstall = event => {
         // understand the successor protocol.
         await self.skipWaiting();
     })());
-    log("Installed");
+    log(`Installed (build ${BUILD_ID})`);
 };
 
 self.onactivate = event => {
@@ -958,7 +965,7 @@ self.onactivate = event => {
             log("Generation cache cleanup failed:", error);
         }),
     );
-    log("Activated");
+    log(`Activated (build ${BUILD_ID})`);
 };
 
 // When a *newer* version completes installation, this script (the currently

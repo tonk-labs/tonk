@@ -301,7 +301,10 @@ grep -q "^const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";$" "$SW_TMP" || {
     echo "stamp-service-worker: ASSET_MANIFEST_HASH verification failed" >&2
     exit 1
 }
-grep -Fqx "$ASSET_PATHS_DECL" "$SW_TMP" || {
+# BSD grep runs out of memory taking the multi-thousand-route ASSET_PATHS
+# line as a fixed pattern; extract the stamped line and compare in the
+# shell instead.
+[ "$(sed -n '/^const ASSET_PATHS = /p' "$SW_TMP")" = "$ASSET_PATHS_DECL" ] || {
     echo "stamp-service-worker: ASSET_PATHS verification failed" >&2
     exit 1
 }
