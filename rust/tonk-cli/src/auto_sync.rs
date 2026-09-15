@@ -47,6 +47,93 @@ pub(crate) fn env_value_opts_out(value: Option<&str>) -> bool {
     }
 }
 
+/// One local write's optional remote-sync lifecycle.
+///
+/// [`begin`](Self::begin) completes warning-only pull-before work. The caller
+/// then performs and, when relevant, reports its local commit before
+/// [`finish`](Self::finish) begins push-after. Keeping that ordering in the
+/// type prevents a remote wait from hiding a durable local receipt.
+pub struct WriteSession<'a> {
+    site: &'a TonkSite,
+    enabled: bool,
+}
+
+impl<'a> WriteSession<'a> {
+    /// Begin a write session, performing best-effort pull-before when enabled.
+    pub async fn begin(site: &'a TonkSite, enabled: bool) -> Self {
+        if enabled {
+            pull_before(site).await;
+        }
+        Self { site, enabled }
+    }
+
+    /// Finish a write after its local outcome has been made observable.
+    ///
+    /// A non-committing eval (including dry-run) skips both push and account
+    /// directory work. Failures are retained in [`SyncReport`] so the caller
+    /// can name the durable local action accurately.
+    pub async fn finish(self, committed: bool) -> SyncReport {
+        if !committed {
+            return SyncReport::default();
+        }
+
+        let push = if self.enabled {
+            push_after(self.site).await
+        } else {
+            None
+        };
+        let account_directory = crate::account_spaces::record_current(self.site)
+            .await
+            .err()
+            .map(|error| format!("{error:#}"));
+        SyncReport {
+            push,
+            account_directory,
+        }
+    }
+}
+
+/// Best-effort work that settled after a durable local commit.
+#[derive(Debug, Default)]
+pub struct SyncReport {
+    push: Option<SyncError>,
+    account_directory: Option<String>,
+}
+
+impl SyncReport {
+    /// Render recovery for an eval whose receipt is already on stdout.
+    ///
+    /// Repeating asserted notation can create a second non-idempotent write,
+    /// so recovery only retries remote delivery of the recorded revision.
+    pub fn warn_eval(&self) {
+        if let Some(error) = &self.push {
+            eprintln!("warning: local eval was saved, but auto-sync push failed: {error}");
+            eprintln!(
+                "do not repeat the eval; inspect the saved revision with `tonk status`, \
+                 then retry only remote delivery with `tonk push`"
+            );
+        }
+        if let Some(error) = &self.account_directory {
+            eprintln!(
+                "warning: local eval was saved, but the account directory update failed: {error}"
+            );
+        }
+    }
+
+    /// Render recovery for a non-eval write after its local commit.
+    pub fn warn_write(&self) {
+        if let Some(error) = &self.push {
+            eprintln!(
+                "warning: the local write was saved, but auto-sync push failed: {error}; \
+                 inspect with `tonk status`, then retry remote delivery with `tonk push`"
+            );
+        }
+        if let Some(error) = &self.account_directory {
+            eprintln!("warning: account directory update failed: {error}");
+        }
+    }
+}
+
 /// Evaluate `source` against `site`, syncing around the write when
 /// `sync` is on.
 ///
@@ -60,18 +147,9 @@ pub async fn run_eval(
     options: Options,
     sync: bool,
 ) -> Result<Outcome, eval::EvalError> {
-    if sync {
-        pull_before(site).await;
-    }
+    let session = WriteSession::begin(site, sync).await;
     let outcome = eval::run_against_site(site, source, options).await?;
-    if sync && outcome.committed {
-        push_after(site).await;
-    }
-    if outcome.committed
-        && let Err(error) = crate::account_spaces::record_current(site).await
-    {
-        eprintln!("warning: account directory update failed: {error:#}");
-    }
+    session.finish(outcome.committed).await.warn_eval();
     Ok(outcome)
 }
 
@@ -90,16 +168,9 @@ pub async fn around_commit<T, E>(
     sync: bool,
     write: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    if sync {
-        pull_before(site).await;
-    }
+    let session = WriteSession::begin(site, sync).await;
     let outcome = write.await?;
-    if sync {
-        push_after(site).await;
-    }
-    if let Err(error) = crate::account_spaces::record_current(site).await {
-        eprintln!("warning: account directory update failed: {error:#}");
-    }
+    session.finish(true).await.warn_write();
     Ok(outcome)
 }
 
@@ -116,10 +187,10 @@ async fn pull_before(site: &TonkSite) {
 /// Push the local branch to its upstream after a write. A missing
 /// upstream is a silent skip; any other failure is a warning — the
 /// local write is already committed.
-async fn push_after(site: &TonkSite) {
+async fn push_after(site: &TonkSite) -> Option<SyncError> {
     match sync::push(site).await {
-        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => {}
-        Err(err) => warn("push", &err),
+        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => None,
+        Err(error) => Some(error),
     }
 }
 
