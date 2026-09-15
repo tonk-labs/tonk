@@ -29,14 +29,17 @@
 //!   establish who the peer is. libp2p uses Noise for this; tonk has
 //!   DIDs and UCAN delegations already.
 //!
-//! - **One credential means one dialer at a time.** Concurrent dialers
-//!   would be indistinguishable on the wire, since ICE separates peers
-//!   by ufrag. Supporting several at once needs a per-dial random ufrag
-//!   and a UDP mux that reads it out of the first STUN packet — the
-//!   mechanism `libp2p-webrtc` uses, and the next step from here.
+//! - **A reachable port is dialable.** Nothing at this layer gates who
+//!   may open a channel: the dialer chooses its own ufrag, so there is
+//!   no shared secret to withhold. That is deliberate — authorization
+//!   is per invocation, where every request carries a signed UCAN and
+//!   is verified before any work is done, so a connected peer with no
+//!   capability is served nothing. Reachability is not permission.
+//!   What an open port does cost is resources: anyone can make this
+//!   side perform DTLS handshakes and hold connections, so a cap on
+//!   concurrent dials belongs here before it faces a hostile network.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -47,21 +50,26 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::dtls_transport::dtls_role::DTLSRole;
+use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
+use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+use crate::identity::Identity;
+use crate::mux::Watching;
 use crate::peer::{CHANNEL_LABEL, PeerError, Session};
 
-/// How long to wait for ICE gathering before publishing what we have.
-const GATHER_DEADLINE: Duration = Duration::from_secs(3);
-
-/// Bytes of entropy behind the dial credential.
+/// How many dials may be in flight or open at once.
 ///
-/// Encoded base64url this yields 32 characters, comfortably over the
-/// 22-character minimum RFC 5245 puts on an ICE password — the same
-/// string serves as both ufrag and password.
-const CREDENTIAL_BYTES: usize = 24;
+/// Reachability is not permission here — authorization happens per
+/// invocation, above this layer — so anyone who can reach the port can
+/// make this side build a peer connection and run a DTLS handshake.
+/// This bounds what that costs. Generous next to the handful of tabs a
+/// person actually has open, small next to what an unbounded loop would
+/// consume.
+const MAX_CONCURRENT_DIALS: usize = 32;
 
 /// One address a dialer can send to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,11 +93,11 @@ pub struct Address {
     /// ICE pick.
     pub candidates: Vec<Candidate>,
     /// The DTLS fingerprint, as an SDP `a=fingerprint` value —
-    /// `"sha-256 AB:CD:…"`. This is what authenticates this side.
+    /// `"sha-256 ab:cd:…"`. This is what authenticates this side, and
+    /// the reason the certificate is persisted rather than minted per
+    /// run: a fingerprint that moves invalidates every address already
+    /// handed out.
     pub fingerprint: String,
-    /// The shared ICE credential, used as BOTH `ice-ufrag` and
-    /// `ice-pwd` on both sides. A bearer secret; see the module note.
-    pub credential: String,
 }
 
 impl Address {
@@ -107,29 +115,25 @@ impl Address {
 }
 
 /// A listening peer, waiting to be dialed.
+///
+/// Holds the shared socket and every peer connection built for a dial;
+/// dropping it tears all of them down.
 pub struct Listener {
-    /// Held so the connection outlives the listener; dropping it tears
-    /// the peer down.
-    _connection: Arc<RTCPeerConnection>,
     address: Address,
     incoming: AsyncMutex<mpsc::UnboundedReceiver<Session>>,
+    /// Kept alive for the listener's life. The accept loop owns the
+    /// per-dial connections; this is the handle that stops it.
+    _accepting: tokio::task::JoinHandle<()>,
 }
 
-/// A fresh bearer credential from the OS entropy source.
-fn credential() -> Result<String, PeerError> {
-    let mut bytes = [0u8; CREDENTIAL_BYTES];
-    getrandom::fill(&mut bytes).map_err(|error| PeerError::Entropy(error.to_string()))?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
-}
-
-/// The offer this side answers.
+/// The offer this side answers for a given dial.
 ///
-/// Entirely fabricated: no dialer has spoken yet. Its ICE credentials
-/// are the shared ones (so the `USERNAME` this side expects is
-/// `credential:credential`, exactly what a dialer using the published
-/// record will send), and its fingerprint is a placeholder this side
-/// never checks — see the module note on one-way authentication.
-fn fabricated_offer(credential: &str) -> String {
+/// Entirely fabricated: the dialer has sent nothing but STUN. Its ICE
+/// credentials are the dialer's own ufrag, used for both fields, which
+/// is what makes the `USERNAME` this side expects match what the dialer
+/// sends. Its fingerprint is a placeholder this side never checks — see
+/// the module note on one-way authentication.
+fn fabricated_offer(ufrag: &str) -> String {
     let placeholder = ["00"; 32].join(":");
     format!(
         "v=0\r\n\
@@ -145,79 +149,74 @@ fn fabricated_offer(credential: &str) -> String {
          a=sendrecv\r\n\
          a=sctp-port:5000\r\n\
          a=max-message-size:65536\r\n\
-         a=ice-ufrag:{credential}\r\n\
-         a=ice-pwd:{credential}\r\n"
+         a=ice-ufrag:{ufrag}\r\n\
+         a=ice-pwd:{ufrag}\r\n"
     )
 }
 
-/// Pull the `a=fingerprint` value out of a description.
-fn fingerprint_of(sdp: &str) -> Option<String> {
-    sdp.lines()
-        .find_map(|line| line.trim().strip_prefix("a=fingerprint:"))
-        .map(str::to_owned)
-}
-
-/// Pull every host candidate's address out of a description.
+/// The addresses this port can be reached on.
 ///
-/// `a=candidate:<foundation> <component> <transport> <priority> <ip> <port> typ host`
-/// — only component 1 is taken, because components 1 and 2 (RTP and
-/// RTCP) share a port here and would otherwise be listed twice.
-fn candidates_of(sdp: &str) -> Vec<Candidate> {
-    let mut found: Vec<Candidate> = Vec::new();
-    for line in sdp.lines() {
-        let Some(rest) = line.trim().strip_prefix("a=candidate:") else {
-            continue;
-        };
-        let fields: Vec<&str> = rest.split_whitespace().collect();
-        if fields.len() < 8 || fields[1] != "1" || fields[7] != "host" {
-            continue;
-        }
-        let Ok(port) = fields[5].parse::<u16>() else {
-            continue;
-        };
-        let candidate = Candidate {
-            host: fields[4].to_owned(),
+/// Loopback always, for the same-machine case. Plus whichever local
+/// address the routing table would use to reach the outside world,
+/// which covers the LAN — found by "connecting" a throwaway UDP socket,
+/// which sends nothing and merely asks the kernel to pick a route.
+fn reachable_on(port: u16) -> Vec<Candidate> {
+    let mut candidates = vec![Candidate {
+        host: "127.0.0.1".to_owned(),
+        port,
+    }];
+    if let Ok(probe) = std::net::UdpSocket::bind("0.0.0.0:0")
+        && probe.connect("198.51.100.1:9").is_ok()
+        && let Ok(local) = probe.local_addr()
+        && !local.ip().is_loopback()
+    {
+        candidates.push(Candidate {
+            host: local.ip().to_string(),
             port,
-        };
-        if !found.contains(&candidate) {
-            found.push(candidate);
-        }
+        });
     }
-    found
+    candidates
 }
 
-/// Start listening, and produce the address a peer can dial.
-pub async fn listen() -> Result<Listener, PeerError> {
-    let credential = credential()?;
-
+/// Build the peer connection that answers one dial.
+async fn answer_dial(
+    ufrag: &str,
+    identity: &Identity,
+    mux: Arc<UDPMuxDefault>,
+    sessions: mpsc::UnboundedSender<Session>,
+) -> Result<Arc<RTCPeerConnection>, PeerError> {
     let mut settings = SettingEngine::default();
-    // Both sides use one string for both fields. This is what removes
-    // the round trip: a dialer rewrites its own credentials to match,
-    // so the `USERNAME` on the wire is `credential:credential` and
-    // neither side has to learn anything from the other.
-    settings.set_ice_credentials(credential.clone(), credential.clone());
-    // A dialer's certificate is generated per page load, so it cannot be
-    // known in advance and cannot be checked. See the module note.
+    // The dialer chose this ufrag and used it for both of its own ICE
+    // fields, so matching it here is what makes the USERNAME check pass
+    // without anything having been exchanged.
+    settings.set_ice_credentials(ufrag.to_owned(), ufrag.to_owned());
+    // Every dial rides the one shared socket; this is what routes its
+    // packets to this connection rather than another dial's.
+    settings.set_udp_network(UDPNetwork::Muxed(mux));
+    // A dialer's certificate is minted per page load, so it cannot be
+    // known in advance and cannot be checked.
     settings.disable_certificate_fingerprint_verification(true);
     // Answer with `a=setup:active` every time, so a dialer synthesising
-    // this side's description can hard-code the role instead of being
-    // told it. Without this the role follows the resolved ICE role and
-    // the dialer would have to guess.
+    // this side's description can hard-code the role.
     settings.set_answering_dtls_role(DTLSRole::Client)?;
-    // Accept a browser's mDNS candidates; see `peer::settings`.
     settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::QueryOnly);
-    // Without this there is no `127.0.0.1` candidate at all, and the
-    // same-machine case — the one this exists for first — has nothing to
-    // dial.
-    settings.set_include_loopback_candidate(true);
 
     let api = APIBuilder::new()
         .with_media_engine(MediaEngine::default())
         .with_setting_engine(settings)
         .build();
-    let connection = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
+    let connection = Arc::new(
+        api.new_peer_connection(RTCConfiguration {
+            // The published fingerprint names THIS certificate, so every
+            // dial must present it. Left to itself each connection would
+            // mint its own and every dialer after the first would refuse
+            // the one it was promised.
+            certificates: vec![identity.certificate()],
+            ..Default::default()
+        })
+        .await?,
+    );
 
-    let (sessions, incoming) = mpsc::unbounded_channel();
     let owner = connection.clone();
     connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let sessions = sessions.clone();
@@ -231,26 +230,72 @@ pub async fn listen() -> Result<Listener, PeerError> {
     }));
 
     connection
-        .set_remote_description(RTCSessionDescription::offer(fabricated_offer(&credential))?)
+        .set_remote_description(RTCSessionDescription::offer(fabricated_offer(ufrag))?)
         .await?;
     let answer = connection.create_answer(None).await?;
-    let mut gathered = connection.gathering_complete_promise().await;
     connection.set_local_description(answer).await?;
-    let _ = tokio::time::timeout(GATHER_DEADLINE, gathered.recv()).await;
+    Ok(connection)
+}
 
-    let local = connection
-        .local_description()
+/// Start listening, and produce the address a peer can dial.
+///
+/// The address stays valid for as long as this listener lives, and
+/// across restarts too when the same [`Identity`] is restored and the
+/// port is stable. Dials may arrive concurrently and repeatedly; each
+/// gets its own peer connection over the one shared port.
+pub async fn listen(identity: Identity) -> Result<Listener, PeerError> {
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
         .await
-        .ok_or(PeerError::NoLocalDescription)?;
+        .map_err(|error| PeerError::Identity(error.to_string()))?;
+    let port = socket
+        .local_addr()
+        .map_err(|error| PeerError::Identity(error.to_string()))?
+        .port();
+
+    let (watching, mut dials) = Watching::wrap(Arc::new(socket));
+    let mux = UDPMuxDefault::new(UDPMuxParams::new(watching));
+
+    let (sessions, incoming) = mpsc::unbounded_channel();
+    let accepting = {
+        let identity = identity.clone();
+        let mux = mux.clone();
+        tokio::spawn(async move {
+            // Every connection built for a dial is kept here; dropping
+            // one would tear down a live channel.
+            let mut connections: Vec<Arc<RTCPeerConnection>> = Vec::new();
+            while let Some(ufrag) = dials.recv().await {
+                // Nothing authenticates a dial at this layer, so a
+                // stranger can announce an arbitrary ufrag and each one
+                // would otherwise cost a peer connection and a DTLS
+                // handshake. Shed closed connections first, then refuse
+                // rather than grow without bound.
+                connections.retain(|connection| {
+                    connection.connection_state() != RTCPeerConnectionState::Closed
+                });
+                if connections.len() >= MAX_CONCURRENT_DIALS {
+                    tracing::warn!(%ufrag, "refusing a dial: too many already open");
+                    continue;
+                }
+
+                match answer_dial(&ufrag, &identity, mux.clone(), sessions.clone()).await {
+                    Ok(connection) => connections.push(connection),
+                    // One dial failing is not the listener failing —
+                    // anyone can send a packet to an open port.
+                    Err(error) => {
+                        tracing::debug!(%ufrag, %error, "could not answer a dial");
+                    }
+                }
+            }
+        })
+    };
 
     Ok(Listener {
         address: Address {
-            candidates: candidates_of(&local.sdp),
-            fingerprint: fingerprint_of(&local.sdp).ok_or(PeerError::NoLocalDescription)?,
-            credential,
+            candidates: reachable_on(port),
+            fingerprint: identity.fingerprint(),
         },
-        _connection: connection,
         incoming: AsyncMutex::new(incoming),
+        _accepting: accepting,
     })
 }
 
@@ -260,9 +305,10 @@ impl Listener {
         &self.address
     }
 
-    /// Wait for a dialer to open the channel.
+    /// Wait for the next dialer to open a channel.
     ///
-    /// `None` once the listener is torn down.
+    /// `None` once the listener is torn down. Called repeatedly: a
+    /// listener serves many dials over its life.
     pub async fn accept(&self) -> Option<Session> {
         self.incoming.lock().await.recv().await
     }
@@ -274,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_published_address_carries_everything_a_dialer_needs() {
-        let listener = listen().await.unwrap();
+        let listener = listen(Identity::generate().unwrap()).await.unwrap();
         let address = listener.address();
         assert!(
             address.fingerprint.starts_with("sha-256 "),
@@ -282,37 +328,62 @@ mod tests {
             address.fingerprint
         );
         assert!(
-            address.credential.len() >= 22,
-            "an ICE password must be at least 22 characters (RFC 5245)"
-        );
-        assert!(
             !address.candidates.is_empty(),
-            "nothing to dial: no host candidates were gathered"
+            "nothing to dial: no addresses were published"
         );
     }
 
     /// The same-machine case is the one this exists for first, and it
-    /// silently has nothing to dial without `set_include_loopback_candidate`.
+    /// silently has nothing to dial without a loopback address.
     #[tokio::test]
-    async fn a_loopback_candidate_is_published() {
-        let listener = listen().await.unwrap();
+    async fn a_loopback_address_is_published() {
+        let listener = listen(Identity::generate().unwrap()).await.unwrap();
         assert!(
             listener
                 .address()
                 .candidates
                 .iter()
                 .any(|candidate| candidate.host == "127.0.0.1"),
-            "no loopback candidate in {:?}",
+            "no loopback address in {:?}",
             listener.address().candidates
         );
     }
 
-    /// Two listeners must not share a credential; it is a bearer secret.
+    /// The published fingerprint is the identity's, not something the
+    /// connection minted — which is what lets an address outlive both a
+    /// restart and the first dial.
     #[tokio::test]
-    async fn credentials_are_not_reused() {
-        let first = listen().await.unwrap();
-        let second = listen().await.unwrap();
-        assert_ne!(first.address().credential, second.address().credential);
+    async fn the_address_names_the_identity_it_was_given() {
+        let identity = Identity::generate().unwrap();
+        let listener = listen(identity.clone()).await.unwrap();
+        assert_eq!(listener.address().fingerprint, identity.fingerprint());
+    }
+
+    /// Restoring the same identity republishes the same fingerprint, so
+    /// an address handed out before a restart still authenticates this
+    /// side afterwards. Only the port moves.
+    #[tokio::test]
+    async fn a_restored_identity_republishes_the_same_fingerprint() {
+        let identity = Identity::generate().unwrap();
+        let before = listen(identity.clone()).await.unwrap();
+        let restored = Identity::from_pem(&identity.to_pem()).unwrap();
+        let after = listen(restored).await.unwrap();
+        assert_eq!(
+            before.address().fingerprint,
+            after.address().fingerprint,
+            "a restart would invalidate every address already published"
+        );
+    }
+
+    /// Every dial shares one port, so two listeners must not.
+    #[tokio::test]
+    async fn listeners_do_not_share_a_port() {
+        let first = listen(Identity::generate().unwrap()).await.unwrap();
+        let second = listen(Identity::generate().unwrap()).await.unwrap();
+        assert_ne!(
+            first.address().candidates[0].port,
+            second.address().candidates[0].port
+        );
     }
 
     #[test]
@@ -322,29 +393,25 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 41794,
             }],
-            fingerprint: "sha-256 AB:CD".into(),
-            credential: "shared-credential-value".into(),
+            fingerprint: "sha-256 ab:cd".into(),
         };
         assert_eq!(Address::decode(&address.encode()).unwrap(), address);
     }
 
     #[test]
-    fn rtcp_components_do_not_duplicate_a_candidate() {
-        // webrtc emits component 1 and component 2 on the same port.
-        let sdp = "a=candidate:1 1 udp 2130706431 127.0.0.1 41794 typ host\r\n\
-                   a=candidate:1 2 udp 2130706431 127.0.0.1 41794 typ host\r\n";
-        assert_eq!(
-            candidates_of(sdp),
-            vec![Candidate {
-                host: "127.0.0.1".into(),
-                port: 41794
-            }]
-        );
+    fn loopback_is_always_reachable_and_carries_the_bound_port() {
+        let candidates = reachable_on(4242);
+        assert!(candidates.iter().any(|c| c.host == "127.0.0.1"));
+        assert!(candidates.iter().all(|c| c.port == 4242));
     }
 
+    /// The dialer chose this ufrag; using it for BOTH fields is what
+    /// makes the USERNAME check pass with nothing exchanged.
     #[test]
-    fn non_host_candidates_are_not_published() {
-        let sdp = "a=candidate:1 1 udp 1 203.0.113.5 3478 typ srflx raddr 10.0.0.1 rport 4000\r\n";
-        assert!(candidates_of(sdp).is_empty());
+    fn the_fabricated_offer_answers_as_the_dialer_addressed_us() {
+        let offer = fabricated_offer("their-random-ufrag");
+        assert!(offer.contains("a=ice-ufrag:their-random-ufrag\r\n"));
+        assert!(offer.contains("a=ice-pwd:their-random-ufrag\r\n"));
+        assert!(offer.contains("m=application"));
     }
 }

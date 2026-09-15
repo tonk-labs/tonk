@@ -1835,6 +1835,7 @@ dependencies = [
  "log",
  "p256",
  "p384",
+ "pem",
  "portable-atomic",
  "rand 0.9.5",
  "rand_core 0.6.4",
@@ -5733,10 +5734,12 @@ dependencies = [
  "base64",
  "env_logger",
  "getrandom 0.4.3",
+ "rcgen",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "webrtc",
 ]
 
@@ -6517,6 +6520,7 @@ dependencies = [
  "interceptor",
  "lazy_static",
  "log",
+ "pem",
  "portable-atomic",
  "rand 0.9.5",
  "rcgen",

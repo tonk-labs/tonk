@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { decodeAddress, decodeDescription, encodeDescription, isLoopback, mungeOffer, synthesizeAnswer } from "../assets/rtc.mjs";
+import { decodeAddress, decodeDescription, encodeDescription, freshCredential, isLoopback, mungeOffer, synthesizeAnswer } from "../assets/rtc.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const scripts = [...html.matchAll(/<script(?: type="module")?>([\s\S]*?)<\/script>/g)].map(match => match[1]);
@@ -77,13 +77,13 @@ test("the answer may only be delivered to a loopback listener", () => {
 const address = {
     candidates: [{ host: "127.0.0.1", port: 46660 }, { host: "192.0.2.2", port: 41445 }],
     fingerprint: "sha-256 " + Array(32).fill("AB").join(":"),
-    credential: "c2hhcmVkLWNyZWRlbnRpYWwtdmFsdWU",
 };
+const CREDENTIAL = "c2hhcmVkLWNyZWRlbnRpYWwtdmFsdWU";
 const encodeAddress = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
 test("an address round-trips and is rejected when incomplete", () => {
     assert.deepEqual(decodeAddress(encodeAddress(address)), address);
-    for (const missing of ["candidates", "fingerprint", "credential"]) {
+    for (const missing of ["candidates", "fingerprint"]) {
         const broken = { ...address, [missing]: missing === "candidates" ? [] : undefined };
         assert.throws(() => decodeAddress(encodeAddress(broken)), /missing/);
     }
@@ -92,14 +92,26 @@ test("an address round-trips and is rejected when incomplete", () => {
 // Both sides use ONE string as ufrag AND password. That is what removes
 // the round trip: get it wrong and the CLI's USERNAME check rejects
 // every binding request, which is silent on the wire.
-test("the synthesized answer uses the shared credential for both ICE fields", () => {
-    const sdp = synthesizeAnswer(address);
-    assert.match(sdp, new RegExp(`a=ice-ufrag:${address.credential}\r\n`));
-    assert.match(sdp, new RegExp(`a=ice-pwd:${address.credential}\r\n`));
+test("the synthesized answer uses the dial's credential for both ICE fields", () => {
+    const sdp = synthesizeAnswer(address, CREDENTIAL);
+    assert.match(sdp, new RegExp(`a=ice-ufrag:${CREDENTIAL}\r\n`));
+    assert.match(sdp, new RegExp(`a=ice-pwd:${CREDENTIAL}\r\n`));
+});
+
+// One address must serve many dials, so the credential cannot live in
+// the address: ICE separates peers by ufrag, and a fixed one would mean
+// exactly one connection ever, concurrently or sequentially.
+test("every dial mints its own credential", () => {
+    const minted = new Set(Array.from({ length: 50 }, () => freshCredential()));
+    assert.equal(minted.size, 50, "credentials repeated across dials");
+    for (const credential of minted) {
+        assert.ok(credential.length >= 22, "shorter than RFC 5245 allows for an ICE password");
+        assert.match(credential, /^[A-Za-z0-9_-]+$/, "must survive an SDP line unescaped");
+    }
 });
 
 test("every published candidate reaches the synthesized answer", () => {
-    const sdp = synthesizeAnswer(address);
+    const sdp = synthesizeAnswer(address, CREDENTIAL);
     for (const candidate of address.candidates) {
         assert.match(sdp, new RegExp(`a=candidate:\\d+ 1 udp \\d+ ${candidate.host.replace(/\./g, "\\.")} ${candidate.port} typ host`));
     }
@@ -109,14 +121,14 @@ test("every published candidate reaches the synthesized answer", () => {
 // The CLI pins its answering DTLS role so it need not travel in the
 // address; if that pin is ever removed these two disagree silently.
 test("the synthesized answer hard-codes the DTLS role the CLI pins", () => {
-    assert.match(synthesizeAnswer(address), /a=setup:active\r\n/);
+    assert.match(synthesizeAnswer(address, CREDENTIAL), /a=setup:active\r\n/);
 });
 
 test("munging replaces our own ICE credentials, not just the first", () => {
     const offer = "a=ice-ufrag:AbCd\r\na=ice-pwd:originalpassword\r\n"
         + "a=ice-ufrag:AbCd\r\na=ice-pwd:originalpassword\r\n";
-    const munged = mungeOffer(offer, address.credential);
+    const munged = mungeOffer(offer, CREDENTIAL);
     assert.ok(!munged.includes("AbCd"), "a stale ufrag survived");
     assert.ok(!munged.includes("originalpassword"), "a stale password survived");
-    assert.equal(munged.match(new RegExp(address.credential, "g")).length, 4);
+    assert.equal(munged.match(new RegExp(CREDENTIAL, "g")).length, 4);
 });

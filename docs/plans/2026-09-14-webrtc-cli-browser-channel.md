@@ -264,18 +264,58 @@ One setting turned out to be load-bearing and is easy to miss:
 no `127.0.0.1` candidate at all, and the same-machine case — the one
 this exists for first — has nothing to dial.
 
-Still to do: a **UDP mux**, so several dialers can share one port.
-Today the credential is fixed per listener, and ICE separates peers by
-ufrag, so concurrent dialers are indistinguishable on the wire and only
-one can connect at a time. That is fine for a demo and not fine for the
-"every tab holds a channel" design, which is precisely N concurrent
-dialers. The mux is what lets each dial carry its own random ufrag,
-read out of the first STUN packet.
+### One address, many dials
 
-Also outstanding: a **persisted certificate** (today's is generated per
-run, so the published fingerprint dies with the process) and the
-**application-layer handshake** the one-way DTLS authentication
-requires.
+The first version served exactly one connection ever. Measured, because
+it was worth checking rather than assuming:
+
+```
+tab 1: CONNECTED
+tab 2 (concurrent):        FAILED — stuck at "dialing…"
+tab 3 (after both closed): FAILED — stuck at "dialing…"
+```
+
+ICE separates peers by ufrag, so a fixed credential in the address
+means one peer, and the single peer connection was consumed by the
+first dialer and never released — not even a sequential redial worked.
+
+The fix is a UDP mux, and it *simplifies* the record: the dialer picks
+its own ufrag, so the credential leaves the address entirely.
+
+Rather than reimplement `UDPMuxDefault` to add ufrag discovery
+(libp2p's own is some six hundred lines), `src/mux.rs` wraps the socket
+the mux reads from. It is an ordinary `Conn` that passes every packet
+through untouched and, on the way past, notices binding requests
+carrying a ufrag it has not reported. The listener builds a peer
+connection for that ufrag; ICE retransmission means the next packet
+lands on a route that now exists. A few dropped packets at the start of
+a dial cost nothing — ICE is built to expect loss. About a hundred
+lines instead of six hundred.
+
+```
+tab 1: CONNECTED
+tab 2 (concurrent):        CONNECTED
+tab 3 (after both closed): CONNECTED
+```
+
+Two consequences.
+
+**The certificate must be persisted, and fixed across dials.** Each
+per-dial peer connection would otherwise mint its own, so every dialer
+after the first would check the published fingerprint against a
+different certificate and refuse. `src/identity.rs` holds it; the CLI
+stores the PEM beside its other local state, `0600`.
+
+**A reachable port is dialable.** Nothing at this layer gates who may
+connect, which is deliberate: authorization is per invocation, where
+every request carries a signed UCAN and is verified before any work is
+done. Reachability is not permission. What an open port *does* cost is
+resources — anyone can make this side run a DTLS handshake — so
+concurrent dials are capped and closed connections are shed first.
+
+Still outstanding: the **application-layer handshake** that the one-way
+DTLS authentication requires, and **framing/chunking** before dialog
+effects ride the channel (data channel messages cap at 64 KiB).
 
 ### What it costs
 

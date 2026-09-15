@@ -133,10 +133,17 @@ function gathered(connection) {
 // `libp2p-webrtc-websys` ships). So both sides use ONE shared string as
 // ufrag and password, and there is nothing left to exchange.
 //
-// Caveat carried from the CLI side: the credential is a bearer secret,
-// and DTLS ends up one-way authenticated — this page verifies the CLI
-// against the published fingerprint, the CLI cannot verify this page.
-// Something above the channel has to establish who the peer is.
+// This page picks the ICE credential itself, fresh per dial, which is
+// what lets one published address serve many dials — concurrently and
+// after a reconnect. ICE separates peers by ufrag, so a fixed one in
+// the address would mean exactly one connection ever.
+//
+// Caveat carried from the CLI side: DTLS ends up one-way authenticated.
+// This page verifies the CLI against the published fingerprint; the CLI
+// cannot verify this page, because a browser's certificate is minted
+// per page load. Nothing at this layer decides who may connect — every
+// invocation over the channel carries a signed UCAN and is verified
+// before any work is done, so reaching the port grants nothing.
 
 /** Read the address record the CLI published. */
 export function decodeAddress(encoded) {
@@ -145,14 +152,29 @@ export function decodeAddress(encoded) {
     const address = JSON.parse(decoder.decode(
         Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
     ));
-    if (!address.credential || !address.fingerprint || !address.candidates?.length) {
-        throw new Error("the address is missing candidates, a fingerprint or a credential");
+    if (!address.fingerprint || !address.candidates?.length) {
+        throw new Error("the address is missing candidates or a fingerprint");
     }
     return address;
 }
 
+/**
+ * A fresh ICE credential for one dial.
+ *
+ * Used as this page's own ufrag AND password, and as both of the CLI's
+ * in the description synthesized below — one value, four fields. That
+ * symmetry is what removes the round trip: the CLI reads this off the
+ * first STUN packet and needs nothing else.
+ */
+export function freshCredential() {
+    const bytes = crypto.getRandomValues(new Uint8Array(24));
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
 /** Build the CLI's side of the handshake from its published address. */
-export function synthesizeAnswer(address) {
+export function synthesizeAnswer(address, credential) {
     const [first] = address.candidates;
     const candidates = address.candidates
         .map((c, index) => `a=candidate:${index + 1} 1 udp 2130706431 ${c.host} ${c.port} typ host`)
@@ -168,8 +190,8 @@ export function synthesizeAnswer(address) {
         + `c=IN IP4 ${first.host}\r\n`
         + `a=setup:active\r\na=mid:0\r\na=sendrecv\r\n`
         + `a=sctp-port:5000\r\na=max-message-size:65536\r\n`
-        + `a=ice-ufrag:${address.credential}\r\n`
-        + `a=ice-pwd:${address.credential}\r\n`
+        + `a=ice-ufrag:${credential}\r\n`
+        + `a=ice-pwd:${credential}\r\n`
         + `${candidates}\r\na=end-of-candidates\r\n`;
 }
 
@@ -186,18 +208,18 @@ export function mungeOffer(sdp, credential) {
  * No signalling channel is involved, so there is nothing to wait for
  * and nothing to time out except ICE itself.
  */
-export async function dial(address) {
+export async function dial(address, credential = freshCredential()) {
     const connection = new RTCPeerConnection({ iceServers: [] });
     const channel = connection.createDataChannel(CHANNEL_LABEL);
 
     const offer = await connection.createOffer();
     await connection.setLocalDescription({
         type: "offer",
-        sdp: mungeOffer(offer.sdp, address.credential),
+        sdp: mungeOffer(offer.sdp, credential),
     });
     await connection.setRemoteDescription({
         type: "answer",
-        sdp: synthesizeAnswer(address),
+        sdp: synthesizeAnswer(address, credential),
     });
 
     await new Promise((resolve, reject) => {

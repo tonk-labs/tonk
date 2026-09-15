@@ -100,6 +100,61 @@ pub struct ListenOptions {
     pub no_open: bool,
 }
 
+/// Where this machine's WebRTC certificate lives.
+///
+/// Beside the other local state the CLI keeps. It contains a private
+/// key, so it is written with the same care as the rest.
+fn identity_path() -> Result<std::path::PathBuf> {
+    let data = dirs::data_dir().context("could not determine platform data directory")?;
+    Ok(data.join("tonk").join("rtc-identity.pem"))
+}
+
+/// Load this machine's WebRTC certificate, minting one the first time.
+///
+/// Persisted because a published address names its fingerprint: mint a
+/// fresh one per run and every address handed out before a restart
+/// stops authenticating this side.
+fn rtc_identity() -> Result<tonk_rtc::Identity> {
+    let path = identity_path()?;
+    if let Ok(pem) = std::fs::read_to_string(&path)
+        && let Ok(identity) = tonk_rtc::Identity::from_pem(&pem)
+    {
+        return Ok(identity);
+    }
+
+    let identity = tonk_rtc::Identity::generate().context("could not mint a WebRTC certificate")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    // A failure to persist is not a failure to listen — this run still
+    // works, its address just will not outlive the process.
+    if let Err(error) = write_private(&path, &identity.to_pem()) {
+        eprintln!(
+            "warning: could not save the WebRTC certificate ({error}); this listener's address will not survive a restart"
+        );
+    }
+    Ok(identity)
+}
+
+/// Write key material readable only by its owner.
+fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, contents)
+}
+
 /// Publish an address and wait to be dialed.
 ///
 /// The opposite direction from [`connect`], and the point of it is what
@@ -117,7 +172,7 @@ pub struct ListenOptions {
 pub async fn listen(options: ListenOptions) -> Result<()> {
     let page = answering_page(options.via.as_deref())?;
 
-    let listener = tonk_rtc::dial::listen()
+    let listener = tonk_rtc::dial::listen(rtc_identity()?)
         .await
         .context("could not start the WebRTC listener")?;
     let address = listener.address();
@@ -148,6 +203,10 @@ pub async fn listen(options: ListenOptions) -> Result<()> {
         .await
         .ok_or_else(|| anyhow::anyhow!("the listener stopped before anyone dialed"))?;
 
+    // The listener keeps serving dials — the address is reusable, and
+    // several tabs may hold channels at once. This relays the first one
+    // because the proof of concept has a single terminal to relay to;
+    // carrying more than one is the dispatcher's job, not this one's.
     println!("connected. type a line to send it to the browser; ctrl-d to hang up.\n");
     relay(session).await
 }

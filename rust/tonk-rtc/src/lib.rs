@@ -43,7 +43,11 @@ pub mod signal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dial;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod identity;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod loopback;
+#[cfg(not(target_arch = "wasm32"))]
+mod mux;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 
@@ -51,6 +55,8 @@ pub use signal::{Description, Role};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use dial::{Address, Candidate, Listener};
+#[cfg(not(target_arch = "wasm32"))]
+pub use identity::Identity;
 #[cfg(not(target_arch = "wasm32"))]
 pub use loopback::{Loopback, SignalError};
 #[cfg(not(target_arch = "wasm32"))]

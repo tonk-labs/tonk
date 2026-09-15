@@ -67,6 +67,9 @@ pub enum PeerError {
     /// minted. Not recoverable by retrying here.
     #[error("could not read entropy for the dial credential: {0}")]
     Entropy(String),
+    /// The listener's certificate could not be minted or restored.
+    #[error("could not establish this listener's identity: {0}")]
+    Identity(String),
 }
 
 /// Forward every text message the channel receives onto a queue.

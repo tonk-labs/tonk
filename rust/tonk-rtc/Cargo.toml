@@ -15,6 +15,7 @@ getrandom = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 # The native peer and the loopback signalling listener are native-only:
 # `webrtc` pulls a UDP/ICE stack that does not build for wasm32, and the
@@ -30,7 +31,14 @@ tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time"] }
 # first STUN packet — the mechanism direct dialling needs, and the one
 # `libp2p-webrtc` is built on. 0.17 also re-exports `webrtc::ice`, so the
 # ICE types are nameable without a version-locked second dependency.
-webrtc = "0.17"
+# `pem` for certificate persistence: the published fingerprint has to
+# survive a restart, and with a mux it has to be FIXED across every
+# per-dial peer connection too — each one would otherwise mint its own.
+webrtc = { version = "0.17", features = ["pem"] }
+# Version-locked to webrtc's own `rcgen` (0.13). `RTCCertificate::from_key_pair`
+# takes a type from THEIR rcgen and the crate does not re-export it, so a
+# mismatch here is a compile error rather than a subtle failure.
+rcgen = "0.13"
 
 # The test process drives the loopback listener over a raw socket, which
 # needs `io-util`. Target-gated for the same reason the runtime deps
