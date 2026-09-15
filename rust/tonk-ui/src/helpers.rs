@@ -224,6 +224,21 @@ mod native {
                     "goog:loggingPrefs".to_string(),
                     serde_json::json!({ "browser": "ALL" }),
                 );
+                // Chrome's own account of every WebAuthn request, in a file
+                // under this harness's profile root (its stderr does not
+                // reach the test). The FIDO event log is what showed the
+                // allow-list id arriving corrupted at the virtual
+                // authenticator; the console never says more than
+                // "not allowed".
+                caps.add_arg("--enable-logging")?;
+                caps.add_arg(&format!(
+                    "--log-file={}",
+                    self.browser_profile_root.join("chrome.log").display()
+                ))?;
+                caps.add_arg("--v=0")?;
+                caps.add_arg(
+                    "--vmodule=device_event_log_impl=3,*webauth*=3,*fido*=3,*authenticator*=3",
+                )?;
             }
 
             Ok(caps)
@@ -473,6 +488,35 @@ mod native {
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
         workspace: Option<TestWorkspace>,
+        /// Where every browser this harness launched keeps its profile;
+        /// see [`reap_browsers`].
+        browser_profile_root: std::path::PathBuf,
+    }
+
+    /// Ends every browser launched under `profile_root`.
+    ///
+    /// Chromedriver only closes a browser when its session is quit. A test
+    /// that fails before `driver.quit()` never quits it, and killing
+    /// chromedriver afterwards does not take the browser with it, so each
+    /// failure left a whole Chrome idling with a live service worker (a
+    /// dozen of them after one bad night). Every browser the harness starts
+    /// carries its profile directory, a child of `profile_root`, on its
+    /// command line, so that path selects exactly this harness's browsers
+    /// and nothing else on the machine. `pkill` sends SIGTERM, which Chrome
+    /// treats as an orderly shutdown; the workspace removal that follows
+    /// already waits for its profile writes to settle.
+    fn reap_browsers(profile_root: &std::path::Path) {
+        if cfg!(not(unix)) {
+            return;
+        }
+        let Some(root) = profile_root.to_str() else {
+            return;
+        };
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", root])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     impl TestServers {
@@ -582,6 +626,13 @@ mod native {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let line = line?;
+                // The server names the build it serves. Recorded so a run's
+                // log says what was under test: the artifact is pinned into
+                // the server when the server is built, and a stale one serves
+                // a stale app without any other symptom.
+                if let Some(artifact) = line.strip_prefix("Test server artifact ") {
+                    record_diagnostic(format!("artifact={artifact}"));
+                }
                 if line.contains("Test server live at") {
                     break;
                 }
@@ -730,6 +781,7 @@ mod native {
                     chromedriver,
                     access_service: Some(access_service),
                     workspace: Some(workspace),
+                    browser_profile_root: browser_profile_root.clone(),
                 },
                 TestEnvironment {
                     tonk_web: Url::parse(&format!("https://{web_host}:{web_port}"))?,
@@ -751,6 +803,7 @@ mod native {
             } else {
                 Ok(())
             };
+            reap_browsers(&self.browser_profile_root);
             let access_result = if let Some(access_service) = self.access_service.take() {
                 access_service.stop().await
             } else {
@@ -788,6 +841,7 @@ mod native {
             if let Some(chromedriver) = self.chromedriver.as_mut() {
                 let _ = chromedriver.terminate();
             }
+            reap_browsers(&self.browser_profile_root);
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
@@ -907,6 +961,37 @@ mod native {
 
             workspace.close()?;
             assert!(!root.exists());
+            Ok(())
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn it_reaps_browsers_that_outlive_their_driver() -> anyhow::Result<()> {
+            let workspace = TestWorkspace::new()?;
+            let profile_root = workspace.directory("browser-profiles")?;
+            let marker = profile_root.join("chrome-profile-test").join("marker");
+            std::fs::create_dir_all(marker.parent().expect("marker has a parent"))?;
+            std::fs::write(&marker, b"")?;
+            // A stand-in for the browser: it carries its profile path on
+            // its command line and never exits on its own.
+            let mut stand_in = std::process::Command::new("tail")
+                .arg("-f")
+                .arg(&marker)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+
+            super::reap_browsers(&profile_root);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while stand_in.try_wait()?.is_none() {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "the stand-in browser survived reaping"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            workspace.close()?;
             Ok(())
         }
     }

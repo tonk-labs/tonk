@@ -653,6 +653,21 @@
                   TONK_UI_ROOT="$ARTIFACT_ROOT"
               fi
 
+              # Name the build under test. The artifact is pinned into this
+              # script when it is built, so a stale server silently serves a
+              # stale app; the harness records this line so a log always says
+              # which build produced it.
+              BUILD_ID=unknown
+              while IFS= read -r line; do
+                  case "$line" in
+                      'const BUILD_ID = "'*)
+                          BUILD_ID=''${line#const BUILD_ID = \"}
+                          BUILD_ID=''${BUILD_ID%\";}
+                          break
+                          ;;
+                  esac
+              done < "$ARTIFACT_ROOT/service_worker.js"
+              echo "Test server artifact $ARTIFACT_ROOT build $BUILD_ID"
               echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then
