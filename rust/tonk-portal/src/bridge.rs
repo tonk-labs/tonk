@@ -21,6 +21,7 @@
 //!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
+//!   analytics(event)  -> void,
 //!   ready: Promise<void>,
 //! }
 //! ```
@@ -274,6 +275,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     open:function(href){
       ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
     },
+    // Carry a typed, pre-validated product event toward the top page. Every
+    // parent relays the same string and the final sink validates it again.
+    analytics:function(event){
+      ready.then(function(){port.postMessage({v:1,type:"analytics",event:event});});
+    },
     // Raise the registration dialog on the HOST page. Sharing needs an
     // account, and only the top page can run the ceremony: WebAuthn wants
     // a `window` and a user gesture, which the guest's opaque realm and
@@ -487,6 +493,54 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     }
   };
   window.tonk=tonk;
+
+  // The product-owned agent prompt lives in rendered guest markup, outside
+  // the Rust component tree. Observe only its reviewed copy control and send
+  // a content-free lifecycle; never read or forward the copied value.
+  var agentCopies=new WeakMap();
+  function eventNode(event,selector){
+    var nodes=event.composedPath?event.composedPath():[event.target];
+    for(var i=0;i<nodes.length;i++){
+      var node=nodes[i];
+      if(node&&node.matches&&node.matches(selector)) return node;
+    }
+    return null;
+  }
+  function productAttemptId(){
+    try{
+      var bytes=new Uint8Array(16); crypto.getRandomValues(bytes);
+      return Array.from(bytes,function(value){return value.toString(16).padStart(2,"0");}).join("");
+    }catch(e){return null;}
+  }
+  function promptEvent(attempt,phase,result,failure){
+    var props={schema_version:1,journey:"handoff",action:"copy_agent_prompt",
+      phase:phase,stage:phase==="started"?"intent":"clipboard",
+      surface:"workspace",trigger:"user",attempt_id:attempt.id};
+    if(phase==="finished"){
+      props.duration_ms=Math.min(600000,Math.max(0,Math.floor(performance.now()-attempt.started)));
+      props.result=result;
+      if(failure) props.failure_kind=failure;
+    }
+    tonk.analytics(JSON.stringify({name:"product_event",props:props}));
+  }
+  document.addEventListener("click",function(event){
+    var target=eventNode(event,".agent-prompt__copy");
+    if(!target||target.disabled||target.isCopying||agentCopies.has(target)) return;
+    var id=productAttemptId(); if(!id) return;
+    var attempt={id:id,started:performance.now()};
+    agentCopies.set(target,attempt); promptEvent(attempt,"started");
+  },true);
+  document.addEventListener("wa-copy",function(event){
+    var target=eventNode(event,".agent-prompt__copy");
+    var attempt=target&&agentCopies.get(target); if(!attempt) return;
+    agentCopies.delete(target); promptEvent(attempt,"finished","success");
+  });
+  document.addEventListener("wa-error",function(event){
+    var target=eventNode(event,".agent-prompt__copy");
+    var attempt=target&&agentCopies.get(target); if(!attempt) return;
+    agentCopies.delete(target);
+    promptEvent(attempt,"finished","retryable_failure","unknown");
+  });
 
   // Override window.fetch so guest code (and our own loaders) can fetch
   // same-origin, SW-routed resources the opaque iframe can't reach itself.
@@ -1642,6 +1696,12 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
     set_v1(&ready, "ready");
     let _ = Reflect::set(&ready, &"context".into(), &build_context(host, state));
     let _ = port.post_message(&ready);
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_composed(true);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("tonk:guest-ready", &init) {
+        let _ = host.dispatch_event(&event);
+    }
 }
 
 /// Update URL context before a reused guest receives the next route frame.
@@ -1677,6 +1737,7 @@ fn make_dispatcher(
             "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
+            "analytics" => handle_analytics(&data),
             "register" => handle_register(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
@@ -1924,6 +1985,14 @@ fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
         return;
     };
     tonk_host::navigate_to(&real_href(state, &href));
+}
+
+/// Forward a closed analytics envelope toward the top page.
+fn handle_analytics(data: &JsValue) {
+    let Some(event) = get_str(data, "event").filter(|event| !event.is_empty()) else {
+        return;
+    };
+    tonk_host::analytics::relay(&event);
 }
 
 /// Translate a guest-world href into the REAL route the host navigates to.

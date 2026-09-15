@@ -91,6 +91,10 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement, window};
 
+use tonk_analytics::product::{
+    FailureKind, Journey, ProductAction, ProductEvent, ProductResult, Stage, Surface, Trigger,
+};
+
 use crate::logic::{
     COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json,
     forget_invite_claim_json, invite_claim_json, invite_state_query_body,
@@ -124,6 +128,62 @@ struct PendingCopy {
     /// the new link is always a *different* string: we wait for one that
     /// differs from this.
     stale: Option<String>,
+}
+
+struct ShareAttempt {
+    id: String,
+    started_ms: f64,
+}
+
+impl ShareAttempt {
+    fn start() -> Self {
+        let started_ms = js_sys::Date::now();
+        let id = tonk_analytics::product::attempt_id();
+        capture_product(&ProductEvent::started(
+            Journey::Collaboration,
+            ProductAction::CopyShareLink,
+            Stage::Intent,
+            Surface::Workspace,
+            Trigger::User,
+            id.clone(),
+        ));
+        Self { id, started_ms }
+    }
+
+    fn checkpoint(&self, stage: Stage) {
+        capture_product(&ProductEvent::checkpoint(
+            Journey::Collaboration,
+            ProductAction::CopyShareLink,
+            stage,
+            Surface::Workspace,
+            Trigger::User,
+            self.id.clone(),
+        ));
+    }
+
+    fn finish(self, stage: Stage, result: ProductResult, failure: Option<FailureKind>) {
+        capture_product(&ProductEvent::finished(
+            Journey::Collaboration,
+            ProductAction::CopyShareLink,
+            stage,
+            Surface::Workspace,
+            Trigger::User,
+            self.id,
+            (js_sys::Date::now() - self.started_ms).max(0.0) as u64,
+            result,
+            failure,
+        ));
+    }
+}
+
+fn capture_product(event: &ProductEvent) {
+    let Ok(properties) = event.validated_properties() else {
+        return;
+    };
+    tonk_host::analytics::capture(
+        tonk_analytics::event::PRODUCT,
+        &serde_json::Value::Object(properties),
+    );
 }
 
 /// A clipboard write opened while user activation is still live and settled
@@ -275,6 +335,8 @@ struct ShareStateCell {
     /// not a clipboard write ever opened), so it has to move in lockstep with
     /// the copy it names rather than drift in a cell of its own.
     pending_time: Option<f64>,
+    /// Product attempt spanning mint through confirmed clipboard write.
+    attempt: Option<ShareAttempt>,
 }
 
 /// An installed listener, paired with the `Closure` owning its JS-side memory.
@@ -432,7 +494,6 @@ struct InviteRow {
 }
 
 /// Read `conclusion.fields.{blocked,detail,time}` off a raw subscription row.
-/// Read `conclusion.fields.{blocked,detail,time}` off a raw subscription row.
 /// `None` for a missing row or any missing field — all three are asserted
 /// together, so a partial row is not a refusal.
 fn read_blocked_row(row: &JsValue) -> Option<Blocked> {
@@ -507,7 +568,11 @@ impl CustomElement for TonkShare {
             // is told from one the overlay is replaying (see
             // `handle_blocked`).
             let time = js_sys::Date::now();
-            state.borrow_mut().pending_time = Some(time);
+            {
+                let mut cell = state.borrow_mut();
+                cell.pending_time = Some(time);
+                cell.attempt = Some(ShareAttempt::start());
+            }
             // Whatever link the last subscription frame delivered is the
             // PREVIOUS mint's. Note it so a frame still carrying it isn't
             // mistaken for our result.
@@ -521,6 +586,13 @@ impl CustomElement for TonkShare {
                 // outright.
                 Err(e) => {
                     warn(&format!("share: clipboard unavailable: {e:?}"));
+                    if let Some(attempt) = state.borrow_mut().attempt.take() {
+                        attempt.finish(
+                            Stage::Clipboard,
+                            ProductResult::RetryableFailure,
+                            Some(FailureKind::Unsupported),
+                        );
+                    }
                     set_state(&host, ShareState::Copying);
                 }
             }
@@ -696,11 +768,22 @@ impl TonkShare {
             });
 
             let time = js_sys::Date::now();
-            state.borrow_mut().pending_time = Some(time);
+            {
+                let mut cell = state.borrow_mut();
+                cell.pending_time = Some(time);
+                cell.attempt = Some(ShareAttempt::start());
+            }
             if wants_share {
                 let stale = current_link.borrow().clone();
                 if let Err(e) = open_clipboard_write(Rc::clone(&state), stale) {
                     warn(&format!("share: clipboard unavailable: {e:?}"));
+                    if let Some(attempt) = state.borrow_mut().attempt.take() {
+                        attempt.finish(
+                            Stage::Clipboard,
+                            ProductResult::RetryableFailure,
+                            Some(FailureKind::Unsupported),
+                        );
+                    }
                 }
                 set_state(&host, ShareState::Copying);
                 arm_timeout(&host, &state);
@@ -907,6 +990,9 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
     }
     match result {
         Ok(link) => {
+            if let Some(attempt) = state.borrow().attempt.as_ref() {
+                attempt.checkpoint(Stage::RemoteCommit);
+            }
             arm_timeout(host, state);
             let completion = pending.clipboard.completion.clone();
             pending.clipboard.resolve(&link);
@@ -924,6 +1010,17 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
                     clear_timeout(id);
                 }
                 let copied = result.is_ok();
+                if let Some(attempt) = state.borrow_mut().attempt.take() {
+                    attempt.finish(
+                        Stage::Clipboard,
+                        if copied {
+                            ProductResult::Success
+                        } else {
+                            ProductResult::RetryableFailure
+                        },
+                        (!copied).then_some(FailureKind::LocalState),
+                    );
+                }
                 set_state(
                     &host,
                     if copied {
@@ -945,6 +1042,17 @@ fn settle(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, result: Resul
             });
         }
         Err(reason) => {
+            if let Some(attempt) = state.borrow_mut().attempt.take() {
+                attempt.finish(
+                    Stage::Clipboard,
+                    ProductResult::RetryableFailure,
+                    Some(if reason.contains("timed out") {
+                        FailureKind::Timeout
+                    } else {
+                        FailureKind::Unknown
+                    }),
+                );
+            }
             pending.clipboard.reject(reason);
             set_state(host, ShareState::Failed);
             arm_revert(host, state);
@@ -1092,6 +1200,19 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         return;
     }
     state.borrow_mut().pending_time = None;
+
+    if let Some(attempt) = state.borrow_mut().attempt.take() {
+        attempt.finish(
+            Stage::Worker,
+            ProductResult::Blocked,
+            Some(match blocked.code.as_str() {
+                tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                | tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION => FailureKind::AccessDenied,
+                tonk_worker_api::share::BLOCKED_NOT_SYNCED => FailureKind::LocalState,
+                _ => FailureKind::Unknown,
+            }),
+        );
+    }
 
     let Some(repair) = Repair::for_code(&blocked.code) else {
         // Nothing the prompt could fix — including an attach that failed after

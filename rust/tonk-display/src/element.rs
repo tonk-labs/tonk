@@ -2611,7 +2611,19 @@ fn mount_view_slide(
             let _ = view_el.set_attribute("data-scalar-fields", &csv);
         }
     }
-    view_el.set_inner_html(display);
+    // Parse the view's markup into an inert `<template>` rather than
+    // into the view's live children. `<tonk-view>` snapshots its row
+    // template on connect, and markup without a `<template>` is moved
+    // into a fragment to become one: had it been parsed as live
+    // children, every custom element in it would have connected once
+    // as that template instance (a `<tonk-site>` booting a guest it
+    // then tears down, a `<tonk-fab>` subscribing from inside the
+    // fragment for its whole retry window) before being exiled for
+    // its clones to take over. A template's content is inert: nothing
+    // in it upgrades or connects until a clone lands in the document.
+    let template = document.create_element("template").ok()?;
+    template.set_inner_html(display);
+    let _ = view_el.append_child(&template);
     forward_with(host, &view_el);
     // Record whose template is being rendered here, so a display mounted
     // inside this view can tell whether it would be re-entering its own
@@ -3734,6 +3746,68 @@ mod tests {
         assert_eq!(
             host.get_attribute("data-state").as_deref(),
             Some("unauthorized")
+        );
+    }
+
+    /// A view's markup is parsed inertly: no custom element in it
+    /// connects as the template instance.
+    ///
+    /// `<tonk-view>` snapshots its row template on connect, and markup
+    /// without a `<template>` was parsed as the view's live children and
+    /// then MOVED into a fragment to become one. Every custom element in
+    /// the space chrome therefore connected once inside the document (or
+    /// inside the fragment, its `connectedCallback` already queued) before
+    /// being exiled: a `<tonk-site>` booted a guest it then tore down, a
+    /// `<tonk-fab>` subscribed from inside the fragment for its whole
+    /// retry window and logged `no host claimed the event
+    /// (connected=false root=#document-fragment)` when it gave up. Only
+    /// the clones the renderer stamps per frame are meant to connect.
+    #[dialog_common::test]
+    fn it_connects_no_custom_element_as_the_template_instance() {
+        let document = web_sys::window().expect("window").document().expect("doc");
+        crate::view::register();
+        // A probe element counting its connects and where it stood.
+        js_sys::eval(
+            r#"
+            if (!customElements.get("probe-connects")) {
+                window.__probeConnects = [];
+                customElements.define("probe-connects", class extends HTMLElement {
+                    connectedCallback() {
+                        window.__probeConnects.push(
+                            this.isConnected + ":" + this.getRootNode().nodeName.toLowerCase()
+                        );
+                    }
+                });
+            }
+            window.__probeConnects = [];
+            "#,
+        )
+        .expect("probe element");
+
+        let host = document.create_element("div").expect("host");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        let mut inner = Inner::new();
+        mount_view_slide(
+            &host,
+            &mut inner,
+            "<probe-connects></probe-connects>",
+            "tonk:test",
+            "ui",
+        )
+        .expect("slide mounts");
+
+        let connects = js_sys::eval("window.__probeConnects.join(\" \")")
+            .expect("read")
+            .as_string()
+            .unwrap_or_default();
+        host.remove();
+        assert_eq!(
+            connects, "",
+            "the template instance must never connect; it did, as: {connects}"
         );
     }
 

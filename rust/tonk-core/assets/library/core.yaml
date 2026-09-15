@@ -1731,29 +1731,6 @@ concept!: &seed/installed
         knowable before the batch is written — which is what lets this
         record ride the same commit as the claims it describes.
 
-        This is the whole upgrade mechanism: nothing tags individual
-        definitions, so an upgrade reads THIS commit's history, inverts
-        its assertions into retractions, and applies them alongside the
-        new library in one atomic commit.
-      the: xyz.tonk.seed/version
-      cardinality: one
-      as: text
-    prior:
-      description: >
-        The seed this one replaced, or `seed:none` on a first install —
-        present on every seed rather than absent on the first, so the
-        chain reads uniformly.
-      the: xyz.tonk.seed/prior
-      cardinality: one
-      as: entity
-    version:
-      description: >
-        The version of the commit that installed this seed. A version,
-        not a revision: a revision includes the tree its commit produces,
-        so a fact inside a commit can never name it, while a version is
-        knowable before the batch is written — which is what lets this
-        record ride the same commit as the claims it describes.
-
         It is also the record of WHAT the seed installed, since a
         commit's history lists every claim it wrote.
       the: xyz.tonk.seed/version

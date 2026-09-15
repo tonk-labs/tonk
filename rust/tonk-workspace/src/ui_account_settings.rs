@@ -26,6 +26,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, window};
 
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
+
 type EventClosure = Closure<dyn FnMut(Event)>;
 type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
@@ -38,6 +40,9 @@ const ACCOUNT_TAG: &str = "ui-account-settings:account";
 /// The passkey rows, likewise.
 const PASSKEY_TAG: &str = "ui-account-settings:passkeys";
 const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
+const ANALYTICS_ATTEMPT: &str = "data-analytics-ceremony-attempt";
+const ANALYTICS_STARTED: &str = "data-analytics-ceremony-started";
+const ANALYTICS_CEREMONY: &str = "data-analytics-ceremony-kind";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -133,9 +138,20 @@ impl CustomElement for UiAccountSettings {
                 return;
             }
             spawn_local(async move {
+                let mut attempt = crate::analytics::Attempt::start(
+                    Journey::Account,
+                    ProductAction::SaveDisplayName,
+                    Surface::Settings,
+                    Trigger::User,
+                    Stage::Intent,
+                );
                 let body = serde_json::json!({ "name": name }).to_string();
-                if let Err(error) = tonk_host::post_json("/api/account/display-name", &body).await {
-                    tonk_common::log!("settings: display-name save failed: {error:?}");
+                match tonk_host::post_json("/api/account/display-name", &body).await {
+                    Ok(_) => attempt.finish(Stage::RemoteCommit, ProductResult::Success, None),
+                    Err(error) => {
+                        attempt.finish_error(Stage::RemoteCommit, &error);
+                        tonk_common::log!("settings: display-name save failed: {error:?}");
+                    }
                 }
             });
         }));
@@ -643,10 +659,30 @@ fn open_delete_dialog(this: &HtmlElement) {
     }
     let host = this.clone();
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::LoadDeletionPlan,
+            Surface::Settings,
+            Trigger::User,
+            Stage::Intent,
+        );
         let plan: Option<tonk_worker_api::AccountDeletionPlan> =
             match tonk_host::get_json("/api/account/deletion/plan").await {
-                Ok(body) => serde_json::from_str(&body).ok(),
-                Err(_) => None,
+                Ok(body) => match serde_json::from_str(&body) {
+                    Ok(plan) => Some(plan),
+                    Err(_) => {
+                        attempt.finish(
+                            Stage::Worker,
+                            ProductResult::TerminalFailure,
+                            Some(tonk_analytics::product::FailureKind::InvalidResponse),
+                        );
+                        None
+                    }
+                },
+                Err(error) => {
+                    attempt.finish_error(Stage::Worker, &error);
+                    None
+                }
             };
         let Some(plan) = plan else {
             set_text(
@@ -656,6 +692,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             );
             return;
         };
+        attempt.finish(Stage::Ready, ProductResult::Success, None);
         let spaces: Vec<_> = plan
             .spaces
             .iter()
@@ -744,16 +781,29 @@ fn submit_delete(this: &HtmlElement) {
         show_status(this, "Deleting the selected space\u{2026}");
         let host = this.clone();
         spawn_local(async move {
+            let mut attempt = crate::analytics::Attempt::start(
+                Journey::Account,
+                ProductAction::DeleteHostedSpace,
+                Surface::Settings,
+                Trigger::User,
+                Stage::Intent,
+            );
             let body = serde_json::json!({ "subject": subject }).to_string();
             match tonk_host::post_json("/api/account/spaces/delete", &body).await {
-                Ok(_) => show_status(
-                    &host,
-                    "Owned space deleted from Tonk services. Your account and other spaces remain.",
-                ),
-                Err(error) => show_status(
-                    &host,
-                    &format!("The space was not deleted: {}", error.message),
-                ),
+                Ok(_) => {
+                    attempt.finish(Stage::RemoteCommit, ProductResult::Success, None);
+                    show_status(
+                        &host,
+                        "Owned space deleted from Tonk services. Your account and other spaces remain.",
+                    );
+                }
+                Err(error) => {
+                    attempt.finish_error(Stage::RemoteCommit, &error);
+                    show_status(
+                        &host,
+                        &format!("The space was not deleted: {}", error.message),
+                    );
+                }
             }
         });
         return;
@@ -763,6 +813,7 @@ fn submit_delete(this: &HtmlElement) {
         return;
     };
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::DELETE_ACCOUNT, ProductAction::DeleteAccount);
     transact(
         this,
         &claim(
@@ -781,14 +832,27 @@ fn sign_out(this: &HtmlElement) {
     show_status(this, "Signing out\u{2026}");
     let host = this.clone();
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::SignOut,
+            Surface::Settings,
+            Trigger::User,
+            Stage::Intent,
+        );
         match tonk_host::delete_json("/api/account").await {
             // The worker's whole state changed hands; rebuilding the
             // page is what drops the subscriptions the old account owned.
-            Ok(_) => tonk_host::reload_page(),
-            Err(error) => show_status(
-                &host,
-                &format!("This device could not be signed out: {}", error.message),
-            ),
+            Ok(_) => {
+                attempt.finish(Stage::LocalCommit, ProductResult::Success, None);
+                tonk_host::reload_page();
+            }
+            Err(error) => {
+                attempt.finish_error(Stage::LocalCommit, &error);
+                show_status(
+                    &host,
+                    &format!("This device could not be signed out: {}", error.message),
+                );
+            }
         }
     });
 }
@@ -797,6 +861,7 @@ fn sign_out(this: &HtmlElement) {
 /// that holds the account, then for the new one.
 fn add_passkey(this: &HtmlElement) {
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::ADD_PASSKEY, ProductAction::AddPasskey);
     transact(
         this,
         &claim(
@@ -835,6 +900,7 @@ fn approve_link(this: &HtmlElement) {
     };
     let _ = this.set_attribute("data-passkey-requested", "");
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::AUTHORIZE_DEVICE, ProductAction::LinkDevice);
     let mut fields = serde_json::json!({
         "audience": request.audience,
         "callback": bs58::encode(request.callback.as_bytes()).into_string(),
@@ -865,6 +931,15 @@ fn decline_link(this: &HtmlElement) {
         return;
     };
     let redirect = format!("{}/settings", page_location().origin);
+    crate::analytics::instant(
+        Journey::Handoff,
+        ProductAction::LinkDevice,
+        Surface::Settings,
+        Trigger::User,
+        Stage::Complete,
+        ProductResult::Cancelled,
+        Some(tonk_analytics::product::FailureKind::Cancelled),
+    );
     match tonk_worker_api::callback::delivery_url(
         &request.callback,
         &[("deny", "declined in the browser"), ("redirect", &redirect)],
@@ -943,6 +1018,14 @@ fn transact(this: &HtmlElement, request: &serde_json::Value) {
                 .unwrap_or_else(|| format!("{error:?}"));
             tonk_common::log!("ui-account-settings: transact refused: {reason}");
             show_status(&host, &format!("The worker refused the request: {reason}"));
+            if let Some(which) = host.get_attribute(ANALYTICS_CEREMONY) {
+                finish_ceremony_attempt(
+                    &host,
+                    &which,
+                    ProductResult::TerminalFailure,
+                    Some(tonk_analytics::product::FailureKind::LocalState),
+                );
+            }
         }
     });
 }
@@ -1262,9 +1345,81 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
     let _ = this.set_attribute("data-ceremony", &which);
     let _ = this.set_attribute("data-ceremony-state", &state);
     show_status(this, &text);
+    match state.as_str() {
+        ceremony_state::DONE => finish_ceremony_attempt(this, &which, ProductResult::Success, None),
+        ceremony_state::REFUSED => finish_ceremony_attempt(
+            this,
+            &which,
+            ProductResult::Blocked,
+            Some(tonk_analytics::product::FailureKind::Unknown),
+        ),
+        ceremony_state::FAILED => finish_ceremony_attempt(
+            this,
+            &which,
+            ProductResult::RetryableFailure,
+            Some(tonk_analytics::product::FailureKind::Unknown),
+        ),
+        _ => {}
+    }
     // No refresh on ADD_PASSKEY: the passkey rows subscribe to
     // `RecoveryPasskey`, so a new one lands on its own commit rather
     // than on a re-read this ceremony has to remember to trigger.
+}
+
+fn start_ceremony_attempt(this: &HtmlElement, which: &str, action: ProductAction) {
+    let attempt = crate::analytics::Attempt::start(
+        if which == ceremony::AUTHORIZE_DEVICE {
+            Journey::Handoff
+        } else {
+            Journey::Account
+        },
+        action,
+        Surface::Settings,
+        Trigger::User,
+        Stage::Intent,
+    );
+    let (id, started_ms) = attempt.token();
+    let _ = this.set_attribute(ANALYTICS_ATTEMPT, id);
+    let _ = this.set_attribute(ANALYTICS_STARTED, &started_ms.to_string());
+    let _ = this.set_attribute(ANALYTICS_CEREMONY, which);
+}
+
+fn finish_ceremony_attempt(
+    this: &HtmlElement,
+    which: &str,
+    result: ProductResult,
+    failure: Option<tonk_analytics::product::FailureKind>,
+) {
+    if this.get_attribute(ANALYTICS_CEREMONY).as_deref() != Some(which) {
+        return;
+    }
+    let Some(id) = this.get_attribute(ANALYTICS_ATTEMPT) else {
+        return;
+    };
+    let started_ms = this
+        .get_attribute(ANALYTICS_STARTED)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(js_sys::Date::now);
+    let (journey, action) = match which {
+        ceremony::DELETE_ACCOUNT => (Journey::Account, ProductAction::DeleteAccount),
+        ceremony::ADD_PASSKEY => (Journey::Account, ProductAction::AddPasskey),
+        ceremony::AUTHORIZE_DEVICE => (Journey::Handoff, ProductAction::LinkDevice),
+        _ => return,
+    };
+    crate::analytics::finish_existing(
+        journey,
+        action,
+        Surface::Settings,
+        Trigger::User,
+        id,
+        started_ms,
+        Stage::RemoteCommit,
+        result,
+        failure,
+    );
+    for attribute in [ANALYTICS_ATTEMPT, ANALYTICS_STARTED, ANALYTICS_CEREMONY] {
+        let _ = this.remove_attribute(attribute);
+    }
 }
 
 /// Seed the display-name editable with what the roster resolved, so the

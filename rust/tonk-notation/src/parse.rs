@@ -102,6 +102,14 @@ struct TopLevelDoc<'input> {
     /// so we have to remember the events ourselves to surface them
     /// as diagnostics.
     alias_spans: Vec<Span>,
+    /// Field names declared twice under one `with:`, with their spans.
+    /// saphyr's loader keeps the last value and drops the rest without
+    /// a word; a definition that declares a field twice (a merge that
+    /// kept both sides, say) would otherwise ship whichever copy came
+    /// last. Only field declarations are checked: a repeated key in an
+    /// assertion body writes several values of a cardinality-many field,
+    /// and root-level repeats are the notation's own multi-block form.
+    duplicate_keys: Vec<(Span, String)>,
 }
 
 fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
@@ -109,6 +117,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
     let mut docs: Vec<TopLevelDoc<'_>> = Vec::new();
     let mut state = LoaderState::Idle;
     let mut current_aliases: Vec<Span> = Vec::new();
+    let mut current_duplicates: Vec<(Span, String)> = Vec::new();
     while let Some(event) = parser.next_event() {
         let (event, span) = event?;
         if matches!(event, Event::Alias(_)) {
@@ -135,6 +144,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                         pairs: None,
                         span: Span::new(*start, span.end),
                         alias_spans: std::mem::take(&mut current_aliases),
+                        duplicate_keys: std::mem::take(&mut current_duplicates),
                     });
                     state = LoaderState::Idle;
                 }
@@ -165,6 +175,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                         pairs: None,
                         span: Span::new(*start, document_end),
                         alias_spans: std::mem::take(&mut current_aliases),
+                        duplicate_keys: std::mem::take(&mut current_duplicates),
                     });
                     state = LoaderState::Idle;
                 }
@@ -181,6 +192,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                         pairs: Some(pairs),
                         span: Span::new(*start, document_end),
                         alias_spans: std::mem::take(&mut current_aliases),
+                        duplicate_keys: std::mem::take(&mut current_duplicates),
                     });
                     state = LoaderState::Idle;
                 }
@@ -202,7 +214,13 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     // silently mis-locates or drops the anchor.
                     let anchor = anchor_id_of(&event)
                         .and_then(|_| scan_anchor(text, key.span.end, span.start));
-                    let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
+                    let value = load_subtree(
+                        &mut parser,
+                        event,
+                        span,
+                        &mut current_aliases,
+                        &mut current_duplicates,
+                    )?;
                     pairs.push((key, value, anchor));
                 }
                 Event::Scalar(_, _, _, _) => {
@@ -213,7 +231,13 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                         span,
                         data: YamlData::Value(SaphyrScalar::Null),
                     };
-                    let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
+                    let value = load_subtree(
+                        &mut parser,
+                        event,
+                        span,
+                        &mut current_aliases,
+                        &mut current_duplicates,
+                    )?;
                     pairs.push((synthetic_key, value, None));
                 }
             },
@@ -276,12 +300,93 @@ fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYa
     }
 }
 
+/// The mappings open while a subtree loads, innermost last, so a key can
+/// be checked against the ones already seen in ITS mapping. A sequence
+/// frame carries no keys: its scalars are items, never keys.
+struct OpenMapping {
+    keys: Option<std::collections::HashMap<String, Span>>,
+    expecting_key: bool,
+    /// The key whose value is being loaded, so a child mapping knows
+    /// what it is the value of.
+    last_key: Option<String>,
+    /// Whether a repeated key in THIS mapping is reported. Only the
+    /// field declarations under a `with:` are: there a repeat can only
+    /// be a mistake. In an assertion body a repeated key is how a
+    /// cardinality-many field takes several values, and in a query a
+    /// repeat has always been last-wins.
+    checked: bool,
+}
+
+/// The key whose value mapping holds field declarations.
+const FIELDS_KEY: &str = "with";
+
+/// Feed one event to the duplicate-key check: a scalar arriving where a
+/// checked mapping expects a key is compared against that mapping's
+/// earlier keys, and a repeat is recorded with its span.
+fn note_key_event(
+    open: &mut Vec<OpenMapping>,
+    event: &Event<'_>,
+    span: Span,
+    duplicates: &mut Vec<(Span, String)>,
+) {
+    match event {
+        Event::MappingStart(_, _) | Event::SequenceStart(_, _) => {
+            let mut checked = false;
+            if let Some(parent) = open.last_mut()
+                && parent.keys.is_some()
+            {
+                // A nested node in key position is a complex key; it is
+                // not compared, and the node after it is the value.
+                let is_value = !parent.expecting_key;
+                checked = is_value && parent.last_key.as_deref() == Some(FIELDS_KEY);
+                parent.expecting_key = !parent.expecting_key;
+            }
+            open.push(OpenMapping {
+                keys: matches!(event, Event::MappingStart(_, _))
+                    .then(std::collections::HashMap::new),
+                expecting_key: true,
+                last_key: None,
+                checked,
+            });
+        }
+        Event::MappingEnd | Event::SequenceEnd => {
+            open.pop();
+        }
+        Event::Scalar(_, _, _, _) | Event::Alias(_) if open.last().is_some() => {
+            let frame = open.last_mut().expect("checked");
+            let Some(keys) = frame.keys.as_mut() else {
+                return;
+            };
+            if frame.expecting_key
+                && let Event::Scalar(text, _, _, _) = event
+            {
+                let key = text.to_string();
+                frame.last_key = Some(key.clone());
+                if frame.checked {
+                    match keys.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(seen) => {
+                            duplicates.push((span, seen.key().clone()));
+                        }
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            slot.insert(span);
+                        }
+                    }
+                }
+            }
+            frame.expecting_key = !frame.expecting_key;
+        }
+        _ => {}
+    }
+}
+
 fn load_subtree<'input>(
     parser: &mut Parser<'input, StrInput<'input>>,
     first_event: Event<'input>,
     first_span: Span,
     alias_spans: &mut Vec<Span>,
+    duplicates: &mut Vec<(Span, String)>,
 ) -> Result<MarkedYaml<'input>, ScanError> {
+    let mut open: Vec<OpenMapping> = Vec::new();
     // `early_parse(false)` keeps every scalar as
     // `YamlData::Representation(text, style, tag)` instead of
     // collapsing it to a typed `Value`. We need the original
@@ -302,6 +407,7 @@ fn load_subtree<'input>(
     if matches!(first_event, Event::Alias(_)) {
         alias_spans.push(first_span);
     }
+    note_key_event(&mut open, &first_event, first_span, duplicates);
     loader.on_event(first_event, first_span);
     while depth > 0 {
         match parser.next_event() {
@@ -310,6 +416,7 @@ fn load_subtree<'input>(
                 if matches!(ev, Event::Alias(_)) {
                     alias_spans.push(sp);
                 }
+                note_key_event(&mut open, &ev, sp, duplicates);
                 match &ev {
                     Event::SequenceStart(_, _) | Event::MappingStart(_, _) => depth += 1,
                     Event::SequenceEnd | Event::MappingEnd => depth -= 1,
@@ -360,6 +467,15 @@ fn walk_document(
         out.push(error(
             range_from_span(*span),
             r#"YAML aliases (`*name`) are not supported in this notation. Use a `&anchor` plus the bare symbol name (`person-name`) to reference an in-document entity, or a `did:key:…` / `id:…` URI."#,
+        ));
+    }
+    for (span, key) in &doc.duplicate_keys {
+        out.push(error(
+            range_from_span(*span),
+            format!(
+                "field `{key}` is declared twice; only one of the two declarations \
+                 would take effect, so remove the copy that is not meant"
+            ),
         ));
     }
     let Some(pairs) = &doc.pairs else {
@@ -1787,8 +1903,9 @@ person:
         assert_eq!(q2.fields.len(), 2);
     }
 
+    /// A query's repeated field key stays last-wins, as it always was.
     #[dialog_common::test]
-    fn it_collapses_duplicate_field_keys() {
+    fn it_collapses_duplicate_query_field_keys() {
         let syntax = parse_clean(
             r#"
 person:
@@ -1805,6 +1922,57 @@ person:
             &age.value,
             FieldValue::Literal(Scalar::UnsignedInteger(29))
         ));
+    }
+
+    /// A field declared twice under a definition's `with:` is an error,
+    /// not a silent last-wins.
+    ///
+    /// The loader keeps the last value and drops the rest without a
+    /// word, which is how a shipped library came to declare
+    /// `seed/installed`'s `prior` and `version` twice after a merge kept
+    /// both sides: it parsed, evaluated, and shipped whichever copy came
+    /// last. The check is scoped to field declarations: a repeated key
+    /// in an assertion body is how a cardinality-many field takes several
+    /// values, and root-level repeats are the multi-block form pinned
+    /// above.
+    #[dialog_common::test]
+    fn it_rejects_a_field_declared_twice() {
+        let parsed = parse(
+            r#"
+concept!:
+  this: tonk:probe
+  with:
+    prior:
+      the: xyz.probe/prior
+    version:
+      the: xyz.probe/version
+    prior:
+      the: xyz.probe/prior
+"#,
+        );
+        assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+        let diagnostic = &parsed.diagnostics[0];
+        assert!(
+            diagnostic
+                .message
+                .contains("field `prior` is declared twice")
+        );
+        assert_eq!(
+            diagnostic.range.start.line, 8,
+            "reported at the second copy"
+        );
+
+        // Inside a declaration, a repeat of a declaration's OWN keys is
+        // not what is checked; the walker reports those on its own terms.
+        // And an assertion body's repeated key is several values.
+        parse_clean(
+            r#"
+note!: &n2
+  body: "hello"
+  tag: "a"
+  tag: "b"
+"#,
+        );
     }
 
     #[dialog_common::test]

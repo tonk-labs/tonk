@@ -805,6 +805,32 @@ pub async fn evaluate_with_retractions(
 /// [`evaluate_profile_body`], with a second commit naming the first's
 /// version — the profile branch's counterpart to
 /// [`evaluate_body_recording`].
+/// [`evaluate_with_retractions`] for the profile branch: the seed upgrade
+/// path, where the claims the previous seed installed are withdrawn in the
+/// same staged commit that installs the new library and records it.
+pub async fn evaluate_profile_with_retractions(
+    tonk_state: &crate::worker::TonkState,
+    branch: &str,
+    body: String,
+    retract: Vec<crate::router::claim::RawClaim>,
+    record: SeedRecord<'_>,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
+    let query = EvaluateQuery { transact: true };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        bytes,
+        query,
+        retract,
+        Some(record),
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(r), _)| r)
+}
+
 pub async fn evaluate_profile_body_recording(
     tonk_state: &crate::worker::TonkState,
     branch: &str,

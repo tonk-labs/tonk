@@ -37,6 +37,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
@@ -157,6 +158,10 @@ const CREATING: &str = "data-creating";
 /// sheets. `project()` sets it so the consuming view can style the
 /// empty binder; it pairs with revealing the `[slot="empty"]` region.
 const EMPTY: &str = "data-empty";
+const ANALYTICS_ATTEMPT: &str = "data-analytics-sheet-attempt";
+const ANALYTICS_STARTED: &str = "data-analytics-sheet-started";
+const ANALYTICS_COUNT: &str = "data-analytics-sheet-count";
+const ANALYTICS_ACTION: &str = "data-analytics-sheet-action";
 
 /// Build/refresh the tab strip from the `<tonk-sheet>` children, then
 /// apply ordering + the active state. Idempotent.
@@ -169,6 +174,7 @@ fn project(this: &HtmlElement) {
     // Collect sheets in `order` order.
     let mut sheets = collect_sheets(this);
     sheets.sort_by(|a, b| a.order.cmp(&b.order));
+    finish_sheet_attempt_if_reconciled(this, sheets.len());
 
     // The sheet to *show*. Normally the one `active` names. If `active`
     // names no present sheet — a persisted stale pointer, or just the
@@ -521,6 +527,9 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
         if node.closest(&format!(".{ADD}")).ok().flatten().is_some()
             || node.closest("[data-create]").ok().flatten().is_some()
         {
+            if !host.has_attribute(CREATING) {
+                start_sheet_attempt(&host, ProductAction::CreateSheet);
+            }
             let _ = host.set_attribute(CREATING, "");
             project(&host);
             return;
@@ -576,7 +585,7 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
                 match next.as_deref() {
                     Some(neighbour) => {
                         let _ = host.set_attribute("active", neighbour);
-                        dispatch_activate(&host, neighbour);
+                        dispatch_activate(&host, neighbour, Trigger::Automatic);
                     }
                     None => {
                         let _ = host.remove_attribute("active");
@@ -589,6 +598,7 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
                 project(&host);
             }
 
+            start_sheet_attempt(&host, ProductAction::CloseSheet);
             dispatch_close(&host, &sheet);
             return;
         }
@@ -602,7 +612,7 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
         let _ = host.set_attribute("active", &sheet);
         project(&host);
         // Persist: the consuming view wires `activate` to a command.
-        dispatch_activate(&host, &sheet);
+        dispatch_activate(&host, &sheet, Trigger::User);
     }) as Box<dyn FnMut(Event)>);
 
     let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
@@ -696,7 +706,16 @@ fn dispatch_close(host: &HtmlElement, closed: &str) {
 }
 
 /// Dispatch `activate` with `detail = { sheet }`, bubbling + composed.
-fn dispatch_activate(host: &HtmlElement, sheet: &str) {
+fn dispatch_activate(host: &HtmlElement, sheet: &str, trigger: Trigger) {
+    crate::analytics::instant(
+        Journey::Workspace,
+        ProductAction::ActivateSheet,
+        Surface::Workspace,
+        trigger,
+        Stage::Ready,
+        ProductResult::Success,
+        None,
+    );
     let detail = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &detail,
@@ -729,8 +748,88 @@ fn commit_create(host: &HtmlElement) {
 
 /// Close the inline create form without creating anything.
 fn cancel_create(host: &HtmlElement) {
+    finish_sheet_attempt(
+        host,
+        ProductResult::Cancelled,
+        Some(tonk_analytics::product::FailureKind::Cancelled),
+    );
     let _ = host.remove_attribute(CREATING);
     project(host);
+}
+
+fn start_sheet_attempt(host: &HtmlElement, action: ProductAction) {
+    let attempt = crate::analytics::Attempt::start(
+        Journey::Workspace,
+        action,
+        Surface::Workspace,
+        Trigger::User,
+        Stage::Intent,
+    );
+    let (id, started_ms) = attempt.token();
+    let _ = host.set_attribute(ANALYTICS_ATTEMPT, id);
+    let _ = host.set_attribute(ANALYTICS_STARTED, &started_ms.to_string());
+    let _ = host.set_attribute(ANALYTICS_COUNT, &collect_sheets(host).len().to_string());
+    let action = match action {
+        ProductAction::CreateSheet => "create",
+        ProductAction::CloseSheet => "close",
+        _ => return,
+    };
+    let _ = host.set_attribute(ANALYTICS_ACTION, action);
+}
+
+fn finish_sheet_attempt_if_reconciled(host: &HtmlElement, current_count: usize) {
+    let Some(previous_count) = host
+        .get_attribute(ANALYTICS_COUNT)
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return;
+    };
+    let reconciled = match host.get_attribute(ANALYTICS_ACTION).as_deref() {
+        Some("create") => current_count > previous_count,
+        Some("close") => current_count < previous_count,
+        _ => false,
+    };
+    if reconciled {
+        finish_sheet_attempt(host, ProductResult::Success, None);
+    }
+}
+
+fn finish_sheet_attempt(
+    host: &HtmlElement,
+    result: ProductResult,
+    failure: Option<tonk_analytics::product::FailureKind>,
+) {
+    let Some(id) = host.get_attribute(ANALYTICS_ATTEMPT) else {
+        return;
+    };
+    let started_ms = host
+        .get_attribute(ANALYTICS_STARTED)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(js_sys::Date::now);
+    let action = match host.get_attribute(ANALYTICS_ACTION).as_deref() {
+        Some("create") => ProductAction::CreateSheet,
+        Some("close") => ProductAction::CloseSheet,
+        _ => return,
+    };
+    crate::analytics::finish_existing(
+        Journey::Workspace,
+        action,
+        Surface::Workspace,
+        Trigger::User,
+        id,
+        started_ms,
+        Stage::LocalCommit,
+        result,
+        failure,
+    );
+    for attribute in [
+        ANALYTICS_ATTEMPT,
+        ANALYTICS_STARTED,
+        ANALYTICS_COUNT,
+        ANALYTICS_ACTION,
+    ] {
+        let _ = host.remove_attribute(attribute);
+    }
 }
 
 /// The current value of the open create input, if any.
