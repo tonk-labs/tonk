@@ -194,6 +194,7 @@ fn render_shell(state: &Shared) {
     let _ = header.append_child(&el("span").class("keystr").text("node"));
     let _ = header.append_child(&el("span").class("col size").text("size"));
     let _ = header.append_child(&el("span").class("col count").text("count"));
+    let _ = header.append_child(&el("span").class("col novelty").text("novelty"));
     let _ = outline.append_child(&header);
     let tree = el("wa-tree").attr("selection", "single");
     let _ = outline.append_child(&tree);
@@ -313,6 +314,12 @@ fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&
     // Count column: the child/entry count as a bare number in its own cell.
     let _ = row.append_child(&el("span").class("col count").text(&node.count.to_string()));
 
+    // Novelty column: the buffered ops riding on this row, which the size
+    // and count columns say nothing about — a node can be small and hold a
+    // lot of pending work. Empty (the common case) when nothing is
+    // buffered either on the node or against it.
+    let _ = row.append_child(&novelty_col(node));
+
     if !node.cached {
         let _ = row.append_child(
             &el("wa-icon")
@@ -322,6 +329,39 @@ fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&
         );
     }
     row
+}
+
+/// The row's novelty cell: up to two chips, each shown only when it counts
+/// something.
+///
+/// The two numbers are different facts and get different chips:
+/// `⊕n` is what THIS node buffers for its own children (a segment never
+/// buffers, so it never shows one), and `↓n` is what the PARENT still
+/// buffers against this node's span — work headed here that has not been
+/// written down yet. The second is the only one an unfetched child can
+/// report, since it is the parent that knows it.
+fn novelty_col(node: &TreeNode) -> Element {
+    let cell = el("span").class("col novelty");
+    if let Some(n) = node.novelty.filter(|n| *n > 0) {
+        let _ = cell.append_child(
+            &el("span")
+                .class("nov nov-own")
+                .attr("title", &format!("{n} ops buffered on this node"))
+                .text(&format!("⊕{n}")),
+        );
+    }
+    if let Some(n) = node.pending.filter(|n| *n > 0) {
+        let _ = cell.append_child(
+            &el("span")
+                .class("nov nov-pending")
+                .attr(
+                    "title",
+                    &format!("{n} ops buffered against this subtree in its parent"),
+                )
+                .text(&format!("↓{n}")),
+        );
+    }
+    cell
 }
 
 thread_local! {
@@ -513,11 +553,17 @@ fn finish_loading(item: &Element) {
 /// its now-cached state: a filled dot, no cloud, real size/count.
 async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
     let loader = state.borrow().loader.clone();
-    let Ok(Some(node)) = loader.node(hash).await else {
+    let Ok(Some(mut node)) = loader.node(hash).await else {
         return;
     };
     {
         let mut s = state.borrow_mut();
+        // The re-read describes the BLOCK; the row's boundary, seam rank
+        // and buffered-op count are its parent's knowledge, which no block
+        // read can recover. Carry them over the refresh.
+        if let Some(previous) = s.nodes.get(&node.hash) {
+            node.carry_span_from(previous);
+        }
         s.nodes.insert(node.hash.clone(), node.clone());
     }
     // Swap the existing row for a fresh one (updated stats, no cloud).
@@ -823,6 +869,11 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
   display: inline-flex; align-items: center; justify-content: flex-end;
   gap: var(--wa-space-xs, 6px); }
 .col.count { width: 48px; }
+.col.novelty { width: 84px; overflow: hidden; display: inline-flex; gap: 4px; justify-content: flex-end; }
+.nov { font-size: 0.85em; padding: 0 4px; border-radius: 4px; line-height: 1.5;
+  background: var(--wa-color-neutral-fill-quiet, #8882); }
+.nov-own { color: var(--tonk-closure, #7a7268); }
+.nov-pending { color: var(--tonk-triangle, #c89a2b); }
 /* Column header: same column widths as the rows, so the labels sit over
    their values. The key cell flexes like a row's, indented to clear the
    tree's dot gutter. */
@@ -874,6 +925,19 @@ tr.entry:hover { background: var(--wa-color-surface-raised, rgba(255,255,255,0.0
 tr.entry.removed td { color: var(--wa-color-text-quiet); }
 /* Columns + value types reuse the app's Bauhaus code palette so the
    inspector reads like the notation editor / query tree. */
+/* The index column: one chip per row naming the ordering it is in, in
+   that ordering's own colour — the fact indexes take the entity /
+   attribute / value hues the key chips use, and the machinery regions
+   (history, coverage, blob) stay neutral so they read as machinery. */
+.col-index { width: 1%; white-space: nowrap; }
+.ordering { display: inline-block; padding: 0 5px; border-radius: 4px;
+  font-size: 0.9em; letter-spacing: 0.02em;
+  background: var(--wa-color-neutral-fill-quiet, #8882);
+  color: var(--wa-color-text-quiet); }
+.ordering-entity { color: var(--tonk-circle, #3d6da8); }
+.ordering-attribute { color: var(--tonk-triangle, #c89a2b); }
+.ordering-value { color: var(--tonk-square, #b94a3d); }
+.edition { margin-left: 4px; color: var(--wa-color-text-quiet); font-size: 0.9em; }
 .col-attr { color: var(--tonk-triangle, #c89a2b); }
 /* Entities are underlined wherever they appear (URIs), so the entity
    column matches `.val-entity`. */

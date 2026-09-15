@@ -71,6 +71,13 @@ pub fn render(state: &Shared) {
     if let Some(novelty) = node.novelty {
         let _ = body.append_child(&kv("novelty", &novelty.to_string()));
     }
+    // What the PARENT still buffers against this node's span: work headed
+    // for this subtree that is not written down in it yet. A different
+    // number from the node's own novelty, and the only one an unfetched
+    // node can report — so it is labelled for where it lives.
+    if let Some(pending) = node.pending {
+        let _ = body.append_child(&kv("buffered in parent", &pending.to_string()));
+    }
     let _ = body.append_child(&kv(
         "storage",
         if node.cached {
@@ -149,14 +156,22 @@ fn render_entries(state: &Shared, body: &Element, hash: &str) {
     });
 }
 
-/// A table of the segment's entries: Entity · Attribute · Value, the
-/// value formatted so its type reads from the text. A row click unfolds
-/// a detail view with the type name, full value, and key bytes.
+/// A table of the segment's entries: Index · Entity · Attribute · Value,
+/// the value formatted so its type reads from the text. A row click
+/// unfolds a detail view with the type name, full value, and key bytes.
+///
+/// The leading INDEX cell is what makes a mixed segment readable. A
+/// segment holds more than facts — history and coverage records, blob
+/// references — and every one of them carries an entity, an attribute and
+/// (bar a blob) a value of its own. Naming the ordering in its own cell
+/// leaves those three columns free to say what the row actually holds,
+/// instead of the ordering squatting in the attribute column with the
+/// rest of the row blank.
 fn entry_table(entries: &[TreeEntry]) -> Element {
     let table = el("table");
     let thead = el("thead");
     let hr = el("tr");
-    for h in ["Entity", "Attribute", "Value"] {
+    for h in ["Index", "Entity", "Attribute", "Value"] {
         let _ = hr.append_child(&el("th").text(h));
     }
     let _ = thead.append_child(&hr);
@@ -170,23 +185,22 @@ fn entry_table(entries: &[TreeEntry]) -> Element {
             "entry"
         });
 
+        let _ = tr.append_child(&ordering_cell(entry));
+
         let ent = el("td").class("col-ent");
         if let Some(e) = &entry.entity {
-            ent.set_text_content(Some(&short(e, 14)));
-        } else if let Some(blob) = &entry.blob {
-            // A blob-index row has no entity — it references content.
-            ent.set_text_content(Some(&format!("blob:{}", short(blob, 10))));
+            // Entities are long (a `did:key:…`, a `blob:<base58>`); the
+            // cell keeps a recognizable head and the title carries the
+            // whole thing for a hover or a copy.
+            ent.set_text_content(Some(&trunc(e, 18)));
+            let _ = ent.set_attribute("title", e);
         }
         let _ = tr.append_child(&ent);
 
-        // A history, coverage or blob record has no attribute; naming
-        // its index there says what the row IS, instead of leaving the
-        // cell blank as though the record were malformed.
-        let attr = match (&entry.attribute, &entry.ordering) {
-            (Some(a), _) => el("td").class("col-attr").text(a),
-            (None, Some(ordering)) => el("td").class("col-attr col-ordering").text(ordering),
-            (None, None) => el("td").class("col-attr"),
-        };
+        let attr = el("td").class("col-attr");
+        if let Some(a) = &entry.attribute {
+            attr.set_text_content(Some(a));
+        }
         let _ = tr.append_child(&attr);
 
         let val_td = el("td").class("col-val");
@@ -198,20 +212,38 @@ fn entry_table(entries: &[TreeEntry]) -> Element {
             // at a glance; entities also underlined (they are URIs).
             let span = el("span")
                 .class(&format!("val val-{}", t.to_lowercase()))
+                .attr("title", &formatted)
                 .text(&trunc(&formatted, 40));
             let _ = val_td.append_child(&span);
-        } else if let Some(size) = entry.blob_size {
-            val_td.set_text_content(Some(&human_size(size)));
-        } else if entry.supersedes.is_some_and(|n| n > 0) {
-            // A covering record's payload IS how much it supersedes.
-            let n = entry.supersedes.unwrap_or(0);
-            val_td.set_text_content(Some(&format!("covers {n}")));
+        } else {
+            // No value in the key. What the row has instead, in the order
+            // a reader wants it: a blob's size (the one thing the tree
+            // knows about content it does not hold), how much a covering
+            // record covers (a coverage entry's whole point), and the
+            // block a spilled value lives in. A coverage row has the last
+            // two at once, so they read together rather than one hiding
+            // the other — and an empty cell no longer reads as a record
+            // that says nothing.
+            let mut notes: Vec<String> = Vec::new();
+            if let Some(size) = entry.blob_size {
+                notes.push(human_size(size));
+            }
+            if let Some(n) = entry.supersedes.filter(|n| *n > 0) {
+                notes.push(format!("covers {n}"));
+            }
+            if let Some(spill) = &entry.spill {
+                let label = entry.type_name.as_deref().unwrap_or("value");
+                notes.push(format!("→ {label} {}", short(spill, 10)));
+            }
+            if !notes.is_empty() {
+                val_td.set_text_content(Some(&notes.join(" · ")));
+            }
         }
         let _ = tr.append_child(&val_td);
 
         // Detail row, hidden until the entry is clicked.
         let detail = el("tr").class("detail").attr("hidden", "");
-        let dtd = el("td").attr("colspan", "3");
+        let dtd = el("td").attr("colspan", "4");
         let _ = dtd.append_child(&entry_detail(entry));
         let _ = detail.append_child(&dtd);
 
@@ -233,6 +265,44 @@ fn entry_table(entries: &[TreeEntry]) -> Element {
     table
 }
 
+/// The row's index cell: a chip naming the ordering the key belongs to,
+/// coloured the way that ordering's chips are coloured in a key. An entry
+/// whose tag is not one we know reads `unknown` rather than nothing —
+/// "which index is this row in?" is the first question a mixed segment
+/// raises, and a blank cell answers it with a shrug.
+fn ordering_cell(entry: &TreeEntry) -> Element {
+    let cell = el("td").class("col-index");
+    let Some(ordering) = &entry.ordering else {
+        return cell;
+    };
+    let chip = el("span")
+        .class(&format!("ordering ordering-{ordering}"))
+        .attr("title", &format!("{ordering} index"))
+        .text(ordering);
+    let _ = cell.append_child(&chip);
+    // A history or coverage record IS identified by the revision that
+    // wrote it — successive records of one fact differ by nothing else in
+    // these columns — so the edition rides beside the chip rather than
+    // hiding in the unfolded detail.
+    if matches!(ordering.as_str(), "history" | "coverage")
+        && let Some(edition) = entry.edition
+    {
+        let _ = cell.append_child(
+            &el("span")
+                .class("edition")
+                .attr(
+                    "title",
+                    &match &entry.origin {
+                        Some(origin) => format!("revision {}@{edition}", short(origin, 12)),
+                        None => format!("revision edition {edition}"),
+                    },
+                )
+                .text(&format!("@{edition}")),
+        );
+    }
+    cell
+}
+
 /// The unfolded detail for one entry: type, full value, key bytes.
 fn entry_detail(entry: &TreeEntry) -> Element {
     let box_ = el("div").class("entry-detail");
@@ -241,6 +311,9 @@ fn entry_detail(entry: &TreeEntry) -> Element {
     }
     if let Some(e) = &entry.entity {
         let _ = box_.append_child(&kv("entity", e.strip_prefix('#').unwrap_or(e)));
+    }
+    if let Some(a) = &entry.attribute {
+        let _ = box_.append_child(&kv("attribute", a));
     }
     if let Some(v) = &entry.value {
         let t = entry.type_name.as_deref().unwrap_or("");
@@ -271,9 +344,12 @@ fn entry_detail(entry: &TreeEntry) -> Element {
         let _ = box_.append_child(&kv("spilled to", spill));
     }
     if let Some(blob) = &entry.blob {
-        let _ = box_.append_child(&kv("blob", blob));
+        let _ = box_.append_child(&kv("blob", blob.strip_prefix('#').unwrap_or(blob)));
         if let Some(size) = entry.blob_size {
             let _ = box_.append_child(&kv("blob size", &human_size(size)));
+        }
+        if let Some(version) = entry.blob_version {
+            let _ = box_.append_child(&kv("blob record version", &version.to_string()));
         }
     }
     let keyrow = el("div").class("keybytes");
