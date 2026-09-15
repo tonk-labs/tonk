@@ -291,10 +291,19 @@ fn it_recovers_from_every_absent_space_directory_state() {
     }
     assert_eq!(
         directory_probe
-            .matches("The address in your browser only opens this space for people who already have access.")
+            .matches("New to this space? Ask someone in it to send you an invite link")
             .count(),
         2,
         "both absence states must explain how to obtain an invite link"
+    );
+    assert_eq!(
+        directory_probe.matches("<tonk-space-login>").count(),
+        2,
+        "both absence states must offer sign-in recovery"
+    );
+    assert!(
+        !directory_probe.contains("you don't have access"),
+        "missing local state is not proof of denied access"
     );
 }
 
@@ -342,25 +351,24 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "you don't have access",
-        "class=\"space-unknown-home\" href=\"/\">go to home",
+        "open this space",
+        "class=\"space-unknown-back\" href=\"/\">go to home",
+        "<tonk-space-login><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the absent-space markup must preserve `{contract}`"
         );
     }
-    // Three authored copies, carrying exactly two messages: DOWNLOADING
-    // when the account directory names the space, and invalid-link
-    // guidance for both lifecycle states a missing directory row can
-    // produce. Collapsing the messages is the bug this pins -- a space
-    // that is merely still arriving was told it did not have access.
+    // Downloading has one narrator. Both missing-directory states offer
+    // sign-in and invite guidance. A space that is merely still arriving
+    // must never be sent through either recovery path.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        3,
-        "the absent-space panel must explain both causes: downloading, and never invited"
+        5,
+        "the absent-space panel must explain downloading, login, and invite recovery"
     );
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
