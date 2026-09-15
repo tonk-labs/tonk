@@ -869,18 +869,46 @@ remote in an unsafe state, but an interrupted QUIC stream is only an
 interrupted stream, and the two deadlines are loss detection. What
 survives is "pick a live tab, pick another when it dies".
 
-**What could still overturn (b), and is unmeasured:** every QUIC datagram
-crosses a `postMessage`. Under (a) that is one message per effect; under
-(b) one per packet — plausibly thousands per second during a bulk sync.
-Transferring the `ArrayBuffer` rather than cloning it is what makes that
-survivable or not, and nobody has counted. The spike is small and
-independent of everything else here: a worker, a page, transferable
-buffers at datagram size, round trips per second against what sync
-actually demands.
+### Measured: the port is not the bottleneck
+
+The objection to (b) was the datagram rate: every QUIC packet is one
+`postMessage`, plausibly thousands per second, where (a) sends one
+message per effect. That was the one thing that could have overturned
+this, so it was measured rather than argued.
+
+Two dedicated workers, each holding an iroh endpoint and a transport
+with no carrier of its own. The page holds both peer connections and
+relays `ArrayBuffer`s between each worker's `MessagePort` and its data
+channel, transferred rather than cloned. Against a baseline of the same
+exchange with both endpoints in the page and no port in the path. 8 MiB
+over one QUIC stream, same browser, same run:
+
+| engine | relayed | direct | datagrams/s relayed |
+| --- | --- | --- | --- |
+| Chromium | 12.4–13.1 MB/s | 10.0–11.1 MB/s | ~14,000 |
+| WebKit | 5.9 MB/s | 4.8 MB/s | ~6,600 |
+| Firefox | 1.6 MB/s | 0.9 MB/s | ~1,800 |
+
+**The relay is faster, on every engine, by 15–72%.** Not "acceptable
+overhead" — a win, and consistent across three runs on Chromium and one
+each on the others. The reading: moving QUIC off the main thread buys
+more than the port costs. In the baseline both endpoints share one event
+loop with the data channel; relayed, each endpoint gets its own thread.
+
+Stated honestly, that comparison is not an isolated postMessage cost —
+it is (a)-shaped single-threading against (b)-shaped multi-threading,
+which is the confound *and* the reason it is the decision-relevant
+number. What it rules out is the failure mode that mattered: the port
+does not throttle the data path.
+
+Firefox's absolute throughput is a separate worry. 1.6 MB/s relayed is
+low for bulk sync, and it is low in the baseline too, so it is not the
+relay. Whether that is wasm, SCTP, or the unreliable-unordered channel
+is unexamined.
 
 The section that follows is written for (a). It is kept because the
-policy in it is real and tested, and because it is what is needed if the
-measurement comes back badly.
+policy in it is real and tested, and because a page still has to be
+chosen even when all it carries is bytes.
 
 ### The decision it was written for
 

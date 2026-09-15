@@ -87,6 +87,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
   "MessageEvent",
+  "MessagePort",
   "RtcDataChannel",
   "RtcDataChannelInit",
   "RtcDataChannelState",
