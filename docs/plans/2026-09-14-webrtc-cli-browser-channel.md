@@ -452,6 +452,55 @@ becomes a local hint. And the fingerprint problem resolves itself for
 the remote case: a bootstrap channel carries the SDP **in band**, so
 nothing has to be published at all.
 
+## Offline is the primary case, so the tiers are
+
+Browser-to-CLI must work with no internet — same machine, no relay
+reachable — which settles the earlier question. The direct dial stays,
+and anything with discovery sits above it rather than replacing it.
+
+| | How the peer is found | What carries the data |
+| --- | --- | --- |
+| Browser ↔ CLI, same machine or LAN, offline | address record, no network | direct WebRTC — built |
+| Browser ↔ CLI, remote | signalled by DID | WebRTC data channel |
+| CLI ↔ CLI, remote | by DID | plain iroh, no WebRTC |
+
+The third row is where iroh is unambiguously right: both peers are
+native, both can open UDP sockets, real hole punching, no relay in the
+data path. WebRTC is in this design only because browsers cannot do
+that.
+
+### Rebuilding `iroh-webrtc-transport` is not the job
+
+Most of that crate's bulk goes on promoting a data channel into an iroh
+**custom transport**, so callers see ordinary iroh connections and
+streams. That is not needed here: `tonk-rtc::Session` is already the
+channel abstraction, and iroh does not have to carry the bytes.
+
+What iroh is needed for is the one thing the local case cannot do — a
+rendezvous by public key when the peer's location is unknown. That is
+`Endpoint::connect(addr, ALPN)` and a bi-stream carrying the
+descriptions. On iroh 1.2 those are **stable API**: only running iroh's
+own QUIC *over* a custom transport needs `unstable-custom-transports`,
+which this does not. `Endpoint` exists under `wasm_browser` too — what
+is gated off there is DNS discovery and the native socket paths, not
+connecting.
+
+So the remote tier is on the order of a couple of hundred lines against
+a stable API, rather than sixteen thousand against an alpha pinned to a
+pre-1.0 iroh.
+
+### What to settle before taking the browser tier
+
+WebRTC already performs its own NAT traversal through ICE, so for
+browser-to-CLI iroh adds a discoverable authenticated rendezvous by
+public key *without running a service of your own* — real, but it puts
+iroh in the browser bundle, shortly after that bundle was deliberately
+slimmed.
+
+The CLI-to-CLI tier needs no browser iroh at all. Taking it first gets
+that win cheaply and leaves the browser tier to be decided on a
+measured bundle delta rather than in advance.
+
 ## Evaluated: `iroh-webrtc-transport`
 
 The crate bootstraps a WebRTC session over an *iroh* stream (ALPN
