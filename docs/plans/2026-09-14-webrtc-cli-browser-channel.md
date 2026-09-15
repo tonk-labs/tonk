@@ -245,6 +245,38 @@ peer/<did>  dialable  { host, port, certhash }   ← CLI, on start
 Zero round trips. No callback, no iframe, no popup, no button, and
 nothing for the dialer to publish.
 
+### Built, and verified
+
+`tonk rtc listen` publishes an address; the browser dials it. Measured
+end to end against real Chromium: the channel opens and relays both ways
+with **nothing travelling back to the CLI** — no callback, no iframe, no
+popup, no button, and no signalling channel of any kind.
+
+```
+[cli]  listening on 127.0.0.1:46660, 192.0.2.2:41445
+[dial] address published; the CLI now receives nothing until the channel is live
+[cli]  connected.
+[dial] PASS  channel open with zero round trips
+```
+
+One setting turned out to be load-bearing and is easy to miss:
+`set_include_loopback_candidate(true)`. Without it webrtc-rs publishes
+no `127.0.0.1` candidate at all, and the same-machine case — the one
+this exists for first — has nothing to dial.
+
+Still to do: a **UDP mux**, so several dialers can share one port.
+Today the credential is fixed per listener, and ICE separates peers by
+ufrag, so concurrent dialers are indistinguishable on the wire and only
+one can connect at a time. That is fine for a demo and not fine for the
+"every tab holds a channel" design, which is precisely N concurrent
+dialers. The mux is what lets each dial carry its own random ufrag,
+read out of the first STUN packet.
+
+Also outstanding: a **persisted certificate** (today's is generated per
+run, so the published fingerprint dies with the process) and the
+**application-layer handshake** the one-way DTLS authentication
+requires.
+
 ### What it costs
 
 - ~~Move to `webrtc` 0.17 and port `peer.rs` to its callback API.~~

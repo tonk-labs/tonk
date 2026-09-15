@@ -8,6 +8,10 @@ edition.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+# The dial credential is a bearer secret — possession of it plus the
+# address is what lets a peer open a channel — so it comes from the OS
+# entropy source, not from a clock or a counter.
+getrandom = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

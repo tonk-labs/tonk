@@ -5732,6 +5732,7 @@ dependencies = [
  "axum",
  "base64",
  "env_logger",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

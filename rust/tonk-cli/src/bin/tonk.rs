@@ -655,6 +655,21 @@ enum AccountSpaceCommand {
 #[cfg(feature = "rtc")]
 #[derive(Subcommand, Debug)]
 enum RtcCommand {
+    /// Publish an address and wait for a browser to dial it.
+    ///
+    /// The opposite of `connect`, and the point is what does not
+    /// happen: nothing travels back from the browser. The address
+    /// carries everything a dialer needs, so the handshake is one way.
+    Listen {
+        /// The page that dials. Defaults to Tonk's own `/rtc`; point it
+        /// at a `dev:web` server for local work.
+        #[arg(long, value_name = "URL")]
+        via: Option<String>,
+        /// Print the URL instead of opening a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// Negotiate a channel with a browser tab and relay text over it.
     Connect {
         /// The page that answers the offer. Defaults to Tonk's own
@@ -1168,6 +1183,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             "rtc",
             Some(match command {
                 RtcCommand::Connect { .. } => "connect",
+                RtcCommand::Listen { .. } => "listen",
             }),
         ),
         Command::Push => ("push", None),
@@ -1378,12 +1394,15 @@ async fn main() {
             write,
         } => import_op(file, &branch, write, space.as_deref()).await,
         #[cfg(feature = "rtc")]
-        Command::Rtc { command } => {
-            let RtcCommand::Connect { via, no_open, stun } = command;
-            tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun })
-                .await
-                .map_or_else(print_failure, |()| ExitCode::Success)
+        Command::Rtc { command } => match command {
+            RtcCommand::Connect { via, no_open, stun } => {
+                tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun }).await
+            }
+            RtcCommand::Listen { via, no_open } => {
+                tonk_cli::rtc::listen(tonk_cli::rtc::ListenOptions { via, no_open }).await
+            }
         }
+        .map_or_else(print_failure, |()| ExitCode::Success),
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,

@@ -119,6 +119,99 @@ function gathered(connection) {
     });
 }
 
+// ---- direct dial -------------------------------------------------
+//
+// The other direction, and the interesting one: the CLI publishes an
+// address and this page dials it with NOTHING travelling back.
+//
+// An SDP answer carries a DTLS fingerprint, ICE credentials and
+// candidates. All three are in the published address, so this page can
+// build the CLI's half of the handshake itself. The piece that makes it
+// work in a browser: `setLocalDescription` accepts a `createOffer`
+// result whose `a=ice-ufrag` and `a=ice-pwd` have been rewritten, and
+// the browser uses them on the wire (measured in Chromium; it is what
+// `libp2p-webrtc-websys` ships). So both sides use ONE shared string as
+// ufrag and password, and there is nothing left to exchange.
+//
+// Caveat carried from the CLI side: the credential is a bearer secret,
+// and DTLS ends up one-way authenticated — this page verifies the CLI
+// against the published fingerprint, the CLI cannot verify this page.
+// Something above the channel has to establish who the peer is.
+
+/** Read the address record the CLI published. */
+export function decodeAddress(encoded) {
+    const padded = encoded.replaceAll("-", "+").replaceAll("_", "/")
+        .padEnd(encoded.length + ((4 - (encoded.length % 4)) % 4), "=");
+    const address = JSON.parse(decoder.decode(
+        Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
+    ));
+    if (!address.credential || !address.fingerprint || !address.candidates?.length) {
+        throw new Error("the address is missing candidates, a fingerprint or a credential");
+    }
+    return address;
+}
+
+/** Build the CLI's side of the handshake from its published address. */
+export function synthesizeAnswer(address) {
+    const [first] = address.candidates;
+    const candidates = address.candidates
+        .map((c, index) => `a=candidate:${index + 1} 1 udp 2130706431 ${c.host} ${c.port} typ host`)
+        .join("\r\n");
+    // `a=setup:active` is hard-coded because the CLI pins its answering
+    // DTLS role, so it does not have to travel in the address.
+    return `v=0\r\n`
+        + `o=- 0 0 IN IP4 ${first.host}\r\n`
+        + `s=-\r\nt=0 0\r\n`
+        + `a=fingerprint:${address.fingerprint}\r\n`
+        + `a=group:BUNDLE 0\r\n`
+        + `m=application ${first.port} UDP/DTLS/SCTP webrtc-datachannel\r\n`
+        + `c=IN IP4 ${first.host}\r\n`
+        + `a=setup:active\r\na=mid:0\r\na=sendrecv\r\n`
+        + `a=sctp-port:5000\r\na=max-message-size:65536\r\n`
+        + `a=ice-ufrag:${address.credential}\r\n`
+        + `a=ice-pwd:${address.credential}\r\n`
+        + `${candidates}\r\na=end-of-candidates\r\n`;
+}
+
+/** Rewrite our own ICE credentials to the shared one. */
+export function mungeOffer(sdp, credential) {
+    return sdp
+        .replace(/a=ice-ufrag:.*/g, `a=ice-ufrag:${credential}`)
+        .replace(/a=ice-pwd:.*/g, `a=ice-pwd:${credential}`);
+}
+
+/**
+ * Dial the CLI. Resolves with the open data channel.
+ *
+ * No signalling channel is involved, so there is nothing to wait for
+ * and nothing to time out except ICE itself.
+ */
+export async function dial(address) {
+    const connection = new RTCPeerConnection({ iceServers: [] });
+    const channel = connection.createDataChannel(CHANNEL_LABEL);
+
+    const offer = await connection.createOffer();
+    await connection.setLocalDescription({
+        type: "offer",
+        sdp: mungeOffer(offer.sdp, address.credential),
+    });
+    await connection.setRemoteDescription({
+        type: "answer",
+        sdp: synthesizeAnswer(address),
+    });
+
+    await new Promise((resolve, reject) => {
+        if (channel.readyState === "open") return resolve();
+        channel.addEventListener("open", resolve, { once: true });
+        connection.addEventListener("connectionstatechange", () => {
+            if (["failed", "closed"].includes(connection.connectionState)) {
+                reject(new Error(`the connection went to "${connection.connectionState}"`));
+            }
+        });
+    });
+    return { connection, channel };
+}
+
 // The palette restated as literals, the way the CLI's own callback
 // confirmation page does: a bare route loads no app stylesheet, so there
 // is nothing to derive tokens from.
@@ -195,6 +288,39 @@ export async function mountRtc(root = document.body) {
 
     const offerField = fields.get("offer");
     const callback = fields.get("callback");
+    const addressField = fields.get("address");
+
+    // The direct-dial form. Nothing goes back to the CLI, so there is
+    // no callback, no iframe, no popup and no button.
+    if (addressField) {
+        let address;
+        try {
+            address = decodeAddress(addressField);
+        } catch (error) {
+            say(`this link is not a usable address: ${error.message}`);
+            return;
+        }
+        say("dialing…");
+        try {
+            const { channel } = await dial(address);
+            channel.addEventListener("message", (event) => append("them", event.data));
+            channel.addEventListener("close", () => say("the terminal closed the channel."));
+            say("connected. type below; it prints in the terminal.");
+            compose.hidden = false;
+            message.focus();
+            compose.addEventListener("submit", (event) => {
+                event.preventDefault();
+                const text = message.value.trim();
+                if (!text || channel.readyState !== "open") return;
+                channel.send(text);
+                append("me", text);
+                message.value = "";
+            });
+        } catch (error) {
+            say(`could not reach the terminal: ${error.message}`);
+        }
+        return;
+    }
 
     if (!offerField || !callback) {
         say("open this page from `tonk rtc connect` — it carries the offer.");

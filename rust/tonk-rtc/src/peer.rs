@@ -63,6 +63,30 @@ pub enum PeerError {
     /// The connection failed or closed before the channel opened.
     #[error("the connection failed before the data channel opened")]
     ConnectionFailed,
+    /// The OS entropy source refused, so no dial credential could be
+    /// minted. Not recoverable by retrying here.
+    #[error("could not read entropy for the dial credential: {0}")]
+    Entropy(String),
+}
+
+/// Forward every text message the channel receives onto a queue.
+///
+/// A chat channel carries text; anything that is not valid UTF-8 comes
+/// from a peer we do not understand, and is dropped rather than guessed
+/// at. When this carries dialog effects instead, this is the seam where
+/// framing and chunking go — data channel messages cap at 64 KiB, which
+/// plenty of blocks exceed.
+fn pump(channel: &Arc<RTCDataChannel>) -> mpsc::UnboundedReceiver<String> {
+    let (messages, inbound) = mpsc::unbounded_channel();
+    channel.on_message(Box::new(move |message: DataChannelMessage| {
+        let messages = messages.clone();
+        Box::pin(async move {
+            if let Ok(text) = String::from_utf8(message.data.to_vec()) {
+                let _ = messages.send(text);
+            }
+        })
+    }));
+    inbound
 }
 
 /// A slot holding a one-shot sender that several callbacks race to fill.
@@ -140,18 +164,7 @@ pub async fn offer(ice_servers: Vec<String>) -> Result<Offering, PeerError> {
     // nothing to answer and no channel ever opens.
     let channel = connection.create_data_channel(CHANNEL_LABEL, None).await?;
 
-    let (messages, inbound) = mpsc::unbounded_channel();
-    channel.on_message(Box::new(move |message: DataChannelMessage| {
-        let messages = messages.clone();
-        Box::pin(async move {
-            // A PoC chat channel carries text. Anything that is not
-            // valid UTF-8 comes from a peer we do not understand; drop
-            // it rather than guess an encoding.
-            if let Ok(text) = String::from_utf8(message.data.to_vec()) {
-                let _ = messages.send(text);
-            }
-        })
-    }));
+    let inbound = pump(&channel);
 
     // One signal resolved by whichever happens first: the channel opens,
     // or the connection gives up. Without the failure arm a peer that
@@ -233,6 +246,20 @@ impl Offering {
 }
 
 impl Session {
+    /// Wrap an already-open channel — the inbound path, where the peer
+    /// created the channel and this side adopted it.
+    ///
+    /// Shares the message pump with the outbound path so both behave
+    /// the same on non-UTF-8 input and on close.
+    pub(crate) fn attach(connection: Arc<RTCPeerConnection>, channel: Arc<RTCDataChannel>) -> Self {
+        let inbound = pump(&channel);
+        Self {
+            connection,
+            channel,
+            inbound: AsyncMutex::new(inbound),
+        }
+    }
+
     /// Send one text message to the browser.
     pub async fn send(&self, text: &str) -> Result<(), PeerError> {
         self.channel.send_text(text.to_owned()).await?;

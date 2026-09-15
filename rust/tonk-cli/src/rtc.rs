@@ -90,6 +90,68 @@ fn answering_page(explicit: Option<&str>) -> Result<url::Url> {
     Ok(page)
 }
 
+/// How the caller wants the listener run.
+#[derive(Debug, Clone, Default)]
+pub struct ListenOptions {
+    /// The page that dials. Defaults to Tonk's own `/rtc`; point it at
+    /// a `dev:web` server for local work.
+    pub via: Option<String>,
+    /// Print the URL instead of opening a browser.
+    pub no_open: bool,
+}
+
+/// Publish an address and wait to be dialed.
+///
+/// The opposite direction from [`connect`], and the point of it is what
+/// does NOT happen: nothing travels from the browser back to here. The
+/// address carries everything a dialer needs — candidates, DTLS
+/// fingerprint, and a shared ICE credential — so the handshake is one
+/// way and involves no signalling channel at all.
+///
+/// For the proof of concept the address still reaches the browser
+/// through a URL, because that is the shortest path to a demo. That URL
+/// is a stand-in for a cardinality-one fact in a replicated space: a
+/// peer reads the record whenever sync delivers it and dials later,
+/// with no coordination. Discovery tolerates arbitrary latency; the
+/// handshake involves no sync at all.
+pub async fn listen(options: ListenOptions) -> Result<()> {
+    let page = answering_page(options.via.as_deref())?;
+
+    let listener = tonk_rtc::dial::listen()
+        .await
+        .context("could not start the WebRTC listener")?;
+    let address = listener.address();
+
+    let target = format!("{page}#address={}", address.encode());
+    println!(
+        "listening on {}",
+        address
+            .candidates
+            .iter()
+            .map(|candidate| format!("{}:{}", candidate.host, candidate.port))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    if options.no_open {
+        println!("open this in your browser:\n\n{target}\n");
+    } else {
+        println!("opening {page} …");
+        if webbrowser::open(&target).is_err() {
+            println!("could not open a browser. open this yourself:\n\n{target}\n");
+        }
+    }
+    println!("waiting to be dialed…");
+
+    let session = listener
+        .accept()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("the listener stopped before anyone dialed"))?;
+
+    println!("connected. type a line to send it to the browser; ctrl-d to hang up.\n");
+    relay(session).await
+}
+
 /// Run the ceremony and then relay lines until one side hangs up.
 pub async fn connect(options: ConnectOptions) -> Result<()> {
     let page = answering_page(options.via.as_deref())?;
