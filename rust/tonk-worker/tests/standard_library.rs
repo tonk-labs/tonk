@@ -276,6 +276,29 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 }
 
 #[test]
+fn it_recovers_from_every_absent_space_directory_state() {
+    let directory_probe = PROFILE_LIBRARY
+        .split("<tonk-display with=\"main@profile:tonk\" entity={id} model=space view=downloading>")
+        .nth(1)
+        .and_then(|source| source.split("</tonk-display>").next())
+        .expect("absent-space chrome must consult the profile directory");
+
+    for state in ["no-model", "no-entity"] {
+        assert!(
+            directory_probe.contains(&format!(r#"slot="{state}" hidden"#)),
+            "an absent profile directory row must render recovery for `{state}`"
+        );
+    }
+    assert_eq!(
+        directory_probe
+            .matches("The address in your browser only opens this space for people who already have access.")
+            .count(),
+        2,
+        "both absence states must explain how to obtain an invite link"
+    );
+}
+
+#[test]
 fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     let absent = PROFILE_LIBRARY
         .split("/* The absent-space state")
@@ -319,7 +342,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "invalid link",
+        "you don't have access",
         "class=\"space-unknown-home\" href=\"/\">go to home",
     ] {
         assert!(
@@ -327,16 +350,16 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
             "the absent-space markup must preserve `{contract}`"
         );
     }
-    // Two, and they must stay two: the absent-space panel says one of
-    // exactly two things. A space the account's directory row names is
-    // DOWNLOADING; one it does not name is an invalid link. Collapsing
-    // them is the bug this pins -- a space that is merely still
-    // arriving was told it did not have access.
+    // Three authored copies, carrying exactly two messages: DOWNLOADING
+    // when the account directory names the space, and invalid-link
+    // guidance for both lifecycle states a missing directory row can
+    // produce. Collapsing the messages is the bug this pins -- a space
+    // that is merely still arriving was told it did not have access.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        2,
+        3,
         "the absent-space panel must explain both causes: downloading, and never invited"
     );
     assert!(

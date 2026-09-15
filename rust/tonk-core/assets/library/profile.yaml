@@ -1153,9 +1153,11 @@ view!:
              account has this space and the bytes are on their way; no
              row means the link opens nothing this account holds.
 
-             So the panel is a nested display over `tonk:space`, and
-             "invalid link" moves into ITS `no-model` — reached only
-             when there is genuinely no directory row. -->
+             So the panel is a nested single-entity display over
+             `tonk:space`, and the access guidance owns both absence
+             states that display can report. `no-entity` is the normal
+             empty-row result; `no-model` covers an older profile whose
+             `space` concept has not arrived yet. -->
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
@@ -1163,14 +1165,28 @@ view!:
             <!-- The account has this space: it is arriving, not missing.
                  When it lands, the OUTER display's standing subscription
                  delivers a real frame and this whole panel is replaced. -->
-            <!-- No directory row: the link really does open nothing this
-                 account holds. -->
+            <!-- No directory row: this account does not hold the space.
+                 A single-entity query normally reports `no-entity`; keep
+                 `no-model` as the same recovery for an older profile whose
+                 directory concept has not arrived yet. -->
             <div slot="no-model" hidden>
               <tonk-title text="Not here — Tonk"></tonk-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">invalid link</h1>
-                <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
+                <h1 class="space-unknown-statement">you don't have access</h1>
+                <p class="space-unknown-narrator">The address in your browser only opens this space for people who already have access. To join, ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you the invite link. Open that link in your browser.</p>
+                <!-- A plain anchor lets the guest relay navigation to the host. -->
+                <div class="space-unknown-run">
+                  <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
+                </div>
+              </div>
+            </div>
+            <div slot="no-entity" hidden>
+              <tonk-title text="Not here — Tonk"></tonk-title>
+              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <div class="space-unknown-wall">
+                <h1 class="space-unknown-statement">you don't have access</h1>
+                <p class="space-unknown-narrator">The address in your browser only opens this space for people who already have access. To join, ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you the invite link. Open that link in your browser.</p>
                 <!-- A plain anchor lets the guest relay navigation to the host. -->
                 <div class="space-unknown-run">
                   <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
