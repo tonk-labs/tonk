@@ -2964,29 +2964,107 @@ pub(crate) enum ProfileLibraryOutcome {
     Repaired { deferred_cleanup: bool },
 }
 
-/// Last profile revision whose system-library claims were fully checked.
+/// Complete desired profile-library input, derived from the shipped document
+/// before it is evaluated against any populated branch.
+#[derive(Clone)]
+struct PreparedProfileLibrary {
+    source: String,
+    target: String,
+    assertions: Vec<super::claim::RawClaim>,
+}
+
+/// Worker-scoped profile-library input and the last profile revision whose
+/// system-library claims were fully checked.
 ///
 /// A target hash by itself is insufficient because an account pull can move
 /// the branch back to stale values while retaining the install record. Pairing
 /// it with the branch revision makes unchanged sweeps cheap without letting a
 /// pull, profile replacement, or development asset change reuse the receipt.
-#[derive(Default)]
-pub(crate) struct ProfileLibraryCache(
-    std::sync::Mutex<Option<(String, Option<dialog_repository::Revision>)>>,
-);
+#[derive(Clone, Default)]
+pub(crate) struct ProfileLibraryCache {
+    receipt: std::sync::Arc<
+        std::sync::Mutex<HashMap<String, (String, Option<dialog_repository::Revision>)>>,
+    >,
+    input: std::sync::Arc<tokio::sync::Mutex<Option<PreparedProfileLibrary>>>,
+    #[cfg(test)]
+    acquisitions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    acquisition_failures: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
 
 impl ProfileLibraryCache {
-    fn contains(&self, target: &str, revision: &Option<dialog_repository::Revision>) -> bool {
-        self.0
+    fn contains(
+        &self,
+        profile: &str,
+        target: &str,
+        revision: &Option<dialog_repository::Revision>,
+    ) -> bool {
+        self.receipt
             .lock()
-            .map(|cached| cached.as_ref() == Some(&(target.to_owned(), revision.clone())))
+            .map(|cached| cached.get(profile) == Some(&(target.to_owned(), revision.clone())))
             .unwrap_or(false)
     }
 
-    fn store(&self, library: String, revision: Option<dialog_repository::Revision>) {
-        if let Ok(mut cached) = self.0.lock() {
-            *cached = Some((library, revision));
+    fn store(
+        &self,
+        profile: String,
+        library: String,
+        revision: Option<dialog_repository::Revision>,
+    ) {
+        if let Ok(mut cached) = self.receipt.lock() {
+            cached.insert(profile, (library, revision));
         }
+    }
+
+    async fn acquire(&self) -> Result<PreparedProfileLibrary, RepositoryError> {
+        let mut cached = self.input.lock().await;
+        if let Some(input) = cached.as_ref() {
+            return Ok(input.clone());
+        }
+        #[cfg(test)]
+        self.acquisitions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if self
+            .acquisition_failures
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(RepositoryError::Internal(
+                "injected profile library acquisition failure".to_owned(),
+            ));
+        }
+        let library = fetch_standard_library(PROFILE_LIBRARY_URL)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
+        let prepared = prepare_profile_library(library)?;
+        *cached = Some(prepared.clone());
+        Ok(prepared)
+    }
+
+    async fn replace_input(
+        &self,
+        library: String,
+    ) -> Result<PreparedProfileLibrary, RepositoryError> {
+        let prepared = prepare_profile_library(library)?;
+        let mut cached = self.input.lock().await;
+        *cached = Some(prepared.clone());
+        Ok(prepared)
+    }
+
+    #[cfg(test)]
+    fn acquisition_count(&self) -> usize {
+        self.acquisitions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn fail_next_acquisition(&self) {
+        self.acquisition_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3704,11 +3782,17 @@ const SEED_NONE: &str = "seed:none";
 /// A missing or unreadable library is a deployment fault, not a
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
+
+    if let Some(library) = crate::cache::immutable_asset_text(url).await.map_err(|e| {
+        TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
+    })? {
+        return Ok(library);
+    }
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
@@ -3739,12 +3823,29 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
         .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
 }
 
+/// Wasm unit tests run in the pooled browser harness rather than the installed
+/// Tonk service-worker scope. Keep acquisition and reconciliation under test
+/// while supplying the same checked-in bytes as native tests; real browser
+/// builds above still exercise generation-cache acquisition.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", test))]
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    embedded_standard_library(url)
+}
+
 /// The native sibling of the fetch above: the same documents the
 /// service worker fetches from its served assets are compiled in from
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    embedded_standard_library(url)
+}
+
+#[cfg(any(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    all(target_arch = "wasm32", target_os = "unknown", test)
+))]
+fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
         STANDARD_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/core.yaml").to_owned())
@@ -4778,10 +4879,82 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
 pub(crate) async fn reconcile_profile_library(
     tonk: &TonkState,
 ) -> Result<ProfileLibraryOutcome, RepositoryError> {
-    let library = fetch_standard_library(PROFILE_LIBRARY_URL)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    reconcile_profile_library_from(tonk, library).await
+    let prepared = tonk.profile_library.acquire().await?;
+    reconcile_prepared_profile_library(tonk, prepared).await
+}
+
+/// Parse, analyze, and lower a self-contained profile-library document into
+/// the complete desired assertion set. This happens without a branch source,
+/// so existing facts cannot suppress unchanged definitions from the result.
+/// `Changes` preserves whether each final write used cardinality-one replace
+/// semantics before any repository commit can deduplicate it.
+fn prepare_profile_library(library: String) -> Result<PreparedProfileLibrary, RepositoryError> {
+    use dialog_artifacts::{Changes, Instruction, Statement as _};
+    use dialog_query::{Parameters, Term};
+    use tonk_schema::transact::{Planner as _, Statement};
+
+    let target = seed_version(&library);
+    let parsed = tonk_notation::parse(&library);
+    if let Some(diagnostic) = parsed.diagnostics.first() {
+        return Err(RepositoryError::Internal(format!(
+            "parse profile library: {}",
+            diagnostic.message
+        )));
+    }
+    let syntax = parsed
+        .syntax
+        .ok_or_else(|| RepositoryError::Internal("profile library is empty".to_owned()))?;
+    let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
+        .map_err(|error| RepositoryError::Internal(format!("analyze profile library: {error}")))?;
+    let mut bindings = Parameters::new();
+    for (name, entity) in &analyzed.analysis.variables {
+        bindings.insert(
+            name.clone(),
+            Term::Constant(dialog_artifacts::Value::Entity(entity.clone())),
+        );
+    }
+
+    let mut desired = Changes::new();
+    for planned in analyzed.analysis.statements() {
+        match planned.statement {
+            Statement::Assert(application) => {
+                let plan = application.plan(&bindings).map_err(|error| {
+                    RepositoryError::Internal(format!("plan profile library: {error}"))
+                })?;
+                plan.assert(&mut desired);
+            }
+            Statement::Retract(_) => {
+                return Err(RepositoryError::Internal(
+                    "profile library desired manifest contains a retraction".to_owned(),
+                ));
+            }
+        }
+    }
+
+    let assertions = desired
+        .into_instructions()
+        .into_iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::Assert(artifact) => Some(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            }),
+            Instruction::Replace(artifact) => Some(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: true,
+            }),
+            Instruction::Retract(_) => None,
+        })
+        .collect();
+    Ok(PreparedProfileLibrary {
+        source: library,
+        target,
+        assertions,
+    })
 }
 
 /// Read every complete installation whose provenance is the exact shipped
@@ -4840,9 +5013,9 @@ async fn profile_library_installations(
     Ok(profile)
 }
 
-/// Whether every assertion attributed to `version` still resolves on the
-/// current branch. This catches an account pull that changed a template while
-/// leaving the target installation record in place.
+/// Whether every desired assertion resolves on the current branch. Owned
+/// cardinality-one fields must contain exactly the desired distinct value;
+/// cardinality-many fields may contain additional authored values.
 async fn assertions_are_current(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
@@ -4851,22 +5024,32 @@ async fn assertions_are_current(
     use dialog_artifacts::ArtifactSelector;
     use futures_util::StreamExt as _;
 
+    let mut grouped: HashMap<
+        (dialog_artifacts::Entity, dialog_artifacts::Attribute),
+        (bool, Vec<dialog_artifacts::Value>),
+    > = HashMap::new();
     for expected in assertions {
+        let entry = grouped
+            .entry((expected.of.clone(), expected.the.clone()))
+            .or_insert_with(|| (false, Vec::new()));
+        entry.0 |= expected.unique;
+        if !entry.1.contains(&expected.is) {
+            entry.1.push(expected.is.clone());
+        }
+    }
+
+    for ((of, the), (unique, expected)) in grouped {
         let stream = session
             .handle()
             .claims()
-            .select(
-                ArtifactSelector::new()
-                    .the(expected.the.clone())
-                    .of(expected.of.clone()),
-            )
+            .select(ArtifactSelector::new().the(the).of(of))
             .perform(&tonk.operator)
             .await
             .map_err(|error| {
                 RepositoryError::Internal(format!("check profile library claim: {error}"))
             })?;
         tokio::pin!(stream);
-        let mut present = false;
+        let mut found_values = Vec::new();
         while let Some(found) = stream.next().await {
             let found = found
                 .map_err(|error| {
@@ -4878,12 +5061,16 @@ async fn assertions_are_current(
                         "materialize profile library claim: {error:?}"
                     ))
                 })?;
-            if found.is == expected.is {
-                present = true;
-                break;
+            if !found_values.contains(&found.is) {
+                found_values.push(found.is);
             }
         }
-        if !present {
+        let current = if unique {
+            found_values.len() == 1 && expected.len() == 1 && found_values[0] == expected[0]
+        } else {
+            expected.iter().all(|value| found_values.contains(value))
+        };
+        if !current {
             return Ok(false);
         }
     }
@@ -4974,11 +5161,60 @@ async fn current_profile_library_retractions(
 
 /// Install the supplied profile library, withdrawing only claims attributable
 /// to earlier installs from the exact profile source.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn reconcile_profile_library_from(
     tonk: &TonkState,
     library: String,
 ) -> Result<ProfileLibraryOutcome, RepositoryError> {
-    let target = seed_version(&library);
+    let prepared = prepare_profile_library(library)?;
+    reconcile_prepared_profile_library(tonk, prepared).await
+}
+
+/// Development-only asset update boundary used by hot swap. The supplied
+/// document becomes the worker's acquired input before it is reconciled, so a
+/// later account sweep cannot restore bytes cached before the edit.
+#[wasm_compat]
+pub(super) async fn update_profile_library(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    if !cfg!(debug_assertions) {
+        return Err(TonkWorkerError::NotFound(
+            "profile library development update is unavailable".to_owned(),
+        ));
+    }
+    let library = String::from_utf8(body.to_vec()).map_err(|error| {
+        TonkWorkerError::Router(format!("profile library is not UTF-8: {error}"))
+    })?;
+    let tonk = state.read().await;
+    let prepared = tonk
+        .profile_library
+        .replace_input(library)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let outcome = reconcile_prepared_profile_library(&tonk, prepared)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let (status, deferred_cleanup) = match outcome {
+        ProfileLibraryOutcome::Unchanged => ("unchanged", false),
+        ProfileLibraryOutcome::Installed => ("installed", false),
+        ProfileLibraryOutcome::Repaired { deferred_cleanup } => ("repaired", deferred_cleanup),
+    };
+    Ok(Json(serde_json::json!({
+        "status": status,
+        "deferredCleanup": deferred_cleanup,
+    })))
+}
+
+async fn reconcile_prepared_profile_library(
+    tonk: &TonkState,
+    prepared: PreparedProfileLibrary,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    let PreparedProfileLibrary {
+        source: library,
+        target,
+        assertions,
+    } = prepared;
     let session = tonk
         .reactor
         .profile_repository()
@@ -4989,18 +5225,17 @@ pub(crate) async fn reconcile_profile_library_from(
             RepositoryError::Internal(format!("open profile branch for reconciliation: {error}"))
         })?;
     let revision = session.handle().revision();
-    if tonk.profile_library.contains(&target, &revision) {
+    let profile = tonk.profile.did().to_string();
+    if tonk.profile_library.contains(&profile, &target, &revision) {
         return Ok(ProfileLibraryOutcome::Unchanged);
     }
 
     let installations = profile_library_installations(tonk, &session).await?;
     if installations.len() == 1
         && installations[0].installed.this.to_string() == target
-        && let Ok(assertions) =
-            assertions_at_version(tonk, &session, &installations[0].installed.version.0).await
         && assertions_are_current(tonk, &session, &assertions).await?
     {
-        tonk.profile_library.store(target, revision);
+        tonk.profile_library.store(profile, target, revision);
         return Ok(ProfileLibraryOutcome::Unchanged);
     }
 
@@ -5048,7 +5283,7 @@ pub(crate) async fn reconcile_profile_library_from(
         RepositoryError::Internal(format!("reconcile profile library on profile branch: {e}"))
     })?;
     tonk.profile_library
-        .store(target, response.revision_after.clone());
+        .store(profile, target, response.revision_after.clone());
 
     Ok(if installations.is_empty() && !legacy {
         ProfileLibraryOutcome::Installed
@@ -7122,9 +7357,45 @@ route!: &foreign-profile-route
             .collect()
     }
 
+    async fn raw_values(tonk: &TonkState, the: &str, of: &str) -> Vec<dialog_artifacts::Value> {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                ArtifactSelector::new()
+                    .the(the.parse().expect("attribute parses"))
+                    .of(of.parse().expect("entity parses")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("raw claim query starts");
+        tokio::pin!(stream);
+        let mut values = Vec::new();
+        while let Some(claim) = stream.next().await {
+            values.push(
+                claim
+                    .expect("raw claim reads")
+                    .to_owned()
+                    .expect("raw claim materializes")
+                    .is,
+            );
+        }
+        values
+    }
+
     #[dialog_common::test]
     async fn profile_library_replaces_recorded_history_and_preserves_authored_content() {
-        let tonk = test_state().await;
+        let mut tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, HISTORICAL).await;
         evaluate_authored(&tonk, AUTHORED).await;
         install_recorded(&tonk, "/library/foreign.yaml", FOREIGN).await;
@@ -7155,7 +7426,8 @@ route!: &foreign-profile-route
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         while subscriber.receiver.try_recv().is_ok() {}
 
-        let outcome = reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+        tonk.profile_library = Default::default();
+        let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("profile library reconciles");
         assert_eq!(
@@ -7245,7 +7517,7 @@ route!: &foreign-profile-route
         assert_eq!(spaces, vec![space]);
 
         assert_eq!(
-            reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+            reconcile_profile_library(&tonk)
                 .await
                 .expect("second reconciliation succeeds"),
             ProfileLibraryOutcome::Unchanged
@@ -7255,6 +7527,299 @@ route!: &foreign-profile-route
             revision,
             "a validated unchanged library does not advance profile main"
         );
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_repairs_a_retained_definition_missing_from_install_history() {
+        let mut tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, HISTORICAL).await;
+        reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+            .await
+            .expect("current library installs");
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let installation = profile_library_installations(&tonk, &session)
+            .await
+            .expect("profile installation resolves")
+            .pop()
+            .expect("current installation exists");
+        let history = assertions_at_version(&tonk, &session, &installation.installed.version.0)
+            .await
+            .expect("installation history resolves");
+
+        let the: dialog_artifacts::Attribute = "db.meta/description"
+            .parse()
+            .expect("description attribute parses");
+        let of: dialog_artifacts::Entity = "tonk:space".parse().expect("space entity parses");
+        let desired = dialog_artifacts::Value::String("A space on this account.".to_owned());
+        assert!(
+            !history
+                .iter()
+                .any(|claim| claim.the == the && claim.of == of && claim.is == desired),
+            "the unchanged retained definition is deliberately absent from the install delta"
+        );
+
+        session
+            .handle()
+            .transaction()
+            .retract(super::super::claim::RawClaim {
+                the: the.clone(),
+                of: of.clone(),
+                is: desired.clone(),
+                unique: false,
+            })
+            .assert(super::super::claim::RawClaim {
+                the: the.clone(),
+                of: of.clone(),
+                is: dialog_artifacts::Value::String("stale account writer".to_owned()),
+                unique: false,
+            })
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("retained definition is damaged");
+
+        tonk.profile_library = Default::default();
+        let outcome = reconcile_profile_library(&tonk)
+            .await
+            .expect("damaged retained definition reconciles");
+        assert!(matches!(outcome, ProfileLibraryOutcome::Repaired { .. }));
+        assert_eq!(
+            raw_values(&tonk, "db.meta/description", "tonk:space").await,
+            vec![desired],
+            "the complete desired manifest repairs definitions absent from the install delta"
+        );
+        let revision = session.handle().revision();
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("repaired library settles"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(session.handle().revision(), revision);
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_removes_competing_values_from_owned_singletons() {
+        for stale_first in [false, true] {
+            let tonk = test_state().await;
+            reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+                .await
+                .expect("profile library installs");
+            let expected = prepare_profile_library(CURRENT.to_owned())
+                .expect("profile library prepares")
+                .assertions
+                .into_iter()
+                .find(|claim| {
+                    claim.unique
+                        && claim.of.to_string() == "tonk:space"
+                        && claim.the.to_string() == "xyz.tonk.view/directory"
+                })
+                .expect("directory facet is an owned singleton");
+            let stale = super::super::claim::RawClaim {
+                the: expected.the.clone(),
+                of: expected.of.clone(),
+                is: dialog_artifacts::Value::String(
+                    "<div data-stale-profile-library></div>".to_owned(),
+                ),
+                unique: false,
+            };
+            let session = tonk
+                .reactor
+                .profile_repository()
+                .branch(PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile branch opens");
+            let mut txn = session.handle().transaction();
+            if stale_first {
+                txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
+                    super::super::claim::RawClaim {
+                        unique: false,
+                        ..expected.clone()
+                    },
+                );
+            } else {
+                txn = txn.assert(stale.clone());
+            }
+            txn.commit()
+                .publish()
+                .perform(&tonk.operator)
+                .await
+                .expect("competing singleton values commit");
+            let before =
+                raw_values(&tonk, &expected.the.to_string(), &expected.of.to_string()).await;
+            assert_eq!(before.len(), 2, "both values stand before repair");
+
+            assert!(matches!(
+                reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+                    .await
+                    .expect("competing value repairs"),
+                ProfileLibraryOutcome::Repaired { .. }
+            ));
+            assert_eq!(
+                raw_values(&tonk, &expected.the.to_string(), &expected.of.to_string(),).await,
+                vec![expected.is.clone()],
+                "repair leaves the exact desired singleton for stale_first={stale_first}"
+            );
+            assert!(
+                !view_snapshot(&tonk)
+                    .await
+                    .contains("data-stale-profile-library"),
+                "resolved rendering uses the desired directory facet"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_acquires_once_and_revalidates_profile_only_changes() {
+        let tonk = test_state().await;
+        assert_eq!(tonk.profile_library.acquisition_count(), 0);
+        let (first, concurrent) = futures_util::join!(
+            reconcile_profile_library(&tonk),
+            reconcile_profile_library(&tonk)
+        );
+        first.expect("first acquisition reconciles");
+        concurrent.expect("concurrent acquisition coalesces");
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        session
+            .handle()
+            .transaction()
+            .assert(tonk_schema::ProfileName::new(
+                tonk.profile.did().this(),
+                "profile-only change".to_owned(),
+            ))
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("profile-only change commits");
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("profile-only change revalidates"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(
+            tonk.profile_library.acquisition_count(),
+            1,
+            "profile revision changes reuse the prepared worker input"
+        );
+
+        let mut switched = test_state().await;
+        switched.profile_library = tonk.profile_library.clone();
+        reconcile_profile_library(&switched)
+            .await
+            .expect("a switched profile uses the running worker input");
+        assert_eq!(
+            switched.profile_library.acquisition_count(),
+            1,
+            "profile switching does not reacquire the generation asset"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_development_input_replaces_the_worker_cache_atomically() {
+        let tonk = test_state().await;
+        reconcile_profile_library(&tonk)
+            .await
+            .expect("shipped profile library installs");
+        let historical = tonk
+            .profile_library
+            .replace_input(HISTORICAL.to_owned())
+            .await
+            .expect("development input prepares");
+        reconcile_prepared_profile_library(&tonk, historical)
+            .await
+            .expect("development input reconciles");
+        assert!(view_snapshot(&tonk).await.contains("no spaces yet"));
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        assert!(
+            tonk.profile_library
+                .replace_input("concept!: [".to_owned())
+                .await
+                .is_err(),
+            "malformed development input is rejected"
+        );
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        session
+            .handle()
+            .transaction()
+            .assert(tonk_schema::ProfileName::new(
+                tonk.profile.did().this(),
+                "invalidate receipt".to_owned(),
+            ))
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("profile revision advances");
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("cached development input revalidates"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert!(
+            view_snapshot(&tonk).await.contains("no spaces yet"),
+            "a failed update cannot expose the previously cached shipped input"
+        );
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_retries_a_failed_initial_acquisition() {
+        let tonk = test_state().await;
+        reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+            .await
+            .expect("existing library state installs independently of acquisition cache");
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let revision_before = session.handle().revision();
+
+        tonk.profile_library.fail_next_acquisition();
+        assert!(
+            reconcile_profile_library(&tonk).await.is_err(),
+            "the injected acquisition failure reaches the production wrapper"
+        );
+        assert_eq!(session.handle().revision(), revision_before);
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("the next sweep retries acquisition"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(session.handle().revision(), revision_before);
+        assert_eq!(tonk.profile_library.acquisition_count(), 2);
     }
 
     #[dialog_common::test]

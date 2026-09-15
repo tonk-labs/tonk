@@ -3900,7 +3900,18 @@ mod tests {
 
         let (old_writer, _old_authenticator) =
             second_device_with_same_passkey(&env, &owner, &authenticator).await?;
-        wait_for_service_worker(&old_writer).await?;
+        crate::service_worker_upgrade::tests::wait_for_complete_generation(
+            &old_writer,
+            &generation_a,
+            None,
+            None,
+        )
+        .await?;
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
         raise_cluster_from_hub(&old_writer, &env).await?;
         run_cluster_login(&old_writer, EMAIL).await?;
         let old_health = get_json(&old_writer, "/api/health").await?;
@@ -3908,6 +3919,11 @@ mod tests {
             old_health["body"]["build"] == generation_a.build,
             "the competing writer did not remain on generation A: {old_health}"
         );
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
 
         crate::service_worker_upgrade::tests::promote_second_generation(&env)?;
         owner.enter_default_frame().await?;
@@ -3929,6 +3945,16 @@ mod tests {
             "publish stale profile claims from generation A",
             &post_json(&old_writer, "/api/sync", serde_json::json!({})).await?,
         );
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
+        goto(&old_writer, env.tonk_web.as_str()).await?;
+        enter_hub(&old_writer).await?;
+        wait_for_text_containing(&old_writer, "body", "no spaces yet").await?;
+        wait_for_text_containing(&old_writer, "body", SPACE).await?;
+        old_writer.enter_default_frame().await?;
         successful_body(
             "repair stale profile claims on generation B",
             &post_json(&owner, "/api/sync", serde_json::json!({})).await?,

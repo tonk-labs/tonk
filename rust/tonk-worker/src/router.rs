@@ -271,6 +271,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(evaluate::evaluate_profile),
         )
         .route(
+            "/api/profile/library",
+            post(repository::update_profile_library),
+        )
+        .route(
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
         )

@@ -497,12 +497,26 @@
     const { core, profile } = splitLibrary(library)
     const libraryFor = (branch) =>
       branch.getAttribute("with").includes("@profile:") ? profile : core
+    let profileApplied = false
 
     for (const branch of branches) {
       const document = libraryFor(branch)
       // An older cached string may carry no profile half; skip rather than
       // seed `null` onto the profile branch.
       if (!document) continue
+      if (branch.getAttribute("with").includes("@profile:")) {
+        if (profileApplied) continue
+        const response = await fetch("/api/profile/library", {
+          method: "POST",
+          headers: { "content-type": "application/x-tonk-notation" },
+          body: document,
+        })
+        if (!response.ok) {
+          throw new Error(`POST /api/profile/library -> ${response.status}: ${await response.text()}`)
+        }
+        profileApplied = true
+        continue
+      }
       const detail = { document }
       const event = new CustomEvent("tonk-evaluate", {
         detail,

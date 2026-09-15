@@ -232,6 +232,7 @@ pub(crate) mod tests {
     #[derive(Debug)]
     pub(crate) struct GenerationContract {
         pub(crate) build: String,
+        pub(crate) profile_library: String,
         /// Digest prefix stamped into the worker glue and re-observed from the
         /// exact ArrayBuffer handed to wasm-bindgen initialization.
         worker_wasm: String,
@@ -278,6 +279,11 @@ pub(crate) mod tests {
             };
 
         let mut probes = BTreeMap::new();
+        let profile_library = assets
+            .get("/library/profile.yaml")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("asset manifest has no profile library digest"))?
+            .to_owned();
         for (path, digest) in [
             select_one("document", &|path| path == "/")?,
             select_one("UI Wasm", &|path| {
@@ -304,6 +310,7 @@ pub(crate) mod tests {
             .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(GenerationContract {
             build,
+            profile_library,
             worker_wasm,
             probes,
             worker_members,
@@ -796,6 +803,52 @@ pub(crate) mod tests {
             result.json()
         );
         Ok(result.json().clone())
+    }
+
+    pub(crate) async fn cached_profile_library_digest(
+        driver: &WebDriver,
+        generation: &GenerationContract,
+    ) -> Result<String> {
+        let result = driver
+            .execute_async(
+                r#"
+                const build = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const cacheName = `TONK_SHELL_${build}`;
+                    const cache = await caches.open(cacheName);
+                    const keys = await cache.keys();
+                    const request = keys.find(key =>
+                        new URL(key.url).pathname === "/library/profile.yaml"
+                    );
+                    const response = request ? await cache.match(request) : null;
+                    if (!response) {
+                        done({
+                            error: "profile library missing from generation cache",
+                            cacheName,
+                            cacheNames: await caches.keys(),
+                            keys: keys.map(key => key.url),
+                        });
+                        return;
+                    }
+                    const bytes = await response.arrayBuffer();
+                    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+                    done(Array.from(hash, byte => byte.toString(16).padStart(2, "0")).join(""));
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![generation.build.clone().into()],
+            )
+            .await?;
+        let digest = result
+            .json()
+            .as_str()
+            .ok_or_else(|| anyhow!("profile-library cache digest failed: {}", result.json()))?;
+        ensure!(
+            digest == generation.profile_library,
+            "profile-library cache digest mismatch: expected={} actual={digest}",
+            generation.profile_library
+        );
+        Ok(digest.to_owned())
     }
 
     async fn opaque_origin_build_probe(driver: &WebDriver, build: &str) -> Result<Value> {

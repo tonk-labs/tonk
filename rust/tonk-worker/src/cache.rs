@@ -20,6 +20,7 @@ use web_sys::{CacheQueryOptions, Request, Response, ServiceWorkerGlobalScope};
 /// builds can never read or write the same one.
 const SHELL_PREFIX: &str = "TONK_SHELL_";
 const WORKER_PREFIX: &str = "TONK_WORKER_";
+const GENERATION_PREFIX: &str = "TONK_GENERATION_";
 
 /// The build id, handed in by the JS shim at activate time (see
 /// `set_build_id`). The shim gets it from the identity that
@@ -56,6 +57,44 @@ pub fn current_build_id() -> Option<String> {
 /// This build's shell cache name.
 fn shell_cache() -> String {
     format!("{SHELL_PREFIX}{}", build_id())
+}
+
+fn generation_cache() -> String {
+    format!("{GENERATION_PREFIX}{}", build_id())
+}
+
+/// Read text from this worker's immutable asset generation.
+///
+/// `None` is returned only for development and a first install that has not
+/// begun publishing a generation, where the running deployment is the only
+/// available source. Once a stamped generation marker exists, a missing asset
+/// fails closed so a retained worker cannot mix a newer deployment's bytes
+/// into its own library input.
+pub(crate) async fn immutable_asset_text(path: &str) -> Result<Option<String>, JsValue> {
+    if build_id() == "dev" {
+        return Ok(None);
+    }
+    let origin = worker_origin().ok_or_else(|| JsValue::from_str("worker origin unavailable"))?;
+    let request = Request::new_with_str(&format!("{origin}{path}"))?;
+    if let Some(response) = cache_match(&request).await? {
+        let text = JsFuture::from(response.text()?).await?;
+        return text
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str("cached asset body is not text"));
+    }
+    let marker_url = Request::new_with_str(&format!("{origin}/.tonk-generation-{}", build_id()))?;
+    let options = CacheQueryOptions::new();
+    options.set_cache_name(&generation_cache());
+    let marker =
+        JsFuture::from(caches()?.match_with_request_and_options(&marker_url, &options)).await?;
+    if !marker.is_null() && !marker.is_undefined() {
+        return Err(JsValue::from_str(&format!(
+            "asset {path} is missing from retained generation {}",
+            build_id()
+        )));
+    }
+    Ok(None)
 }
 
 /// Should this request be served via the shell cache?
