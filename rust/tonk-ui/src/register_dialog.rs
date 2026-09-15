@@ -2738,6 +2738,20 @@ pub fn describe(payload: &str) {
     }
 }
 
+/// A guest's position update: move an open anchored ceremony to the bar's
+/// latest viewport rectangle, and do nothing when none is open.
+///
+/// A position update is never a request for a ceremony. The guest keeps
+/// its linking marker until this page's terminal event reaches it across
+/// the frame boundary, and its bar observer can fire inside that gap: with
+/// the opening reason on that update, Escape closed the cluster and the
+/// next resize opened a fresh one over the bar, taking focus with it.
+pub fn reseat(request: &Request) {
+    if is_open() {
+        reanchor(request);
+    }
+}
+
 /// Move an already-open anchored ceremony to the guest bar's latest viewport
 /// rectangle. Scroll and resize updates use this without rebuilding the
 /// editor, so the address and focus both survive.
@@ -2941,6 +2955,59 @@ mod tests {
     /// The guest's ask carries why it could not share and what it was
     /// sharing, so the dialog can word the prompt and then finish the
     /// click that raised it.
+    /// A position update while nothing is open opens nothing: the guest
+    /// still had its linking marker when its bar observer fired after
+    /// Escape, and that update used to open a fresh cluster.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_reseats_nothing_when_no_ceremony_is_open() {
+        close();
+        reseat(&parse_request(
+            r#"{"reason":"reseat","space":"","anchor":{"left":90.0,"bottom":184.0,"width":576.0}}"#,
+        ));
+        assert!(!is_open());
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .get_element_by_id(DIALOG_ID)
+                .is_none(),
+            "a position update must not raise a cluster"
+        );
+    }
+
+    /// The same update moves an open anchored cluster to the new seat.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_reseats_an_open_ceremony() {
+        open();
+        describe(
+            r#"{"reason":"needs-account","space":"","anchor":{"left":90.0,"bottom":184.0,"width":576.0}}"#,
+        );
+        let host: HtmlDialogElement = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .get_element_by_id(DIALOG_ID)
+            .expect("the cluster is raised")
+            .dyn_into()
+            .unwrap();
+        // The raise is deferred a task; show it now so the update finds
+        // the cluster open, as it is once a person can see it.
+        host.show();
+        assert!(is_open());
+        reseat(&parse_request(
+            r#"{"reason":"reseat","space":"","anchor":{"left":120.0,"bottom":200.0,"width":500.0}}"#,
+        ));
+        let host: HtmlElement = host.dyn_into().unwrap();
+        let left = host.style().get_property_value("--anchor-left").unwrap();
+        let width = host.style().get_property_value("--anchor-width").unwrap();
+        close();
+        assert_eq!(left, "120px");
+        assert_eq!(width, "500px");
+    }
+
     #[dialog_common::test]
     fn it_reads_the_reason_and_the_interrupted_share() {
         let request = parse_request(r#"{"reason":"needs-account","space":"did:key:z6Mk"}"#);
