@@ -56,6 +56,7 @@ rcgen = "0.13"
 # needs `io-util`. Target-gated for the same reason the runtime deps
 # above are: tokio's `net` pulls `mio`, which does not build for wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+anyhow = { workspace = true }
 # `env_logger` surfaces the `log` records the ICE/DTLS stack emits, which
 # is how the direct-dial spike tells "rejected the binding request" apart
 # from "never received one".

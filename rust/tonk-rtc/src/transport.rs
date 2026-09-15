@@ -30,11 +30,11 @@
 //! `max_retransmits: 0`. [`datagram_channel`] is the only way this
 //! module accepts one.
 //!
-//! # Proven, and what it took
+//! Proven by `tests/iroh_over_webrtc.rs`, which is native-only: the
+//! browser half is the same transport with `web-sys` channels
+//! underneath, a port rather than a redesign.
 //!
-//! Two native peers, a data channel between them, two iroh endpoints
-//! whose only transport is this one: `connect` by endpoint id,
-//! `open_bi`, bytes back. No UDP between the peers and no relay.
+//! # What it took
 //!
 //! Three things were not obvious and cost time:
 //!
@@ -62,9 +62,8 @@
 //! versions needed no API change.
 //!
 //! With it, `tonk-cli` checks clean carrying **both** iroh and
-//! `dialog-remote-s3`. Until dialog-db is tagged and tonk's pin moved,
-//! building this feature needs a `[patch]` pointing at a local
-//! dialog-db checkout.
+//! `dialog-remote-s3`. Tonk's dialog-db dependencies point at the
+//! branch holding that bump until it is tagged.
 
 use std::collections::HashMap;
 use std::io;
