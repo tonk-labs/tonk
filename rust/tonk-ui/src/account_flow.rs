@@ -3858,6 +3858,127 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn profile_library_repairs_claims_from_an_old_account_writer(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "profile-library-upgrade@example.com";
+        const NAME: &str = "Profile Library Owner";
+        const SPACE: &str = "Profile Library Sentinel";
+
+        let (generation_a, generation_b) =
+            crate::service_worker_upgrade::tests::prepare_profile_library_generations(&env)?;
+        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
+        crate::service_worker_upgrade::tests::wait_for_complete_generation(
+            &owner,
+            &generation_a,
+            None,
+            None,
+        )
+        .await?;
+        sign_up(&owner, &env, EMAIL).await?;
+        successful_body(
+            "name the account",
+            &post_json(
+                &owner,
+                "/api/account/display-name",
+                serde_json::json!({ "name": NAME }),
+            )
+            .await?,
+        );
+        let _space = create_space(&owner, SPACE).await?;
+        successful_body(
+            "publish the populated historical profile",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+        goto(&owner, env.tonk_web.as_str()).await?;
+        enter_hub(&owner).await?;
+        wait_for_text_containing(&owner, "body", "no spaces yet").await?;
+        wait_for_text_containing(&owner, "body", SPACE).await?;
+        owner.enter_default_frame().await?;
+
+        let (old_writer, _old_authenticator) =
+            second_device_with_same_passkey(&env, &owner, &authenticator).await?;
+        crate::service_worker_upgrade::tests::wait_for_complete_generation(
+            &old_writer,
+            &generation_a,
+            None,
+            None,
+        )
+        .await?;
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
+        raise_cluster_from_hub(&old_writer, &env).await?;
+        run_cluster_login(&old_writer, EMAIL).await?;
+        let old_health = get_json(&old_writer, "/api/health").await?;
+        anyhow::ensure!(
+            old_health["body"]["build"] == generation_a.build,
+            "the competing writer did not remain on generation A: {old_health}"
+        );
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
+
+        crate::service_worker_upgrade::tests::promote_second_generation(&env)?;
+        owner.enter_default_frame().await?;
+        owner.refresh().await?;
+        crate::service_worker_upgrade::tests::wait_for_complete_generation(
+            &owner,
+            &generation_b,
+            None,
+            Some(&generation_a.build),
+        )
+        .await?;
+        goto(&owner, env.tonk_web.as_str()).await?;
+        enter_hub(&owner).await?;
+        wait_for_text_without(&owner, "body", "no spaces yet").await?;
+        wait_for_text_containing(&owner, "body", SPACE).await?;
+        owner.enter_default_frame().await?;
+
+        successful_body(
+            "publish stale profile claims from generation A",
+            &post_json(&old_writer, "/api/sync", serde_json::json!({})).await?,
+        );
+        crate::service_worker_upgrade::tests::cached_profile_library_digest(
+            &old_writer,
+            &generation_a,
+        )
+        .await?;
+        goto(&old_writer, env.tonk_web.as_str()).await?;
+        enter_hub(&old_writer).await?;
+        wait_for_text_containing(&old_writer, "body", "no spaces yet").await?;
+        wait_for_text_containing(&old_writer, "body", SPACE).await?;
+        old_writer.enter_default_frame().await?;
+        successful_body(
+            "repair stale profile claims on generation B",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+        goto(&owner, env.tonk_web.as_str()).await?;
+        enter_hub(&owner).await?;
+        wait_for_text_without(&owner, "body", "no spaces yet").await?;
+        wait_for_text_containing(&owner, "body", SPACE).await?;
+        owner.enter_default_frame().await?;
+        await_account_name(&owner, NAME).await?;
+
+        old_writer.quit().await?;
+        successful_body(
+            "settle the first unchanged current sweep",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+        successful_body(
+            "settle the second unchanged current sweep",
+            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
+        );
+        owner.quit().await?;
+        Ok(())
+    }
+
     /// The tap-bound assertion hands clone-safe PRF bytes to the worker,
     /// never `CryptoKey` handles. Keep the real virtual-authenticator
     /// ceremony and intercept only the final service-worker post.
