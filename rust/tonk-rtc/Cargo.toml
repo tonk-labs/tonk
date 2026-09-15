@@ -21,7 +21,17 @@ tracing = { workspace = true }
 # `webrtc` pulls a UDP/ICE stack that does not build for wasm32, and the
 # browser half of this ceremony uses the platform's own
 # `RTCPeerConnection` rather than anything from this crate.
+[features]
+# Run iroh over a WebRTC data channel, so a peer gets QUIC streams
+# instead of 64 KiB messages and one endpoint address can hold a local
+# WebRTC route beside a relay and an IP one. `unstable-custom-transports`
+# is unstable by name, so iroh is pinned exactly.
+iroh = ["dep:iroh", "dep:bytes", "dep:n0-watcher"]
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bytes = { workspace = true, optional = true }
+iroh = { version = "=1.2.0", features = ["unstable-custom-transports"], optional = true }
+n0-watcher = { version = "1.0", optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["form", "http1", "tokio"] }
 tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time"] }
