@@ -2973,6 +2973,8 @@ struct PreparedProfileLibrary {
     assertions: Vec<super::claim::RawClaim>,
 }
 
+type ProfileLibraryReceipts = HashMap<String, (String, Option<dialog_repository::Revision>)>;
+
 /// Worker-scoped profile-library input and the last profile revision whose
 /// system-library claims were fully checked.
 ///
@@ -2982,9 +2984,7 @@ struct PreparedProfileLibrary {
 /// pull, profile replacement, or development asset change reuse the receipt.
 #[derive(Clone, Default)]
 pub(crate) struct ProfileLibraryCache {
-    receipt: std::sync::Arc<
-        std::sync::Mutex<HashMap<String, (String, Option<dialog_repository::Revision>)>>,
-    >,
+    receipt: std::sync::Arc<std::sync::Mutex<ProfileLibraryReceipts>>,
     input: std::sync::Arc<tokio::sync::Mutex<Option<PreparedProfileLibrary>>>,
     #[cfg(test)]
     acquisitions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
