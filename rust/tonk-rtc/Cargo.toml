@@ -26,4 +26,8 @@ webrtc = "0.20.5"
 # needs `io-util`. Target-gated for the same reason the runtime deps
 # above are: tokio's `net` pulls `mio`, which does not build for wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# `env_logger` surfaces the `log` records the ICE/DTLS stack emits, which
+# is how the direct-dial spike tells "rejected the binding request" apart
+# from "never received one".
+env_logger = "0.11"
 tokio = { workspace = true, features = ["rt", "macros", "net", "sync", "time", "io-util"] }

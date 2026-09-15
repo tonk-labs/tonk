@@ -185,6 +185,60 @@ Signalling through the space also removes the delivery problem above
 entirely: no loopback hop means no iframe, no popup, no gesture and no
 button.
 
+## Can the browser just dial the CLI, with nothing coming back?
+
+Nearly. Measured, not reasoned about — see
+`rust/tonk-rtc/examples/direct_dial.rs`, which is kept so the findings
+can be re-checked against a later `webrtc` release.
+
+The idea is libp2p's WebRTC-Direct: browsers refuse to let you munge
+your own local SDP, but `setRemoteDescription` accepts any well-formed
+SDP. So a browser can synthesise the CLI's half of the handshake from a
+published address record, build its own offer locally, and dial — with
+nothing travelling back. For that the CLI must stop needing the three
+things an answer would carry.
+
+What the measurements found, on `webrtc` 0.20.5:
+
+| The CLI would need | Verdict |
+| --- | --- |
+| The peer's DTLS fingerprint | **Not needed.** `disable_certificate_fingerprint_verification(true)` works. The browser still checks the CLI against the published certhash, so the connection is one-way authenticated. |
+| The peer's ICE candidates | **Not needed.** A peer-reflexive candidate is formed from the source address of the first check. |
+| The peer's `ice-ufrag` | **Needed.** Username validation checks both halves; a placeholder is rejected outright. |
+| The peer's `ice-pwd` | **Needed — because `set_lite(true)` does not suppress outgoing checks.** Despite lite mode the agent pings, signing with the remote password; a wrong one draws a `401` and the pair never validates. This contradicts the setting's own docs and is worth reporting upstream. |
+
+Two supporting facts. Chromium dials a `127.0.0.1` remote candidate
+without complaint, from `http` and `https` origins alike — that doubt
+turned out to be nothing. And there is no UDP mux
+(`SettingEngine::set_udp_network` is commented out as `/*todo:*/`), so
+libp2p's trick of reading the peer's ufrag off the first STUN packet
+before building a peer connection is not available without upstream
+work.
+
+So zero-information dialling is out, but the gap is two short strings
+rather than a whole answer, and **neither side has to wait for a reply**:
+
+```
+peer/<did>  dialable  { host, port, certhash, ufrag, pwd }   ← CLI, on start
+peer/<did>  dialing   { to, ufrag, pwd }                     ← dialer, on dial
+```
+
+The dialer builds its offer locally, publishes its two strings, and
+starts sending checks immediately; ICE retransmits, so checks are still
+arriving while the far side picks the record up. No callback, no iframe,
+no popup, no button.
+
+**The number this lives or dies on:** Chromium abandons failed checks
+after roughly thirty seconds, so sync has to deliver the `dialing` fact
+inside that window or the dial fails and must be retried. Worth
+measuring against real sync latency before committing to this.
+
+It also does not survive NAT — the CLI must be reachable by UDP at the
+published address, and the dialer cannot help it hole-punch without a
+round trip. Same machine and same LAN, yes; anything wider needs the
+offer/answer path as a fallback. One address record, two dial methods.
+
+
 ## Running it
 
 Against a dev server:
