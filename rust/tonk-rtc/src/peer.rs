@@ -14,36 +14,32 @@
 //! connection starts forming before gathering finishes. That needs a
 //! *live* signalling channel in both directions.
 //!
-//! This PoC's channel is a pair of browser navigations (see
-//! [`crate::loopback`]) — one message each way, nothing left open
-//! afterwards. So we wait for gathering to complete and ship a single
-//! description with every candidate already in it. On loopback that
-//! wait is milliseconds; across a real network with STUN it is a second
-//! or two of dead air before the browser can even answer.
-//!
-//! That tradeoff belongs to the *signalling channel*, not to this
-//! module. Once descriptions travel as facts in a replicated space —
-//! a channel that stays open — [`Offering::gather`] is the thing to
-//! delete, and `on_ice_candidate` becomes the thing to implement.
+//! This ceremony's channel carries one message each way and then closes,
+//! so we wait for gathering and ship a single description with every
+//! candidate already in it. The wait is bounded: "complete" is not
+//! guaranteed to arrive promptly (an unreachable STUN server, an odd
+//! network stack), the description already carries every candidate found
+//! so far, and an unbounded wait is a hang — observed, not theorised.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
-use webrtc::data_channel::{DataChannel, DataChannelEvent};
-use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState, RTCSessionDescription,
-    SettingEngine,
-};
+use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::setting_engine::SettingEngine;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::signal::{Description, Role};
 
 /// How long to wait for ICE gathering before shipping what we have.
-///
-/// This ceremony sends one description and then closes the signalling
-/// channel, so candidates found after this point are lost — hence the
-/// wait at all. Bounded because an unbounded one is a hang.
-const GATHER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+const GATHER_DEADLINE: Duration = Duration::from_secs(3);
 
 /// The data channel label both peers agree on.
 ///
@@ -57,7 +53,7 @@ pub const CHANNEL_LABEL: &str = "tonk";
 pub enum PeerError {
     /// The WebRTC stack refused an operation.
     #[error("webrtc: {0}")]
-    WebRtc(#[from] webrtc::error::Error),
+    WebRtc(#[from] webrtc::Error),
     /// A session description could not be read.
     #[error(transparent)]
     Signal(#[from] crate::signal::DecodeError),
@@ -79,40 +75,10 @@ fn fire<T>(trigger: &Trigger<T>, value: T) {
     }
 }
 
-/// Watches the connection for the two moments this crate cares about:
-/// ICE gathering finishing, and the connection giving up.
-struct Watcher {
-    gathered: Trigger<()>,
-    lost: Trigger<()>,
-}
-
-#[async_trait::async_trait]
-impl PeerConnectionEventHandler for Watcher {
-    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
-        if state == RTCIceGatheringState::Complete {
-            fire(&self.gathered, ());
-        }
-    }
-
-    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        if matches!(
-            state,
-            RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Closed
-                | RTCPeerConnectionState::Disconnected
-        ) {
-            // Also release anyone still waiting on gathering: a
-            // connection that died mid-gather will never complete it.
-            fire(&self.lost, ());
-            fire(&self.gathered, ());
-        }
-    }
-}
-
 /// A peer that has made an offer and is waiting for the answer.
 pub struct Offering {
-    connection: Arc<dyn PeerConnection>,
-    channel: Arc<dyn DataChannel>,
+    connection: Arc<RTCPeerConnection>,
+    channel: Arc<RTCDataChannel>,
     inbound: mpsc::UnboundedReceiver<String>,
     opened: oneshot::Receiver<Result<(), PeerError>>,
     offer: Description,
@@ -120,9 +86,25 @@ pub struct Offering {
 
 /// An open data channel to the browser peer.
 pub struct Session {
-    connection: Arc<dyn PeerConnection>,
-    channel: Arc<dyn DataChannel>,
+    connection: Arc<RTCPeerConnection>,
+    channel: Arc<RTCDataChannel>,
     inbound: AsyncMutex<mpsc::UnboundedReceiver<String>>,
+}
+
+/// The settings every peer in this crate is built with.
+///
+/// The mDNS mode is set explicitly even though it matches this
+/// version's default, because the default is exactly the kind of thing
+/// a version bump changes underneath you — the 0.20 line of this crate
+/// flips it to `Disabled`, which silently breaks every browser
+/// connection. `QueryOnly` ACCEPTS a peer's mDNS candidates; Chrome and
+/// Safari emit only mDNS host candidates (`<uuid>.local`) by default,
+/// to avoid leaking private IPs to a page, so a peer that discards them
+/// can never connect to a browser at all.
+fn settings() -> SettingEngine {
+    let mut engine = SettingEngine::default();
+    engine.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::QueryOnly);
+    engine
 }
 
 /// Build a peer, create the data channel, and produce the offer.
@@ -132,51 +114,25 @@ pub struct Session {
 /// skipping STUN takes a network round-trip out of the ceremony. Supply
 /// a STUN URL when the peers are on different networks.
 pub async fn offer(ice_servers: Vec<String>) -> Result<Offering, PeerError> {
-    let mut configuration = RTCConfigurationBuilder::default();
-    if !ice_servers.is_empty() {
-        configuration = configuration.with_ice_servers(vec![RTCIceServer {
-            urls: ice_servers,
-            ..Default::default()
-        }]);
-    }
+    let configuration = RTCConfiguration {
+        ice_servers: if ice_servers.is_empty() {
+            Vec::new()
+        } else {
+            vec![RTCIceServer {
+                urls: ice_servers,
+                ..Default::default()
+            }]
+        },
+        ..Default::default()
+    };
 
-    let gathered_trigger: Trigger<()> = Arc::new(Mutex::new(None));
-    let lost_trigger: Trigger<()> = Arc::new(Mutex::new(None));
-    let (gathered_tx, gathered) = oneshot::channel();
-    let (lost_tx, lost) = oneshot::channel();
-    *gathered_trigger.lock().expect("fresh mutex") = Some(gathered_tx);
-    *lost_trigger.lock().expect("fresh mutex") = Some(lost_tx);
-
-    let connection: Arc<dyn PeerConnection> = Arc::new(
-        PeerConnectionBuilder::new()
-            .with_configuration(configuration.build())
-            .with_handler(Arc::new(Watcher {
-                gathered: gathered_trigger,
-                lost: lost_trigger,
-            }))
-            // NOT optional, despite looking like a no-op.
-            //
-            // `PeerConnectionBuilder`'s own default is
-            // `MulticastDnsMode::Disabled`, which DISCARDS remote mDNS
-            // candidates. Chrome and Safari emit only mDNS host
-            // candidates (`<uuid>.local`) by default, to avoid leaking
-            // private IPs to a page — so against the builder default a
-            // browser offer arrives with every candidate dropped and no
-            // connection can ever form. `SettingEngine`'s default is
-            // `QueryOnly`: resolve the peer's mDNS names, without
-            // publishing our own host IPs as mDNS names.
-            //
-            // The consequence to remember: a same-machine connection
-            // depends on mDNS resolution working on the host. It does on
-            // an ordinary desktop; it does not inside a container with
-            // no multicast.
-            .with_setting_engine(SettingEngine::default())
-            // Port 0 on every interface: the OS picks, and every local
-            // address becomes a host candidate.
-            .with_udp_addrs(vec!["0.0.0.0:0"])
-            .build()
-            .await?,
-    );
+    // A data-channel-only peer registers no codecs and no interceptors:
+    // both exist to serve media tracks this connection will never carry.
+    let api = APIBuilder::new()
+        .with_media_engine(MediaEngine::default())
+        .with_setting_engine(settings())
+        .build();
+    let connection = Arc::new(api.new_peer_connection(configuration).await?);
 
     // Creating the channel BEFORE the offer is what puts an
     // `m=application` section in the SDP. Create it after and the offer
@@ -184,19 +140,52 @@ pub async fn offer(ice_servers: Vec<String>) -> Result<Offering, PeerError> {
     // nothing to answer and no channel ever opens.
     let channel = connection.create_data_channel(CHANNEL_LABEL, None).await?;
 
-    let (opened_tx, opened) = oneshot::channel();
     let (messages, inbound) = mpsc::unbounded_channel();
-    pump(channel.clone(), messages, opened_tx, lost);
+    channel.on_message(Box::new(move |message: DataChannelMessage| {
+        let messages = messages.clone();
+        Box::pin(async move {
+            // A PoC chat channel carries text. Anything that is not
+            // valid UTF-8 comes from a peer we do not understand; drop
+            // it rather than guess an encoding.
+            if let Ok(text) = String::from_utf8(message.data.to_vec()) {
+                let _ = messages.send(text);
+            }
+        })
+    }));
+
+    // One signal resolved by whichever happens first: the channel opens,
+    // or the connection gives up. Without the failure arm a peer that
+    // never connects leaves the caller awaiting forever.
+    let (opened_tx, opened) = oneshot::channel();
+    let ready: Trigger<Result<(), PeerError>> = Arc::new(Mutex::new(Some(opened_tx)));
+
+    let on_open = ready.clone();
+    channel.on_open(Box::new(move || {
+        fire(&on_open, Ok(()));
+        Box::pin(async {})
+    }));
+
+    let on_state = ready.clone();
+    connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected
+        ) {
+            fire(&on_state, Err(PeerError::ConnectionFailed));
+        }
+        Box::pin(async {})
+    }));
 
     let local = connection.create_offer(None).await?;
-    connection.set_local_description(local).await?;
 
-    // Awaited only after `set_local_description`, which is what starts
-    // gathering — and bounded, because "complete" is not guaranteed to
-    // arrive promptly (an unreachable STUN server, a host with no
-    // multicast). The description already carries every candidate found
-    // so far, so a timeout ships those rather than hanging.
-    let _ = tokio::time::timeout(GATHER_DEADLINE, gathered).await;
+    // Taken BEFORE `set_local_description`, which is what starts
+    // gathering: take it after and the completion it waits for may
+    // already have fired.
+    let mut gathered = connection.gathering_complete_promise().await;
+    connection.set_local_description(local).await?;
+    let _ = tokio::time::timeout(GATHER_DEADLINE, gathered.recv()).await;
 
     let offer = connection
         .local_description()
@@ -210,63 +199,6 @@ pub async fn offer(ice_servers: Vec<String>) -> Result<Offering, PeerError> {
         opened,
         offer: Description::offer(offer.sdp),
     })
-}
-
-/// Drain the channel's event stream for as long as it lives.
-///
-/// Reports the channel opening (or the connection dying first) through
-/// `opened`, and forwards every text message to `messages`. Dropping
-/// the receivers is how a caller unsubscribes: the sends start failing
-/// and the task falls out of its loop.
-fn pump(
-    channel: Arc<dyn DataChannel>,
-    messages: mpsc::UnboundedSender<String>,
-    opened: oneshot::Sender<Result<(), PeerError>>,
-    lost: oneshot::Receiver<()>,
-) {
-    tokio::spawn(async move {
-        let mut opened = Some(opened);
-        // A connection that fails before the channel opens must release
-        // the caller, so the failure signal races the event stream.
-        tokio::pin!(lost);
-
-        loop {
-            let event = tokio::select! {
-                event = channel.poll() => event,
-                _ = &mut lost => {
-                    if let Some(opened) = opened.take() {
-                        let _ = opened.send(Err(PeerError::ConnectionFailed));
-                    }
-                    return;
-                }
-            };
-
-            match event {
-                Some(DataChannelEvent::OnOpen) => {
-                    if let Some(opened) = opened.take() {
-                        let _ = opened.send(Ok(()));
-                    }
-                }
-                Some(DataChannelEvent::OnMessage(message)) => {
-                    // A PoC chat channel carries text. Anything that is
-                    // not valid UTF-8 comes from a peer we do not
-                    // understand; drop it rather than guess an encoding.
-                    if let Ok(text) = String::from_utf8(message.data.to_vec())
-                        && messages.send(text).is_err()
-                    {
-                        return;
-                    }
-                }
-                Some(DataChannelEvent::OnClose) | None => {
-                    if let Some(opened) = opened.take() {
-                        let _ = opened.send(Err(PeerError::ConnectionFailed));
-                    }
-                    return;
-                }
-                Some(_) => {}
-            }
-        }
-    });
 }
 
 impl Offering {
@@ -293,8 +225,8 @@ impl Offering {
                 inbound: AsyncMutex::new(self.inbound),
             }),
             Ok(Err(error)) => Err(error),
-            // The pump dropped its sender without sending, which means
-            // the task itself went away.
+            // The sender was dropped without sending, which means the
+            // connection object went away underneath us.
             Err(_) => Err(PeerError::ConnectionFailed),
         }
     }
@@ -303,7 +235,7 @@ impl Offering {
 impl Session {
     /// Send one text message to the browser.
     pub async fn send(&self, text: &str) -> Result<(), PeerError> {
-        self.channel.send_text(text).await?;
+        self.channel.send_text(text.to_owned()).await?;
         Ok(())
     }
 

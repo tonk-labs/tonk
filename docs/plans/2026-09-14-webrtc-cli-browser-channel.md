@@ -15,7 +15,7 @@ Three pieces:
 | Where | What |
 | --- | --- |
 | `rust/tonk-rtc/src/signal.rs` | The session-description envelope both halves agree on, and its URL-safe encoding. Target-agnostic, plain serde data. |
-| `rust/tonk-rtc/src/peer.rs` | The native peer (webrtc-rs 0.20). Offers, then talks. |
+| `rust/tonk-rtc/src/peer.rs` | The native peer (webrtc-rs 0.17 — see below for why not 0.20). Offers, then talks. |
 | `rust/tonk-rtc/src/loopback.rs` | Same-machine signalling: a loopback listener the browser navigates back to. |
 | `rust/tonk-ui/assets/rtc.mjs` | The browser half, on the bare `/rtc` route. |
 | `rust/tonk-cli/src/rtc.rs` | The `tonk rtc connect` command and the stdin/stdout relay. |
@@ -190,8 +190,9 @@ button.
 ## Dialling with no answer at all
 
 Yes, and it is the design to build. Measured, not reasoned about — see
-`rust/tonk-rtc/examples/direct_dial.rs`, which is kept so the findings
-can be re-checked against a later `webrtc` release.
+the `direct_dial` spike (removed once this crate moved off 0.20, since
+it measured that version specifically; recovered from git history if the
+raw instrument is ever wanted again).
 
 The idea is libp2p's WebRTC-Direct: browsers refuse to let you munge
 your own local SDP, but `setRemoteDescription` accepts any well-formed
@@ -246,7 +247,13 @@ nothing for the dialer to publish.
 
 ### What it costs
 
-- Move to `webrtc` 0.17 and port `peer.rs` to its callback API.
+- ~~Move to `webrtc` 0.17 and port `peer.rs` to its callback API.~~
+  **Done.** The port compiled first try and the browser end-to-end
+  passes unchanged on it. 0.17 also re-exports `webrtc::ice`, so the ICE
+  types are nameable without a version-locked second dependency, and its
+  `MulticastDnsMode` default is already `QueryOnly` — set explicitly
+  anyway, since a default is exactly what a version bump changes
+  underneath you.
 - A UDP mux keyed on the STUN `USERNAME` (libp2p's is ~350 lines and
   `pub(crate)`, so it is a reimplementation, not a dependency).
 - A persisted certificate, so the published certhash survives a restart.
