@@ -34,6 +34,10 @@
 //! [`RTCDataChannel`]: https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel
 //! [`RTCPeerConnection`]: https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection
 
+/// Choosing which page carries an operation, and failing it over.
+/// Target-agnostic: this is the policy `tonk-worker` needs, with no
+/// worker, no `postMessage` and no WebRTC in it.
+pub mod dispatch;
 pub mod signal;
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -410,6 +410,87 @@ the cross-target session layer the 0.17 port needs. And if CLI-to-CLI
 mesh with discovery ever becomes a product feature rather than a
 workaround, this is how a browser joins that mesh.
 
+## Choosing which tab carries an operation
+
+`RTCPeerConnection` is `[Exposed=Window]`, so the worker cannot hold a
+channel. The replica and the sync engine are in the worker, the channels
+are in the pages, and every operation crosses worker → page → CLI and
+back. The worker has to pick a page.
+
+`rust/tonk-rtc/src/dispatch.rs` is that decision and nothing else — no
+worker, no `postMessage`, no WebRTC — so every failure path is reachable
+in a test without a browser. It compiles for wasm32, which is what lets
+the worker use it.
+
+### The answer does not arrive everywhere
+
+Each page holds its own `RTCPeerConnection`: separate DTLS session,
+separate SCTP association, separate data channel. Point-to-point, no
+broadcast. So the CLI's answer comes back on the channel that carried
+the request, to the page that sent it — pairing is automatic, and the
+failure to handle is narrow: a page that dies after sending loses the
+answer with its channel, and the request must be re-issued elsewhere.
+
+That is safe because the remote effects are idempotent: `archive::Put`
+of a content-addressed block is a no-op on repeat and `memory::Publish`
+is a compare-and-swap. Worth stating because it is load-bearing — add a
+non-idempotent effect and retrying silently stops being safe.
+
+### Ranked by visibility, because frozen tabs do not announce it
+
+Browsers freeze and throttle background tabs. A frozen tab does not say
+so; it stops answering. The visible tab is the one the browser
+guarantees is running, so "most recently visible" is a liveness
+heuristic rather than an arbitrary tiebreak.
+
+### Two deadlines, because they detect different things
+
+An unacknowledged request means the page is not running, and should be
+abandoned in about a second. An acknowledged request with no answer
+means the page is alive and the CLI is working, which may legitimately
+take much longer. A single deadline would have to be either so short it
+sheds healthy slow work or so long a frozen tab stalls sync behind it.
+
+The split pays for itself a second time. When a page fails to
+acknowledge it is **demoted**, not merely skipped for that request —
+otherwise it stays the most-recently-visible candidate and every queued
+operation pays the ack deadline again before reaching the same
+conclusion. Ten queued operations, ten wasted deadlines, serially. A
+page that *did* acknowledge keeps its standing, because the timeout
+says nothing about the page.
+
+### A whole session is pinned to one page
+
+Dialog's push writes blocks in reference order, children before parents,
+so that every prefix of an interrupted push leaves the remote
+closure-complete. `dialog-repository`'s own note is emphatic that this
+is a protocol invariant rather than a nicety: another pusher's existence
+probes prune a whole subtree on one positive answer, which is sound only
+if a block's presence implies the presence of everything it references.
+
+Spreading one push across pages breaks it — two pages write over
+separate SCTP associations with no ordering between them — and the
+damage is not self-contained, because it makes a *different* pusher's
+probes unsound. So a session is pinned to a page for its whole life,
+even when a better candidate appears mid-session.
+
+The same invariant is what makes failover safe: an interrupted push left
+the remote closure-complete, so the session simply restarts elsewhere
+with nothing to undo.
+
+### Giving up is a normal outcome
+
+When every page is frozen — the person switched to another application
+— there is no live carrier and waiting is not the answer. The dispatcher
+reports `Abandon` and the caller falls back to the ordinary remote.
+WebRTC here is an accelerator, never the only path.
+
+Note this is *not* the same as "no pages at all": with no clients there
+is no service worker either (absent Web Push or periodic background
+sync, which tonk has neither), so nothing is running to need a fallback.
+If either is ever added, a worker can wake with no clients and
+`Abandon { NoPage }` becomes a live path rather than a guard.
+
 ## Running it
 
 Against a dev server:
