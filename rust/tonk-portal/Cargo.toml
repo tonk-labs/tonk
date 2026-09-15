@@ -31,6 +31,8 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "CssStyleDeclaration",
+    "CustomEvent",
+    "CustomEventInit",
     "CustomElementRegistry",
     "Document",
     "Element",

@@ -323,7 +323,25 @@ mod dom {
                 return;
             };
             let next = !is_enabled(&repo);
-            if set_enabled(&repo, next) {
+            let stored = set_enabled(&repo, next);
+            crate::analytics::instant(
+                tonk_analytics::product::Journey::Sync,
+                if next {
+                    tonk_analytics::product::ProductAction::EnableSync
+                } else {
+                    tonk_analytics::product::ProductAction::PauseSync
+                },
+                tonk_analytics::product::Surface::Workspace,
+                tonk_analytics::product::Trigger::User,
+                tonk_analytics::product::Stage::LocalCommit,
+                if stored {
+                    tonk_analytics::product::ProductResult::Success
+                } else {
+                    tonk_analytics::product::ProductResult::TerminalFailure
+                },
+                (!stored).then_some(tonk_analytics::product::FailureKind::LocalState),
+            );
+            if stored {
                 request_status_refresh(&repo);
             }
         }) as Box<dyn FnMut(Event)>);

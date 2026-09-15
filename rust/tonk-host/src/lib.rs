@@ -58,6 +58,8 @@ pub mod events {
 // Wasm-only — the installed host, transport, and event-dispatch
 // glue all assume a browser environment.
 #[cfg(target_arch = "wasm32")]
+pub mod analytics;
+#[cfg(target_arch = "wasm32")]
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consumer;
