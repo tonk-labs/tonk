@@ -539,7 +539,12 @@ impl Mediation {
 /// the passkey is a decision, not a fault.
 fn report(error: &str) {
     if error.starts_with("NotAllowedError") {
-        web_sys::console::debug_1(&"custody: the passkey prompt was dismissed".into());
+        // Debug level, but with the browser's own text: a refusal the
+        // person never saw (a bad allow-list id reads the same as a
+        // dismissed prompt) is only distinguishable by it.
+        web_sys::console::debug_1(
+            &format!("custody: the passkey prompt was dismissed ({error})").into(),
+        );
     } else {
         web_sys::console::warn_1(&format!("custody: {error}").into());
     }
