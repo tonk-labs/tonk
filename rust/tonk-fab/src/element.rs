@@ -38,6 +38,7 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::{Function, Object, Promise, Reflect};
+use tonk_analytics::product::{Journey, ProductAction, ProductEvent, Stage, Surface, Trigger};
 use tonk_common::log;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -676,6 +677,20 @@ fn navigate(path: &str) {
 /// No remote is supplied by the page: the worker resolves where the space
 /// syncs from the account's provider registration.
 fn create_space() {
+    let event = ProductEvent::started(
+        Journey::Space,
+        ProductAction::CreateSpace,
+        Stage::Intent,
+        Surface::Workspace,
+        Trigger::User,
+        tonk_analytics::product::attempt_id(),
+    );
+    if let Ok(properties) = event.validated_properties() {
+        tonk_host::analytics::capture(
+            tonk_analytics::event::PRODUCT,
+            &serde_json::Value::Object(properties),
+        );
+    }
     let claim = crate::logic::create_space_claim_json("Untitled");
     transact(&claim);
 }

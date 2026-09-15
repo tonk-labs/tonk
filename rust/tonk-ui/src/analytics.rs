@@ -23,12 +23,30 @@
 // The wasm-bindgen executor needs no initialization: `install()` runs from
 // the ui binary's `main`, which mounts custom elements rather than starting a
 // framework runtime, so there is no global executor to spawn onto.
+use std::cell::RefCell;
+
 use wasm_bindgen_futures::spawn_local;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::api;
+
+thread_local! {
+    static STARTUP: RefCell<Option<StartupAttempt>> = const { RefCell::new(None) };
+    static PENDING_CREATE: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
+    static PENDING_JOIN: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
+}
+
+struct StartupAttempt {
+    attempt_id: String,
+    started_ms: f64,
+}
+
+struct WorkerAttempt {
+    attempt_id: String,
+    started_ms: f64,
+}
 
 /// Install the panic hook and, when analytics is enabled, boot
 /// capture. Call exactly once, before mounting the shell.
@@ -44,7 +62,71 @@ pub fn install() {
     );
     capture_current_pageview();
     attach_listeners();
+    start_startup_attempt();
     spawn_local(identify());
+}
+
+fn start_startup_attempt() {
+    let attempt_id = tonk_analytics::product::attempt_id();
+    let event = tonk_analytics::product::ProductEvent::started(
+        tonk_analytics::product::Journey::Startup,
+        tonk_analytics::product::ProductAction::ProductReady,
+        tonk_analytics::product::Stage::Intent,
+        tonk_analytics::product::Surface::Shell,
+        tonk_analytics::product::Trigger::Automatic,
+        attempt_id.clone(),
+    );
+    let _ = tonk_analytics::web::capture_product(&event);
+    STARTUP.with(|slot| {
+        *slot.borrow_mut() = Some(StartupAttempt {
+            attempt_id,
+            started_ms: js_sys::Date::now(),
+        });
+    });
+}
+
+/// Record a startup checkpoint reached by the UI entrypoint.
+pub fn startup_checkpoint(stage: tonk_analytics::product::Stage) {
+    STARTUP.with(|slot| {
+        let binding = slot.borrow();
+        let Some(attempt) = binding.as_ref() else {
+            return;
+        };
+        let event = tonk_analytics::product::ProductEvent::checkpoint(
+            tonk_analytics::product::Journey::Startup,
+            tonk_analytics::product::ProductAction::ProductReady,
+            stage,
+            tonk_analytics::product::Surface::Shell,
+            tonk_analytics::product::Trigger::Automatic,
+            attempt.attempt_id.clone(),
+        );
+        let _ = tonk_analytics::web::capture_product(&event);
+    });
+}
+
+/// Finish startup once with a typed outcome.
+pub fn finish_startup(
+    stage: tonk_analytics::product::Stage,
+    result: tonk_analytics::product::ProductResult,
+    failure: Option<tonk_analytics::product::FailureKind>,
+) {
+    STARTUP.with(|slot| {
+        let Some(attempt) = slot.borrow_mut().take() else {
+            return;
+        };
+        let event = tonk_analytics::product::ProductEvent::finished(
+            tonk_analytics::product::Journey::Startup,
+            tonk_analytics::product::ProductAction::ProductReady,
+            stage,
+            tonk_analytics::product::Surface::Shell,
+            tonk_analytics::product::Trigger::Automatic,
+            attempt.attempt_id,
+            (js_sys::Date::now() - attempt.started_ms).max(0.0) as u64,
+            result,
+            failure,
+        );
+        let _ = tonk_analytics::web::capture_product(&event);
+    });
 }
 
 /// Reduce the browser landing URL and referrer to the closed attribution
@@ -192,13 +274,85 @@ fn attach_listeners() {
             .map(String::from)
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        tonk_analytics::web::capture(&name, &props);
+        if name != tonk_analytics::event::PRODUCT {
+            return;
+        }
+        if tonk_analytics::web::capture_product_properties(&props).is_ok() {
+            remember_worker_attempt(&props);
+            if props.get("action").and_then(|value| value.as_str()) == Some("activate_sheet") {
+                tonk_analytics::web::capture(
+                    tonk_analytics::event::SHEET_ACTIVATED,
+                    &serde_json::json!({
+                        "trigger": props.get("trigger").cloned().unwrap_or_default()
+                    }),
+                );
+            }
+        }
     });
     let _ = window
         .add_event_listener_with_callback("tonk:analytics", on_custom.as_ref().unchecked_ref());
     on_custom.forget();
 
+    let on_guest_ready = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        finish_startup(
+            tonk_analytics::product::Stage::Ready,
+            tonk_analytics::product::ProductResult::Success,
+            None,
+        );
+    });
+    let _ = window.add_event_listener_with_callback(
+        "tonk:guest-ready",
+        on_guest_ready.as_ref().unchecked_ref(),
+    );
+    on_guest_ready.forget();
+
     attach_worker_lifecycle_listener();
+}
+
+fn remember_worker_attempt(properties: &serde_json::Value) {
+    if properties.get("phase").and_then(|value| value.as_str()) != Some("started") {
+        return;
+    }
+    let Some(attempt_id) = properties
+        .get("attempt_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let attempt = WorkerAttempt {
+        attempt_id,
+        started_ms: js_sys::Date::now(),
+    };
+    match properties.get("action").and_then(|value| value.as_str()) {
+        Some("create_space") => PENDING_CREATE.with(|slot| *slot.borrow_mut() = Some(attempt)),
+        Some("join_space") => PENDING_JOIN.with(|slot| *slot.borrow_mut() = Some(attempt)),
+        _ => {}
+    }
+}
+
+fn finish_worker_attempt(
+    slot: &'static std::thread::LocalKey<RefCell<Option<WorkerAttempt>>>,
+    journey: tonk_analytics::product::Journey,
+    action: tonk_analytics::product::ProductAction,
+) {
+    slot.with(|slot| {
+        let Some(attempt) = slot.borrow_mut().take() else {
+            return;
+        };
+        let event = tonk_analytics::product::ProductEvent::finished(
+            journey,
+            action,
+            tonk_analytics::product::Stage::LocalCommit,
+            tonk_analytics::product::Surface::Workspace,
+            tonk_analytics::product::Trigger::User,
+            attempt.attempt_id,
+            (js_sys::Date::now() - attempt.started_ms).max(0.0) as u64,
+            tonk_analytics::product::ProductResult::Success,
+            None,
+        );
+        let _ = tonk_analytics::web::capture_product(&event);
+    });
 }
 
 /// Capture only typed, worker-confirmed lifecycle successes. The worker sends
@@ -220,12 +374,22 @@ fn attach_worker_lifecycle_listener() {
             }
             match message.event {
                 tonk_worker_api::AnalyticsEvent::SpaceCreated { space } => {
+                    finish_worker_attempt(
+                        &PENDING_CREATE,
+                        tonk_analytics::product::Journey::Space,
+                        tonk_analytics::product::ProductAction::CreateSpace,
+                    );
                     tonk_analytics::web::capture_space_conversion(
                         tonk_analytics::launch::SpaceConversion::Created,
                         &space,
                     );
                 }
                 tonk_worker_api::AnalyticsEvent::SpaceJoined { space } => {
+                    finish_worker_attempt(
+                        &PENDING_JOIN,
+                        tonk_analytics::product::Journey::Collaboration,
+                        tonk_analytics::product::ProductAction::JoinSpace,
+                    );
                     tonk_analytics::web::capture_space_conversion(
                         tonk_analytics::launch::SpaceConversion::Joined,
                         &space,
