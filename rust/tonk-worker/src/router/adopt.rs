@@ -1305,6 +1305,78 @@ mod tests {
         assert!(ensure_space_mounted(&tonk, suffix).await.unwrap());
     }
 
+    /// A page's `tonk:load` site stamp travels the transact route, so a
+    /// directory-listed space this device has not pulled must mount there
+    /// too, before the stamp acquires the branch. It did not: the stamp
+    /// found no branch and gave up silently, the guest's first query
+    /// mounted the space a moment later, and nothing re-ran the stamp, so
+    /// the site never resolved its route and the page sat on its loading
+    /// placeholder for good.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_a_first_transact() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_repository::SiteAddress;
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+
+        let foreign = Ed25519Signer::generate().await.unwrap();
+        let subject: dialog_varsig::Did = foreign.did();
+        let address = SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(
+            &tonk,
+            &subject,
+            &configuration,
+            Some("Foreign Space"),
+        )
+        .await;
+        assert!(
+            !super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the space must start unmounted for the pin to mean anything"
+        );
+
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let response = crate::router::transact::transact(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(crate::router::transact::TransactPath {
+                repo: subject.to_string(),
+                branch: "main".to_owned(),
+            }),
+            None,
+            None,
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from_static(b"{\"claims\":[]}"),
+        )
+        .await;
+        assert!(
+            response.is_ok(),
+            "a transact addressed to a directory space mounts it and lands: {:?}",
+            response.err()
+        );
+        let tonk = state.read().await;
+        assert!(
+            super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the transact route mounts the directory space before touching its branch"
+        );
+    }
+
     /// A mounted replica is not proof that its configuration is current.
     /// The account directory may have gained the remote and tracking facts
     /// after this device first recorded the local replica, so first use must
