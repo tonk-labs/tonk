@@ -49,14 +49,22 @@
 //!   each peer gets a bounded queue and a pump task. A full queue drops,
 //!   which is what a socket does and what QUIC expects.
 //!
-//! # Not yet buildable inside this workspace
+//! # The dependency conflict, and its fix
 //!
-//! `iroh 1.2` wants `ed25519-dalek 3.0.0-rc.0`, which needs the released
-//! `sha2 0.11`; `dialog-remote-s3` pulls `s3s 0.13`, which pins
-//! `sha2 = 0.11.0-rc.5` exactly. The two cannot coexist. `s3s` is at
-//! 0.16 upstream, so the likely fix is a bump in dialog-db rather than
-//! anything here — until then this module compiles only outside the
-//! workspace lock.
+//! `iroh 1.2` wants `ed25519-dalek 3.0.0-rc.0`, which needs the
+//! released `sha2 0.11`. `dialog-remote-s3` used to pull `s3s 0.13`,
+//! which pinned `sha2 = 0.11.0-rc.5` exactly, so the two could not share
+//! a binary at all.
+//!
+//! Fixed upstream by bumping dialog-db to `s3s 0.16`, which drops the
+//! pin. That bump was free: `s3s` is used there only by test helpers —
+//! a local S3 server — never the production path, and three minor
+//! versions needed no API change.
+//!
+//! With it, `tonk-cli` checks clean carrying **both** iroh and
+//! `dialog-remote-s3`. Until dialog-db is tagged and tonk's pin moved,
+//! building this feature needs a `[patch]` pointing at a local
+//! dialog-db checkout.
 
 use std::collections::HashMap;
 use std::io;
@@ -68,20 +76,12 @@ use bytes::Bytes;
 use iroh::endpoint::transports::{
     CustomEndpoint, CustomSender, CustomTransport, RecvInfo, Transmit,
 };
-use iroh_base_compat::CustomAddr;
+use iroh_base::CustomAddr;
 use tokio::sync::mpsc;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
-
-mod iroh_base_compat {
-    //! `CustomAddr` is re-exported by iroh itself; this alias keeps the
-    //! import readable and the path in one place.
-    pub use iroh::EndpointAddr as _EndpointAddr;
-    pub use iroh::TransportAddr as _TransportAddr;
-    pub use iroh_base::CustomAddr;
-}
 
 use crate::peer::PeerError;
 
