@@ -70,6 +70,15 @@ pub enum PeerError {
     /// The listener's certificate could not be minted or restored.
     #[error("could not establish this listener's identity: {0}")]
     Identity(String),
+    /// The port could not be bound — most often another listener
+    /// already holds it, which is the cost of a predictable default.
+    #[error("could not listen on port {port}: {detail}")]
+    Bind {
+        /// The port that could not be bound.
+        port: u16,
+        /// What the operating system said.
+        detail: String,
+    },
 }
 
 /// Forward every text message the channel receives onto a queue.

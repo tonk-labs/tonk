@@ -668,6 +668,11 @@ enum RtcCommand {
         /// Print the URL instead of opening a browser.
         #[arg(long)]
         no_open: bool,
+        /// Listen on this port instead of the default. A dialer assumes
+        /// the default, so a non-default port has to be configured at
+        /// the other end too.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
     },
 
     /// Negotiate a channel with a browser tab and relay text over it.
@@ -1398,8 +1403,8 @@ async fn main() {
             RtcCommand::Connect { via, no_open, stun } => {
                 tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun }).await
             }
-            RtcCommand::Listen { via, no_open } => {
-                tonk_cli::rtc::listen(tonk_cli::rtc::ListenOptions { via, no_open }).await
+            RtcCommand::Listen { via, no_open, port } => {
+                tonk_cli::rtc::listen(tonk_cli::rtc::ListenOptions { via, no_open, port }).await
             }
         }
         .map_or_else(print_failure, |()| ExitCode::Success),

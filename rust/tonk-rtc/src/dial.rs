@@ -61,6 +61,19 @@ use crate::identity::Identity;
 use crate::mux::Watching;
 use crate::peer::{CHANNEL_LABEL, PeerError, Session};
 
+/// The port a listener binds unless told otherwise.
+///
+/// The point of a default is that a dialer needs no coordination to
+/// find it — the same bargain a local HTTP daemon makes. Chosen from
+/// the dynamic/private range (49152–65535), where no registered service
+/// will collide with it.
+pub const DEFAULT_PORT: u16 = 51247;
+
+/// A default outside the dynamic range risks colliding with a
+/// registered service, and a dialer assumes this value — so moving it
+/// wrongly would silently break every cached address.
+const _: () = assert!(DEFAULT_PORT >= 49152);
+
 /// How many dials may be in flight or open at once.
 ///
 /// Reachability is not permission here — authorization happens per
@@ -239,14 +252,23 @@ async fn answer_dial(
 
 /// Start listening, and produce the address a peer can dial.
 ///
-/// The address stays valid for as long as this listener lives, and
-/// across restarts too when the same [`Identity`] is restored and the
-/// port is stable. Dials may arrive concurrently and repeatedly; each
-/// gets its own peer connection over the one shared port.
-pub async fn listen(identity: Identity) -> Result<Listener, PeerError> {
-    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+/// Binding [`DEFAULT_PORT`] is what makes the address predictable: a
+/// dialer that knows the fingerprint needs nothing else, the same way a
+/// page dials a local daemon on a port it assumes. Pass `0` for an
+/// ephemeral port when predictability does not matter — a test, or a
+/// second listener on one machine.
+///
+/// With a restored [`Identity`] and a fixed port the address survives a
+/// restart unchanged, so a dialer can cache it indefinitely. Dials may
+/// arrive concurrently and repeatedly; each gets its own peer
+/// connection over the one shared port.
+pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError> {
+    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
         .await
-        .map_err(|error| PeerError::Identity(error.to_string()))?;
+        .map_err(|error| PeerError::Bind {
+            port,
+            detail: error.to_string(),
+        })?;
     let port = socket
         .local_addr()
         .map_err(|error| PeerError::Identity(error.to_string()))?
@@ -320,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_published_address_carries_everything_a_dialer_needs() {
-        let listener = listen(Identity::generate().unwrap()).await.unwrap();
+        let listener = listen(Identity::generate().unwrap(), 0).await.unwrap();
         let address = listener.address();
         assert!(
             address.fingerprint.starts_with("sha-256 "),
@@ -337,7 +359,7 @@ mod tests {
     /// silently has nothing to dial without a loopback address.
     #[tokio::test]
     async fn a_loopback_address_is_published() {
-        let listener = listen(Identity::generate().unwrap()).await.unwrap();
+        let listener = listen(Identity::generate().unwrap(), 0).await.unwrap();
         assert!(
             listener
                 .address()
@@ -355,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn the_address_names_the_identity_it_was_given() {
         let identity = Identity::generate().unwrap();
-        let listener = listen(identity.clone()).await.unwrap();
+        let listener = listen(identity.clone(), 0).await.unwrap();
         assert_eq!(listener.address().fingerprint, identity.fingerprint());
     }
 
@@ -365,9 +387,9 @@ mod tests {
     #[tokio::test]
     async fn a_restored_identity_republishes_the_same_fingerprint() {
         let identity = Identity::generate().unwrap();
-        let before = listen(identity.clone()).await.unwrap();
+        let before = listen(identity.clone(), 0).await.unwrap();
         let restored = Identity::from_pem(&identity.to_pem()).unwrap();
-        let after = listen(restored).await.unwrap();
+        let after = listen(restored, 0).await.unwrap();
         assert_eq!(
             before.address().fingerprint,
             after.address().fingerprint,
@@ -378,8 +400,8 @@ mod tests {
     /// Every dial shares one port, so two listeners must not.
     #[tokio::test]
     async fn listeners_do_not_share_a_port() {
-        let first = listen(Identity::generate().unwrap()).await.unwrap();
-        let second = listen(Identity::generate().unwrap()).await.unwrap();
+        let first = listen(Identity::generate().unwrap(), 0).await.unwrap();
+        let second = listen(Identity::generate().unwrap(), 0).await.unwrap();
         assert_ne!(
             first.address().candidates[0].port,
             second.address().candidates[0].port

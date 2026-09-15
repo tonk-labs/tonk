@@ -98,6 +98,10 @@ pub struct ListenOptions {
     pub via: Option<String>,
     /// Print the URL instead of opening a browser.
     pub no_open: bool,
+    /// The UDP port to listen on. Defaults to
+    /// [`tonk_rtc::dial::DEFAULT_PORT`], which is what makes the
+    /// address predictable enough for a dialer to assume it.
+    pub port: Option<u16>,
 }
 
 /// Where this machine's WebRTC certificate lives.
@@ -172,7 +176,8 @@ fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> 
 pub async fn listen(options: ListenOptions) -> Result<()> {
     let page = answering_page(options.via.as_deref())?;
 
-    let listener = tonk_rtc::dial::listen(rtc_identity()?)
+    let port = options.port.unwrap_or(tonk_rtc::dial::DEFAULT_PORT);
+    let listener = tonk_rtc::dial::listen(rtc_identity()?, port)
         .await
         .context("could not start the WebRTC listener")?;
     let address = listener.address();
