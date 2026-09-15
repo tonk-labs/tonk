@@ -937,7 +937,8 @@ tr.entry.removed td { color: var(--wa-color-text-quiet); }
 .ordering-entity { color: var(--tonk-circle, #3d6da8); }
 .ordering-attribute { color: var(--tonk-triangle, #c89a2b); }
 .ordering-value { color: var(--tonk-square, #b94a3d); }
-.edition { margin-left: 4px; color: var(--wa-color-text-quiet); font-size: 0.9em; }
+.version { margin-left: 4px; color: var(--wa-color-text-quiet); font-size: 0.9em;
+  font-family: var(--wa-font-family-code, ui-monospace, monospace); }
 .col-attr { color: var(--tonk-triangle, #c89a2b); }
 /* Entities are underlined wherever they appear (URIs), so the entity
    column matches `.val-entity`. */

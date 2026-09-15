@@ -282,25 +282,51 @@ fn ordering_cell(entry: &TreeEntry) -> Element {
     let _ = cell.append_child(&chip);
     // A history or coverage record IS identified by the revision that
     // wrote it — successive records of one fact differ by nothing else in
-    // these columns — so the edition rides beside the chip rather than
+    // these columns — so the version rides beside the chip rather than
     // hiding in the unfolded detail.
     if matches!(ordering.as_str(), "history" | "coverage")
-        && let Some(edition) = entry.edition
+        && let Some(version) = version_chip(entry)
     {
-        let _ = cell.append_child(
-            &el("span")
-                .class("edition")
-                .attr(
-                    "title",
-                    &match &entry.origin {
-                        Some(origin) => format!("revision {}@{edition}", short(origin, 12)),
-                        None => format!("revision edition {edition}"),
-                    },
-                )
-                .text(&format!("@{edition}")),
-        );
+        let _ = cell.append_child(&version);
     }
     cell
+}
+
+/// The revision a history or coverage record was written by, as
+/// `<origin>@<edition>`.
+///
+/// Both halves, not just the edition: the edition is a causal depth, not an
+/// identity, so two records at the same edition under DIFFERENT origins are
+/// concurrent writes by different replicas — which is the thing a reader of
+/// this region came to see. Showing the edition alone made those rows look
+/// like duplicates of each other. The origin is 32 bytes, so the chip keeps
+/// a recognizable head and the tooltip carries it whole.
+fn version_chip(entry: &TreeEntry) -> Option<Element> {
+    let edition = entry.edition?;
+    let chip = el("span").class("version");
+    match &entry.origin {
+        Some(origin) => {
+            let origin = hex_body(origin);
+            chip.set_text_content(Some(&format!("{}@{edition}", head(&origin, 8))));
+            let _ = chip.set_attribute("title", &format!("revision origin:{origin} @{edition}"));
+        }
+        // An unversioned write records no origin; the edition still places it.
+        None => {
+            chip.set_text_content(Some(&format!("@{edition}")));
+            let _ = chip.set_attribute("title", &format!("revision edition {edition}"));
+        }
+    }
+    Some(chip)
+}
+
+/// The digits of a `0x`-prefixed hex string, without the prefix.
+fn hex_body(hex: &str) -> String {
+    hex.strip_prefix("0x").unwrap_or(hex).to_owned()
+}
+
+/// The first `n` characters of `s`.
+fn head(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
 }
 
 /// The unfolded detail for one entry: type, full value, key bytes.
@@ -325,8 +351,14 @@ fn entry_detail(entry: &TreeEntry) -> Element {
     // The claim version and its lineage. Zeroes are omitted: an ordinary
     // fact carries none of this, and printing `cause 0` on every row
     // would bury the records where it is the whole story.
-    if let (Some(origin), Some(edition)) = (&entry.origin, entry.edition) {
-        let _ = box_.append_child(&kv("version", &format!("{}@{edition}", short(origin, 12))));
+    // The version, split: the origin names the replica that wrote the
+    // record and the edition its causal depth. Whole, not shortened — this
+    // is the pane you open to compare two origins digit by digit.
+    if let Some(origin) = &entry.origin {
+        let _ = box_.append_child(&kv("origin", &hex_body(origin)));
+    }
+    if let Some(edition) = entry.edition {
+        let _ = box_.append_child(&kv("edition", &edition.to_string()));
     }
     for (label, value) in [
         ("cause", entry.cause),
