@@ -26,7 +26,7 @@ pub struct Component {
 /// Which part of a key a component is — selects the `seg-<part>` CSS color.
 /// entity → circle/blue, attribute → triangle/yellow, value & type →
 /// square/red, structural (index/origin/edition/blob/spill) → neutral.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Part {
     Entity,
     Attribute,
@@ -97,14 +97,18 @@ pub fn components(parts: &[KeyPart]) -> Vec<Component> {
     let mut offset = 0usize;
     for p in parts {
         let (part, label) = part_of(&p.kind);
-        // The index and value-type chips carry a NAME in `hex` (not real
-        // bytes) for the tooltip, and always span one byte (the tag). Every
-        // other part's byte span comes from its `hex` length.
-        let (len, label) = match p.kind.as_str() {
-            "index" => (1usize, capitalize(&p.hex)),
-            "vtype" => (1usize, format!("Value type: {}", p.hex)),
-            _ => (hex_len(&p.hex).max(1), label.to_owned()),
+        // The tooltip names the part; for the two chips whose one byte IS a
+        // name — the index tag and the value-type tag — it names what that
+        // byte says. Both read it off `text` (where the worker puts the
+        // decoded name) and NOT off `hex`, which is the raw byte: a tooltip
+        // built from the hex read "0x05 index", telling the reader the one
+        // thing they already had on screen and none of what they wanted.
+        let label = match p.kind.as_str() {
+            "index" => index_label(&p.text),
+            "vtype" => format!("Value type: {}", p.text),
+            _ => label.to_owned(),
         };
+        let len = hex_len(&p.hex).max(1);
         // The index chip spells out its ordering (`entity`, `attribute`,
         // `value`), but the segments that follow are already colour-coded
         // by exactly that, and hovering gives the full name. The word is
@@ -136,9 +140,10 @@ fn initial(name: &str) -> String {
 }
 
 /// Title-case an ordering name for the index tooltip (`entity` → `Entity
-/// index`).
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
+/// index`). An empty or unrecognized name degrades to a bare `Index`
+/// rather than a tooltip that reads like a decoded byte.
+fn index_label(name: &str) -> String {
+    let mut chars = name.chars();
     match chars.next() {
         Some(first) => format!("{}{} index", first.to_uppercase(), chars.as_str()),
         None => "Index".to_owned(),
@@ -234,5 +239,103 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
             J::String(s) => s.clone(),
             other => other.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn part(kind: &str, text: &str, hex: &str) -> KeyPart {
+        KeyPart {
+            kind: kind.to_owned(),
+            text: text.to_owned(),
+            hex: hex.to_owned(),
+        }
+    }
+
+    /// The index chip's tooltip names the ORDERING, not the tag byte. It
+    /// used to be built from the part's `hex`, so a coverage key's chip
+    /// read "0x05 index" — a tooltip that repeats the byte and explains
+    /// nothing. The decoded name is in `text`.
+    #[dialog_common::test]
+    fn it_names_the_index_chip_by_its_ordering() {
+        for (name, hex, expected) in [
+            ("entity", "0x00", "Entity index"),
+            ("history", "0x03", "History index"),
+            ("blob", "0x04", "Blob index"),
+            ("coverage", "0x05", "Coverage index"),
+        ] {
+            let parts = vec![part("index", name, hex)];
+            let components = components(&parts);
+            assert_eq!(components[0].label, expected);
+            // The chip itself keeps one letter in the dense outline.
+            assert_eq!(components[0].text, name[..1].to_uppercase());
+        }
+    }
+
+    /// The value-type chip names the type the same way: off `text`, not
+    /// off the raw tag byte in `hex`.
+    #[dialog_common::test]
+    fn it_names_the_value_type_chip_by_its_type() {
+        let parts = vec![part("vtype", "String", "0x03")];
+
+        let components = components(&parts);
+
+        assert_eq!(components[0].label, "Value type: String");
+    }
+
+    /// Byte spans come from each part's `hex` length, in document order,
+    /// so the pivot logic can locate a component in the raw key. The tag
+    /// chips span exactly their one byte.
+    #[dialog_common::test]
+    fn it_spans_each_component_by_its_raw_bytes() {
+        let parts = vec![
+            part("index", "entity", "0x00"),
+            part("entity", "ab", "0x6162"),
+            part("vtype", "String", "0x03"),
+        ];
+
+        let components = components(&parts);
+
+        assert_eq!(components[0].bytes, 0..1);
+        assert_eq!(components[1].bytes, 1..3);
+        assert_eq!(components[2].bytes, 3..4);
+    }
+
+    /// A history key's parts render as what they are: the version halves
+    /// are labelled, and the fact fields behind them keep their own
+    /// colours — an entity is entity-blue whether it sits in the entity
+    /// index or behind a history record's version.
+    #[dialog_common::test]
+    fn it_labels_a_history_key_version_and_its_fact() {
+        let parts = vec![
+            part("index", "history", "0x03"),
+            part("origin", "origin:abab", &format!("0x{}", "ab".repeat(32))),
+            part("edition", "@7", "0x0000000000000007"),
+            part("entity", "test:subject", "0x746573743a7375626a656374"),
+            part("attribute", "test/name", "0x746573742f6e616d65"),
+        ];
+
+        let components = components(&parts);
+
+        let labels: Vec<&str> = components.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "History index",
+                "Revision origin",
+                "Revision edition",
+                "Entity",
+                "Attribute"
+            ]
+        );
+        assert_eq!(components[3].part, Part::Entity);
+        assert_eq!(components[4].part, Part::Attribute);
     }
 }
