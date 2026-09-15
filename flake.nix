@@ -53,8 +53,21 @@
         filter = nix-filter.lib;
 
         # We get wrangler from a 3P crate because nixpkgs#wrangler lags
-        # the latest release
-        wrangler = wrangler-flake.packages.${system}.wrangler;
+        # the latest release. Neither it nor nixpkgs' builds on a Mac: both
+        # die in pnpm's tsup step with "EBADF: bad file descriptor" inside
+        # the build sandbox, and neither has a Darwin cache, which left
+        # every dev shell unopenable there. Only the publish workflow, on
+        # Linux, runs wrangler, so a Mac shell gets a shim that fetches the
+        # same release through npx on first use instead of a store build.
+        wrangler =
+          if pkgs.stdenv.isLinux then
+            wrangler-flake.packages.${system}.wrangler
+          else
+            pkgs.writeShellScriptBin "wrangler" ''
+              exec ${pkgs.nodejs}/bin/npx --yes wrangler@${
+                wrangler-flake.packages.${system}.wrangler.version or "4.128.0"
+              } "$@"
+            '';
 
         # The official PostHog CLI moves faster than nixpkgs. Pin its release
         # archives directly so `posthog-cli login` and the API client are
