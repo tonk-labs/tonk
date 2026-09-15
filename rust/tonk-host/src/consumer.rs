@@ -219,10 +219,33 @@ pub async fn subscribe_claimed_with_route(
     profile: bool,
 ) -> Result<Subscription, ErrorDetail> {
     let mut not_established = None;
+    let mut was_connected = false;
     for attempt in 0..12u32 {
         if attempt > 0 {
             crate::ops::wait_ms(250 * attempt.min(4) as i32).await;
         }
+        // A detached consumer's event reaches no host, so dispatching
+        // would only burn an attempt. One that has not connected YET (the
+        // reaction queue delivers `connectedCallback` before the element
+        // is in the document) keeps its place in the window; one that was
+        // in the document and left is done: if it comes back, its own
+        // `connectedCallback` subscribes afresh, and nothing should be
+        // waiting on the element it used to be.
+        if !consumer.is_connected() {
+            let diagnostics = dispatch_diagnostics(consumer);
+            if was_connected {
+                return Err(ErrorDetail::new(
+                    ErrorKind::Network,
+                    format!("tonk-subscribe: consumer left the document ({diagnostics})"),
+                ));
+            }
+            not_established = Some(ErrorDetail::new(
+                ErrorKind::Network,
+                format!("tonk-subscribe: consumer never entered the document ({diagnostics})"),
+            ));
+            continue;
+        }
+        was_connected = true;
         match subscribe_with_route(consumer, query_body, tag, space, branch, profile) {
             Ok(subscription) => return Ok(subscription),
             Err(error) if subscription_not_established(&error) => not_established = Some(error),
