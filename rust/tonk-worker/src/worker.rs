@@ -422,6 +422,9 @@ pub struct TonkState {
     /// HTTP surface, so it sits on the hot path for every repository request.
     /// See [`crate::router::AccountKeys`].
     pub account_keys: crate::router::AccountKeys,
+    /// The profile-library bytes and branch revision most recently validated
+    /// by this worker instance.
+    pub(crate) profile_library: crate::router::ProfileLibraryCache,
     /// Handle to the fixed registry profile recording which profile is
     /// active and the roster of every profile this browser knows. Held so
     /// the profile-switching routes can validate, repoint, and annotate
@@ -1712,6 +1715,19 @@ pub(crate) async fn boot_state(
     profile: Profile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
+    boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
+        .await
+}
+
+/// Build profile state while retaining the running worker generation's
+/// acquired profile-library input across an in-memory profile switch.
+pub(crate) async fn boot_state_with_profile_library(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: Profile,
+    registry: crate::device::Registry,
+    profile_library: crate::router::ProfileLibraryCache,
+) -> Result<TonkState, crate::TonkWorkerError> {
     let reactor = crate::Reactor::new(profile.clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
@@ -1737,6 +1753,7 @@ pub(crate) async fn boot_state(
         clients: Default::default(),
         seed_upgrades: Default::default(),
         account_keys: Default::default(),
+        profile_library,
         registry,
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),

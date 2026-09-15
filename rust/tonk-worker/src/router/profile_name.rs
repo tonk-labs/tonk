@@ -264,6 +264,7 @@ mod tests {
             commands: crate::router::command_providers(),
             clients: Default::default(),
             account_keys: Default::default(),
+            profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.to_string(),
                 directory: dialog_effects::storage::Directory::Profile,

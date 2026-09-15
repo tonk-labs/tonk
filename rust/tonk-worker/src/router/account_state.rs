@@ -25,8 +25,8 @@ use tonk_schema::{
 };
 use zeroize::Zeroizing;
 
-use crate::TonkWorkerError;
 use crate::worker::TonkState;
+use crate::{RepositoryError, TonkWorkerError};
 
 /// Remote name for the account's access branch in the profile repository.
 pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
@@ -600,6 +600,20 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     Ok(())
 }
 
+/// Preserve both retryable failures when library repair and account push fail
+/// in the same sweep.
+fn finish_account_sweep(
+    reconciliation: Result<super::repository::ProfileLibraryOutcome, RepositoryError>,
+    push: Result<(), String>,
+) -> Result<(), String> {
+    let reconciliation = reconciliation.map_err(|error| format!("profile library: {error}"));
+    match (reconciliation, push) {
+        (Ok(_), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(reconciliation), Err(push)) => Err(format!("{reconciliation}; {push}")),
+    }
+}
+
 /// What a push outcome says about registration, if anything.
 ///
 /// `None` means it said nothing and no fact should be written. That is
@@ -729,16 +743,18 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
+    let reconciliation = super::repository::reconcile_profile_library(tonk).await;
     // Pushed through the session this function already holds, rather
     // than `push_account_main`, which acquires one of its own for the
     // hydrate arm.
-    session
+    let push = session
         .handle()
         .push()
         .perform(&tonk.operator)
         .await
-        .map_err(|error| format!("account push failed: {error}"))?;
-    Ok(())
+        .map(|_| ())
+        .map_err(|error| format!("account push failed: {error}"));
+    finish_account_sweep(reconciliation, push)
 }
 
 /// Mount and, when necessary, hydrate the configured account repository.
@@ -843,8 +859,12 @@ pub(crate) async fn ensure_account_state_swept(
                     // is not poked again simply never publishes: its
                     // spaces stay invisible to the account's other
                     // devices.
+                    let reconciliation = super::repository::reconcile_profile_library(tonk).await;
                     let pushed = push_account_main(tonk).await;
-                    (AccountStateStatus::Ready, pushed)
+                    (
+                        AccountStateStatus::Ready,
+                        finish_account_sweep(reconciliation, pushed),
+                    )
                 }
                 Err(error) => {
                     log!("account repository hydrated but marker save failed: {error}");
@@ -1931,6 +1951,7 @@ pub(crate) mod tests {
             clients: Default::default(),
             seed_upgrades: Default::default(),
             account_keys: Default::default(),
+            profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
@@ -2978,6 +2999,94 @@ pub(crate) mod tests {
             AccountStateStatus::Ready
         );
 
+        discard(state, &ready.key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stale_profile_library() -> String {
+        const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
+        let historical = CURRENT.replacen(marker, &stale, 1);
+        assert_ne!(historical, CURRENT, "the historical fixture must differ");
+        historical
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_reconciles_during_initial_account_hydration() {
+        let (state, service, _root, _remote) = linked_account_state(None, false).await;
+        crate::router::repository::reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+
+        service
+            .address
+            .confirm_email("worker-account-state@example.com")
+            .await
+            .unwrap();
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("hydration, reconciliation, and push all succeed");
+        assert_eq!(
+            crate::router::repository::reconcile_profile_library(&state)
+                .await
+                .expect("the installed library validates"),
+            crate::router::repository::ProfileLibraryOutcome::Unchanged,
+            "the hydration sweep already repaired the stale library"
+        );
+
+        let ready = require_ready_account_state(&state).await.unwrap();
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_reconciles_a_ready_account_pull_and_settles() {
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        crate::router::repository::reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+        push_account_main(&state)
+            .await
+            .expect("the stale account head publishes");
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("ready pull, reconciliation, and push succeed");
+        assert_eq!(
+            crate::router::repository::reconcile_profile_library(&state)
+                .await
+                .expect("the installed library validates"),
+            crate::router::repository::ProfileLibraryOutcome::Unchanged,
+            "the ready sweep already repaired the stale library"
+        );
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let repaired = branch.handle().revision();
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("unchanged ready sweep succeeds");
+        assert_eq!(
+            branch.handle().revision(),
+            repaired,
+            "an unchanged sweep performs no profile-library write"
+        );
+
+        service.stop().await.unwrap();
         discard(state, &ready.key);
     }
 
