@@ -335,14 +335,64 @@ effects ride the channel (data channel messages cap at 64 KiB).
   capability unless something on top checks the peer. libp2p uses Noise;
   tonk has DIDs and UCAN delegations already.
 
-### The risk that decides it
+### WebKit: measured, and it works
 
-**Safari is unverified, and Safari is why this project exists.** The
-munge was measured in Chromium only; libp2p documents browser
-WebRTC-Direct for Chrome and Firefox. If WebKit rejects a rewritten
-local `ice-ufrag`, this path dies for exactly the browser it was meant
-to serve, and the offer/answer-over-the-space design is the fallback.
-Measuring that needs a Mac and about ten minutes.
+This was the outstanding risk — the munge had only been measured in
+Chromium, and libp2p documents browser WebRTC-Direct for Chrome and
+Firefox. WebKit refusing a rewritten local `ice-ufrag` would have killed
+this path for the browser the whole project exists to serve.
+
+Playwright's WebKit build (`AppleWebKit/605.1.15 Version/26.0`, Safari's
+engine — not Safari itself, but the same engine) says otherwise:
+
+```
+[munge] setLocalDescription accepted: true
+[munge] localDescription now says ice-ufrag: tonkdial+v1/…
+[munge] STUN USERNAME on the wire:  tonkdial+v1/…:tonkdial+v1/…
+```
+
+Byte-identical to Chromium. And the full ceremony end to end, not just
+STUN inspection:
+
+```
+[cli]  listening on 127.0.0.1:51247, 192.0.2.2:51247
+[dial] PASS  channel open with zero round trips
+[dial] PASS  browser -> CLI
+[dial] PASS  CLI -> browser
+```
+
+Caveat worth keeping: Playwright's WebKit is not Safari. It shares the
+engine but not the embedding, and Safari adds its own policy on top —
+Local Network Access prompts among it. This clears the *engine*
+question, which was the one that could have invalidated the design. A
+run on real Safari is still worth ten minutes before anyone relies on
+it.
+
+## What iroh costs in a wasm bundle
+
+Measured against a deliberately non-empty baseline, `opt-level = "z"`,
+LTO, stripped, referencing `Endpoint::builder(..).bind()` so the linker
+retains the QUIC machinery rather than discarding it:
+
+| | raw | gzipped |
+| --- | --- | --- |
+| baseline | 27.9 KB | 9.3 KB |
+| + iroh, `presets::Empty` | 768 KB | 223 KB |
+| + iroh, `presets::N0` | 1,367 KB | 446 KB |
+
+So iroh costs about **+214 KB gzipped** at minimum, and **+427 KB
+gzipped** with the n0 relay and discovery — roughly half the weight is
+the relay and discovery half, which an offline-first design may not
+need on the browser side.
+
+Read these as a floor rather than a figure. The probe references the
+builder without awaiting it, so some connection and stream paths are
+still absent; it carries no `wasm-bindgen` glue, no custom transport of
+ours, and no `wasm-opt` pass (which would claw back some). Against a
+bundle that was deliberately slimmed in #931, +214 KB gzipped is a real
+number to weigh rather than an obvious yes or no.
+
+### The risk that remains
 
 It also does not survive NAT — the CLI must be reachable by UDP at the
 published address, and the dialer cannot help it hole-punch without a
