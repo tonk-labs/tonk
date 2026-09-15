@@ -403,15 +403,16 @@ mod when_defining_an_element {
         let listed = tonk_cli::elements::list(&test.site).await?;
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].tag.as_deref(), Some("tally-widget"));
-        assert_eq!(listed[0].entity.to_string(), "element:tally-widget");
         assert_eq!(listed[0].methods, vec!["connected", "disconnected"]);
         assert!(!listed[0].deprecated);
         Ok(())
     }
 
-    /// The property the whole `method:` dictionary exists for, and the
-    /// one derived identity cannot provide: authoring ONE method
-    /// leaves the others standing.
+    /// The property the `method:` dictionary exists for: authoring one
+    /// method leaves the others standing. It works without a pin
+    /// because the tag reaches the digest as a scalar (so the entity
+    /// is this element's own) while the methods do not (so it stays
+    /// put as they change).
     #[dialog_common::test]
     async fn it_supersedes_only_the_methods_a_later_assertion_names() -> Result<()> {
         let test = TestSite::new().await?;
@@ -426,7 +427,7 @@ mod when_defining_an_element {
             Default::default(),
         )
         .await?;
-        // Re-author `connected` ALONE.
+        let before = tonk_cli::views::entity_for_name(&test.site, "tally-widget").await?;
         tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
@@ -434,45 +435,40 @@ mod when_defining_an_element {
             Default::default(),
         )
         .await?;
+        let after = tonk_cli::views::entity_for_name(&test.site, "tally-widget").await?;
+        assert_eq!(before, after, "editing a method should not move the entity");
 
-        let listed = tonk_cli::elements::list(&test.site).await?;
-        assert_eq!(listed.len(), 1, "redefinition accrued a row: {listed:?}");
-        assert_eq!(
-            listed[0].methods,
-            vec!["bump", "connected", "disconnected"],
-            "authoring one method dropped the others",
-        );
-        // And the surviving `connected` is the NEW one.
-        let described = tonk_cli::data_ops::query(&test.site, "element", false).await?;
-        assert!(described.contains("'v2'"), "{described}");
+        let now = tonk_cli::elements::methods_of(&test.site, "tally-widget").await?;
+        let keys: Vec<&str> = now.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["bump", "connected", "disconnected"]);
         assert!(
-            !described.contains("'v1'"),
-            "old method still present:\n{described}"
+            now.iter()
+                .any(|(k, v)| k == "connected" && v.contains("v2"))
         );
+        assert!(!now.iter().any(|(_, v)| v.contains("v1")));
         Ok(())
     }
 
+    /// Every element needs its own entity. The methods are a nested
+    /// map and carry no content identity, so without the scalar `name`
+    /// every element on a branch digests to the same empty body and
+    /// the last one authored silently replaces all the others.
     #[dialog_common::test]
-    async fn it_records_the_accrual_the_deprecated_component_concept_still_has() -> Result<()> {
+    async fn it_gives_each_tag_an_entity_of_its_own() -> Result<()> {
         let test = TestSite::new().await?;
-        // Two `component!:` assertions differing only in module text.
-        // Each is keyed by its own body digest, so the branch ends up
-        // holding both definitions of the same custom element and the
-        // directory view mounts both.
-        for body in ["console.log('v1');", "console.log('v2');"] {
-            let doc = format!("component!:\n  module: |\n    {body}\n");
-            test.eval_inline(&doc).await?;
+        for tag in ["a-one", "b-two"] {
+            tonk_cli::data_ops::element_add(
+                &test.site,
+                tag,
+                &methods(&[("connected", "(self) => {}")]),
+                Default::default(),
+            )
+            .await?;
         }
-        let listed = tonk_cli::elements::list(&test.site).await?;
-        let components: Vec<_> = listed.iter().filter(|row| row.deprecated).collect();
-        assert_eq!(
-            components.len(),
-            2,
-            "expected the digest-keyed concept to accrue both rows: {listed:?}",
-        );
-        // And the tag is unrecoverable from either — the listing has
-        // nothing to show but a digest.
-        assert!(components.iter().all(|row| row.tag.is_none()), "{listed:?}");
+        let a = tonk_cli::views::entity_for_name(&test.site, "a-one").await?;
+        let b = tonk_cli::views::entity_for_name(&test.site, "b-two").await?;
+        assert_ne!(a, b, "two tags collapsed onto one entity");
+        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), 2);
         Ok(())
     }
 

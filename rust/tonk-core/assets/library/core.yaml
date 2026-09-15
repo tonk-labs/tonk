@@ -1428,29 +1428,45 @@ view!:
 
 # An author-defined custom element carried as branch data.
 #
-# The element's entity IS the tag it defines (`element:<tag>`), exactly
-# as a `view`'s entity IS the model it renders. Identity never moves,
-# so facts accumulate on it and a later assertion supersedes only what
-# it names.
+# `element!: &tally-widget` publishes `id:tally-widget` pointing at the
+# entity the assertion derives, and the browser resolves a tag through
+# that name the moment it first meets the tag in the DOM. Nothing is
+# registered ahead of time, and repointing the name — at a definition
+# authored elsewhere, or back at an earlier one — swaps the element for
+# everything that refers to it.
+#
+# The entity is derived, not pinned, and the two fields below divide
+# the work: `name` is a scalar, so it lands in the digest and makes
+# this element's entity its own; the methods are nested, so they do not,
+# and the entity stays put as they are edited. That is what lets a
+# single method be re-authored without restating the rest, the way one
+# view facet is re-authored without restating `show`.
 #
 # `method` is a keyed dictionary, the same construct as a view's
-# `show`: one fact per entry, cardinality one, so a method is authored
-# on its own or alongside the others and re-authoring one leaves the
-# rest standing. A view is a dictionary of templates keyed by facet; an
+# `show`. A view is a dictionary of templates keyed by facet; an
 # element is a dictionary of functions keyed by method.
 #
-# The runtime defines the tag ONCE with a generated wrapper that
-# dispatches through a live table (tag -> method -> function) which a
-# subscription keeps in step with these facts. So editing a method is a
-# fact write, not a re-registration: `customElements.define` is never
-# called twice and no page reload is needed.
-# The concept is anchored, not pinned: its entity is content-addressed
-# from the declaration below (`declaration.rs:387`), the way the other
-# view-layer concepts here are. A pin is for a concept some code names
-# by URI; nothing names this one.
+# The concept is anchored, not pinned, like the other view-layer
+# concepts here: a pin is for a concept some code names by URI, and
+# nothing names this one.
 concept!: &element
   description: A custom element definition carried as branch data
   with:
+    name:
+      description: |
+        The custom element name this defines, e.g. `tally-widget`.
+
+        Load-bearing for identity, not decoration. A derived entity is
+        a digest of the assertion's SCALAR fields; nested maps
+        contribute nothing (`assertion.rs:797`). So this field is what
+        makes one element's entity differ from another's — without it
+        every `element!:` on a branch digests to the same empty body
+        and collapses onto one entity. And because the methods are
+        nested, the entity stays PUT as they are edited, which is what
+        lets a method supersede on its own.
+      the: xyz.tonk.element/name
+      cardinality: one
+      as: text
     method:
       description: |
         The element's methods, keyed by name, each a JS arrow-function

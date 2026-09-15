@@ -397,20 +397,6 @@ pub fn validate_element_tag(tag: &str) -> Result<(), AuthoringError> {
     Ok(())
 }
 
-/// The entity URI an element tag is stored under. The tag IS the
-/// identity — the same relationship a `view` has to the model it
-/// renders — so a second assertion of the same tag supersedes the
-/// first `module` rather than landing beside it as a new row.
-pub fn element_entity(tag: &str) -> String {
-    format!("element:{tag}")
-}
-
-/// The tag an [`element_entity`] URI names. `element:tally-widget` →
-/// `Some("tally-widget")`; anything else → `None`.
-pub fn element_tag(entity: &str) -> Option<&str> {
-    entity.strip_prefix("element:")
-}
-
 /// The four method keys the DOM lifecycle dispatches. Everything else
 /// in a `method:` dictionary becomes a method on the element.
 pub const LIFECYCLE_METHODS: &[&str] =
@@ -542,12 +528,19 @@ pub fn validate_method_key(key: &str) -> Result<(), AuthoringError> {
 /// Build the `element!:` declaration defining the custom element `tag`
 /// from `methods`, a list of `(key, source)` pairs.
 ///
-/// The entity is pinned to `element:<tag>` and `method` is a keyed
-/// dictionary at cardinality one, so a later assertion supersedes only
-/// the keys it names — authoring one method leaves the others
-/// standing, exactly as re-authoring one view facet leaves the rest of
-/// `show` alone. The tag is also published as an `&anchor` name so
-/// `tonk show <tag>` resolves it like any other named entity.
+/// The declaration is ANCHORED, not pinned: the assertion mints a
+/// content-addressed entity for this set of methods and publishes
+/// `id:<tag>` pointing at it. That indirection is the point. An
+/// element is an immutable value and the tag is a mutable pointer to
+/// one, so re-authoring the tag publishes a NEW value and repoints the
+/// name — and everything that resolves the tag by name follows on the
+/// spot, which is what makes a definition swappable at all. Pinning an
+/// entity to the tag would collapse the indirection and take that
+/// away.
+///
+/// A consequence worth stating: each assertion is the WHOLE element,
+/// not a patch. Callers wanting to change one method carry the others
+/// forward ([`crate::data_ops::element_add`] does).
 pub fn build_element_decl(
     tag: &str,
     methods: &[(String, String)],
@@ -558,7 +551,11 @@ pub fn build_element_decl(
     }
     let mut out = String::new();
     let _ = writeln!(out, "element!: &{tag}");
-    let _ = writeln!(out, "  this: {}", element_entity(tag));
+    // The tag as a SCALAR field, not decoration: it is the only part
+    // of the body that reaches the entity digest (the methods are a
+    // nested map, which carries no content identity), so it is what
+    // distinguishes this element's entity from every other one's.
+    let _ = writeln!(out, "  name: {}", quote_string(tag));
     out.push_str("  method:\n");
     for (key, source) in methods {
         validate_method_key(key)?;
@@ -789,9 +786,10 @@ mod tests {
         )
         .expect("valid tag and method");
         assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
-        // The pinned `this` is the whole point: it is what makes a
-        // later `add` land on the same entity instead of a new one.
-        assert!(doc.contains("  this: element:tally-widget\n"), "{doc}");
+        // No `this:`. The anchor mints a value and points the tag at
+        // it; pinning an entity here would collapse the indirection
+        // the loader resolves through.
+        assert!(!doc.contains("this:"), "{doc}");
         assert!(doc.contains("  method:\n    connected: |\n"), "{doc}");
         assert!(doc.contains("      (self) => { self.textContent"), "{doc}");
     }
@@ -831,13 +829,6 @@ mod tests {
             doc.contains("      (self) => {\n\n        const a = 1;\n"),
             "{doc}"
         );
-    }
-
-    #[test]
-    fn it_round_trips_a_tag_through_its_entity_uri() {
-        assert_eq!(element_entity("tally-widget"), "element:tally-widget");
-        assert_eq!(element_tag("element:tally-widget"), Some("tally-widget"));
-        assert_eq!(element_tag("did:key:zAbc"), None);
     }
 
     #[test]

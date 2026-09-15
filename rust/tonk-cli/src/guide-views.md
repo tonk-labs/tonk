@@ -172,10 +172,10 @@ template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
 A custom element is branch data: an `element` row whose `method`
-dictionary holds its functions. The row's identity IS the tag it
-defines (`element:<tag>`), the same way a view's identity is the model
-it renders — and identity never moves, so a later assertion supersedes
-only the methods it names.
+dictionary holds its functions, published under its tag with an
+`&anchor`. The browser resolves that name the first time it meets the
+tag in a rendered view — nothing is registered ahead of time, and
+nothing has to be mounted.
 
 ```text
 tonk element add tally-widget --method-file connected=tally.js
@@ -188,9 +188,17 @@ an element is a dictionary of functions keyed by method.** Re-authoring
 `connected` alone leaves `disconnected` standing, exactly as
 re-authoring one view facet leaves the rest of `show` alone.
 
+Quote the `name` — a bare symbol is read as a reference to something
+else on the branch. The `name` field is load-bearing, not decoration. A derived entity is a
+digest of the assertion's *scalar* fields, and a nested map contributes
+nothing — so `name` is what gives this element an entity of its own
+(without it, every element on a branch would digest to the same empty
+body and collapse onto one), while the nested methods are what keep
+that entity still as they are edited.
+
 ```yaml tonk=eval
 element!: &tally-widget
-  this: element:tally-widget
+  name: "tally-widget"
   method:
     connected: |
       (self) => {
@@ -217,14 +225,6 @@ Any other key becomes a method on the element, camelCased —
 key; `el['my-method']()` is not callable JS but `el.myMethod()` is. A
 key that would shadow a member every element already has (`remove`,
 `click`, `id`, `text-content`) is refused at authoring time.
-
-Mount the element directory once, in a view that always renders
-(typically your root/shell view); it is invisible and loads every
-element on the branch:
-
-```html
-<tonk-display model=element />
-```
 
 The runtime registers each tag ONCE, with a generated wrapper that
 dispatches through a live table (tag → method → function). So editing a

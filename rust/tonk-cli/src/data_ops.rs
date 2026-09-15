@@ -123,6 +123,9 @@ pub enum DataOpError {
     /// The underlying eval pipeline failed.
     #[error(transparent)]
     Eval(#[from] crate::eval::EvalError),
+    /// A branch read the verb needed before writing failed.
+    #[error("{0}")]
+    Read(String),
     /// The raw CLI flags for `assert` failed clap's
     /// dynamically-built parse: an unknown `--flag` or a bad value
     /// for the arg's type. Display text mirrors clap's own rendered
@@ -177,7 +180,8 @@ impl crate::Coded for DataOpError {
             DataOpError::NoConcept { .. }
             | DataOpError::Io(_)
             | DataOpError::NoInstance { .. }
-            | DataOpError::ConceptExists { .. } => crate::ExitCode::IoError,
+            | DataOpError::ConceptExists { .. }
+            | DataOpError::Read(_) => crate::ExitCode::IoError,
             // A bad field/value, or a rejected flag parse, is an
             // analysis-level rejection, not an I/O failure.
             DataOpError::Data(_)
@@ -659,17 +663,24 @@ pub async fn view_add(
     Ok(out)
 }
 
-/// Author a custom element definition: an `element!:` pinning
-/// `element:<tag>` and writing `methods` into its `method` dictionary.
+/// Author a custom element: an `element!: &<tag>` carrying `methods`.
 ///
-/// The dictionary is cardinality one per entry on an entity keyed by
-/// the tag, so this supersedes only the methods it names — authoring
-/// `connected` on its own leaves `disconnected` standing, the way
-/// re-authoring one view facet leaves the rest of `show` alone.
+/// Three properties fall out of the shape, none of them from a pin:
 ///
-/// Nothing here mounts the element. A branch loads its definitions
-/// through a `<tonk-display model=element />` in a view that always
-/// renders; the caller is reminded of that on success.
+/// - The `name` field is a scalar, so it reaches the entity digest and
+///   gives this tag an entity of its own. Without it every element on
+///   a branch would derive the same empty body and collapse onto one
+///   entity.
+/// - The methods are a nested map, which carries no content identity
+///   (`assertion.rs:797`), so the entity stays PUT as they are edited.
+/// - Each dictionary entry is its own fact at cardinality one, so this
+///   supersedes only the methods it names: authoring `connected` alone
+///   leaves `disconnected` standing, the way re-authoring one view
+///   facet leaves the rest of `show` alone.
+///
+/// The anchor publishes `id:<tag>`, which is how the browser finds the
+/// definition — by name, on first sight of the tag, never ahead of
+/// time.
 pub async fn element_add(
     site: &TonkSite,
     tag: &str,
@@ -686,7 +697,7 @@ pub async fn element_add(
     let mut out = format!(
         "{}\n",
         write.summarize(format_args!(
-            "defined {n} method{s} on <{tag}>: {list}",
+            "authored {n} method{s} on <{tag}>: {list}",
             n = named.len(),
             s = if named.len() == 1 { "" } else { "s" },
             list = named.join(", "),
@@ -694,8 +705,7 @@ pub async fn element_add(
     );
     out.push_str(&outcome.stdout);
     out.push_str(&format!(
-        "\nuse it in any view as <{tag}>; a branch loads its elements through a \
-         `<tonk-display model=element />` in a view that always renders\n"
+        "\nuse it in any view as <{tag}>; the browser resolves it by name on first render\n"
     ));
     Ok(out)
 }

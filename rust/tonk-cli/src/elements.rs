@@ -1,11 +1,16 @@
 //! `tonk element` — enumerate the custom elements defined on the
 //! local branch.
 //!
-//! One row per entity carrying `method` entries. An element's entity
-//! IS the tag it defines (`element:<tag>`, written by
-//! [`crate::authoring::build_element_decl`]), so the listing recovers
-//! the tag from the URI rather than from a field — there is only ever
-//! one source of truth for what a row defines.
+//! One row per entity carrying `method` entries, with its tag
+//! recovered from the name registry: an `element!: &<tag>` assertion
+//! publishes `db.name/referent` on `id:<tag>` pointing at the entity it
+//! minted, and that binding is the only thing that says what a row
+//! defines.
+//!
+//! An entity with methods but no name is a SUPERSEDED definition — the
+//! tag was re-authored and now points elsewhere. The loader never sees
+//! it (it resolves by name), so the listing marks it rather than
+//! hiding it: the facts are still on the branch and still addressable.
 //!
 //! The methods are a keyed dictionary, so each lands as its own fact
 //! under `xyz.tonk.element.method/<key>`. The listing reads that
@@ -24,7 +29,6 @@ use dialog_artifacts::{Attribute, Entity};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use tonk_render::QueryBackend as _;
 
-use crate::authoring::element_tag;
 use crate::site::TonkSite;
 
 /// The domain an `element!:` assertion writes its methods under. Each
@@ -37,9 +41,10 @@ const COMPONENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.component/module";
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElementSummary {
-    /// The custom element name this row defines, recovered from the
-    /// entity URI. `None` for a legacy `component` row, whose entity
-    /// is a body digest that names nothing.
+    /// The custom element name this row defines, from the tag's
+    /// `db.name/referent` binding. `None` when nothing names this
+    /// entity — a superseded definition, or a legacy `component` row
+    /// that never carried an anchor.
     pub tag: Option<String>,
     /// Entity carrying the module claim.
     pub entity: Entity,
@@ -59,9 +64,10 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
     let mut out: Vec<ElementSummary> = Vec::new();
     // Methods are one fact per key, so an element with three methods
     // is three claims on one entity. Fold them back into a row.
+    let names = crate::views::names_by_entity(site).await?;
     for (entity, methods) in method_dictionaries(site).await? {
         out.push(ElementSummary {
-            tag: element_tag(&entity.to_string()).map(str::to_owned),
+            tag: names.get(&entity).cloned(),
             entity,
             methods,
             deprecated: false,
@@ -69,7 +75,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
     }
     for claim in claims_for_attribute(site, COMPONENT_MODULE_ATTRIBUTE).await? {
         out.push(ElementSummary {
-            tag: element_tag(&claim.of.to_string()).map(str::to_owned),
+            tag: names.get(&claim.of).cloned(),
             entity: claim.of,
             methods: Vec::new(),
             deprecated: true,
@@ -107,6 +113,27 @@ async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_q
         .map_err(|e| anyhow!("{uri} enumeration failed: {e:?}"))
 }
 
+/// The methods currently bound to `tag`, as `(key, source)` pairs in
+/// key order. Empty when the tag names nothing.
+///
+/// Resolves through the name, not through any URI built from the tag:
+/// `id:<tag>`'s `db.name/referent` says which entity the tag means
+/// right now, and that is the only thing that does. An entity the tag
+/// used to point at is a previous value and is deliberately not read.
+pub async fn methods_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, String)>> {
+    let Some(entity) = crate::views::entity_for_name(site, tag).await? else {
+        return Ok(Vec::new());
+    };
+    let mut methods: Vec<(String, String)> = source_dictionaries(site)
+        .await?
+        .into_iter()
+        .find(|(candidate, _)| *candidate == entity)
+        .map(|(_, sources)| sources.into_iter().collect())
+        .unwrap_or_default();
+    methods.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(methods)
+}
+
 /// Every element's method dictionary, folded to one entry per entity.
 ///
 /// The same wire query the display stack runs for a view's `show`
@@ -120,6 +147,15 @@ async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_q
 /// is open, so the attribute would have to be a variable too, and a
 /// selector with nothing constrained is refused as a full scan.
 async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>)>> {
+    Ok(source_dictionaries(site)
+        .await?
+        .into_iter()
+        .map(|(entity, sources)| (entity, sources.into_keys().collect()))
+        .collect())
+}
+
+/// [`method_dictionaries`], keeping each method's source.
+async fn source_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<String, String>)>> {
     let body = serde_json::json!({
         "terms": {
             "this":       { "?": { "name": "this" } },
@@ -147,7 +183,7 @@ async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>
         .map_err(|e| anyhow!("method enumeration failed: {e}"))?;
     // One flat row per entry, `method` a one-entry `{key: source}`
     // map; merge rows by entity.
-    let mut folded: BTreeMap<Entity, Vec<String>> = BTreeMap::new();
+    let mut folded: BTreeMap<Entity, BTreeMap<String, String>> = BTreeMap::new();
     for row in rows {
         let Ok(entity) = row.this.parse::<Entity>() else {
             continue;
@@ -155,17 +191,12 @@ async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>
         let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get("method") else {
             continue;
         };
-        let keys = folded.entry(entity).or_default();
-        for key in entries.keys() {
-            keys.push(key.clone());
+        let slot = folded.entry(entity).or_default();
+        for (key, value) in entries {
+            if let ipld_core::ipld::Ipld::String(source) = value {
+                slot.insert(key.clone(), source.clone());
+            }
         }
     }
-    Ok(folded
-        .into_iter()
-        .map(|(entity, mut keys)| {
-            keys.sort();
-            keys.dedup();
-            (entity, keys)
-        })
-        .collect())
+    Ok(folded.into_iter().collect())
 }
