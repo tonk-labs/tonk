@@ -43,9 +43,13 @@
 //! `SendWrapper` and asserting a thread-safety that is not there.
 //!
 //! `tests/iroh_over_webrtc.rs` proves the native path end to end. The
-//! browser path compiles for `wasm32-unknown-unknown` but is not yet
-//! exercised in a browser — the glue is small and mirrors the native
-//! one, but "compiles" is not "works".
+//! browser path was proved separately, out of tree: two peer
+//! connections in one page, one unreliable unordered channel between
+//! them, two `presets::Empty` endpoints over it — no relay, no
+//! discovery, and in a browser no IP transport either, so a completed
+//! exchange completed over the channel. Chromium, WebKit and Firefox
+//! all pass, with no per-engine accommodation. That harness is not
+//! checked in: CI has no browser runner for this crate.
 //!
 //! # What it took
 //!

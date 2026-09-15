@@ -631,6 +631,39 @@ is iroh.
 `dispatch.rs` is unaffected: the worker still cannot hold a connection,
 and something still has to choose a page and fail over.
 
+### Measured: iroh runs over a browser data channel
+
+The native end-to-end test proved the transport; it did not prove the
+browser, and the wasm port only proved that the browser half compiles.
+Those are different claims, so the browser one was measured separately.
+
+Two `RTCPeerConnection`s in a single page, wired to each other, with one
+`ordered: false, maxRetransmits: 0` data channel between them. Both ends
+of that channel go into a wasm module that builds two
+`Endpoint::builder(presets::Empty)` endpoints over them, connects by
+`TransportAddr::Custom`, opens a bi-stream and echoes. `presets::Empty`
+matters: no relay, no discovery, and in a browser no IP transport to
+fall back on either. If the exchange completes, it completed over the
+data channel, because there was nothing else.
+
+It completes. **Chromium, WebKit and Firefox all pass**, first run, no
+per-engine accommodation — three independent SCTP implementations under
+the same code.
+
+Browser-to-browser rather than browser-to-CLI on purpose: it isolates
+transport from signalling. With this, the remaining work between a
+browser and the CLI is finding the peer, not carrying the bytes.
+
+Two things this does *not* claim. It is Playwright's engine builds, not
+shipped Safari or shipped Chrome. And both peers were in one page, so
+the data channel never crossed a process — the native test is what
+covers a channel that does, and the direct-dial spike is what covers a
+browser channel reaching a CLI.
+
+The harness is `scratchpad/e2e/wasmproof.mjs` plus a small cdylib; like
+the rest of the browser harnesses it is not checked in, for the same
+reason — CI has no browser runner for this crate.
+
 ## Evaluated: `iroh-webrtc-transport`
 
 The crate bootstraps a WebRTC session over an *iroh* stream (ALPN

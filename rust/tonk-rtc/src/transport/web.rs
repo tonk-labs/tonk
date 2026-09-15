@@ -26,7 +26,7 @@ use iroh_base::CustomAddr;
 /// than `Blob` — a Blob would have to be read asynchronously, which
 /// turns every inbound datagram into a task and reorders them.
 pub fn datagram_channel(connection: &RtcPeerConnection, label: &str) -> RtcDataChannel {
-    let mut options = RtcDataChannelInit::new();
+    let options = RtcDataChannelInit::new();
     options.set_ordered(false);
     options.set_max_retransmits(0);
     let channel = connection.create_data_channel_with_data_channel_dict(label, &options);

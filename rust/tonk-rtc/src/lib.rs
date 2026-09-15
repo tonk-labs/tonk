@@ -53,7 +53,7 @@ pub mod peer;
 /// Carrying iroh over a WebRTC data channel, so a peer gets QUIC
 /// streams and the local dial becomes one route among several rather
 /// than a separate code path.
-#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+#[cfg(feature = "iroh")]
 pub mod transport;
 
 pub use signal::{Description, Role};
