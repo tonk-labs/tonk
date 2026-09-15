@@ -709,6 +709,7 @@ pub(crate) mod tests {
                 clients: Default::default(),
                 seed_upgrades: Default::default(),
                 account_keys: Default::default(),
+                profile_library: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),
                     directory: dialog_effects::storage::Directory::Profile,
