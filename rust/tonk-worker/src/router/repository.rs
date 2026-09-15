@@ -2962,6 +2962,8 @@ struct InstalledSeed {
     seed: dialog_artifacts::Entity,
     /// Where those bytes were fetched from.
     source: String,
+    /// The seed it replaced, or `seed:none` on a first install.
+    prior: dialog_artifacts::Entity,
     /// The version of the commit that installed it.
     version: String,
 }
@@ -3010,8 +3012,43 @@ async fn read_installed_seed(
     Ok(Some(InstalledSeed {
         seed: current.this,
         source: source.source.0,
+        prior: current.prior.0,
         version: current.version.0,
     }))
+}
+
+/// The retractions that withdraw `current`'s install half, so that after
+/// an upgrade the branch records one running seed, not every seed it
+/// ever ran.
+///
+/// [`prior_seed_retractions`] cannot cover this: the record commits as
+/// the link AFTER the version it names, so inverting that version's
+/// history withdraws the library and leaves its record standing. The
+/// `seed/available` half stays: it says the seed exists and where it
+/// came from, which is still true of a seed no longer running.
+fn installed_record_retractions(current: &InstalledSeed) -> Vec<super::claim::RawClaim> {
+    use dialog_artifacts::Statement as _;
+
+    let mut changes = dialog_artifacts::Changes::new();
+    tonk_schema::SeedInstalled {
+        this: current.seed.clone(),
+        prior: tonk_schema::domain::seed::Prior(current.prior.clone()),
+        version: tonk_schema::domain::seed::Version(current.version.clone()),
+    }
+    .retract(&mut changes);
+    changes
+        .into_instructions()
+        .into_iter()
+        .filter_map(|instruction| match instruction {
+            dialog_artifacts::Instruction::Retract(claim) => Some(super::claim::RawClaim {
+                the: claim.the,
+                of: claim.of,
+                is: claim.is,
+                unique: false,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Check whether a newer seed is waiting for the space the command names.
@@ -3390,7 +3427,8 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         return Ok(false);
     }
 
-    let retract = prior_seed_retractions(tonk, &session, &current.version).await?;
+    let mut retract = prior_seed_retractions(tonk, &session, &current.version).await?;
+    retract.extend(installed_record_retractions(&current));
     log!(
         "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
         retract.len()
@@ -4653,20 +4691,25 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
         })?;
     log!("Profile branch bootstrapped");
 
-    // Seed the standard library onto the profile meta branch so a
+    // Seed the lean profile library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
-    // the library's concepts and views — the `space` model and its
-    // directory view — there, the same way a named repo's content
-    // branch carries them. Idempotent: re-evaluating the library
-    // de-duplicates rather than minting fresh claims, so it's safe on
-    // every boot. Fetch is only available in the SW scope; native
-    // builds skip it (the Hub is a browser-only surface).
+    // the library's concepts and views there, the same way a named
+    // repo's content branch carries them. Once: the first boot installs
+    // it and records the install, a later boot whose shipped library
+    // matches the record does nothing at all, and one whose library
+    // changed upgrades, withdrawing what the recorded install asserted
+    // and installing the new one in the same commit. Re-evaluating the
+    // library on every boot is not free even when nothing changed: the
+    // record names the commit that installs it, so it was a new fact
+    // every time, and the commit it rode carried most of the tree.
+    // After sign-in the profile branch tracks the account, so every
+    // worker restart on every device was pushing that into the
+    // account's history.
     //
-    // Best-effort: this runs again on every boot and profile
-    // activation, so a failed fetch (an offline worker restart, a
-    // harness that serves no library) costs a degraded Hub until the
-    // next attempt — not a worker that refuses to boot or a profile
-    // switch that dies half-way.
+    // Best-effort: a failed fetch (an offline worker restart, a harness
+    // that serves no library) costs a degraded Hub until the next boot,
+    // not a worker that refuses to boot or a profile switch that dies
+    // half-way.
     if let Err(error) = seed_profile_library(tonk).await {
         log!("profile library seed skipped: {error}");
     }
@@ -4677,30 +4720,89 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     Ok(())
 }
 
-/// Fetch and seed the lean profile library onto the profile branch —
-/// on every target, since the fetch reads the embedded assets natively.
+/// Seed the lean profile library onto the profile branch on first boot,
+/// upgrade it when the shipped library changed, and do nothing when the
+/// recorded install already matches. Fetch is served by the embedded
+/// assets natively, so this runs on every target.
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
     let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    let version = seed_version(&library);
-    // The record names the commit that installs the library — see the
-    // create path for why recording separately breaks provenance.
-    let record = |minted: &dialog_artifacts::history::Version| {
-        seed_record_facts(
-            &version,
-            PROFILE_LIBRARY_URL,
-            SEED_NONE,
-            SEED_NONE,
-            &encode_seed_version(minted),
-        )
-    };
-    super::evaluate::evaluate_profile_body_recording(tonk, PROFILE_BRANCH, library, &record)
+    install_profile_library(tonk, library).await
+}
+
+/// Install `library` on the profile branch unless the recorded install
+/// already is it: nothing when the record matches, an upgrade when it
+/// names an earlier library, a first install when there is no record.
+async fn install_profile_library(tonk: &TonkState, library: String) -> Result<(), RepositoryError> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
         .await
-        .map(|_| ())
-        .map_err(|e| {
-            RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
-        })
+        .map_err(|e| RepositoryError::Internal(format!("acquire profile branch: {e}")))?;
+    let shipped = seed_version(&library);
+
+    let current = read_installed_seed(tonk, &session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read profile seed record: {e}")))?;
+
+    match current {
+        // Already installed at exactly this library: nothing to write.
+        Some(current) if current.seed.to_string() == shipped => Ok(()),
+        // The library changed since the recorded install: withdraw what
+        // that install asserted and install the new one, one commit, the
+        // record chaining on it.
+        Some(current) => {
+            let mut retract = prior_seed_retractions(tonk, &session, &current.version).await?;
+            retract.extend(installed_record_retractions(&current));
+            log!(
+                "profile seed upgrade: moves to {shipped}, withdrawing {} claims",
+                retract.len()
+            );
+            let prior = current.seed.to_string();
+            let record = |minted: &dialog_artifacts::history::Version| {
+                seed_record_facts(
+                    &shipped,
+                    PROFILE_LIBRARY_URL,
+                    &prior,
+                    &prior,
+                    &encode_seed_version(minted),
+                )
+            };
+            super::evaluate::evaluate_profile_with_retractions(
+                tonk,
+                PROFILE_BRANCH,
+                library,
+                retract,
+                &record,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| RepositoryError::Internal(format!("upgrade profile seed: {e}")))
+        }
+        // First boot: install and record the commit that installs it.
+        None => {
+            let record = |minted: &dialog_artifacts::history::Version| {
+                seed_record_facts(
+                    &shipped,
+                    PROFILE_LIBRARY_URL,
+                    SEED_NONE,
+                    SEED_NONE,
+                    &encode_seed_version(minted),
+                )
+            };
+            super::evaluate::evaluate_profile_body_recording(tonk, PROFILE_BRANCH, library, &record)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "seed standard library on profile branch: {e}"
+                    ))
+                })
+        }
+    }
 }
 
 /// Load a repository by name and return its [`RepositoryInfo`].
@@ -6960,6 +7062,133 @@ mod tests {
         super::remove_space_inner(&state, &subject)
             .await
             .expect("a repeated remove is a no-op, not an error");
+    }
+
+    /// The profile bootstrap installs the library once. A boot whose
+    /// shipped library matches the recorded install writes nothing: the
+    /// branch head does not move. A boot whose library changed upgrades
+    /// in one commit, withdrawing what the recorded install asserted and
+    /// recording the new one. Before this, every boot re-evaluated the
+    /// library and recorded the commit doing so, a new fact each time on
+    /// a commit carrying most of the tree, which after sign-in every
+    /// worker restart pushed into the account.
+    ///
+    /// Drives `install_profile_library` directly: `bootstrap_profile`
+    /// fetches the library over the network, which the harness (no
+    /// service-worker registration) cannot serve.
+    #[dialog_common::test]
+    async fn it_installs_the_profile_library_once_and_upgrades_it() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, _key) = fresh_repo("test-seed-once").await;
+        let tonk = state.read().await;
+
+        let library = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        let first = format!(
+            "{library}\nroute!: &probe/kept\n  this: id:probe/kept\n  path: \"/probe/kept\"\n  concept: tonk:settings\n\nroute!: &probe/dropped\n  this: id:probe/dropped\n  path: \"/probe/dropped\"\n  concept: tonk:settings\n"
+        );
+        let second = format!(
+            "{library}\nroute!: &probe/kept\n  this: id:probe/kept\n  path: \"/probe/kept\"\n  concept: tonk:settings\n"
+        );
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire the profile branch");
+        let head = || {
+            session
+                .handle()
+                .revision()
+                .expect("the profile branch has a head")
+                .version()
+        };
+        let installed = || async {
+            super::read_installed_seed(&tonk, &session)
+                .await
+                .expect("read the seed record")
+        };
+        let paths = || async {
+            let routes: Vec<tonk_schema::Route> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::Route> {
+                    this: Term::var("this"),
+                    path: Term::var("path"),
+                    concept: Term::var("concept"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("route query");
+            routes
+                .into_iter()
+                .map(|route| route.path.0)
+                .collect::<Vec<String>>()
+        };
+
+        super::install_profile_library(&tonk, first.clone())
+            .await
+            .expect("the first boot installs the library");
+        let record = installed()
+            .await
+            .expect("the first boot records its install");
+        assert_eq!(record.seed.to_string(), super::seed_version(&first));
+        let seeded = head();
+
+        super::install_profile_library(&tonk, first.clone())
+            .await
+            .expect("a matching boot succeeds");
+        assert_eq!(
+            head(),
+            seeded,
+            "a boot whose library matches the recorded install must not commit"
+        );
+        assert_eq!(
+            installed().await.expect("the record survives").version,
+            record.version,
+            "a matching boot leaves the install record alone"
+        );
+
+        super::install_profile_library(&tonk, second.clone())
+            .await
+            .expect("a changed library upgrades");
+        assert_ne!(head(), seeded, "an upgrade commits");
+        let upgraded = installed().await.expect("the upgrade records itself");
+        assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
+        assert_eq!(
+            upgraded.prior.to_string(),
+            super::seed_version(&first),
+            "the upgrade records what it replaced"
+        );
+        let running: Vec<tonk_schema::SeedInstalled> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedInstalled> {
+                this: Term::var("this"),
+                prior: Term::var("prior"),
+                version: Term::var("version"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("installed query");
+        assert_eq!(
+            running.len(),
+            1,
+            "an upgrade withdraws the earlier install record: {running:?}"
+        );
+        let paths = paths().await;
+        assert!(
+            paths.iter().any(|path| path == "/probe/kept"),
+            "a definition both libraries carry survives the upgrade: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path == "/probe/dropped"),
+            "a definition only the earlier library had is withdrawn: {paths:?}"
+        );
     }
 
     /// The self-replica (subject == profile) is refused: deleting the
