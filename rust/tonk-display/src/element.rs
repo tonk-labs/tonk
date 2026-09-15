@@ -2577,13 +2577,42 @@ fn forward_with(host: &Element, view_el: &Element) {
     {
         let _ = view_el.set_attribute("with", &context);
     }
-    if let Ok(list) = view_el.query_selector_all(selector) {
-        for i in 0..list.length() {
-            if let Some(el) = list.item(i).and_then(|n| n.dyn_into::<Element>().ok())
-                && !el.has_attribute("with")
-            {
-                let _ = el.set_attribute("with", &context);
-            }
+    stamp_matches(&view_el.query_selector_all(selector), &context);
+    // The view's markup is parsed into an INERT `<template>` child, and a
+    // template's nodes live in its `content` DocumentFragment — which
+    // `querySelectorAll` on the view does NOT descend into. Stamping only
+    // the light-DOM subtree therefore reaches nothing at all, and every
+    // routing consumer authored in a view template (`<tonk-inspector>` in
+    // the `inspector` directory view, `<tonk-tree>` in `dialog:diagnose`,
+    // a nested `<tonk-display>` that should cascade context onward) is
+    // cloned without a `with` and renders "no repository in context".
+    // Stamp the template content too, BEFORE the renderer clones it, so
+    // every clone carries the context.
+    let children = view_el.child_nodes();
+    for i in 0..children.length() {
+        let Some(child) = children.item(i) else {
+            continue;
+        };
+        if let Some(template) = child.dyn_ref::<web_sys::HtmlTemplateElement>() {
+            let content: web_sys::DocumentFragment = template.content();
+            stamp_matches(&content.query_selector_all(selector), &context);
+        }
+    }
+}
+
+/// Stamp `context` onto every matched element that lacks its own `with`.
+/// Shared by [`forward_with`]'s two passes — the view's light DOM and each
+/// inert `<template>`'s content — which are queried from different roots
+/// (`Element` vs `DocumentFragment`) but handled identically.
+fn stamp_matches(list: &Result<web_sys::NodeList, JsValue>, context: &str) {
+    let Ok(list) = list else {
+        return;
+    };
+    for i in 0..list.length() {
+        if let Some(el) = list.item(i).and_then(|n| n.dyn_into::<Element>().ok())
+            && !el.has_attribute("with")
+        {
+            let _ = el.set_attribute("with", context);
         }
     }
 }
@@ -3487,6 +3516,69 @@ mod tests {
             ],
             "the ui entry survives; only the drifted directory slot is replaced"
         );
+    }
+
+    /// A view's markup lives in an inert `<template>`, whose content is a
+    /// DocumentFragment `querySelectorAll` does not descend into — so a
+    /// consumer authored in a view template must still be stamped, or every
+    /// clone the renderer stamps from it carries no context and renders
+    /// "no repository in context". This is the `/space/{id}/inspector` and
+    /// `dialog:diagnose` regression.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_its_with_into_template_content() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        // Exactly how `mount_view_slide` parses a view: into a template,
+        // never as live children.
+        let template = document.create_element("template").unwrap();
+        template.set_inner_html(concat!(
+            "<tonk-inspector></tonk-inspector>",
+            "<tonk-tree></tonk-tree>",
+            r#"<tonk-display with="main@did:key:zOther"></tonk-display>"#,
+        ));
+        view.append_child(&template).unwrap();
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        let content = template
+            .dyn_ref::<web_sys::HtmlTemplateElement>()
+            .expect("template element")
+            .content();
+        assert_eq!(
+            content
+                .query_selector("tonk-inspector")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "a consumer inside the view's template inherits the display's with",
+        );
+        assert_eq!(
+            content
+                .query_selector("tonk-tree")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "every routing consumer in the template is stamped, not just the first",
+        );
+        assert_eq!(
+            content
+                .query_selector("tonk-display")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zOther"),
+            "a consumer with its own with keeps it",
+        );
+        host.remove();
     }
 
     /// `forward_with` stamps the display host's OWN `with` onto routing

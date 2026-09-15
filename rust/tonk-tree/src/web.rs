@@ -58,7 +58,13 @@ impl CustomElement for TonkTreeElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["repo", "branch"]
+        // `with` belongs here with `repo`/`branch`: `<tonk-display>` forwards
+        // its routing context by stamping `with` AFTER mounting the view, so a
+        // tree mounted by a view (the `dialog:diagnose` directory view is a
+        // bare `<tonk-tree>`) connects with no context at all. Without
+        // observing it, `start` renders "no repository in context" and the
+        // element never hears that the context landed.
+        &["repo", "branch", "with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
