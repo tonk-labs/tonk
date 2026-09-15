@@ -519,6 +519,56 @@ Two details that are easy to get wrong and expensive to debug:
 The risk to carry: `unstable-custom-transports` is unstable by name, so
 pin the iroh version exactly and expect to follow it.
 
+### The local dial is a route, not a code path
+
+The tiering earlier in this note — local here, remote there — reads as
+though an application has to choose. It does not. In `iroh-base`:
+
+```rust
+pub struct EndpointAddr {
+    pub id: EndpointId,
+    pub addrs: BTreeSet<TransportAddr>,   // one peer, many paths at once
+}
+
+pub enum TransportAddr { Relay(RelayUrl), Ip(SocketAddr), Custom(CustomAddr) }
+
+pub struct CustomAddr { id: u64, data: CustomAddrBytes }
+```
+
+`Custom` is a peer of `Relay` and `Ip`, and `addrs` is a set, so one
+endpoint address carries a relay URL, an IP and a WebRTC route at the
+same time. iroh's path selection (there is a `biased_rtt_path_selector`)
+picks among them and migrates, so a local path at sub-millisecond RTT
+wins over a relay without anyone deciding, and fails over when it dies.
+
+Application code is `endpoint.connect(id, ALPN)`. There is no branch.
+Offline, the custom path is simply the only viable one.
+
+`CustomAddr.data` is **opaque bytes this transport defines**, which
+means the `Address { candidates, fingerprint }` already built is the
+address payload — not a parallel scheme to be reconciled with iroh's,
+but the content of `CustomAddr` for transport id *n*. `CustomAddr`
+implements `Display` and `FromStr` as `{id:x}_{hex}`, so it goes into
+config, a fact, or a URL as it stands.
+
+So `tonk remote add <did>` records an `EndpointAddr` holding the custom
+route beside whatever relay and IP information exists, and it keeps
+working with no network because the custom route never needed one.
+
+### What this retires
+
+**The fingerprint stops being a security boundary.** iroh's TLS
+authenticates end to end by endpoint key, so the WebRTC layer beneath is
+a pipe. The fingerprint stays in `CustomAddr` for addressing — and
+persisting the certificate still keeps that stable — but it carries no
+trust. The one-way DTLS authentication caveat threaded through this
+whole note dissolves, and with it the argument that the application
+handshake is the *only* thing standing between a reachable port and a
+served request: iroh will not complete a connection with a peer that
+cannot prove the key.
+
+**The 64 KiB message cap stops existing.** iroh gives streams.
+
 ### Where the work already done fits
 
 None of it is wasted, but its role changes. The direct dial — address
