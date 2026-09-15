@@ -2620,15 +2620,13 @@ const SHARE_RETURN: &str = "tonk-share-return";
 const RETURN_PATH: &str = "data-return-path";
 
 /// Ordinary login returns home; missing-space recovery keeps its destination.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn finish_account_navigation(host: &Element) {
     let path = host
         .get_attribute(RETURN_PATH)
         .unwrap_or_else(|| "/".to_owned());
     close();
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     tonk_host::navigate_to(&path);
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let _ = path;
 }
 
 /// Return to the surface the ceremony replaced.
