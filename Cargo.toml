@@ -114,6 +114,7 @@ getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_0_3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 hex = "0.4"
 hkdf = "0.12"
+hmac = "0.12"
 html5gum = "0.7"
 http-body-util = "0.1"
 hyper = "1"
