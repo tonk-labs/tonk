@@ -138,16 +138,18 @@ second implementation, not a rewrite.
 
 An SDP offer is not an address. It is one half of a stateful, pairwise
 handshake carrying a DTLS fingerprint, ICE credentials and candidates.
-If both peers could choose all three up front, each could construct the
-other's SDP locally and skip the round trip entirely — `rtc`'s
-`SettingEngine` supports exactly that (`set_ice_credentials`, documented
-for "signalless WebRTC"). **But the browser API has no way to set
-`ice-ufrag`/`ice-pwd`.** A certificate can be pre-generated
-(`RTCPeerConnection.generateCertificate`), the ICE credentials cannot.
-So with a browser as one peer, one round trip is the floor. Worth
-re-verifying against current browsers before designing around it.
+If both peers can choose all three up front, each can construct the
+other's SDP locally and skip the round trip entirely.
 
-That argues for two kinds of fact rather than one:
+They can. A browser **does** accept a local offer whose `ice-ufrag` and
+`ice-pwd` have been rewritten, and uses them on the wire — measured in
+Chromium, and what `libp2p-webrtc-websys` ships. See "Dialling with no
+answer at all" below; that is the design to build, and it needs neither
+of the two fact shapes described next.
+
+The offer/answer path is still needed where direct dialling cannot
+reach — across NAT, where the CLI has no UDP address a browser can send
+to. There, two kinds of fact:
 
 - **Presence, cardinality one per peer** — `peer/<did> dialable
   { fingerprint, candidates, at }`. Superseding is exactly right: a new
@@ -185,9 +187,9 @@ Signalling through the space also removes the delivery problem above
 entirely: no loopback hop means no iframe, no popup, no gesture and no
 button.
 
-## Can the browser just dial the CLI, with nothing coming back?
+## Dialling with no answer at all
 
-Nearly. Measured, not reasoned about — see
+Yes, and it is the design to build. Measured, not reasoned about — see
 `rust/tonk-rtc/examples/direct_dial.rs`, which is kept so the findings
 can be re-checked against a later `webrtc` release.
 
@@ -215,23 +217,53 @@ libp2p's trick of reading the peer's ufrag off the first STUN packet
 before building a peer connection is not available without upstream
 work.
 
-So zero-information dialling is out, but the gap is two short strings
-rather than a whole answer, and **neither side has to wait for a reply**:
+Those last two rows say the CLI needs the peer's ICE credentials. It
+does — but it does not need to *receive* them, because **the dialer
+chooses them for both sides**.
+
+`libp2p-webrtc-websys` munges its own `createOffer` output, replacing
+`a=ice-ufrag` and `a=ice-pwd` with one random string, and synthesises
+the peer's SDP with that same string in both fields. Measured in
+Chromium: `setLocalDescription` accepts the rewrite, `localDescription`
+reflects it, and the STUN `USERNAME` on the wire reads
+`<ufrag>:<ufrag>`. One shared secret, symmetric, nothing to exchange.
+
+The listener then reads that ufrag out of the first STUN packet and
+builds a peer connection with `set_ice_credentials(ufrag, ufrag)`. That
+needs a UDP mux — which the **0.17 line of the same `webrtc` crate
+has** (`SettingEngine::set_udp_network(UDPNetwork::Muxed(..))`, a live
+function there, and what `libp2p-webrtc` is built on). Its absence in
+0.20.5 is a regression in the rewrite, not a property of the ecosystem.
+
+So the address record collapses to what the CLI alone knows:
 
 ```
-peer/<did>  dialable  { host, port, certhash, ufrag, pwd }   ← CLI, on start
-peer/<did>  dialing   { to, ufrag, pwd }                     ← dialer, on dial
+peer/<did>  dialable  { host, port, certhash }   ← CLI, on start
 ```
 
-The dialer builds its offer locally, publishes its two strings, and
-starts sending checks immediately; ICE retransmits, so checks are still
-arriving while the far side picks the record up. No callback, no iframe,
-no popup, no button.
+Zero round trips. No callback, no iframe, no popup, no button, and
+nothing for the dialer to publish.
 
-**The number this lives or dies on:** Chromium abandons failed checks
-after roughly thirty seconds, so sync has to deliver the `dialing` fact
-inside that window or the dial fails and must be retried. Worth
-measuring against real sync latency before committing to this.
+### What it costs
+
+- Move to `webrtc` 0.17 and port `peer.rs` to its callback API.
+- A UDP mux keyed on the STUN `USERNAME` (libp2p's is ~350 lines and
+  `pub(crate)`, so it is a reimplementation, not a dependency).
+- A persisted certificate, so the published certhash survives a restart.
+- An application-layer handshake. DTLS is one-way authenticated here —
+  the dialer verifies the CLI against the published certhash, the CLI
+  verifies nothing — so possession of the address becomes the
+  capability unless something on top checks the peer. libp2p uses Noise;
+  tonk has DIDs and UCAN delegations already.
+
+### The risk that decides it
+
+**Safari is unverified, and Safari is why this project exists.** The
+munge was measured in Chromium only; libp2p documents browser
+WebRTC-Direct for Chrome and Firefox. If WebKit rejects a rewritten
+local `ice-ufrag`, this path dies for exactly the browser it was meant
+to serve, and the offer/answer-over-the-space design is the fallback.
+Measuring that needs a Mac and about ten minutes.
 
 It also does not survive NAT — the CLI must be reachable by UDP at the
 published address, and the dialer cannot help it hole-punch without a

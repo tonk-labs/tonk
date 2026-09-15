@@ -44,7 +44,19 @@
 //!   reading the peer's ufrag off the first STUN packet before building
 //!   a peer connection is not available without upstream work.
 //!
-//! # So the shape that does work
+//! # The framing above is too pessimistic
+//!
+//! Those two requirements assume the peer's credentials are the peer's
+//! to choose. They are not: a browser accepts a `createOffer` result
+//! whose `a=ice-ufrag` and `a=ice-pwd` have been rewritten and uses
+//! them on the wire (measured in Chromium; it is what
+//! `libp2p-webrtc-websys` ships). So a dialer picks ONE random string,
+//! uses it as both sides' ufrag and password, and the listener reads it
+//! out of the first STUN packet — needing a UDP mux, which the 0.17
+//! line of this same crate has. Nothing is exchanged at all.
+//!
+//! # The shape that works without that
+
 //!
 //! Each side publishes once and neither waits for a reply: this process
 //! publishes `{ host, port, certhash, ufrag, pwd }`, and a dialer
