@@ -14,6 +14,9 @@ pub struct Event {
     pub event: String,
     /// Hashed identity ([`crate::distinct_id`]) or `"tonk:anonymous"`.
     pub distinct_id: String,
+    /// UTC occurrence time captured when the event was queued, before the
+    /// command's bounded end-of-run flush.
+    pub timestamp: String,
     /// Content-free properties.
     pub properties: Map<String, Value>,
 }
@@ -83,6 +86,7 @@ impl Client {
         self.events.push(Event {
             event: event.to_owned(),
             distinct_id: config.distinct_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             properties,
         });
     }
@@ -96,6 +100,17 @@ impl Client {
         let mut properties = event.validated_properties()?;
         properties.insert("environment".to_owned(), Value::from("cli"));
         self.capture(crate::event::ACCOUNT, properties);
+        Ok(())
+    }
+
+    /// Validate and queue one product interaction with native context.
+    pub fn capture_product(
+        &mut self,
+        event: &crate::product::ProductEvent,
+    ) -> Result<(), crate::product::ValidationError> {
+        let mut properties = event.validated_properties()?;
+        properties.insert("environment".to_owned(), Value::from("cli"));
+        self.capture(crate::event::PRODUCT, properties);
         Ok(())
     }
 
@@ -157,6 +172,7 @@ mod tests {
         let event = &payload["batch"][0];
         assert_eq!(event["event"], "cli_command_run");
         assert_eq!(event["distinct_id"], "tonk:abc");
+        assert!(event["timestamp"].as_str().unwrap().ends_with('Z'));
         assert_eq!(event["properties"]["command"], "eval");
         assert_eq!(event["properties"]["os"], std::env::consts::OS);
         assert!(event["properties"]["version"].is_string());
@@ -183,6 +199,27 @@ mod tests {
         assert_eq!(event["properties"]["environment"], "cli");
         assert_eq!(event["properties"]["action"], "login");
         assert_eq!(event["properties"]["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[dialog_common::test]
+    fn product_capture_has_occurrence_time_and_closed_cli_context() {
+        use crate::product::{Journey, ProductAction, ProductEvent, Stage, Surface, Trigger};
+        let mut client = Client::new("http://localhost:1".into(), "key".into(), "tonk:abc".into());
+        let event = ProductEvent::started(
+            Journey::Workspace,
+            ProductAction::Query,
+            Stage::Intent,
+            Surface::NativeCli,
+            Trigger::User,
+            "opaque-2",
+        );
+        client.capture_product(&event).unwrap();
+        let event = &client.payload().unwrap()["batch"][0];
+        assert_eq!(event["event"], "product_event");
+        assert_eq!(event["properties"]["environment"], "cli");
+        assert_eq!(event["properties"]["action"], "query");
+        assert!(event["timestamp"].as_str().unwrap().ends_with('Z'));
+        assert!(event["properties"].get("query").is_none());
     }
 
     /// Minimal one-shot HTTP server: accept one connection, read one

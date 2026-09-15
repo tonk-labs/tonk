@@ -11,6 +11,35 @@ use wasm_bindgen::prelude::*;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[wasm_bindgen(inline_js = r#"
+export function ph_sanitize(payload) {
+    if (!payload) return payload;
+    var strip = function (obj) {
+        if (!obj) return;
+        delete obj.$pathname;
+        delete obj.$prev_pageview_pathname;
+        delete obj.$referrer;
+        delete obj.$referring_domain;
+        for (var key in obj) {
+            if (key.indexOf("$initial_") === 0) delete obj[key];
+            if (key.indexOf("$utm_") === 0) delete obj[key];
+            if (["$gclid","$gclsrc","$dclid","$fbclid","$msclkid","$twclid","$li_fat_id","$mc_cid"].indexOf(key) !== -1) delete obj[key];
+        }
+    };
+    strip(payload.$set);
+    strip(payload.$set_once);
+    var props = payload.properties;
+    if (props) {
+        strip(props);
+        strip(props.$set);
+        strip(props.$set_once);
+        if (props.route) {
+            props.$current_url = props.route;
+        } else {
+            delete props.$current_url;
+        }
+    }
+    return payload;
+}
 export function ph_init(key, host, version) {
     try {
         if (!key || !window.posthog) return false;
@@ -33,32 +62,7 @@ export function ph_init(key, host, version) {
             // normalize_path guarantee is re-enforced here: drop the
             // raw-URL fields and let the pre-normalized `route`
             // property stand in for $current_url.
-            before_send: function (payload) {
-                if (!payload) return payload;
-                var strip = function (obj) {
-                    if (!obj) return;
-                    delete obj.$pathname;
-                    delete obj.$referrer;
-                    delete obj.$referring_domain;
-                    for (var key in obj) {
-                        if (key.indexOf("$initial_") === 0) delete obj[key];
-                    }
-                };
-                strip(payload.$set);
-                strip(payload.$set_once);
-                var props = payload.properties;
-                if (props) {
-                    strip(props);
-                    strip(props.$set);
-                    strip(props.$set_once);
-                    if (props.route) {
-                        props.$current_url = props.route;
-                    } else {
-                        delete props.$current_url;
-                    }
-                }
-                return payload;
-            },
+            before_send: ph_sanitize,
         });
         // Super property on every event: which deployment this is.
         // Dashboards filter/break down on it to keep production,
@@ -96,6 +100,7 @@ extern "C" {
     fn ph_capture(name: &str, props_json: &str);
     fn ph_register(props_json: &str);
     fn ph_identify(id: &str);
+    fn ph_sanitize(payload: JsValue) -> JsValue;
 }
 
 /// Initialize posthog-js. Returns whether capture is live; when it
@@ -122,6 +127,7 @@ pub fn capture(name: &str, properties: &serde_json::Value) {
             | crate::event::ACCOUNT_CREATED
             | crate::event::SPACE_CONVERSION
             | crate::event::SPACE_SHARED
+            | crate::event::PRODUCT
     ) {
         return;
     }
@@ -201,6 +207,26 @@ pub fn capture_space_shared(space_key: &str) {
     );
 }
 
+/// Validate and capture one product interaction.
+pub fn capture_product(
+    event: &crate::product::ProductEvent,
+) -> Result<(), crate::product::ValidationError> {
+    let properties = event.validated_properties()?;
+    capture_unchecked(
+        crate::event::PRODUCT,
+        &serde_json::Value::Object(properties),
+    );
+    Ok(())
+}
+
+/// Re-validate a product event carried through the sealed-guest relay.
+pub fn capture_product_properties(
+    properties: &serde_json::Value,
+) -> Result<(), crate::product::ValidationError> {
+    let event = crate::product::ProductEvent::from_properties(properties)?;
+    capture_product(&event)
+}
+
 /// Tie this device to the hashed profile identity
 /// (see [`crate::distinct_id`] — pass its output, never a raw DID).
 pub fn identify(distinct_id: &str) {
@@ -213,6 +239,38 @@ pub fn identify(distinct_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    async fn outbound_sanitizer_drops_sdk_route_and_campaign_fields() {
+        let sentinel = "private-route-sentinel";
+        let payload = js_sys::JSON::parse(
+            &serde_json::json!({
+                "$set": { "$initial_pathname": sentinel, "$utm_campaign": sentinel },
+                "$set_once": { "$initial_referrer": sentinel, "$fbclid": sentinel },
+                "properties": {
+                    "route": "/space/reviewed-hash",
+                    "$current_url": format!("https://tonk.network/{sentinel}"),
+                    "$pathname": format!("/{sentinel}"),
+                    "$prev_pageview_pathname": format!("/{sentinel}/previous"),
+                    "$referrer": format!("https://{sentinel}.example"),
+                    "$referring_domain": format!("{sentinel}.example"),
+                    "$utm_source": sentinel,
+                    "$gclid": sentinel,
+                    "$set": { "$prev_pageview_pathname": sentinel },
+                    "$set_once": { "$initial_current_url": sentinel, "$msclkid": sentinel }
+                }
+            })
+            .to_string(),
+        )
+        .expect("fixture parses");
+        let sanitized = ph_sanitize(payload);
+        let outbound = js_sys::JSON::stringify(&sanitized)
+            .expect("fixture stringifies")
+            .as_string()
+            .expect("JSON string");
+        assert!(!outbound.contains(sentinel), "SDK field leaked: {outbound}");
+        assert!(outbound.contains("/space/reviewed-hash"));
+    }
 
     #[wasm_bindgen(inline_js = r#"
 let launchEvents = [];

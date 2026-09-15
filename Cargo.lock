@@ -4724,9 +4724,11 @@ dependencies = [
 name = "tonk-analytics"
 version = "0.6.15"
 dependencies = [
+ "chrono",
  "dialog-common",
  "hex",
  "js-sys",
+ "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4953,6 +4955,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde_json",
  "tokio",
+ "tonk-analytics",
  "tonk-common",
  "tonk-host",
  "tonk-schema",

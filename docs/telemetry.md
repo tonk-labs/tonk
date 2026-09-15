@@ -27,6 +27,11 @@ before a profile exists report as `tonk:anonymous`.
 |---|---|
 | `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
 | `account_event` | The closed account journey schema below. Account commands emit this lifecycle in addition to one `cli_command_run`; never add the two event types together when counting account attempts. |
+| `product_event` | The closed product lifecycle below for every parsed non-account command family. It is paired with, and must not be added to, the `cli_command_run` summary. |
+
+Every native batch item carries an RFC 3339 UTC occurrence timestamp recorded
+when it is queued. Starts and checkpoints therefore retain their real order
+even though the CLI flushes the batch only when the command finishes.
 
 ### Web app
 
@@ -42,6 +47,7 @@ before a profile exists report as `tonk:anonymous`.
 | `account_created` | `schema_version`; fired after account creation, configured enrollment, and a best-effort refresh of the hashed profile identity, even though the account journey then waits for email activation |
 | `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
 | `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
+| `product_event` | Closed product interaction lifecycle for startup, active Settings/profile operations, invite resolution/retry, share-and-copy, sheet activation, and CLI operations. |
 
 `visit` is captured before the other web events and its reviewed attribution
 properties are registered for the current in-memory PostHog session. That puts
@@ -141,14 +147,26 @@ Browser exception capture and console-error capture are disabled. A project
 setting cannot override that client configuration. Handled account failures
 are represented only by `account_event`; exact diagnostics remain local.
 
-The web shell also listens for a generic `tonk:analytics` DOM event
-(`detail: { name, props }`) so future components can emit events
-without new dependencies. Nothing dispatches it today; any future
-dispatcher is responsible for keeping its payload content-free
-(hashes and counts only), like every event above.
+The web shell listens for a `tonk:analytics` DOM event
+(`detail: { name, props }`) relayed from sealed guests. Guest code can emit only
+the closed `product_event`; the top page parses and validates it again before
+capture.
 The bridge cannot emit `account_event`, `visit`, `account_created`,
-`space_conversion`, or `space_shared`; those names are reserved for typed,
-validated capture interfaces.
+`space_conversion`, or `space_shared`; those names are reserved for their
+typed capture interfaces.
+
+### Product journey schema
+
+`product_event` has `schema_version=1`. Its closed properties are `journey`,
+`action`, `phase`, `stage`, `surface`, `trigger`, an opaque per-attempt
+`attempt_id`, and terminal `result`, optional `failure_kind`, and capped
+`duration_ms`. The exact vocabulary, receipts, privacy rules, coverage ledger,
+and dashboard definitions live in [`analytics-contract.md`](analytics-contract.md).
+
+The browser's final `before_send` sanitizer removes current and previous raw
+pathnames, referrers, arbitrary UTM fields, click IDs, and SDK-generated initial
+URL fields from event and person-property blocks. Reviewed launch attribution
+is registered separately through the closed launch schema.
 
 ## Operational logs
 

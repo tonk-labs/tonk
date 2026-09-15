@@ -17,6 +17,7 @@ pub mod account;
 pub mod launch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
+pub mod product;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
 
@@ -47,6 +48,8 @@ pub mod event {
     pub const SPACE_CONVERSION: &str = "space_conversion";
     /// An invite was successfully minted for a space.
     pub const SPACE_SHARED: &str = "space_shared";
+    /// Typed lifecycle for product-owned interactions outside account signup.
+    pub const PRODUCT: &str = "product_event";
 }
 
 /// Default PostHog ingestion host (EU cloud).

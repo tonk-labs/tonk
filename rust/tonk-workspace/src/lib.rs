@@ -12,6 +12,8 @@
 #![warn(missing_docs)]
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod analytics;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod binder;
