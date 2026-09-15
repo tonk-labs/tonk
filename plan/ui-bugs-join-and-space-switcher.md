@@ -51,3 +51,22 @@ minutes while preserving a bound for actual hangs.
 The next run passed the original callback test and completed within 38 minutes,
 then exposed the same terminal-only race in the revocation test: it revoked
 before the CLI had cached the browser row whose stale visibility it asserts.
+
+## Follow-up: inaccessible normal space URLs
+
+- [x] Reproduce the screenshot's lifecycle boundary in source: the nested
+  single-entity directory probe enters `no-entity`, while recovery exists only
+  in its `no-model` slot.
+- [x] Add focused regression coverage for both absence states.
+- [x] Render the same invite guidance for `no-model` and `no-entity` without
+  changing the downloading state.
+- [x] Run formatting, the focused standard-library test, and rendered browser
+  verification at desktop and narrow widths.
+
+The focused test first failed because the nested directory probe had no
+`no-entity` recovery. After the fix, all 32 `standard_library` tests pass. A
+fresh isolated Chrome profile rendered the normal `/space/<DID>` URL as
+“you don't have access” with invite-link guidance at desktop, 390 px light,
+320 px light with keyboard focus, and 390 px dark. The authored foreground and
+background pairs range from 7.71:1 to 14.60:1. Safari, a physical device, true
+200% browser zoom, staging deployment, and invite redemption remain unverified.
