@@ -249,12 +249,26 @@ fn custody_creation_options(
     Ok(options)
 }
 
+/// A JavaScript-owned copy of `bytes`, for a WebAuthn dictionary field.
+///
+/// The `*_u8_slice` constructors keep a view of the wasm memory they are
+/// handed, and the browser reads a dictionary only when `create()` or
+/// `get()` runs. By then the local that held the bytes has left scope, and
+/// any allocation in between can grow the memory and detach the view. The
+/// allow-list id was built that way over a temporary `Vec`: the allocator
+/// reused its chunk, Chrome was handed an id whose first eight bytes were
+/// free-list pointers, and about one custody assertion in five failed with
+/// "no such credential". Copying makes the dictionary own its bytes.
+fn owned(bytes: &[u8]) -> Uint8Array {
+    Uint8Array::from(bytes)
+}
+
 fn creation_options_shell(
     name: Option<&str>,
     display_name: Option<&str>,
     user_id: &[u8; 16],
 ) -> Result<PublicKeyCredentialCreationOptions> {
-    let mut challenge = rand::random::<[u8; 32]>();
+    let challenge = owned(&rand::random::<[u8; 32]>());
     let rp = PublicKeyCredentialRpEntity::new("tonk");
     if let Some(id) = current_rp_id() {
         rp.set_id(id);
@@ -263,15 +277,10 @@ fn creation_options_shell(
     // are the only thing telling two entries apart, so a caller that
     // has something distinguishing should pass it.
     let opaque_name = hex::encode(rand::random::<[u8; 16]>());
-    // A copy per entity: `new_with_u8_slice` keeps a view on the buffer
-    // it is handed rather than copying it, so two entities built from
-    // one slice end up sharing a handle — which is exactly the
-    // collision the random id exists to avoid.
-    let mut handle = *user_id;
-    let user = PublicKeyCredentialUserEntity::new_with_u8_slice(
+    let user = PublicKeyCredentialUserEntity::new_with_u8_array(
         name.unwrap_or(&opaque_name),
         display_name.or(name).unwrap_or("Tonk identity"),
-        &mut handle,
+        &owned(user_id),
     );
     let params = Array::new();
     for algorithm in COSE_ALGORITHMS {
@@ -280,8 +289,8 @@ fn creation_options_shell(
                 .into(),
         );
     }
-    let options = PublicKeyCredentialCreationOptions::new_with_u8_slice(
-        &mut challenge,
+    let options = PublicKeyCredentialCreationOptions::new_with_u8_array(
+        &challenge,
         &params.into(),
         &rp,
         &user,
@@ -392,29 +401,38 @@ impl PendingCustodyAssertion {
 pub fn begin_evaluate_custody_passkey(
     credential_id: Option<&[u8]>,
 ) -> Result<PendingCustodyAssertion> {
-    let mut challenge = rand::random::<[u8; 32]>();
-    let options = PublicKeyCredentialRequestOptions::new_with_u8_slice(&mut challenge);
-    options.set_user_verification(UserVerificationRequirement::Required);
-    options.set_extensions(&custody_extensions());
-    if let Some(id) = current_rp_id() {
-        options.set_rp_id(id);
-    }
-    if let Some(credential_id) = credential_id {
-        let mut credential_id = credential_id.to_vec();
-        let descriptor = PublicKeyCredentialDescriptor::new_with_u8_slice(
-            &mut credential_id,
-            PublicKeyCredentialType::PublicKey,
-        );
-        let allowed = js_sys::Array::new();
-        allowed.push(&descriptor);
-        options.set_allow_credentials(&allowed);
-    }
+    let options = custody_request_options(credential_id)?;
     let request = CredentialRequestOptions::new();
     request.set_public_key(&options);
     let promise = credentials()?
         .get_with_options(&request)
         .map_err(|e| ceremony_error("credentials.get was rejected", e))?;
     Ok(PendingCustodyAssertion { promise })
+}
+
+/// Assertion options for a custody passkey: user verification, the PRF
+/// evaluation, and `credential_id` as the whole allow list when the caller
+/// knows which passkey holds the account.
+fn custody_request_options(
+    credential_id: Option<&[u8]>,
+) -> Result<PublicKeyCredentialRequestOptions> {
+    let challenge = owned(&rand::random::<[u8; 32]>());
+    let options = PublicKeyCredentialRequestOptions::new_with_u8_array(&challenge);
+    options.set_user_verification(UserVerificationRequirement::Required);
+    options.set_extensions(&custody_extensions());
+    if let Some(id) = current_rp_id() {
+        options.set_rp_id(id);
+    }
+    if let Some(credential_id) = credential_id {
+        let descriptor = PublicKeyCredentialDescriptor::new_with_u8_array(
+            &owned(credential_id),
+            PublicKeyCredentialType::PublicKey,
+        );
+        let allowed = js_sys::Array::new();
+        allowed.push(&descriptor);
+        options.set_allow_credentials(&allowed);
+    }
+    Ok(options)
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -538,6 +556,61 @@ mod tests {
 
     fn user_handle(options: &PublicKeyCredentialCreationOptions) -> Vec<u8> {
         Uint8Array::new(&Reflect::get(&user_entity(options), &"id".into()).unwrap()).to_vec()
+    }
+
+    fn bytes_of(dictionary: &JsValue, field: &str) -> Vec<u8> {
+        Uint8Array::new(&Reflect::get(dictionary, &field.into()).unwrap()).to_vec()
+    }
+
+    fn allowed_credential_id(options: &PublicKeyCredentialRequestOptions) -> Vec<u8> {
+        let allowed = Reflect::get(options, &"allowCredentials".into()).unwrap();
+        bytes_of(&Array::from(&allowed).get(0), "id")
+    }
+
+    /// The browser reads a request dictionary when `credentials.get`
+    /// runs, not when the dictionary is built. The allow-list id used to
+    /// be a view over a temporary `Vec` that had already been freed by
+    /// then: the allocator reused the chunk, and Chrome was handed an id
+    /// whose first bytes were free-list pointers, so it found no such
+    /// credential. Freeing the source and reusing its chunk must leave
+    /// the dictionary's copy untouched.
+    #[dialog_common::test]
+    fn it_owns_the_allow_list_credential_id() {
+        let id: Vec<u8> = (0u8..32).collect();
+        let options = {
+            let source = id.clone();
+            custody_request_options(Some(&source)).unwrap()
+        };
+        let churn: Vec<Vec<u8>> = (0..64).map(|_| vec![0xFF; 32]).collect();
+        let stored = allowed_credential_id(&options);
+        drop(churn);
+        assert_eq!(stored, id);
+    }
+
+    /// Same for the challenge, which lived on the stack of the builder:
+    /// the next call to the builder reuses that stack and the view
+    /// showed a different challenge from the one the browser signed.
+    #[dialog_common::test]
+    fn it_owns_the_request_challenge() {
+        let options = custody_request_options(None).unwrap();
+        let before = bytes_of(&options, "challenge");
+        let _later = custody_request_options(None).unwrap();
+        let after = bytes_of(&options, "challenge");
+        assert_eq!(before.len(), 32);
+        assert_eq!(before, after);
+    }
+
+    /// And for creation: the user handle and the challenge both lived
+    /// on the builder's stack.
+    #[dialog_common::test]
+    fn it_owns_the_creation_handle_and_challenge() {
+        let options = custody_creation_options(None, None).unwrap();
+        let handle = user_handle(&options);
+        let challenge = bytes_of(&options, "challenge");
+        let _later = custody_creation_options(None, None).unwrap();
+        assert_eq!(handle.len(), 16);
+        assert_eq!(user_handle(&options), handle);
+        assert_eq!(bytes_of(&options, "challenge"), challenge);
     }
 
     /// With no label the entity stays opaque; labelled, it carries the
