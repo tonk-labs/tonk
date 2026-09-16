@@ -614,39 +614,44 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
 
 #[test]
 fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
-    let copied = STANDARD_LIBRARY
-        .split("copy-label=\"Copy prompt\"")
-        .nth(1)
-        .and_then(|tail| tail.split("</wa-copy-button>").next())
-        .expect("the agent prompt copy button");
-    let command = "npx --yes @tonk/cli connect '{link}'";
-    assert_eq!(
-        copied.matches(command).count(),
-        1,
-        "the clipboard prompt must carry one production CLI command",
-    );
-    assert!(
-        !STANDARD_LIBRARY
+    for library in [
+        STANDARD_LIBRARY,
+        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
+    ] {
+        let copied = library
             .split("copy-label=\"Copy prompt\"")
-            .next()
-            .unwrap_or_default()
-            .contains(command),
-        "machine instructions must not be visible before the copy button",
-    );
-    assert!(
-        copied.contains(
-            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
-        ),
-        "the clipboard prompt must define the success boundary",
-    );
-    assert!(
-        copied.contains("npx --yes @tonk/cli --space NAME connect"),
-        "the resume command must work without a globally installed CLI",
-    );
-    assert!(
-        copied.contains("npx --yes @tonk/cli connect INVITE --name NEW_NAME"),
-        "the prompt must explain how to reclaim after revoked saved authority",
-    );
+            .nth(1)
+            .and_then(|tail| tail.split("</wa-copy-button>").next())
+            .expect("the agent prompt copy button");
+        let command = "npx --yes @tonk/cli connect '{link}'";
+        assert_eq!(
+            copied.matches(command).count(),
+            1,
+            "the clipboard prompt must carry one production CLI command",
+        );
+        assert!(
+            !library
+                .split("copy-label=\"Copy prompt\"")
+                .next()
+                .unwrap_or_default()
+                .contains(command),
+            "machine instructions must not be visible before the copy button",
+        );
+        assert!(
+            copied.contains(
+                "Only report connected after it prints &quot;Agent connection confirmed&quot;"
+            ),
+            "the clipboard prompt must define the success boundary",
+        );
+        assert!(
+            copied.contains("npx --yes @tonk/cli --space NAME connect"),
+            "the resume command must work without a globally installed CLI",
+        );
+        assert!(
+            copied.contains("npx --yes @tonk/cli connect INVITE --name NEW_NAME"),
+            "the prompt must explain how to reclaim after revoked saved authority",
+        );
+    }
 }
 
 #[test]
@@ -1209,4 +1214,70 @@ fn parse_command_attributes(
         out.insert(name, attributes);
     }
     out
+}
+
+#[test]
+fn it_keeps_scoped_agent_prompts_separate_from_legacy_account_approval() {
+    for library in [
+        STANDARD_LIBRARY,
+        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
+    ] {
+        assert!(library.contains("hash.startsWith(\"#tonk-agent-v1=\")"));
+        assert!(library.contains("<div data-agent-mode=\"legacy\" hidden>"));
+        assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
+        assert!(library.contains("event!: &on/new-agent-invite"));
+        assert!(library.contains("the: xyz.tonk.agent-handoff/fresh"));
+
+        let scoped = library
+            .split("<div data-agent-mode=\"scoped\" hidden>")
+            .nth(1)
+            .and_then(|tail| tail.split("</wa-copy-button>").next())
+            .expect("separate scoped prompt, hidden until its envelope is selected");
+        assert_eq!(
+            scoped
+                .matches("npx --yes @tonk/cli connect '{link}'")
+                .count(),
+            1
+        );
+        assert!(scoped.contains("npx --yes @tonk/cli --space NAME connect"));
+        assert!(scoped.contains(
+            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
+        ));
+        assert!(scoped.contains("acknowledged receipt push"));
+        assert!(
+            scoped.contains("Multiple holders of this link share the same invitation authority")
+        );
+        assert!(scoped.contains("ask me for a fresh invite"));
+        assert!(!scoped.contains("join --agent"));
+        assert!(!scoped.contains("--switch-account"));
+        assert!(!scoped.contains("requires account {account}"));
+    }
+    let playground = include_str!("../../tonk-core/assets/library/onboarding-agent.yaml");
+    let scoped = playground
+        .split("<div data-agent-mode=\"scoped\" hidden>")
+        .nth(1)
+        .unwrap();
+    assert!(scoped.contains("Do not change the space home, other pages, shared components, shared schemas, or space-wide settings."));
+    assert!(scoped.contains("Agent playground&quot; page"));
+    assert!(!scoped.contains("Finish with `npx --yes @tonk/cli space home"));
+}
+
+#[test]
+fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
+    let receipt = STANDARD_LIBRARY
+        .split("view!:\n  this: tonk:agent-connection\n")
+        .nth(1)
+        .unwrap()
+        .split("# A space member")
+        .next()
+        .unwrap();
+    assert!(receipt.contains("directory: |"));
+    assert!(receipt.contains("entity={this} model=tonk:agent-connection"));
+    assert!(receipt.contains("agent connection acknowledged"));
+    assert!(receipt.contains("data-this={this}"));
+    assert!(!receipt.contains("Your agent connected"));
+    assert!(
+        !STANDARD_LIBRARY
+            .contains("entity=\"id:tonk:agent-connection\" model=tonk:agent-connection")
+    );
 }

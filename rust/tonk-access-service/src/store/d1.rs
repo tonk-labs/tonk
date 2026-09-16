@@ -12,6 +12,10 @@ use serde::Deserialize;
 use worker::d1::D1Database;
 use worker::wasm_bindgen::JsValue;
 
+mod additions;
+mod chunks;
+mod delivery;
+
 use crate::store::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
     DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION,
@@ -434,12 +438,28 @@ impl Store for D1Store {
             .prepare(DELETE_CUSTOMER)
             .bind(&[JsValue::from(did)])
             .map_err(map_err)?;
+        let additions = self
+            .0
+            .prepare(super::DELETE_ACCOUNT_ADDITIONS)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
+        let deliveries = self
+            .0
+            .prepare(super::DELETE_ACCOUNT_DELIVERIES)
+            .bind(&[JsValue::from(did)])
+            .map_err(map_err)?;
         let results = self
             .0
-            .batch(vec![anonymize, self_consumer, customer])
+            .batch(vec![
+                anonymize,
+                self_consumer,
+                customer,
+                additions,
+                deliveries,
+            ])
             .await
             .map_err(map_err)?;
-        Ok(results.last().map(changed_rows).unwrap_or_default() == 1)
+        Ok(results.get(2).map(changed_rows).unwrap_or_default() == 1)
     }
 
     async fn claim_activation_resend(

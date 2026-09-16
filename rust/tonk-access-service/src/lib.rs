@@ -49,6 +49,7 @@ pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
 pub mod cached;
 pub mod deletion;
+pub mod delivery;
 pub mod describe;
 pub mod email;
 mod error;
@@ -84,6 +85,14 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let router = Router::new();
 
     router
+        .options_async("/connection/delivery", handlers::delivery::options)
+        .post_async("/connection/delivery", handlers::delivery::handle)
+        .options_async("/connection/read", handlers::delivery::options)
+        .post_async("/connection/read", handlers::delivery::handle)
+        .options_async("/connection/addition", handlers::delivery::options)
+        .post_async("/connection/addition", handlers::delivery::handle)
+        .options_async("/connection/additions/read", handlers::delivery::options)
+        .post_async("/connection/additions/read", handlers::delivery::handle)
         // Browser deployment configuration must run before static assets.
         .get_async("/.well-known/tonk", handlers::config::handle)
         // The service's DID document: its ed25519 key under the host's

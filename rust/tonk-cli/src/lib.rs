@@ -44,6 +44,7 @@ pub mod auto_sync;
 pub mod blob;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
+pub mod connections;
 pub mod context;
 pub mod custody;
 pub mod customer;
@@ -145,3 +146,6 @@ pub trait Coded: std::error::Error + Send + Sync + 'static {
     /// The exit code this failure should produce.
     fn exit_code(&self) -> ExitCode;
 }
+
+/// CLI-owned selected-space linking and durable approval recovery.
+pub mod terminal_link;

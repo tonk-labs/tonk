@@ -68,7 +68,7 @@ async fn connection_receipt_is_visible_only_in_the_connected_space() -> anyhow::
     let route =
         tonk_cli::render::RenderRoute::parse("id:tonk:agent-connection@tonk:agent-connection")?;
     let html = tonk_cli::render::render(&connected.site, &route).await?;
-    assert!(html.contains("Your agent connected"));
+    assert!(html.contains("agent connection acknowledged"));
     assert!(html.contains("Dismiss agent connection notification"));
     let untouched = other.eval_inline(query).await?;
     assert!(untouched.response.matches_after[0].results.is_empty());
@@ -331,32 +331,36 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
 }
 
 #[dialog_common::test]
-async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
+async fn agent_join_and_legacy_connect_reject_open_invite_before_mutation() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
-    let home = tempfile::tempdir()?;
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
-    let output = std::process::Command::new(binary)
-        .args(["connect", &invite.url, "--no-open"])
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("XDG_DATA_HOME", home.path().join("data"))
-        .env("TONK_SPACES_STATE", home.path().join("spaces"))
-        .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
-        .env("TONK_UPDATE_STATE", home.path().join("update"))
-        .env("TONK_NO_UPDATE_CHECK", "1")
-        .env("DO_NOT_TRACK", "1")
-        .env_remove("TONK_SPACE")
-        .output()?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
-    assert!(
-        !home.path().join("spaces").exists(),
-        "legacy open invite must fail before local account/space writes"
-    );
+    for args in [vec!["join", "--agent"], vec!["connect"]] {
+        let home = tempfile::tempdir()?;
+        let output = std::process::Command::new(&binary)
+            .args(args)
+            .args([&invite.url, "--no-open"])
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("XDG_DATA_HOME", home.path().join("data"))
+            .env("TONK_SPACES_STATE", home.path().join("spaces"))
+            .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
+            .env("TONK_UPDATE_STATE", home.path().join("update"))
+            .env("TONK_NO_UPDATE_CHECK", "1")
+            .env("DO_NOT_TRACK", "1")
+            .env_remove("TONK_SPACE")
+            .output()?;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tonk join URL --name NAME"));
+        assert!(
+            !home.path().join("spaces").exists(),
+            "legacy open invite must fail before local account/space writes"
+        );
+    }
     Ok(())
 }
 

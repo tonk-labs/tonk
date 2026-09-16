@@ -7,6 +7,10 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod additions;
+mod chunks;
+mod delivery;
+
 use super::{
     ACTIVATE_CUSTOMER, ACTIVATE_SUBSCRIPTIONS, ADD_SUBSCRIPTION, ARCHIVE_SUBSCRIPTION, Customer,
     DELETE_CUSTOMER, DELETE_PURGED_SUBSCRIPTIONS, DELETE_SELF_SUBSCRIPTION,
@@ -29,6 +33,11 @@ impl SqliteStore {
     pub fn in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
         Self::prepare(conn)
+    }
+
+    #[cfg(test)]
+    fn activate_delivery_account_for_test(&self, account: &str) {
+        self.0.lock().unwrap().execute("INSERT INTO customer(account,email,verified_at,status,plan,cycle_anchor_at) VALUES(?1,?2,1,'Active','free@2026-08',1) ON CONFLICT(account) DO UPDATE SET status='Active'", params![account,format!("{account}@example.test")]).unwrap();
     }
 
     /// Set a customer's status to `Suspended`, for tests.
@@ -120,6 +129,34 @@ impl SqliteStore {
                 .map_err(map_err)?;
             conn.pragma_update(None, "user_version", 6)
                 .map_err(map_err)?;
+            version = 6;
+        }
+        if version < 7 {
+            conn.execute_batch(include_str!(
+                "../../migrations/0007_connection_delivery.sql"
+            ))
+            .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 7)
+                .map_err(map_err)?;
+            version = 7;
+        }
+        if version < 8 {
+            conn.execute_batch(include_str!(
+                "../../migrations/0008_connection_additions.sql"
+            ))
+            .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 8)
+                .map_err(map_err)?;
+            version = 8;
+        }
+        if version < 9 {
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+            tx.execute_batch(include_str!(
+                "../../migrations/0009_connection_payload_chunks.sql"
+            ))
+            .map_err(map_err)?;
+            tx.pragma_update(None, "user_version", 9).map_err(map_err)?;
+            tx.commit().map_err(map_err)?;
         }
         Ok(Self(Mutex::new(conn)))
     }
@@ -460,6 +497,10 @@ impl Store for SqliteStore {
         tx.execute(DELETE_SELF_SUBSCRIPTION, params![did])
             .map_err(map_err)?;
         let changed = tx.execute(DELETE_CUSTOMER, params![did]).map_err(map_err)?;
+        tx.execute(super::DELETE_ACCOUNT_ADDITIONS, params![did])
+            .map_err(map_err)?;
+        tx.execute(super::DELETE_ACCOUNT_DELIVERIES, params![did])
+            .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
         Ok(changed == 1)
     }

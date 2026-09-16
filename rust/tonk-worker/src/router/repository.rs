@@ -889,17 +889,42 @@ impl crate::reactor::Decode for EnableSyncRequest {
     }
 }
 
+/// The existing handoff trigger plus an explicit request for a new bearer.
+/// Mount events omit `fresh`, so ordinary reconciliation reuses the session link.
+pub(crate) struct AgentHandoffRequest {
+    fresh: bool,
+}
+
+impl crate::reactor::Decode for AgentHandoffRequest {
+    fn trigger_attributes() -> Vec<String> {
+        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::trigger_attributes()
+    }
+
+    fn decode(this: dialog_artifacts::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::decode(this, facts)?;
+        Some(Self {
+            fresh: text_fact(facts, "xyz.tonk.agent-handoff/fresh").as_deref() == Some("new"),
+        })
+    }
+}
+
+impl dialog_capability::Command for AgentHandoffRequest {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Mint an account-scoped handoff for the originating space.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<tonk_schema::command::AgentHandoff> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::AgentHandoff) {
-        if let Err(error) = run_agent_handoff(self).await {
+impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::CommandEnv {
+    async fn execute(&self, request: AgentHandoffRequest) {
+        if let Err(error) = run_agent_handoff(self, request.fresh).await {
             log!("agent handoff failed: {error}");
         }
     }
 }
 
+#[cfg(not(feature = "connection-invites"))]
 async fn publish_agent_handoff(
     tonk: &TonkState,
     repo: &str,
@@ -928,7 +953,259 @@ async fn publish_agent_handoff(
     Ok(())
 }
 
-async fn run_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
+#[cfg(feature = "connection-invites")]
+async fn publish_connection_invite(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    account: &Did,
+    status: String,
+    link: String,
+) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(tonk_schema::command::AgentHandoffState {
+            this: subject.this(),
+            status: status.into(),
+            link: link.into(),
+            account: account.this().into(),
+        })
+        .assert(
+            dialog_query::the!("xyz.tonk.agent-handoff/mode")
+                .of(subject.this())
+                .is("scoped".to_owned()),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to publish agent invite state: {error}"))
+        })?;
+    Ok(())
+}
+
+async fn run_agent_handoff(
+    env: &crate::router::CommandEnv,
+    _fresh: bool,
+) -> Result<(), TonkWorkerError> {
+    #[cfg(feature = "connection-invites")]
+    {
+        return run_connection_invite(env, _fresh).await;
+    }
+    #[cfg(not(feature = "connection-invites"))]
+    run_legacy_agent_handoff(env).await
+}
+
+// Only fingerprints live here: the bearer stays exclusively in the reactor
+// overlay. The marker also excludes matching facts supplied by space content.
+#[cfg(feature = "connection-invites")]
+struct ReadyConnectionInvite {
+    state: std::sync::Weak<tokio::sync::RwLock<TonkState>>,
+    subject: Did,
+    issuer: [u8; 32],
+    link: [u8; 32],
+}
+
+#[cfg(feature = "connection-invites")]
+static CONNECTION_ISSUANCE: tokio::sync::Mutex<Vec<ReadyConnectionInvite>> =
+    tokio::sync::Mutex::const_new(Vec::new());
+
+#[cfg(feature = "connection-invites")]
+async fn run_connection_invite(
+    env: &crate::router::CommandEnv,
+    fresh: bool,
+) -> Result<(), TonkWorkerError> {
+    let mut issued = CONNECTION_ISSUANCE.lock().await;
+    issued.retain(|entry| entry.state.strong_count() > 0);
+    let repo = &env.origin().repo;
+    let (subject, expected) = {
+        let tonk = env.state().read().await;
+        let repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        let subject = repository.did();
+        require_real_space(&tonk, &subject).await?;
+        let expected = match super::identity::local_root(&tonk).await {
+            Ok(root) => root,
+            Err(error) => {
+                return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &tonk.profile.did(),
+                    format!("could not create an agent invite: {error}"),
+                    String::new(),
+                )
+                .await;
+            }
+        };
+        let issuer = *blake3::hash(&expected.bytes).as_bytes();
+        let saved = issued
+            .iter()
+            .find(|entry| {
+                entry.subject == subject
+                    && entry.issuer == issuer
+                    && entry
+                        .state
+                        .upgrade()
+                        .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
+            })
+            .map(|entry| entry.link);
+        if !fresh && let Some(saved) = saved {
+            let branch = tonk
+                .reactor
+                .repository(repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            use tonk_schema::domain::agent_handoff::{Account, Status};
+            let ready: Vec<tonk_schema::command::AgentHandoffState> = branch
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::command::AgentHandoffState> {
+                    this: Term::from(subject.this()),
+                    status: Term::from(Status::from("ready".to_owned())),
+                    link: Term::var("link"),
+                    account: Term::from(Account::from(expected.root_did.this())),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            if ready
+                .iter()
+                .any(|state| *blake3::hash(state.link.0.as_bytes()).as_bytes() == saved)
+            {
+                return Ok(());
+            }
+            // The URL was intentionally transient. Losing it must never mint
+            // another grant set as a side effect of rendering this panel.
+            return publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "invite link is no longer in this session; create a new invite to continue".into(),
+                String::new(),
+            )
+            .await;
+        }
+        if !fresh {
+            match super::agent_connections::has_issued_for_subject(&tonk, &subject).await {
+                Ok(false) => {}
+                Ok(true) => return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &expected.root_did,
+                    "an invite was already issued for this space; create a new invite to continue"
+                        .into(),
+                    String::new(),
+                )
+                .await,
+                Err(error) => {
+                    return publish_connection_invite(
+                        &tonk,
+                        repo,
+                        &subject,
+                        &expected.root_did,
+                        format!("could not read prior agent invites: {error}"),
+                        String::new(),
+                    )
+                    .await;
+                }
+            }
+        }
+        issued.retain(|entry| {
+            entry.subject != subject
+                || !entry
+                    .state
+                    .upgrade()
+                    .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
+        });
+        publish_connection_invite(
+            &tonk,
+            repo,
+            &subject,
+            &expected.root_did,
+            "generating agent invite…".into(),
+            String::new(),
+        )
+        .await?;
+        (subject, expected)
+    };
+    let origin = crate::axum::RequestOrigin::parse(
+        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+    )
+    .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
+    let minted = super::agent_connections::mint(env.state().clone(), repo.clone(), origin).await;
+    let tonk = env.state().read().await;
+    match minted {
+        Ok(response) => {
+            let current = super::identity::local_root(&tonk).await?;
+            let current_repository = tonk
+                .profile
+                .repository(repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            if current.root_did != expected.root_did
+                || current.bytes != expected.bytes
+                || current_repository.did() != subject
+                || response.connection.subject != subject.to_string()
+            {
+                return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &tonk.profile.did(),
+                    "account or space changed; generate a new agent invite".into(),
+                    String::new(),
+                )
+                .await;
+            }
+            let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
+            publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "ready".into(),
+                response.url,
+            )
+            .await?;
+            issued.push(ReadyConnectionInvite {
+                state: std::sync::Arc::downgrade(env.state()),
+                subject,
+                issuer: *blake3::hash(&expected.bytes).as_bytes(),
+                link: digest,
+            });
+            Ok(())
+        }
+        Err(error) => {
+            publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                format!("could not create an agent invite: {error}"),
+                String::new(),
+            )
+            .await
+        }
+    }
+}
+
+#[cfg(not(feature = "connection-invites"))]
+async fn run_legacy_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
     let repo = &env.origin().repo;
     let subject = {
         let tonk = env.state().read().await;
@@ -11351,5 +11628,182 @@ route!: &probe/dropped
                 "every route the library installed is attributed to the seed: {route:?}"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "connection-invites", not(target_arch = "wasm32")))]
+mod connection_invite_overlay_tests {
+    use super::*;
+
+    async fn response(state: &AppState, repo: &str) -> tonk_schema::command::AgentHandoffState {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::var("this"),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        rows.into_iter().next().unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn connection_invite_overlay_reuses_ready_and_requires_explicit_new_after_loss() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Invitation cache")
+            .await
+            .unwrap();
+        {
+            let tonk = state.read().await;
+            let root = Ed25519Signer::import(&[77; 32]).await.unwrap();
+            let grant =
+                tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+                    .await
+                    .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "cache-test".into(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        // Prime the same public digest the successful issuer records. This
+        // fixture exercises retention, not the separately tested grant mint.
+        let link = "https://example.test/join#tonk-agent-v1=transient-test-bearer";
+        let (subject, account, before) = {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let subject = repository.did();
+            let root = super::super::identity::local_root(&tonk).await.unwrap();
+            publish_connection_invite(
+                &tonk,
+                &repo,
+                &subject,
+                &root.root_did,
+                "ready".into(),
+                link.into(),
+            )
+            .await
+            .unwrap();
+            CONNECTION_ISSUANCE
+                .lock()
+                .await
+                .push(ReadyConnectionInvite {
+                    state: std::sync::Arc::downgrade(&state),
+                    subject: subject.clone(),
+                    issuer: *blake3::hash(&root.bytes).as_bytes(),
+                    link: *blake3::hash(link.as_bytes()).as_bytes(),
+                });
+            let branch = tonk
+                .reactor
+                .repository(&repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            (
+                subject,
+                root.root_did,
+                branch.handle().revision().unwrap().tree,
+            )
+        };
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let (one, two) = tokio::join!(
+            run_connection_invite(&env, false),
+            run_connection_invite(&env, false)
+        );
+        one.unwrap();
+        two.unwrap();
+        assert_eq!(response(&state, &repo).await.link.0, link);
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .state
+                .clear_overlay();
+        }
+        for _ in 0..2 {
+            run_connection_invite(&env, false).await.unwrap();
+            let unavailable = response(&state, &repo).await;
+            assert!(unavailable.link.0.is_empty());
+            assert!(unavailable.status.0.contains("no longer in this session"));
+        }
+        // Even a matching ready response cannot supply an unissued bearer.
+        {
+            let tonk = state.read().await;
+            publish_connection_invite(
+                &tonk,
+                &repo,
+                &subject,
+                &account,
+                "ready".into(),
+                "https://example.test/join#tonk-agent-v1=unissued".into(),
+            )
+            .await
+            .unwrap();
+        }
+        run_connection_invite(&env, false).await.unwrap();
+        assert!(response(&state, &repo).await.link.0.is_empty());
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(&repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert_eq!(
+            branch.handle().revision().unwrap().tree,
+            before,
+            "retaining or losing a transient invitation never writes durable space data"
+        );
+        assert_eq!(
+            CONNECTION_ISSUANCE
+                .lock()
+                .await
+                .iter()
+                .filter(|entry| entry
+                    .state
+                    .upgrade()
+                    .is_some_and(|candidate| std::sync::Arc::ptr_eq(&candidate, &state)))
+                .count(),
+            1
+        );
     }
 }
