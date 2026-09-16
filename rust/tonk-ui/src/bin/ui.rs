@@ -84,6 +84,10 @@ async fn main() {
                 tonk_ui::register_dialog::close();
                 return;
             }
+            "reseat" => {
+                tonk_ui::register_dialog::reseat(&request);
+                return;
+            }
             "suspend" => {
                 tonk_ui::register_dialog::suspend();
                 return;
