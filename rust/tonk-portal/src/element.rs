@@ -190,6 +190,13 @@ mod tests {
     /// the body. `register()` runs first so the element upgrades on
     /// connect.
     fn mount(content: Option<&str>) -> Element {
+        mount_with_children(content, "")
+    }
+
+    /// Mount a portal that carries `children` in its light DOM, the way an
+    /// embedder nests a `<style>` to dress its guest. Written before the
+    /// element is connected so `connected_callback` sees them.
+    fn mount_with_children(content: Option<&str>, children: &str) -> Element {
         register();
         let document = document();
         let host = document
@@ -197,6 +204,9 @@ mod tests {
             .expect("create tonk-portal");
         if let Some(content) = content {
             host.set_attribute("content", content).expect("set content");
+        }
+        if !children.is_empty() {
+            host.set_inner_html(children);
         }
         document
             .body()
@@ -248,6 +258,96 @@ mod tests {
         assert!(
             srcdoc.contains("<canvas id=\"c\"></canvas>"),
             "srcdoc should still carry the author content; got: {srcdoc}",
+        );
+    }
+
+    /// Styling a guest is the EMBEDDER's call, so a `<style>` nested in the
+    /// portal's light DOM rides into the guest document. This is the
+    /// mechanism that lets a site dress its own guest instead of inheriting
+    /// whatever stylesheet the host page happens to carry.
+    #[dialog_common::test]
+    fn it_hoists_a_nested_style_into_the_guest_document() {
+        let host = mount_with_children(
+            Some("<p id=\"t\">hi</p>"),
+            "<style>#t{color:rgb(1,2,3)}</style>",
+        );
+        let srcdoc = iframe_of(&host)
+            .get_attribute("srcdoc")
+            .expect("srcdoc present");
+        assert!(
+            srcdoc.contains("<style>#t{color:rgb(1,2,3)}</style>"),
+            "the embedder's style should ride into the guest; got: {srcdoc}",
+        );
+        // Ahead of the content, so it applies from the first parsed node
+        // rather than restyling what already painted.
+        let style_at = srcdoc.find("#t{color").expect("style present");
+        let content_at = srcdoc.find("<p id=\"t\">").expect("content present");
+        assert!(
+            style_at < content_at,
+            "style should precede the content; got: {srcdoc}",
+        );
+    }
+
+    /// The head is not a general injection point: only the tags a document
+    /// head may carry are hoisted. A portal's content belongs in `content`.
+    #[dialog_common::test]
+    fn it_leaves_non_head_children_out_of_the_guest_document() {
+        let host = mount_with_children(
+            Some("<p>hi</p>"),
+            "<div id=\"smuggled\">not a stylesheet</div>",
+        );
+        let srcdoc = iframe_of(&host)
+            .get_attribute("srcdoc")
+            .expect("srcdoc present");
+        assert!(
+            !srcdoc.contains("smuggled"),
+            "only head tags should be hoisted; got: {srcdoc}",
+        );
+    }
+
+    /// Cascade order is the embedder's to control, so the children are
+    /// hoisted in the order they were written.
+    #[dialog_common::test]
+    fn it_hoists_several_stylesheets_in_source_order() {
+        let host = mount_with_children(
+            Some("<p>hi</p>"),
+            "<style>#a{color:red}</style><style>#b{color:blue}</style>",
+        );
+        let srcdoc = iframe_of(&host)
+            .get_attribute("srcdoc")
+            .expect("srcdoc present");
+        let first = srcdoc.find("#a{color:red}").expect("first style");
+        let second = srcdoc.find("#b{color:blue}").expect("second style");
+        assert!(
+            first < second,
+            "source order should survive the hoist; got: {srcdoc}",
+        );
+    }
+
+    /// A reload rebuilds the whole guest document, so it must re-read the
+    /// children rather than replay the markup captured at mount time.
+    #[dialog_common::test]
+    fn it_rehoists_the_current_styles_when_the_content_reloads() {
+        let host = mount_with_children(Some("<p>one</p>"), "<style>#t{color:red}</style>");
+        // Edit the style in place. The connected portal's iframe is a child
+        // of the host too, so replacing the host's whole `innerHTML` would
+        // tear out the very iframe this test then reads.
+        host.query_selector("style")
+            .expect("query_selector")
+            .expect("the mounted style")
+            .set_text_content(Some("#t{color:blue}"));
+        host.set_attribute("content", "<p>two</p>")
+            .expect("set content");
+        let srcdoc = iframe_of(&host)
+            .get_attribute("srcdoc")
+            .expect("srcdoc present");
+        assert!(
+            srcdoc.contains("#t{color:blue}"),
+            "a reload should pick up the edited style; got: {srcdoc}",
+        );
+        assert!(
+            !srcdoc.contains("#t{color:red}"),
+            "the replaced style should be gone; got: {srcdoc}",
         );
     }
 

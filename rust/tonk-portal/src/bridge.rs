@@ -214,16 +214,19 @@ fn base_tag(base: &str) -> String {
 /// Prepend the bootstrap script that wires `window.tonk` to this
 /// portal's bridge over a `MessagePort`. `base` is the per-space synthetic
 /// origin the guest should resolve URLs against (empty = leave inherited).
-pub(crate) fn bootstrap_srcdoc(content: &str, base: &str) -> String {
-    format!("{}<script>{BOOTSTRAP_JS}</script>{content}", base_tag(base))
+pub(crate) fn bootstrap_srcdoc(content: &str, base: &str, head: &str) -> String {
+    format!(
+        "{}{head}<script>{BOOTSTRAP_JS}</script>{content}",
+        base_tag(base)
+    )
 }
 
 /// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
 /// guest will ask the parent (`runtime-ready`) for the element runtime and
 /// bring it up before `content`'s custom elements upgrade.
-pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str) -> String {
+pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &str) -> String {
     format!(
-        "{}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
+        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
         base_tag(base)
     )
 }
