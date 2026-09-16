@@ -2314,6 +2314,64 @@ async fn record_space_best_effort(name: &str, site: &site::TonkSite) {
     }
 }
 
+fn print_registered_space(
+    store: &tonk_cli::space::SpaceStore,
+    flag: Option<&str>,
+    cwd: &std::path::Path,
+    outcome: &tonk_cli::space::CreateOutcome,
+    account: Option<&str>,
+) -> ExitCode {
+    if outcome.adopted {
+        println!(
+            "Registered space '{}' on the site data already at that path",
+            outcome.name
+        );
+    } else {
+        println!("Registered space '{}'", outcome.name);
+    }
+    println!("site: {}", outcome.site.display());
+    println!("DID: {}", outcome.did);
+    println!("binding: {}", cwd.display());
+    print_active_space_resolution(store, flag, Some(cwd));
+    if let Some(account) = account {
+        println!("account: {account}");
+    }
+    ExitCode::Success
+}
+
+fn print_partial_space(
+    outcome: &tonk_cli::space::CreateOutcome,
+    error: &tonk_cli::space_link::PublicationError,
+) -> ExitCode {
+    print_error(format!(
+        "signed-in space '{}' stopped at stage '{}': {}\n\
+         the local space is safe and remains registered; its data and binding were not removed\n\
+         site: {}\n\
+         DID: {}\n\
+         this stage may already have completed, so do not repeat `tonk space new`\n\
+         inspect the site and DID, then continue the same publication idempotently with:\n  \
+         tonk space link {}",
+        outcome.name,
+        error.stage,
+        error.source,
+        outcome.site.display(),
+        outcome.did,
+        outcome.name,
+    ))
+}
+
+fn print_existing_space_new(name: &str) -> ExitCode {
+    print_error(format!(
+        "space '{name}' already exists; the existing space was not changed\n\
+         this name may belong to another operation; inspect it with \
+         `tonk --space {name} status` and only adopt it after its site and DID match \
+         the space you intended\n\
+         if this follows an interrupted signed-in create, continue it with:\n  \
+         tonk space link {name}\n\
+         otherwise choose another name or remove the existing registration explicitly"
+    ))
+}
+
 /// `tonk space use <name>` — bind this directory to a registered space.
 async fn use_op(name: String, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::space::SpaceStore::open() {
@@ -2389,67 +2447,29 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
                 &store,
                 &name,
                 site.as_deref(),
-                None,
+                Some(&cwd),
                 create_config.clone(),
             )
             .await
             {
                 Ok(outcome) => {
-                    if let Err(error) = tonk_cli::space::bind(&store, &outcome.name, &cwd) {
-                        return print_failure(error);
-                    }
-                    if outcome.adopted {
-                        println!(
-                            "Registered space '{}' on the site data already at that path",
-                            outcome.name
-                        );
-                    } else {
-                        println!("Registered space '{}'", outcome.name);
-                    }
-                    println!("site: {}", outcome.site.display());
-                    println!("DID: {}", outcome.did);
-                    println!("binding: {}", cwd.display());
-                    print_active_space_resolution(&store, flag, Some(&cwd));
-                    let Some(account) = account else {
-                        return ExitCode::Success;
-                    };
-                    let Some(access) = &account.access_remote else {
-                        unreachable!("checked before the space was created");
-                    };
-                    match site::TonkSite::open_with(&outcome.site, create_config).await {
-                        Ok(site) => {
-                            if let Err(error) = site::record_founder_membership(&site).await {
-                                return print_failure(error);
-                            }
-                            if let Err(error) = remote::add(
-                                &site,
-                                remote::DEFAULT_REMOTE,
-                                access,
-                                Some(site.repository.did()),
-                            )
-                            .await
-                            {
-                                return print_failure(error);
-                            }
-                            if let Err(error) =
-                                remote::set_upstream(&site, remote::DEFAULT_REMOTE).await
-                            {
-                                return print_failure(error);
-                            }
-                            if let Err(error) = sync::push(&site).await {
-                                return print_failure(error);
-                            }
-                            if let Err(error) =
-                                account_spaces::record_site_in(&outcome.name, &site, &store).await
-                            {
-                                return print_failure(error);
-                            }
-                            println!("account: {}", account.root);
-                            ExitCode::Success
+                    let account_root = if account.is_some() {
+                        match tonk_cli::space_link::publish_created(
+                            &store,
+                            &create_config,
+                            &outcome.name,
+                        )
+                        .await
+                        {
+                            Ok(linked) => Some(linked.account),
+                            Err(error) => return print_partial_space(&outcome, &error),
                         }
-                        Err(error) => print_failure(error),
-                    }
+                    } else {
+                        None
+                    };
+                    print_registered_space(&store, flag, &cwd, &outcome, account_root.as_deref())
                 }
+                Err(tonk_cli::space::SpaceError::Exists(_)) => print_existing_space_new(&name),
                 Err(err) => print_failure(err),
             }
         }
@@ -2828,12 +2848,18 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
     // A dry run never commits, so there's nothing to push; force
     // auto-sync off so a preview can't pull the remote in either.
     let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
-    match auto_sync::run_eval(&site, source, options, sync).await {
+    let session = auto_sync::WriteSession::begin(&site, sync).await;
+    match tonk_cli::eval::run_against_site(&site, source, options).await {
         Ok(outcome) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(outcome.stdout.as_bytes()) {
                 return print_error(format!("failed to write stdout: {e}"));
             }
+            if let Err(e) = stdout.flush() {
+                return print_error(format!("failed to flush stdout: {e}"));
+            }
+            drop(stdout);
+            session.finish(outcome.committed).await.warn_eval();
             ExitCode::Success
         }
         Err(err) => {
@@ -3795,9 +3821,9 @@ async fn confirm_selected_agent(space: Option<&str>, fresh_claim_available: bool
 /// after the claim succeeds, against a registry freshly reloaded
 /// at that point — a concurrent `tonk space new`/`use`/`rm` while
 /// the claim is in flight is re-checked, never silently reverted.
-/// A failed join never leaves a dangling registry entry (a
-/// partial site dir may remain; re-running with the same name
-/// reports it).
+/// A failed join never leaves a dangling registry entry or partial canonical
+/// site. A process killed before publication may leave only a marked sibling;
+/// a post-publication registry failure reports the complete site for adoption.
 async fn claim_invite(
     url: String,
     requested_name: Option<String>,
@@ -3865,7 +3891,7 @@ async fn claim_invite(
             {
                 return print_failure(error);
             }
-            let mut registry = match store.load() {
+            let registry = match store.load() {
                 Ok(registry) => registry,
                 Err(err) => return print_failure(err),
             };
@@ -3897,27 +3923,19 @@ async fn claim_invite(
             if let Err(error) = tonk_cli::space::validate_name(&name) {
                 return print_failure(error);
             }
-            if registry.spaces.contains_key(&name) {
-                return print_error(format!(
-                    "{err}\nthe site was claimed at {root}; register it with \
-                     `tonk space new <other-name> --site {root}`",
-                    err = tonk_cli::space::SpaceError::Exists(name.clone()),
-                    root = root.display(),
-                ));
-            }
-
-            registry
-                .spaces
-                .insert(name.clone(), tonk_cli::space::SpaceEntry::at(root.clone()));
-            if let Err(err) = store.save(&registry) {
+            if let Err(err) = tonk_cli::space::register_existing_bound(store, &name, &root, &cwd) {
+                if matches!(err, tonk_cli::space::SpaceError::Exists(_)) {
+                    return print_error(format!(
+                        "{err}\nthe site was claimed at {root}; register it with \
+                         `tonk space new <other-name> --site {root}`",
+                        root = root.display(),
+                    ));
+                }
                 return print_error(format!(
                     "joined, but registering space '{name}' failed: {err}\n\
                      re-register with `tonk space new {name} --site {root}`",
                     root = root.display(),
                 ));
-            }
-            if let Err(error) = tonk_cli::space::bind(store, &name, &cwd) {
-                return print_failure(error);
             }
             print_claim_outcome(&name, &root, &cwd, &outcome);
             print_active_space_resolution(store, flag, Some(&cwd));

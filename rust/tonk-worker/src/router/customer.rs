@@ -1088,6 +1088,31 @@ pub(crate) async fn account_registration(
     facts
 }
 
+/// Promote the device-local customer record older installs already carry into
+/// the replicated registration fact.
+///
+/// The record is only evidence for the account that wrote it. Matching its
+/// customer DID prevents a stale credential from naming a later account, and
+/// an existing registration makes this a no-op after the first successful
+/// boot. The attached provider supplies the address older records did not
+/// store themselves.
+pub(crate) async fn migrate_customer_record(
+    state: &crate::worker::TonkState,
+    account: &dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    if account_registration(state).await.email.is_some() {
+        return Ok(());
+    }
+    let Some(record) = load_customer(state).await? else {
+        return Ok(());
+    };
+    if record.customer != account.to_string() {
+        return Ok(());
+    }
+    let provider = super::account::provider(state).await;
+    record_customer_status(state, record.status, &record.email, provider.as_deref()).await
+}
+
 /// Record the account's registration state as a fact on profile main,
 /// so it reaches every device on the account.
 ///
@@ -1175,7 +1200,7 @@ pub(crate) async fn record_customer_status(
     Ok(())
 }
 
-async fn save_customer(
+pub(super) async fn save_customer(
     state: &crate::worker::TonkState,
     record: &CustomerRecord,
 ) -> Result<(), TonkWorkerError> {

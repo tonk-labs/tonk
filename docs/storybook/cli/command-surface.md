@@ -189,6 +189,33 @@ Account login may settle with an active account and a rotation warning. A
 rerun must preserve repository subjects and data, avoid repeating completed
 custody moves, and retry only work whose authority is still unresolved.
 
+Carry migration, invite join, and account-space pull publish canonical site
+directories only after a complete sibling stage has passed its local
+verification. Before the final rename, a returned error removes only that
+marked stage and leaves the canonical name absent; a process killed in flight
+may leave a hidden Tonk-marked sibling, but it neither reserves the canonical
+name nor appears as user-owned orphan data. Arbitrary hidden or visible
+unregistered directories remain visible and are never treated as Tonk cleanup
+state.
+
+Account pull publishes before its guarded registry transaction. If that final
+registration fails, the verified canonical site remains intact and the error
+names its path. The user lists occupied names, verifies the site's repository
+subject, and adopts it under an available name; Tonk never overwrites the
+colliding entry or deletes a complete published replica to make a registry
+error look atomic.
+
+`migrate carry --move` copies and verifies before it removes the source. A
+verification failure leaves the source at its original path and does not create
+`.tonk`. A publication error also leaves the source and never replaces a
+colliding `.tonk`; if that path exists, its repository subject must be verified
+before it is treated as the migrated copy. If source cleanup fails after
+publication, the command fails with both exact paths while retaining the
+verified `.tonk`; both copies must be inspected before retrying only the
+cleanup. `--move` also records the source directory identity before copying and
+refuses cleanup if that path was replaced while the verified destination was
+being built.
+
 ## Modifiers
 
 | Modifier | Set at the start | Changed while in flight |
@@ -220,12 +247,51 @@ cross-process locked. Selected space authority remains distinct. Destructive
 and remote commands validate exact DIDs/subjects/generations.
 
 **Local durability.** Registry, profile, account session, branch, blob, output,
-telemetry, update, and migration files each need atomic/restart tests. Temporary
-fixtures must isolate all state environment variables.
+telemetry, update, and migration files each need atomic/restart tests. Join,
+account pull, and carry migration construct sites in hidden same-filesystem
+siblings and publish with one atomic no-replace rename after closing repository
+handles. A same-name race discards only the losing stage and never replaces or
+removes the winner. A colliding destination may belong to another operation,
+so recovery never overwrites or deletes it and adoption requires repository
+subject verification. Temporary fixtures must isolate all state environment
+variables.
+
+Space-registry reads remain lock-free and observe either the previous or the
+next complete `spaces.json`. Every registry mutation retains an exclusive
+`spaces.lock` across its read/validate/change/publish transaction, including
+account selection, join registration, creation, binding, unbinding, and
+removal. Publication uses a unique same-directory temporary file, syncs its
+contents, atomically replaces the registry, and syncs the state directory. A
+lock/open failure happens before the command mutates space state; a publish
+failure never exposes partial JSON, while the command's documented recovery
+rules still govern any site work that completed before publication.
 
 **Remote service and sync.** Status is read-only. Auto-sync wraps writes, while
 manual push/pull remains explicit. Remote errors never justify destructive
-local ref replacement.
+local ref replacement. Main and metadata push/pull, plus the fetch used by
+status, each have their own deadline. `TONK_REMOTE_TIMEOUT_SECONDS` overrides
+the 120-second default with a positive whole number capped at 300 seconds; an
+invalid value fails with the accepted range instead of silently changing the
+policy. Expiry names the exact phase and target and says the remote outcome may
+be unknown.
+
+`eval` settles its local and remote outcomes in that order. Once evaluation
+commits, the complete notation or JSON receipt is written and flushed to
+stdout before optional push-after begins. A later push failure remains a
+zero-exit warning on stderr: the local eval is saved, the remote outcome may be
+unknown, `tonk push` is the recovery command, and the non-idempotent eval must
+not be repeated.
+
+A signed-in `space new` prints its final `Registered space` receipt only
+after founder, remote, upstream, push, and account-directory publication all
+finish. If one of those stages fails, the command exits non-zero with no final
+receipt on stdout. Stderr names the failed stage, retained local site and DID,
+and `tonk space link <name>` as the single idempotent continuation. A failed
+stage may already have completed, so continuation verifies the existing
+remote, subject, and upstream and fills only what remains. Repeating `space
+new` against that name does not overwrite it: the collision may belong to
+another operation, so output first asks the user to inspect the site and DID,
+then points interrupted work to the same continuation.
 
 **Concurrency and multi-device.** Process tests need real second processes for
 locks/signals and independent repository actors for sync. Async tasks in one
@@ -254,6 +320,15 @@ that may embed secrets.
 - `--dry-run` implies no remote even if an upstream exists.
 - `TONK_NO_SYNC` and `--no-sync` agree; explicit flags and environment
   precedence are stable.
+- `TONK_REMOTE_TIMEOUT_SECONDS` is absent, at both bounds, zero, negative,
+  non-numeric, or above the cap.
+- A remote socket accepts a pull/push/fetch request but never returns bytes;
+  the exact phase expires independently and reports remote uncertainty.
+- SIGINT arrives after an eval receipt is flushed but while push-after remains
+  in flight; a fresh process observes the one local commit and can push it.
+- Signed-in `space new` stops after founder, remote, upstream, push, or
+  account-directory work; every case retains the same site/DID and converges
+  through `space link`.
 - Output path exists, is a directory, is read-only, fills mid-write, or is on a
   different filesystem.
 - Signal arrives during callback wait, local transaction, remote request,
