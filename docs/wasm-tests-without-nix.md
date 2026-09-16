@@ -1,95 +1,62 @@
 # Running the wasm browser tests without the Nix shell
 
-`.cargo/config.toml` names `wbg-pool` as the wasm32 test runner. It is
-provided by the Nix dev/CI shells and is not in this workspace, so a
-plain checkout cannot run `cargo test --target wasm32-unknown-unknown`
-at all — which is how a wasm-only module ends up shipped with no test
-ever having executed against it.
+`.cargo/config.toml` names `wbg-pool` as the wasm32 test runner, and the
+Nix dev/CI shells put it on `PATH`. A plain checkout has no `wbg-pool`,
+so `cargo test --target wasm32-unknown-unknown` fails before a test runs
+— which is how a wasm-only module ends up shipped with nothing ever
+having executed against it.
 
-The stock `wasm-bindgen-test-runner` works in its place. Three things
-have to line up.
+`wbg-pool` is not magic infrastructure, though: it is a crate in
+`dialog-db`, which this workspace already depends on. Build it.
 
-## 1. A runner matching the pinned `wasm-bindgen`
-
-```sh
-cargo install wasm-bindgen-cli --version "$(
-  grep -A 1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p'
-)" --root /tmp/wbg
-```
-
-The version must match `Cargo.lock` exactly; the runner refuses a
-schema it does not recognise.
-
-## 2. A chromedriver matching the browser's MAJOR version
-
-This is the one that wastes time. A mismatched driver fails with a bare
-`Error: http status: 404` that names neither version. Check both:
+## The runner
 
 ```sh
-chromedriver --version
-/opt/pw-browsers/chromium-*/chrome-linux/chrome --version
+cargo install --path <dialog-db>/rust/wbg-pool --root /tmp/wbg
+export PATH="/tmp/wbg/bin:$PATH"
+export CHROME=/opt/pw-browsers/chromium-*/chrome-linux/chrome   # any Chrome/Chromium
 ```
 
-If the majors differ, fetch the matching driver — Chrome for Testing
-publishes one per exact version:
+That is the whole setup. `.cargo/config.toml` already points the runner
+at it, so:
 
 ```sh
-curl -L -o cd.zip \
-  "https://storage.googleapis.com/chrome-for-testing-public/<VERSION>/linux64/chromedriver-linux64.zip"
-unzip cd.zip
+cargo test    -p tonk-display --target wasm32-unknown-unknown
+cargo nextest run -p tonk-display --target wasm32-unknown-unknown   # how CI runs it
 ```
 
-## 3. A browser chromedriver can FIND
+No chromedriver, no `CARGO_TARGET_*_RUNNER` override, no browser on
+`PATH` under a particular name — `CHROME` (or `WBG_POOL_BROWSER`) is
+enough. The first invocation starts a daemon holding one headless
+Chrome; it exits after five idle minutes.
 
-`webdriver.json` is the documented way to set `goog:chromeOptions.binary`,
-but the runner looks for it somewhere other than the workspace root and
-silently falls back to defaults — it prints `Try find webdriver.json …`
-then `Not found`, and chromedriver reports `cannot find Chrome binary`.
-Putting the browser on `PATH` under a name chromedriver probes for is
-more reliable:
-
-```sh
-mkdir -p /tmp/browserbin
-for n in google-chrome google-chrome-stable chrome chromium chromium-browser; do
-  ln -sf /opt/pw-browsers/chromium-1194/chrome-linux/chrome /tmp/browserbin/$n
-done
-```
-
-## Running
-
-```sh
-PATH="/tmp/browserbin:/tmp/wbg/bin:$PATH" \
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-CHROMEDRIVER=/path/to/matching/chromedriver \
-cargo test -p tonk-display --target wasm32-unknown-unknown --lib
-```
-
-## Diagnosing
-
-The runner swallows the real cause behind a backtrace. `RUST_LOG` gets
-it back:
-
-```sh
-RUST_LOG=wasm_bindgen_cli=debug,ureq=debug cargo test … 2>&1 | grep -i "session\|got:"
-```
-
-The `got: {…}` line carries chromedriver's own error message, which is
-what says `cannot find Chrome binary` or names a version mismatch.
+**Prefer this over the stock runner**, and not only because it is what
+CI uses: every test gets its own `t-<n>.localhost` origin, so IndexedDB,
+service workers, `customElements` and the document are pristine per
+test. Tests that install document-level listeners — anything driving the
+real host — stop interfering with each other by construction.
 
 ## Writing a test that needs a host
 
 A consumer element reaches IO by dispatching `tonk-query` (and friends)
 and reading back `detail.result`, with a host claiming the event via
-`preventDefault()`. A test supplies its own host by listening on
-`document` — but every query in the realm bubbles there, so the listener
-must **stand down when `event.defaultPrevented` is already set**, or it
-will overwrite results other tests' element-level stubs have answered.
-`registry.rs`'s `install_fake_host` is the worked example.
+`preventDefault()`.
+
+A test can stand one up by listening on `document`, but every consumer
+event in the realm bubbles there, so such a listener must:
+
+- **stand down when `event.defaultPrevented` is already set**, or it
+  overwrites results another test's element-level stub has answered; and
+- **claim only the query shapes it serves** — answering an unrelated
+  component's query changes how that component behaves.
+
+`registry.rs`'s `install_fake_host` is the worked example of both. Under
+`wbg-pool`'s per-test origins neither can bite across tests, but both
+still matter within one.
 
 One more trap: `serde_wasm_bindgen::to_value` renders a Rust map as a JS
 `Map`, whose contents `JSON.stringify` as `{}`. A fake host inspecting a
-query body must read it back with `serde_wasm_bindgen::from_value`, not
-stringify it.
+query body must read it back with `serde_wasm_bindgen::from_value`.
 
 ## Testing against a real worker
 
@@ -104,15 +71,39 @@ so subscriptions work, not just one-shot queries.
 `rust/tonk-display/tests/registry_fullstack.rs` is the worked example.
 Two things it has to get right:
 
-- **A test that installs the real host needs its own test BINARY.** The
-  host claims every consumer event on the document, so sharing a page
-  with tests that stub their own host means answering their queries too.
-  wasm-bindgen gives each binary its own page; that is the only reliable
-  isolation.
 - **There is no service worker.** A DOM test cannot install one, so the
   router runs in-page: the same code over the same interface, one
   process boundary short. Nothing else in the path is stood in for.
+- **A consumer element needs its own `with` attribute.** `resolve_with`
+  reads it off the element itself, not its ancestors, and the host's
+  observer that stamps descendants runs on a later task — so anything
+  that subscribes the moment it is created has to carry the context
+  over itself.
 
-A consumer element also needs its own `with` attribute — `resolve_with`
-reads it off the element itself, not its ancestors; the host's observer
-that stamps descendants runs on a later task.
+Assert a negative with a short bounded wait, not by polling until a
+timeout: under one process per test, an exhausted poll costs seconds of
+pure waiting per test. `registry.rs` keeps `settle_briefly` for this.
+
+## If you must use the stock runner
+
+`wasm-bindgen-test-runner` works, with more setup and no per-test
+isolation. Three things have to line up, and each fails obscurely:
+
+1. **A runner matching the pinned `wasm-bindgen`** — the version in
+   `Cargo.lock`, exactly; it refuses a schema it does not know.
+2. **A chromedriver matching the browser's MAJOR version.** A mismatch
+   fails with a bare `Error: http status: 404` naming neither version.
+   Chrome for Testing publishes a driver per exact version.
+3. **A browser chromedriver can find.** `webdriver.json` is the
+   documented way to set `goog:chromeOptions.binary`, but the runner
+   looks for it somewhere other than the workspace root and silently
+   falls back to defaults (`Try find webdriver.json …` / `Not found`,
+   then `cannot find Chrome binary`). Symlinking the browser onto `PATH`
+   as `google-chrome` / `chromium` / `chrome` is more reliable.
+
+```sh
+RUST_LOG=wasm_bindgen_cli=debug,ureq=debug cargo test … 2>&1 | grep "got:"
+```
+
+The `got: {…}` line carries chromedriver's own error, which is what says
+`cannot find Chrome binary` or names a version mismatch.

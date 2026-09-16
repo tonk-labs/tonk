@@ -573,6 +573,24 @@ mod tests {
         rows
     }
 
+    /// Give anything in flight a bounded chance to happen, for
+    /// asserting that it does NOT. Polling a negative with
+    /// [`settle_until`] burns its whole budget every time — cheap when
+    /// a page is shared, seconds each under one process per test.
+    async fn settle_briefly() {
+        for _ in 0..20 {
+            let promise = js_sys::Promise::new(&mut |resolve, _| {
+                let _ = window()
+                    .expect("window")
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        resolve.unchecked_ref(),
+                        0,
+                    );
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        }
+    }
+
     async fn settle_until(done: impl Fn() -> bool) {
         for _ in 0..400 {
             if done() {
@@ -824,7 +842,7 @@ mod tests {
             );
         });
         notify("probe-repoint", "methods");
-        settle_until(|| host.text_content().as_deref() == Some("resurrected")).await;
+        settle_briefly().await;
         assert_eq!(
             host.text_content().as_deref(),
             Some("new"),
@@ -930,7 +948,7 @@ mod tests {
 
         // Same methods, new frame.
         notify("probe-idem", "methods");
-        settle_until(|| runs() > 1.0).await;
+        settle_briefly().await;
         assert_eq!(
             runs(),
             1.0,
