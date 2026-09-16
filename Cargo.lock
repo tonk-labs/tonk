@@ -4883,6 +4883,7 @@ dependencies = [
 name = "tonk-display"
 version = "0.6.14"
 dependencies = [
+ "axum",
  "custom-elements",
  "dialog-common",
  "indexmap",
@@ -4898,6 +4899,8 @@ dependencies = [
  "tonk-notation",
  "tonk-schema",
  "tonk-template",
+ "tonk-worker",
+ "tower",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

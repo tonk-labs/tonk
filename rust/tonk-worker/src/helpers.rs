@@ -4,6 +4,9 @@
 //! for downstream crates that want the same fixtures via the
 //! `helpers` cargo feature.
 
+pub mod serve;
+pub mod state;
+
 use dialog_query::{ConceptQuery, Query as ConceptPattern};
 use tonk_schema::meta::Name;
 use tonk_schema::query::Query as WireQuery;

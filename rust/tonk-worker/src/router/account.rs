@@ -198,7 +198,11 @@ async fn linked(state: &crate::worker::TonkState) -> bool {
 /// that links on top of this fixture is then an upgrade — the same account
 /// gaining its descriptor — rather than a second account arriving, which
 /// `persist_link` refuses.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    any(test, feature = "helpers"),
+    target_arch = "wasm32",
+    target_os = "unknown"
+))]
 pub(crate) async fn attach_test_account(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {

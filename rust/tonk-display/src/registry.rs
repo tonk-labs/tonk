@@ -148,6 +148,22 @@ async fn watch(source: &Element, tag: &str) {
     };
     let _ = consumer.set_attribute("hidden", "");
     let _ = consumer.set_attribute("data-tag", tag);
+    // Carry the announcing element's routing context onto the watch
+    // explicitly. `resolve_with` reads `with` off the consumer ITSELF,
+    // and the host's observer that stamps it onto descendants runs on a
+    // later task — so a watch that subscribed on creation would race it
+    // and resolve no context at all. Copying it is also more honest:
+    // the definition is fetched from the branch the element that needed
+    // it was rendering against, not from wherever the watch landed.
+    if let Some(context) = source
+        .closest("[with]")
+        .ok()
+        .flatten()
+        .and_then(|ancestor| ancestor.get_attribute("with"))
+        .filter(|value| !value.is_empty())
+    {
+        let _ = consumer.set_attribute("with", &context);
+    }
     // Alongside the announcing element rather than inside it: an author
     // element's children are its own business, and a sibling shares the
     // same `with` ancestry.
@@ -222,9 +238,16 @@ fn install_frame_handlers(consumer: &Element, tag: &str) {
     // failing the view that rendered it.
     let tag_for_error = tag.to_owned();
     let on_error = Closure::<dyn Fn(JsValue, JsValue)>::new(move |payload: JsValue, _opts| {
-        web_sys::console::warn_2(
-            &format!("<{tag_for_error}>: subscription error").into(),
-            &payload,
+        // Stringified into the message rather than passed as a second
+        // argument: a bare object logs as `[object Object]` wherever the
+        // console is captured as text, which is every place anyone reads
+        // this from.
+        let detail = js_sys::JSON::stringify(&payload)
+            .ok()
+            .and_then(|text| text.as_string())
+            .unwrap_or_else(|| format!("{payload:?}"));
+        web_sys::console::warn_1(
+            &format!("<{tag_for_error}>: subscription error: {detail}").into(),
         );
     });
     let _ = Reflect::set(consumer, &"error".into(), on_error.as_ref().unchecked_ref());

@@ -90,3 +90,29 @@ One more trap: `serde_wasm_bindgen::to_value` renders a Rust map as a JS
 `Map`, whose contents `JSON.stringify` as `{}`. A fake host inspecting a
 query body must read it back with `serde_wasm_bindgen::from_value`, not
 stringify it.
+
+## Testing against a real worker
+
+`tonk_worker::helpers` exposes what a full-stack browser test needs:
+`state::test_state()` for a real `TonkState` (IndexedDB storage, a
+profile, an attached account) and `serve::install_fetch(router)` to
+answer `/api/...` in-page through the same browser<->axum conversion the
+service worker runs. With those, the real `tonk-host` talks to a real
+router over real `Request`/`Response` pairs, streamed bodies included —
+so subscriptions work, not just one-shot queries.
+
+`rust/tonk-display/tests/registry_fullstack.rs` is the worked example.
+Two things it has to get right:
+
+- **A test that installs the real host needs its own test BINARY.** The
+  host claims every consumer event on the document, so sharing a page
+  with tests that stub their own host means answering their queries too.
+  wasm-bindgen gives each binary its own page; that is the only reliable
+  isolation.
+- **There is no service worker.** A DOM test cannot install one, so the
+  router runs in-page: the same code over the same interface, one
+  process boundary short. Nothing else in the path is stood in for.
+
+A consumer element also needs its own `with` attribute — `resolve_with`
+reads it off the element itself, not its ancestors; the host's observer
+that stamps descendants runs on a later task.
