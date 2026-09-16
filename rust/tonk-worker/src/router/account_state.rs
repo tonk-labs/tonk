@@ -802,6 +802,9 @@ pub(crate) async fn ensure_account_state_swept(
     if !account_configured(tonk).await {
         return (AccountStateStatus::Unconfigured, Ok(()));
     }
+    if let Err(error) = super::customer::migrate_customer_record(tonk, &root.root_did).await {
+        log!("legacy customer record did not migrate: {error}");
+    }
 
     let key = match configure_account_upstream(tonk, &root.root_did).await {
         Ok(key) => key,
@@ -2171,6 +2174,49 @@ pub(crate) mod tests {
             "the registration names where to sync"
         );
 
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// Accounts enrolled before registration became a replicated fact still
+    /// carry the verified address in their device-local customer record. The
+    /// ordinary boot sweep promotes that record once, so settings and a newly
+    /// linked device can read the address from profile main.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_migrates_a_legacy_customer_record_during_account_startup() {
+        use tonk_account::customer::CustomerStatus;
+
+        let (state, service, root, remote) = ready_account_state(None).await;
+        super::super::customer::save_customer(
+            &state,
+            &super::super::customer::CustomerRecord {
+                customer: root.did().to_string(),
+                email: "legacy@example.com".to_string(),
+                status: CustomerStatus::Active,
+                enrolled_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::super::customer::account_registration(&state)
+                .await
+                .email,
+            None,
+            "the fixture starts with only the legacy record"
+        );
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+
+        let registration = super::super::customer::account_registration(&state).await;
+        assert_eq!(registration.email.as_deref(), Some("legacy@example.com"));
+        assert_eq!(registration.provider.as_deref(), Some(remote.as_str()));
+
+        let ready = require_ready_account_state(&state).await.unwrap();
         service.stop().await.unwrap();
         discard(state, &ready.key);
     }
