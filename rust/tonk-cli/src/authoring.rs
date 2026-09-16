@@ -397,10 +397,22 @@ pub fn validate_element_tag(tag: &str) -> Result<(), AuthoringError> {
     Ok(())
 }
 
-/// The four method keys the DOM lifecycle dispatches. Everything else
-/// in a `method:` dictionary becomes a method on the element.
-pub const LIFECYCLE_METHODS: &[&str] =
-    &["connected", "disconnected", "adopted", "attribute-changed"];
+/// The method keys the runtime dispatches rather than installing on the
+/// element. Everything else in a `method:` dictionary becomes a method
+/// on the element.
+///
+/// Four come from the DOM lifecycle. The last two are the runtime's
+/// own: a definition can be replaced while its instances are live, and
+/// `released` / `swapped` are the outgoing and incoming halves of that
+/// handover.
+pub const LIFECYCLE_METHODS: &[&str] = &[
+    "connected",
+    "disconnected",
+    "adopted",
+    "attribute-changed",
+    "released",
+    "swapped",
+];
 
 /// The reserved key whose value is a class factory. When present the
 /// runtime registers the class it returns instead of the generated

@@ -32,8 +32,8 @@
   const property = (key) =>
     key.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
 
-  const call = (tag, key, ...args) => {
-    const fn = table.get(tag)?.[key];
+  /** Call `fn` as `<tag>`'s `key`, containing anything it throws. */
+  const invoke = (tag, key, fn, ...args) => {
     if (typeof fn !== "function") return undefined;
     try {
       return fn(...args);
@@ -44,6 +44,9 @@
       return undefined;
     }
   };
+
+  /** Call `<tag>`'s CURRENT `key`, whatever the table now holds. */
+  const call = (tag, key, ...args) => invoke(tag, key, table.get(tag)?.[key], ...args);
 
   // Attribute changes go through a MutationObserver rather than
   // `attributeChangedCallback`, whose `observedAttributes` is static:
@@ -197,13 +200,43 @@
       }
     }
 
-    // An edit only reaches instances already in the DOM if we re-run
-    // the hook: call-time dispatch makes FUTURE calls live, not past
-    // ones. Without this a `connected` edit would appear to do nothing
-    // until the next render.
-    if (previous && previous.connected !== methods.connected) {
-      for (const self of live.get(tag) ?? []) call(tag, "connected", self);
+    // An edit only reaches instances already in the DOM if something
+    // re-runs against them: call-time dispatch makes FUTURE calls live,
+    // not past ones. Without this a `connected` edit would appear to do
+    // nothing until the next render.
+    if (!previous || !changed(previous, methods)) return;
+    const instances = [...(live.get(tag) ?? [])];
+
+    // The OUTGOING definition gets to tear down first, and it has to be
+    // called through its own function rather than the table, which now
+    // holds the replacement. Without this the default below would run
+    // `connected` a second time over setup the previous definition left
+    // behind — a listener, a timer, an observer per edit, with no way
+    // for an author to undo any of it.
+    for (const self of instances) {
+      invoke(tag, "released", previous.released, self);
     }
+
+    for (const self of instances) {
+      if (methods.swapped) {
+        // The incoming definition said how to take over a live
+        // instance, so it decides — `connected` is for a fresh mount.
+        call(tag, "swapped", self);
+      } else if (previous.connected !== methods.connected) {
+        // No migration declared: re-run `connected`, which is what an
+        // author who has not thought about swapping expects.
+        call(tag, "connected", self);
+      }
+    }
+  };
+
+  /** Whether two method tables differ in any key. */
+  const changed = (before, after) => {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of keys) {
+      if (before[key] !== after[key]) return true;
+    }
+    return false;
   };
 
   const LIFECYCLE = new Set([
@@ -211,6 +244,8 @@
     "disconnected",
     "adopted",
     "attribute-changed",
+    "released",
+    "swapped",
   ]);
 
   // Tags already announced, so a tag is asked about once per realm

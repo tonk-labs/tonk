@@ -1474,8 +1474,17 @@ concept!: &element
 
         Four keys are dispatched by the DOM lifecycle: `connected`,
         `disconnected`, `adopted` — all `(self) => …` — and
-        `attribute-changed`, `(self, name, before, after) => …`. The
-        reserved `define` key is the escape hatch for what a method
+        `attribute-changed`, `(self, name, before, after) => …`.
+
+        Two more cover a definition being REPLACED while instances are
+        live, which the DOM has no notion of. `released`, `(self) =>
+        …`, runs on the OUTGOING definition before the swap: undo what
+        `connected` set up, and stash anything worth keeping on the
+        element. `swapped`, `(self) => …`, runs on the incoming one and
+        takes over the live instance; without it the runtime re-runs
+        `connected`, which is right only when nothing needed undoing.
+
+        The reserved `define` key is the escape hatch for what a method
         table cannot express (`static formAssociated`, extending a
         built-in): `() => class extends HTMLElement { … }`, whose
         returned class the runtime registers INSTEAD of the generated

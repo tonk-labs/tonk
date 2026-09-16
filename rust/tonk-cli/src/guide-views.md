@@ -219,6 +219,30 @@ argument. Four keys are dispatched by the DOM lifecycle:
 | `adopted` | `(self) => …` |
 | `attribute-changed` | `(self, name, before, after) => …` |
 
+Two more cover something the DOM has no notion of: your definition
+being **replaced while instances are live**.
+
+| Key | Runs on | For |
+|-----|---------|-----|
+| `released` | the outgoing definition, before the swap | undo what `connected` set up; stash anything worth keeping on the element |
+| `swapped` | the incoming definition, after it | take over the live instance |
+
+Without `released`, a redefinition re-runs `connected` on top of setup
+the previous one left behind — a listener, a timer, an observer per
+edit, with nothing able to undo them. Without `swapped`, `connected` is
+re-run, which is right only when there was nothing to undo; declaring
+`swapped` means the new definition decides how to adopt an instance
+that is already mounted, and `connected` goes back to meaning a fresh
+mount. Both fire on any change to the definition; `connected` is only
+re-run when `connected` itself changed.
+
+```yaml tonk=illustrative-fragment-of-a-method-map
+released: |
+  (self) => { clearInterval(self.__timer); self.dataset.at = self.dataset.count; }
+swapped: |
+  (self) => { self.textContent = `resuming from ${self.dataset.at}`; }
+```
+
 Any other key becomes a method on the element, camelCased —
 `attribute-changed` is `self.attributeChanged`, a custom `bump` is
 `self.bump()`. Keys stay kebab in the data, matching every other tonk

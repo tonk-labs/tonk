@@ -908,6 +908,61 @@ mod tests {
         );
     }
 
+    /// The swap hooks fire on a real branch-driven replacement, not
+    /// just when `defineTonkElement` is called by hand: the outgoing
+    /// definition tears down, the incoming one takes over.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_runs_the_swap_hooks_on_a_branch_edit() {
+        define(
+            "probe-hooks",
+            "did:key:zHooks",
+            &[
+                (
+                    "connected",
+                    "(self) => { self.dataset.count = '3'; self.textContent = 'v1'; }",
+                ),
+                (
+                    "released",
+                    "(self) => { globalThis.__hookLog = (globalThis.__hookLog || []).concat('released'); \
+                     self.dataset.carried = self.dataset.count; }",
+                ),
+            ],
+        );
+        let host = render("probe-hooks").await;
+        settle_until(|| host.text_content().as_deref() == Some("v1")).await;
+
+        define(
+            "probe-hooks",
+            "did:key:zHooks",
+            &[
+                ("connected", "(self) => { self.textContent = 'fresh'; }"),
+                (
+                    "swapped",
+                    "(self) => { globalThis.__hookLog = (globalThis.__hookLog || []).concat('swapped'); \
+                     self.textContent = `kept ${self.dataset.carried}`; }",
+                ),
+            ],
+        );
+        notify("probe-hooks", "methods");
+
+        settle_until(|| host.text_content().as_deref() == Some("kept 3")).await;
+        assert_eq!(
+            host.text_content().as_deref(),
+            Some("kept 3"),
+            "the incoming definition should have taken over the live instance",
+        );
+        let log = Reflect::get(&js_sys::global(), &"__hookLog".into())
+            .ok()
+            .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
+            .map(|a| a.iter().filter_map(|v| v.as_string()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert_eq!(
+            log,
+            vec!["released", "swapped"],
+            "the outgoing definition must tear down before the incoming takes over",
+        );
+    }
+
     /// A tag that resolves to nothing stays inert and is not
     /// registered — but it IS looked up, and its watch stays open.
     #[wasm_bindgen_test::wasm_bindgen_test]

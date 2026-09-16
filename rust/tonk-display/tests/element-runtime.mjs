@@ -357,6 +357,151 @@ check('a shadow root can announce its own tags', await page.evaluate(async () =>
       && root.querySelector('lazy-shadow').textContent === 'resolved lazy-shadow';
 }));
 
+// --- swap hooks ------------------------------------------------------
+
+// 24. The outgoing definition tears down before the incoming takes
+// over. Without `released`, re-running `connected` would stack setup on
+// top of setup — a listener per edit, with no way to undo it.
+check('released runs on the outgoing definition before the swap', await page.evaluate(async () => {
+  globalThis.order = [];
+  defineTonkElement('swap-el', {
+    connected: (self) => { globalThis.order.push('connected-v1'); self.textContent = 'v1'; },
+    released: (self) => { globalThis.order.push('released-v1'); },
+  });
+  const el = document.createElement('swap-el');
+  document.body.append(el);
+
+  defineTonkElement('swap-el', {
+    connected: (self) => { globalThis.order.push('connected-v2'); self.textContent = 'v2'; },
+  });
+  return JSON.stringify(globalThis.order) ===
+      JSON.stringify(['connected-v1', 'released-v1', 'connected-v2'])
+    && el.textContent === 'v2';
+}));
+
+// 25. `released` is called through the OUTGOING function, not the table
+// — the table already holds the replacement by then.
+check('released is the outgoing implementation, not the new one', await page.evaluate(async () => {
+  globalThis.which = null;
+  defineTonkElement('which-el', {
+    connected: () => {},
+    released: () => { globalThis.which = 'old'; },
+  });
+  document.body.append(document.createElement('which-el'));
+  defineTonkElement('which-el', {
+    connected: () => {},
+    released: () => { globalThis.which = 'new'; },
+  });
+  return globalThis.which === 'old';
+}));
+
+// 26. A definition that declares `swapped` takes over live instances
+// itself; `connected` stays for a fresh mount.
+check('swapped takes over instead of re-running connected', await page.evaluate(async () => {
+  globalThis.calls = [];
+  defineTonkElement('taken-over', {
+    connected: (self) => { globalThis.calls.push('connected'); self.textContent = 'first'; },
+  });
+  const live = document.createElement('taken-over');
+  document.body.append(live);
+
+  defineTonkElement('taken-over', {
+    connected: (self) => { globalThis.calls.push('connected'); self.textContent = 'fresh'; },
+    swapped: (self) => { globalThis.calls.push('swapped'); self.textContent = 'migrated'; },
+  });
+  const migrated = live.textContent === 'migrated';
+
+  // A NEW instance still goes through `connected`.
+  const fresh = document.createElement('taken-over');
+  document.body.append(fresh);
+  return migrated
+    && fresh.textContent === 'fresh'
+    && JSON.stringify(globalThis.calls) === JSON.stringify(['connected', 'swapped', 'connected']);
+}));
+
+// 27. State handed from one implementation to the next, which is what
+// the pair is for.
+check('released can hand state to swapped', await page.evaluate(async () => {
+  defineTonkElement('handover-el', {
+    connected: (self) => { self.dataset.count = '7'; },
+    released: (self) => { self.dataset.carried = self.dataset.count; },
+  });
+  const el = document.createElement('handover-el');
+  document.body.append(el);
+  defineTonkElement('handover-el', {
+    connected: (self) => { self.textContent = 'fresh'; },
+    swapped: (self) => { self.textContent = `kept ${self.dataset.carried}`; },
+  });
+  return el.textContent === 'kept 7';
+}));
+
+// 28. The real reason `released` exists: teardown. A listener added on
+// connect and removed on release must not fire twice after an edit.
+check('released prevents setup stacking across edits', await page.evaluate(async () => {
+  globalThis.fired = 0;
+  const bump = () => { globalThis.fired++; };
+  defineTonkElement('listen-el', {
+    connected: (self) => { self.__bump = bump; self.addEventListener('ping', self.__bump); },
+    released: (self) => { self.removeEventListener('ping', self.__bump); },
+  });
+  const el = document.createElement('listen-el');
+  document.body.append(el);
+  defineTonkElement('listen-el', {
+    connected: (self) => { self.__bump = bump; self.addEventListener('ping', self.__bump); },
+    released: (self) => { self.removeEventListener('ping', self.__bump); },
+  });
+  el.dispatchEvent(new CustomEvent('ping'));
+  return globalThis.fired === 1;
+}));
+
+// 29. Swap hooks fire on ANY change to the definition, not only when
+// `connected` moved — adding a method is a swap too. But `connected`
+// itself is only re-run when it actually changed.
+check('a changed method fires the hooks without re-running connected', await page.evaluate(async () => {
+  globalThis.log = [];
+  const connected = (self) => { globalThis.log.push('connected'); };
+  defineTonkElement('grow-el', {
+    connected,
+    released: () => { globalThis.log.push('released'); },
+  });
+  document.body.append(document.createElement('grow-el'));
+  // Same `connected`, one method added.
+  defineTonkElement('grow-el', {
+    connected,
+    released: () => { globalThis.log.push('released'); },
+    extra: () => 1,
+  });
+  return JSON.stringify(globalThis.log) === JSON.stringify(['connected', 'released']);
+}));
+
+// 30. An identical redefinition is not a swap at all.
+check('an unchanged definition fires no swap hooks', await page.evaluate(async () => {
+  globalThis.quiet = 0;
+  const methods = {
+    connected: () => {},
+    released: () => { globalThis.quiet++; },
+  };
+  defineTonkElement('quiet-el', methods);
+  document.body.append(document.createElement('quiet-el'));
+  defineTonkElement('quiet-el', { ...methods });
+  return globalThis.quiet === 0;
+}));
+
+// 31. Ordinary removal is `disconnected`, not `released` — the two say
+// different things and must not be conflated.
+check('removing an element calls disconnected, not released', await page.evaluate(async () => {
+  globalThis.events = [];
+  defineTonkElement('bye2-el', {
+    connected: () => {},
+    disconnected: () => { globalThis.events.push('disconnected'); },
+    released: () => { globalThis.events.push('released'); },
+  });
+  const el = document.createElement('bye2-el');
+  document.body.append(el);
+  el.remove();
+  return JSON.stringify(globalThis.events) === JSON.stringify(['disconnected']);
+}));
+
 await browser.close();
 let failed = 0;
 for (const r of results) {
