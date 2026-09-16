@@ -31,9 +31,6 @@ use tonk_render::QueryBackend as _;
 
 use crate::site::TonkSite;
 
-/// The domain an `element!:` assertion writes its methods under. Each
-/// entry is `<domain>/<key>`.
-const ELEMENT_METHOD_DOMAIN: &str = "xyz.tonk.element.method";
 /// The attribute the deprecated `component!:` assertion writes.
 const COMPONENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.component/module";
 
@@ -156,21 +153,17 @@ async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>
 
 /// [`method_dictionaries`], keeping each method's source.
 async fn source_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<String, String>)>> {
+    // `this` left as a variable so this matches every element on the
+    // branch; the predicate is the shared one, so the listing and the
+    // browser registry cannot drift about what a method dictionary
+    // looks like on the wire.
     let body = serde_json::json!({
         "terms": {
             "this":       { "?": { "name": "this" } },
             "method":     { "?": { "name": "method" } },
             "method/key": { "?": { "name": "method/key" } },
         },
-        "predicate": {
-            "with": {
-                "method": {
-                    "the": { "domain": ELEMENT_METHOD_DOMAIN, "keyed": "dictionary" },
-                    "as": "Text",
-                    "cardinality": "one"
-                }
-            }
-        }
+        "predicate": tonk_template::resolve::element_method_predicate(),
     });
     let query: tonk_schema::query::Query =
         serde_json::from_value(body).context("method query body is well-formed")?;

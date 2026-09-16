@@ -515,6 +515,130 @@ mod when_defining_an_element {
         Ok(())
     }
 
+    /// The queries the BROWSER registry runs, executed here against a
+    /// real branch and the real query engine.
+    ///
+    /// Everything else about the registry is exercised in a browser
+    /// against a fake host, which proves the DOM half but takes the
+    /// wire shapes on trust. These two queries are the seam between the
+    /// two halves, and the ways they can be wrong — a `the:` written as
+    /// an attribute where the schema declares a domain, a keyed
+    /// collection missing its key operand — all read as "this element
+    /// has no methods" rather than as an error. So run them for real.
+    #[dialog_common::test]
+    async fn the_browser_queries_resolve_against_a_real_branch() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            &methods(&[
+                ("connected", "(self) => { self.textContent = 'hi'; }"),
+                ("attribute-changed", "(self, name, before, after) => {}"),
+                ("bump", "(self) => 1"),
+            ]),
+            Default::default(),
+        )
+        .await?;
+
+        // Hop one, exactly as the registry runs it: the tag's name to
+        // the entity it currently means.
+        let named = run(&test, tonk_template::resolve::name_query("tally-widget")).await?;
+        let entity = named
+            .first()
+            .and_then(|row| row.fields.get("entity"))
+            .and_then(ipld_string)
+            .expect("the tag should resolve to an entity");
+
+        // Hop two: that entity's whole method dictionary, one flat row
+        // per entry, which the registry folds into the method table.
+        let rows = run(
+            &test,
+            tonk_template::resolve::element_method_query(&entity).expect("the method query builds"),
+        )
+        .await?;
+        let mut found: Vec<(String, String)> = Vec::new();
+        for row in &rows {
+            let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get("method") else {
+                continue;
+            };
+            for (key, value) in entries {
+                if let Some(source) = ipld_string(value) {
+                    found.push((key.clone(), source));
+                }
+            }
+        }
+        found.sort();
+        let keys: Vec<&str> = found.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["attribute-changed", "bump", "connected"],
+            "every method should come back, keyed — a dictionary query \
+             missing its key operand returns entries with no key",
+        );
+        assert!(
+            found
+                .iter()
+                .any(|(key, source)| key == "connected" && source.contains("'hi'")),
+            "the source should come back with the key: {found:?}",
+        );
+        Ok(())
+    }
+
+    /// The registry resolves through the NAME, so an element the tag no
+    /// longer points at must not answer for it.
+    #[dialog_common::test]
+    async fn the_name_hop_follows_the_current_binding() -> Result<()> {
+        let test = TestSite::new().await?;
+        for tag in ["a-one", "b-two"] {
+            tonk_cli::data_ops::element_add(
+                &test.site,
+                tag,
+                &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                Default::default(),
+            )
+            .await?;
+        }
+        let a = run(&test, tonk_template::resolve::name_query("a-one")).await?;
+        let b = run(&test, tonk_template::resolve::name_query("b-two")).await?;
+        let entity_of = |rows: &Vec<tonk_schema::conclusion::Conclusion>| {
+            rows.first()
+                .and_then(|row| row.fields.get("entity"))
+                .and_then(ipld_string)
+        };
+        let (a, b) = (entity_of(&a), entity_of(&b));
+        assert!(a.is_some() && b.is_some(), "both tags should resolve");
+        assert_ne!(a, b, "each tag must resolve to its own element");
+
+        // And a name nothing has published resolves to nothing, which
+        // is what leaves an unknown tag inert rather than erroring.
+        let missing = run(&test, tonk_template::resolve::name_query("no-such")).await?;
+        assert!(missing.is_empty(), "{missing:?}");
+        Ok(())
+    }
+
+    /// Run a wire query the way the browser host would, against the
+    /// real engine.
+    async fn run(
+        test: &TestSite,
+        query: tonk_schema::query::Query,
+    ) -> Result<Vec<tonk_schema::conclusion::Conclusion>> {
+        use tonk_render::QueryBackend as _;
+        let concept_query = query
+            .into_concept_query()
+            .map_err(|e| anyhow::anyhow!("query should lower: {e:?}"))?;
+        test.site
+            .query(concept_query)
+            .await
+            .map_err(|e| anyhow::anyhow!("query failed: {e}"))
+    }
+
+    fn ipld_string(value: &ipld_core::ipld::Ipld) -> Option<String> {
+        match value {
+            ipld_core::ipld::Ipld::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
     /// Both concepts are anchored, not pinned — their entities are
     /// content-addressed from their declarations. What coexistence
     /// actually needs is only that the two are DISTINCT and that each

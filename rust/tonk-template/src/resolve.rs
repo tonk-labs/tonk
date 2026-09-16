@@ -42,6 +42,55 @@ pub fn view_query(model_entity: &str) -> Result<Query, serde_json::Error> {
     serde_json::from_value(json!({ "terms": terms, "predicate": view_predicate() }))
 }
 
+/// The domain an `element!:` assertion writes its methods under. Each
+/// entry lands as `<domain>/<key>`.
+pub const ELEMENT_METHOD_DOMAIN: &str = "xyz.tonk.element.method";
+
+/// The `element` concept's `method` shape, kept in step with the
+/// declaration in the standard library.
+///
+/// A hand-mirrored copy for the same reason [`view_predicate`] is one:
+/// this crate builds wire queries as JSON and does not go through the
+/// descriptor types. The library is the source of truth; the parity
+/// test in `tonk-worker` is what keeps the two honest.
+pub fn element_method_predicate() -> Value {
+    json!({
+        "with": {
+            "method": {
+                "the": { "domain": ELEMENT_METHOD_DOMAIN, "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// Build the query that reads one element's whole `method` dictionary.
+///
+/// A keyed collection binds TWO terms — the field and its key operand —
+/// because an entry is a `(key, value)` pair. Requesting only the field
+/// leaves the key unbound, and the wire fold that turns the pair into
+/// `{key: value}` then has nothing to fold: every entry reads empty.
+///
+/// Shared rather than rebuilt per caller: the browser registry, the CLI
+/// listing and the parity test all have to agree about this body, and
+/// the ways they can silently disagree (a missing key operand, a
+/// `the:` written as an attribute rather than a domain) all read as an
+/// element with no methods.
+pub fn element_method_query(entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(entity));
+    terms.insert("method".into(), json!({ "?": { "name": "method" } }));
+    terms.insert(
+        "method/key".into(),
+        json!({ "?": { "name": "method/key" } }),
+    );
+    serde_json::from_value(json!({
+        "terms": terms,
+        "predicate": element_method_predicate(),
+    }))
+}
+
 /// The `event` concept's shape, kept in step with the built-in
 /// registered as `event` in `tonk_schema::builtin`.
 ///

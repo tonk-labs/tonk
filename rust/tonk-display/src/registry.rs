@@ -43,7 +43,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use js_sys::Reflect;
-use serde_json::json;
 use wasm_bindgen::{JsCast, JsValue, prelude::Closure};
 use web_sys::{CustomEvent, Element, window};
 
@@ -305,30 +304,15 @@ async fn named_entity(consumer: &Element, tag: &str) -> Option<String> {
     first_field(&rows, "entity")
 }
 
-/// The wire query for one entity's `method` dictionary.
+/// The wire query for one entity's `method` dictionary, serialized for
+/// the host bridge.
 ///
-/// A keyed collection binds two terms — the field and its key operand —
-/// because an entry is a `(key, value)` pair; requesting the field alone
-/// leaves every entry keyless. Built through `Query` because every other
-/// wire query in the system is, and the two do not serialize alike.
+/// The query itself is built in [`tonk_template::resolve`], shared with
+/// the CLI listing and with the test that runs it against a real branch
+/// — the three have to agree, and every way they can silently disagree
+/// reads as "this element has no methods" rather than as an error.
 fn method_query(entity: &str) -> Option<JsValue> {
-    let body = json!({
-        "terms": {
-            "this":       entity,
-            "method":     { "?": { "name": "method" } },
-            "method/key": { "?": { "name": "method/key" } },
-        },
-        "predicate": {
-            "with": {
-                "method": {
-                    "the": { "domain": "xyz.tonk.element.method", "keyed": "dictionary" },
-                    "as": "Text",
-                    "cardinality": "one"
-                }
-            }
-        }
-    });
-    let query = serde_json::from_value::<tonk_schema::query::Query>(body).ok()?;
+    let query = tonk_template::resolve::element_method_query(entity).ok()?;
     serde_wasm_bindgen::to_value(&query).ok()
 }
 
@@ -461,6 +445,15 @@ mod tests {
             let body = serde_wasm_bindgen::from_value::<serde_json::Value>(query)
                 .map(|value| value.to_string())
                 .unwrap_or_default();
+            // Claim only the two shapes this branch knows. A
+            // document-level listener sees every consumer query in the
+            // realm — `<tonk-display>` boots and subscribes in other
+            // tests of this same suite — and answering those would
+            // change how they behave. Leaving them unclaimed is the
+            // difference between a stand-in and a hijack.
+            if !ours(&body) {
+                return;
+            }
             let rows = answer(&body);
             let promise = js_sys::Promise::resolve(&rows);
             let _ = Reflect::set(&detail, &"result".into(), &promise);
@@ -476,9 +469,17 @@ mod tests {
             if event.default_prevented() {
                 return;
             }
+            let detail = event.detail();
+            let body = Reflect::get(&detail, &"query".into())
+                .ok()
+                .and_then(|query| serde_wasm_bindgen::from_value::<serde_json::Value>(query).ok())
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            if !ours(&body) {
+                return;
+            }
             // A subscription handle with a no-op cancel is all the
             // consumer contract requires; frames are pushed by `notify`.
-            let detail = event.detail();
             let subscription = js_sys::Object::new();
             let _ = Reflect::set(
                 &subscription,
@@ -493,6 +494,12 @@ mod tests {
             on_subscribe.as_ref().unchecked_ref(),
         );
         on_subscribe.forget();
+    }
+
+    /// Whether a query body is one of the two this fake branch serves.
+    fn ours(body: &str) -> bool {
+        body.contains("db.name/referent")
+            || body.contains(tonk_template::resolve::ELEMENT_METHOD_DOMAIN)
     }
 
     /// The rows the fake branch returns for one query body.
@@ -516,7 +523,7 @@ mod tests {
             }
             return rows;
         }
-        if body.contains("xyz.tonk.element.method") {
+        if body.contains(tonk_template::resolve::ELEMENT_METHOD_DOMAIN) {
             let found = BRANCH.with(|branch| {
                 branch
                     .borrow()
