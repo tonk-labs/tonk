@@ -690,7 +690,53 @@ async fn observe_registration(
     }
 }
 
-async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
+/// Whether a sweep uploads what it made durable before it answers.
+///
+/// The sync heartbeat pushes: it is the background, and the push is what
+/// it is for. A sweep that a page is waiting on (the login, the account
+/// status read, a profile switch, boot) does not: everything the page
+/// needs is local once the pull and the convergence have run, so it
+/// answers first. The login then pushes right behind its answer
+/// ([`push_after_answer`]); everything else leaves the push to the
+/// heartbeat that follows within seconds. Before this the passkey login
+/// held its answer until the last PUT of the push had landed, which on a
+/// cold account was longer than the pull itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Publish {
+    /// Push before answering.
+    Now,
+    /// Answer first; the caller or the heartbeat pushes.
+    Later,
+}
+
+/// Push profile main behind an answer already on its way.
+///
+/// The login's sweep answers before it pushes ([`Publish::Later`]) so the
+/// page is not held for the upload; this is the upload, started once the
+/// caller has let go of its read guard. Detached in the browser, where
+/// the answer has gone out; awaited natively, so the tests that follow a
+/// link with a remote check see what the browser will have seen a
+/// moment later.
+pub(crate) async fn push_after_answer(app: crate::router::AppState) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            let tonk = app.read().await;
+            if let Err(error) = push_account_main(&tonk).await {
+                log!("push behind the login's answer did not land: {error}");
+            }
+        });
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let tonk = app.read().await;
+        if let Err(error) = push_account_main(&tonk).await {
+            log!("push behind the login's answer did not land: {error}");
+        }
+    }
+}
+
+async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()
@@ -744,16 +790,19 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
         log!("account-state convergence after sync failed: {error}");
     }
     let reconciliation = super::repository::reconcile_profile_library(tonk).await;
-    // Pushed through the session this function already holds, rather
-    // than `push_account_main`, which acquires one of its own for the
-    // hydrate arm.
-    let push = session
-        .handle()
-        .push()
-        .perform(&tonk.operator)
-        .await
-        .map(|_| ())
-        .map_err(|error| format!("account push failed: {error}"));
+    let push = match publish {
+        // Pushed through the session this function already holds, rather
+        // than `push_account_main`, which acquires one of its own for the
+        // hydrate arm.
+        Publish::Now => session
+            .handle()
+            .push()
+            .perform(&tonk.operator)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("account push failed: {error}")),
+        Publish::Later => Ok(()),
+    };
     finish_account_sweep(reconciliation, push)
 }
 
@@ -765,9 +814,11 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
 /// An already-ready branch is reconciled on the way through, so this doubles as
 /// the account repository's catch-up on boot and before an authoritative write.
 /// That reconcile is best-effort here; [`ensure_account_state_swept`] is the
-/// same work with its outcome reported.
+/// same work with its outcome reported. This is the form a page waits on, so
+/// it answers once the local state is converged and leaves the push to the
+/// heartbeat ([`Publish::Later`]).
 pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus {
-    let (status, swept) = ensure_account_state_swept(tonk).await;
+    let (status, swept) = sweep_account_state(tonk, Publish::Later).await;
     if let Err(error) = swept {
         log!("account repository is ready but did not reconcile: {error}");
     }
@@ -782,6 +833,15 @@ pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus
 /// on any path that ran no reconcile — the status carries that story instead.
 pub(crate) async fn ensure_account_state_swept(
     tonk: &TonkState,
+) -> (AccountStateStatus, Result<(), String>) {
+    sweep_account_state(tonk, Publish::Now).await
+}
+
+/// The sweep behind both entry points; `publish` says whether it pushes
+/// before returning.
+async fn sweep_account_state(
+    tonk: &TonkState,
+    publish: Publish,
 ) -> (AccountStateStatus, Result<(), String>) {
     // One ensure at a time. The drain heartbeat, the link path, and the
     // save path can all arrive here concurrently, and their futures
@@ -829,7 +889,7 @@ pub(crate) async fn ensure_account_state_swept(
 
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
-            let swept = sync_ready(tonk, &key).await;
+            let swept = sync_ready(tonk, &key, publish).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
@@ -853,17 +913,17 @@ pub(crate) async fn ensure_account_state_swept(
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
-                    // Push what this sweep just made durable. Without
-                    // it, hydrating leaves the account Ready but never
-                    // uploaded, so nothing local reaches the account
-                    // remote until some *later* sweep happens to take
-                    // the `marker_matches` arm above — which is the only
-                    // other place profile main is pushed. A device that
-                    // is not poked again simply never publishes: its
-                    // spaces stay invisible to the account's other
-                    // devices.
+                    // Push what this sweep just made durable, when this
+                    // is the heartbeat's sweep. The marker is written now,
+                    // so every later sweep takes the `marker_matches` arm
+                    // above, and the heartbeat's pushes there; a sweep a
+                    // page is waiting on answers first and leaves the push
+                    // to it (see `Publish`).
                     let reconciliation = super::repository::reconcile_profile_library(tonk).await;
-                    let pushed = push_account_main(tonk).await;
+                    let pushed = match publish {
+                        Publish::Now => push_account_main(tonk).await,
+                        Publish::Later => Ok(()),
+                    };
                     (
                         AccountStateStatus::Ready,
                         finish_account_sweep(reconciliation, pushed),
