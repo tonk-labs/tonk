@@ -1356,13 +1356,13 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
 dependencies = [
  "anyhow",
  "async-trait",
  "base58",
  "blake3",
  "bytes",
+ "chrono",
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
@@ -5084,10 +5084,17 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-effects",
+ "dialog-operator",
+ "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "ipld-core",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
  "tokio",
  "url",
  "wasm-bindgen-test",
@@ -5349,6 +5356,7 @@ dependencies = [
  "tonk-common",
  "tonk-host",
  "tonk-identity",
+ "tonk-invite",
  "tonk-portal",
  "tonk-schema",
  "tonk-worker",
@@ -5470,6 +5478,7 @@ dependencies = [
  "tonk-common",
  "tonk-fab",
  "tonk-host",
+ "tonk-invite",
  "tonk-schema",
  "tonk-worker-api",
  "wasm-bindgen",

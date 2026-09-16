@@ -23,6 +23,19 @@
       <span>another passkey for this account</span>
       <button class="cta" type="button" data-add-passkey>add a passkey with the current one</button>
     </div>
+    <section data-agent-connections hidden aria-label="agent access">
+      <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+      <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
+      <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
+      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
+      <div data-connections-list></div>
+    </section>
+    <section data-terminal-connections hidden aria-label="terminal access">
+      <div class="srowd"><span>terminal access</span><button class="cta" type="button" data-terminal-management-refresh>refresh</button></div>
+      <p class="expl">add or remove spaces while the terminal is offline. revoking access preserves downloaded copies and unsynced edits. service enforcement can take time.</p>
+      <p class="expl" data-terminal-management-result role="status" aria-live="polite" tabindex="-1"></p>
+      <div data-terminal-connections-list></div>
+    </section>
     <div class="sect">sign out</div>
     <div class="srowd">
       <span>disconnect this account; keep local spaces on this device</span>
@@ -42,13 +55,29 @@
     <p class="expl">
       approving gives that terminal the same access to your account as this
       browser: every space, on every device. decline if you did not just run
-      <code>tonk account login</code> or <code>tonk connect</code> yourself.
+      <code>tonk account login</code> or <code>tonk join --agent</code> yourself.
     </p>
     <div class="link-foot">
       <button class="m-cancel" type="button" data-link-decline>decline</button>
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
+  <section class="pane terminal-link" data-pane="terminal-link" hidden aria-label="terminal space access">
+    <div class="sect">choose spaces for this terminal</div>
+    <div class="srowd"><span>terminal</span><b class="lft" data-terminal-name>checking request…</b></div>
+    <p class="expl" data-terminal-recipient></p>
+    <div class="srowd"><span>browser account</span><b class="lft" data-terminal-account>loading…</b></div>
+    <p class="expl">allow this terminal to read and build data and views in the selected spaces for 90 days. approve only a request you started with <code>tonk link</code>.</p>
+    <p class="expl" data-terminal-deadline></p>
+    <div class="srowd"><label class="terminal-choice"><input type="checkbox" data-terminal-all disabled>select all available spaces</label><button class="cta" type="button" data-terminal-refresh>refresh spaces</button></div>
+    <p class="expl">this selects the spaces available now. spaces added later require another grant.</p>
+    <div data-terminal-spaces></div>
+    <p class="expl" data-terminal-status role="status" aria-live="polite" tabindex="-1">checking request…</p>
+    <div class="link-foot">
+      <button class="m-cancel" type="button" data-terminal-decline disabled>decline</button>
+      <button class="m-go" type="button" data-terminal-approve disabled>link selected spaces</button>
+    </div>
+  </section>
   <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
   <div data-custody-seat aria-hidden="true"></div>
 </div>

@@ -263,18 +263,25 @@ A fresh empty space says “Build this space with an agent”. It explains that 
 person should copy the prompt, give it to their preferred agent, and describe
 what to build. Machine instructions are hidden in the copy button value.
 
-The release CLI invocation `tonk connect INVITE` reuses an
-active CLI account, or runs the browser approval described above. It then joins
-and pulls the invite's exact space and pushes a receipt. “Agent connection
+The CLI invocation `tonk join --agent INVITE` reuses the active CLI account
+when it matches the invitation, or runs browser approval when unlinked.
+A different active account requires explicit `--switch-account DID` consent
+and browser approval. It then joins and pulls the invite's exact space and
+pushes a receipt. “Agent connection
 confirmed” appears through the space subscription, including in the workspace
 shell after the agent changes the home view. The receipt confirms a completed
 round trip; it does not indicate that the agent is still online.
 
-Product boundaries: an existing CLI account is printed and reused, so use an
-unlinked CLI and the source browser for the same-account walkthrough. There is
+Ordinary `tonk join INVITE --name NAME` joins as the current identity without
+agent approval or confirmation. The explicit `--agent` flag selects the full
+agent flow; the link does not implicitly select it. `connect` remains hidden
+from help as a compatibility command for older prompts.
+
+Product boundaries: an existing matching CLI account is printed and reused. There is
 no OTP exchange, expiring presence, or automatic account switch. The invite is
-still a reusable space capability. An explicitly requested occupied local name fails before linking. Without
-`--name`, connect reads the pulled space’s RepositoryName, makes a CLI-safe local
+still a reusable space capability. An explicitly requested occupied local name
+is refused instead of overwritten. Without
+`--name`, agent setup reads the pulled space’s RepositoryName, makes a CLI-safe local
 alias, and adds a numeric suffix only when needed to avoid a local collision.
 If the first pull cannot supply the name, a stable DID-derived fallback keeps
 the joined site registered and resumable. Join or sync failures retain local
@@ -304,12 +311,112 @@ The agent path now skips the ordinary join's account-directory refresh, keeping
 that unrelated account push out of the acknowledgement path. Ordinary `join`
 continues to update the account directory.
 
-After an interruption, run `tonk --space NAME connect` against the already joined
-space. It pulls and publishes the receipt without another invite, account login,
-or new local space. Only “Agent connection confirmed” is a success signal;
+After an interruption, run `tonk --space NAME join --agent` against the already
+joined space. It repeats the account check, requesting consent and approval if
+needed, then pulls and publishes the receipt without another invite or new local
+space. Only “Agent connection confirmed” is a success signal;
 `status: synced` alone is insufficient. The hidden prompt teaches this distinction.
 
 The copied prompt no longer assumes `agent-space`. Commands can use the working
 folder binding made by `connect`; outside it, use the local name printed by the
 command. The local alias does not overwrite the shared display name. Existing
 local aliases are retained; subsequent shared renames do not rekey local bindings.
+
+## Scoped agent invitation
+
+`ACCT-C14` describes the opt-in `connection-invites` build. The account handoff
+above remains the legacy flow. New browser issuance is not enabled by default
+until a compatible CLI is published and verified.
+
+A browser account with authority to a hosted space can copy a prompt containing
+`tonk connect AGENT_LINK`. The reusable link carries a fresh invitation identity
+and grants to build that space's data and views. The CLI imports that identity
+without account login or browser approval; the issuing browser can already be
+closed. An unrelated CLI account remains attached to its own authority.
+
+The requested lifetime is 90 days. The browser refuses an upstream authority
+that cannot support it and shows the actual expiry in Settings. Reopening the
+view reuses its transient link while available. Once that link is lost, “new
+invite” creates a separate grant group explicitly. The browser retains public
+grant records, not a recoverable invitation secret.
+
+The CLI retains the invitation credentials and a separate local replica. Only
+after pulling and pushing its grant-specific setup receipt does it report
+“Agent connection confirmed”. Later `tonk --space NAME connect` resumes from
+those retained credentials. A receipt records completed setup, not exclusive
+ownership of the invite or live agent presence; several holders may use it.
+
+Settings lists the space, recipient, scope, expiry, setup confirmation and
+revocation acknowledgements. Tab moves between settings controls without
+dismissing the panel; Tab still dismisses the account menu itself. Revoking an
+invite withdraws its six grants for
+all holders and descendants. Partial delivery stays visible and retryable.
+Acknowledgement does not promise immediate global enforcement. Downloaded data
+and offline edits remain; revoked or expired remote access requires new
+authorization and never falls back to a CLI account.
+
+Local evidence at worktree base `8acaa1897d3ed09a7bbde972f55060761d89f7f9`
+on 2026-09-16 includes real CLI crash/restart recovery, service revocation and
+persisted KV/D1 restart, and one browser copy/close/import/confirm/revoke journey.
+The final artifact `b32834be7306c317` passes the complete two-holder journey,
+independent-invite isolation, retained offline work and responsive/keyboard
+checks. [Running-product captures](../capture/agent-connections-2026-09-16/README.md)
+record the desktop and 390px visual evidence. This is not published npm, staging, production, Safari or
+global revocation-propagation evidence. See `HANDOFF-21` and
+[the execution record](../../../plans/001-cli-space-connections.md).
+
+## Selected terminal spaces
+
+`ACCT-C15` / `HANDOFF-22` starts with `tonk link`: the CLI durably retains a fresh
+key before opening or printing its signed approval URL. The browser checks that
+request, asks the user to sign in if needed, and shows the current account and
+terminal key. Nothing is selected initially. One, several, or all-current
+spaces can be selected; unavailable spaces remain visible with their delegation
+limits. All-current never subscribes the terminal to future spaces.
+
+Approval issues space-specific read/build grants to the CLI's exact public key.
+The private key stays on the CLI. Browser success says the complete selection
+was sent; only the terminal can report completed import. The CLI stages and
+checks every selected grant and remote before publishing the complete registry
+change. Account catalogue operations remain unavailable on an accountless CLI.
+
+The approval window is ten minutes; issued grants last 90 days, bounded by
+upstream authority. A request that was interrupted can explicitly resume an
+already published decision after its approval window. Local cancellation and
+automatic timeout are durable terminal outcomes and never silently reopen.
+Decline, wrong-key delivery, changed account, malformed selection, conflicting
+replay, and local alias collisions cannot silently install a smaller selection.
+
+Settings groups terminal access separately from copied agent invites. Additions
+issue fresh grants to the retained terminal key and can wait for an offline CLI.
+Removing one space or all terminal access publishes ordinary UCAN revocations.
+Each leaf's acknowledgement remains visible; partial removal offers retry.
+Fresh access after removal gets new grant CIDs. Downloaded data and offline edits
+remain with the terminal. Delivery and saved status are historical observations,
+not proof of current remote permission or online presence.
+
+Local execution now covers browser/CLI one, several and all-current selections,
+explicit legacy-account conversion with retained aliases and unsynced edits,
+and offline additions, removal, rejected queued grants and fresh re-addition.
+The final CLI reports a revoked delivery without installing it, then imports a
+later fresh grant; an exact local query still reads retained edits. Signed codec,
+atomic import and crash recovery, SQLite/D1 restart, real HTTP authorization,
+worker selection and Wasm DOM checks provide the lower-layer evidence.
+
+[Running-product captures](../capture/terminal-connections-2026-09-16/README.md)
+record artifact `63775cbb5273ce15`, desktop and 390px layout, real Tab focus and
+44px controls. Top-document reduced-motion emulation does not verify the opaque
+guest's media query. The local journey is verified on the later snapshot-fix
+artifact `d7f3967a6db1fa1a`: exact selections, fresh signed decline, offline
+management with a rejected queued grant, and explicit conversion all pass.
+The captures retain their earlier artifact provenance.
+
+A worker regression reproduced a snapshot rejection and passed after the
+fingerprint stopped including mutable presentation and eligibility; the root
+proof and exact repository/subject set remain pinned, and approval rechecks
+current selected grants. This does not establish the cause of every earlier
+intermittent pre-staging refusal; retain that symptom for staging monitoring.
+CI, staging, published CLI/browser compatibility, Safari and global revocation
+propagation remain unrun gates. Evidence is from the dirty worktree based on
+`8acaa1897d3ed09a7bbde972f55060761d89f7f9`; [the execution record](../../../plans/001-cli-space-connections.md)
+tracks the final checkpoint and external limits.

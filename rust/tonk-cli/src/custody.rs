@@ -136,6 +136,9 @@ pub async fn has_custody(
 /// `None` for a space this machine only ever held a verifier for — a
 /// joined or delegated space, whose seed is someone else's to custody.
 pub async fn site_seed(site: &crate::site::TonkSite) -> Result<Option<Zeroizing<[u8; 32]>>> {
+    if site.is_scoped() {
+        return Ok(None);
+    }
     let Some(signer) = site.repository.credential().signer() else {
         return Ok(None);
     };
@@ -220,6 +223,11 @@ async fn rotate_site(
     account_root: &Did,
     store: &crate::space::SpaceStore,
 ) -> Result<SpaceRotation> {
+    if site.is_scoped() {
+        return Ok(SpaceRotation::Skipped(
+            "scoped connection access does not transfer ownership".to_string(),
+        ));
+    }
     let subject = site.repository.did();
     // Ownership is the space's own answer: a founder row naming another
     // account is final — a synced space stays with its owner.

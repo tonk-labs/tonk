@@ -21,11 +21,12 @@ use sha2_0_10::{Digest, Sha256};
 /// parses as "deployment configuration is invalid"), resolves the
 /// service identity via did.json, the account panel reads /customer/,
 /// and /@ is the invite shortcut.
-const PROXIED_PREFIXES: [&str; 5] = [
+const PROXIED_PREFIXES: [&str; 6] = [
     "/ucan",
     "/.well-known/tonk",
     "/.well-known/did.json",
     "/customer/",
+    "/connection/",
     "/@",
 ];
 

@@ -33,6 +33,7 @@ dialog-varsig = { workspace = true }
 tonk-account = { workspace = true }
 tonk-email = { workspace = true }
 tonk-identity = { workspace = true }
+tonk-invite = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 # Cryptography
@@ -61,6 +62,7 @@ thiserror = { workspace = true }
 url = { workspace = true }
 
 async-trait = { workspace = true }
+futures-util = { workspace = true }
 
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }

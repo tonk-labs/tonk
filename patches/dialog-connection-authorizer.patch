@@ -1,0 +1,507 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 3e89517..cf2b30f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1499,6 +1499,7 @@ dependencies = [
+  "base58",
+  "blake3",
+  "bytes",
++ "chrono",
+  "dialog-capability",
+  "dialog-common",
+  "dialog-credentials",
+diff --git a/rust/dialog-remote-ucan-s3/Cargo.toml b/rust/dialog-remote-ucan-s3/Cargo.toml
+index 81dfd12..f0a2aaa 100644
+--- a/rust/dialog-remote-ucan-s3/Cargo.toml
++++ b/rust/dialog-remote-ucan-s3/Cargo.toml
+@@ -27,6 +27,7 @@ web-integration-tests = ["dialog-common/web-integration-tests"]
+ async-trait = { workspace = true }
+ base58 = { workspace = true }
+ blake3 = { workspace = true }
++chrono = { workspace = true }
+ dialog-capability = { workspace = true }
+ dialog-ucan = { workspace = true }
+ dialog-common = { workspace = true }
+diff --git a/rust/dialog-remote-ucan-s3/src/authorizer.rs b/rust/dialog-remote-ucan-s3/src/authorizer.rs
+index bf980ef..3b841de 100644
+--- a/rust/dialog-remote-ucan-s3/src/authorizer.rs
++++ b/rust/dialog-remote-ucan-s3/src/authorizer.rs
+@@ -63,9 +63,95 @@ use dialog_remote_s3::{Address, Permit, S3Credential, S3Error};
+ use dialog_ucan_core::invocation::CheckFailed;
+ use dialog_ucan_core::promise::Promised;
+ use dialog_ucan_core::time::TimeBoundError;
++use dialog_ucan_core::time::{TimeRange, Timestamp};
+ use dialog_ucan_core::{Environment, InvocationChain, VerificationContext};
+ use ipld_core::ipld::Ipld;
+ use serde::de::DeserializeOwned;
++use std::ops::Bound;
++
++/// Immutable invocation and exact proof path, available only after verification.
++/// Unreferenced container blocks are deliberately not exposed.
++pub struct VerifiedInvocation {
++    chain: InvocationChain<dialog_varsig::AnySignature>,
++    range: TimeRange,
++}
++
++impl VerifiedInvocation {
++    /// Root subject whose authority was verified.
++    pub fn subject(&self) -> &Did {
++        self.chain.subject()
++    }
++    /// Invoking principal.
++    pub fn issuer(&self) -> &Did {
++        self.chain.issuer()
++    }
++    /// Signed invocation audience; embedders must check their service binding.
++    pub fn audience(&self) -> &Did {
++        self.chain.invocation.audience()
++    }
++    /// Verified command.
++    pub fn command(&self) -> &dialog_ucan_core::command::Command {
++        self.chain.command()
++    }
++    /// Signed invocation arguments.
++    pub fn arguments(&self) -> &Args {
++        self.chain.arguments()
++    }
++    /// Verified delegation CIDs, in root-to-leaf order.
++    pub fn proofs(&self) -> &[ipld_core::cid::Cid] {
++        self.chain.proofs()
++    }
++    /// A delegation on the verified path, never an unrelated container block.
++    pub fn delegation(
++        &self,
++        cid: &ipld_core::cid::Cid,
++    ) -> Option<&dialog_ucan_core::Delegation<dialog_varsig::AnySignature>> {
++        self.proofs()
++            .contains(cid)
++            .then(|| self.chain.delegation(cid).map(AsRef::as_ref))
++            .flatten()
++    }
++    /// Effective intersection of invocation and ancestor validity windows.
++    pub fn time_range(&self) -> TimeRange {
++        self.range
++    }
++}
++
++fn clamp_request(
++    request: &mut dialog_remote_s3::request::S3Request,
++    range: TimeRange,
++    deadline: Option<Timestamp>,
++    now: Timestamp,
++) -> Result<(), S3Error> {
++    range.check(&now).map_err(|error| {
++        S3Error::Authorization(check_failed_to_authorize_error(CheckFailed::TimeBound(
++            error,
++        )))
++    })?;
++    let at = now.to_unix();
++    let mut end = at.saturating_add(60);
++    if let Bound::Included(exp) | Bound::Excluded(exp) = range.expiration {
++        end = end.min(exp.to_unix());
++    }
++    if let Some(deadline) = deadline {
++        end = end.min(deadline.to_unix());
++    }
++    let remaining = end.saturating_sub(at);
++    if remaining == 0 {
++        return Err(S3Error::Authorization(AuthorizeError::Expired {
++            expiration: end,
++            at,
++        }));
++    }
++    request.time = chrono::DateTime::from_timestamp(
++        i64::try_from(at)
++            .map_err(|_| S3Error::Configuration("Signing time is out of range".into()))?,
++        0,
++    )
++    .ok_or_else(|| S3Error::Configuration("Signing time is out of range".into()))?;
++    request.expires = request.expires.min(remaining);
++    Ok(())
++}
+ 
+ // Generic deserialization from UCAN args
+ 
+@@ -232,14 +318,17 @@ impl FromUcanArgs for blob::Import {
+ /// Dispatch UCAN command to the appropriate `FromUcanArgs` handler and authorize
+ /// the resulting capability directly against the S3 address.
+ macro_rules! dispatch {
+-    ($self:expr, $subject:expr, $args:expr, $segments:expr, {
++    ($self:expr, $subject:expr, $args:expr, $segments:expr, $bounds:expr, {
+         $( [$($seg:literal),+ $(,)?] => $fx:ty ),+ $(,)?
+     }) => {
+         match $segments {
+             $(
+                 [$($seg),+] => {
+                     let capability = <$fx as FromUcanArgs>::capability_from_args($subject, $args)?;
+-                    let request = ::dialog_remote_s3::request::S3Request::from(&capability);
++                    let mut request = ::dialog_remote_s3::request::S3Request::from(&capability);
++                    if let Some((range, deadline, now)) = $bounds {
++                        clamp_request(&mut request, range, deadline, now)?;
++                    }
+                     let authorization = match $self.credential.clone() {
+                         Some(credential) => request.attest(credential),
+                         None => ::dialog_remote_s3::S3Authorization::public(request),
+@@ -448,6 +537,63 @@ where
+     /// 2. Checks command prefix authorization at each delegation
+     /// 3. Validates policy predicates on each delegation
+     pub async fn authorize(&self, container: &[u8]) -> Result<Permit, S3Error> {
++        self.authorize_inner(container, |_| async { Ok(None) }, Timestamp::now, false)
++            .await
++    }
++
++    /// Verify, apply authoritative embedder policy, then sign a descriptor bounded
++    /// by the chain lifetime, optional policy deadline, and a 60-second ceiling.
++    /// Policy refusal preserves the embedder's typed authorization error.
++    /// Policy should inspect authoritative state without mutating it: command
++    /// decoding and descriptor construction may still fail after it returns.
++    /// Signing credentials are required; public unsigned URLs cannot expire.
++    pub async fn authorize_with_policy<P, F>(
++        &self,
++        container: &[u8],
++        policy: P,
++    ) -> Result<Permit, S3Error>
++    where
++        P: FnOnce(VerifiedInvocation) -> F,
++        F: std::future::Future<Output = Result<Option<Timestamp>, AuthorizeError>>,
++    {
++        self.authorize_with_policy_and_clock(container, policy, Timestamp::now)
++            .await
++    }
++
++    /// As `authorize_with_policy`, with a trusted caller-supplied clock sampled
++    /// before verification and again after awaiting policy, immediately before signing.
++    /// This clock also sets the signed S3 request timestamp.
++    pub async fn authorize_with_policy_and_clock<P, F, C>(
++        &self,
++        container: &[u8],
++        policy: P,
++        clock: C,
++    ) -> Result<Permit, S3Error>
++    where
++        P: FnOnce(VerifiedInvocation) -> F,
++        F: std::future::Future<Output = Result<Option<Timestamp>, AuthorizeError>>,
++        C: Fn() -> Timestamp,
++    {
++        self.authorize_inner(container, policy, clock, true).await
++    }
++
++    async fn authorize_inner<P, F, C>(
++        &self,
++        container: &[u8],
++        policy: P,
++        clock: C,
++        bounded: bool,
++    ) -> Result<Permit, S3Error>
++    where
++        P: FnOnce(VerifiedInvocation) -> F,
++        F: std::future::Future<Output = Result<Option<Timestamp>, AuthorizeError>>,
++        C: Fn() -> Timestamp,
++    {
++        if bounded && self.credential.is_none() {
++            return Err(S3Error::Configuration(
++                "Bounded authorization requires signing credentials".into(),
++            ));
++        }
+         // Parse and verify the invocation chain
+         let chain = InvocationChain::try_from(container).map_err(|e| {
+             S3Error::Authorization(AuthorizeError::Malformed {
+@@ -464,8 +610,8 @@ where
+         // real index behind it. Either way the question is asked inside the
+         // chain walk, per link and per entitled revoker.
+         let environment = Environment::new(chain.proof_store(), resolver, &*self.revocations);
+-        let context = VerificationContext::new(&environment);
+-        chain.verify(&context).await.map_err(|e| {
++        let context = VerificationContext::at(&environment, Some(clock()));
++        let range = chain.verify(&context).await.map_err(|e| {
+             // Two different failures arrive here: their material not
+             // verifying, and our own setup being unable to check it (for
+             // example, an unreachable did:web host). Only the first is a
+@@ -497,6 +643,14 @@ where
+             })
+         })?;
+ 
++        let deadline = policy(VerifiedInvocation {
++            chain: chain.clone(),
++            range,
++        })
++        .await
++        .map_err(S3Error::Authorization)?;
++        let bounds = bounded.then(|| (range, deadline, clock()));
++
+         // Extract command path and arguments
+         let command = chain.command();
+         let args = chain.arguments();
+@@ -506,7 +660,7 @@ where
+ 
+         let command_segments: Vec<&str> = command.0.iter().map(|s| s.as_str()).collect();
+ 
+-        dispatch!(self, subject_did, args, command_segments.as_slice(), {
++        dispatch!(self, subject_did, args, command_segments.as_slice(), bounds, {
+             ["use", "get", "memory", "cell"]     => dialog_effects::memory::Resolve,
+             ["use", "put", "memory", "cell"]     => dialog_effects::memory::Publish,
+             ["use", "delete", "memory", "cell"]  => dialog_effects::memory::Retract,
+@@ -545,6 +699,250 @@ mod tests {
+     use dialog_ucan_core::subject::Subject as DelegatedSubject;
+     use std::collections::BTreeMap;
+ 
++    fn connection_time(seconds: i128) -> Timestamp {
++        seconds.try_into().unwrap()
++    }
++
++    async fn connection_fixture() -> (UcanAuthorizer, Vec<u8>) {
++        connection_fixture_with_expiration(None).await
++    }
++
++    async fn connection_fixture_with_expiration(
++        expiration: Option<Timestamp>,
++    ) -> (UcanAuthorizer, Vec<u8>) {
++        let subject = test_signer().await;
++        let operator = Ed25519Signer::import(&[7u8; 32]).await.unwrap();
++        let args = BTreeMap::from([
++            ("space".into(), Promised::String("branch/main".into())),
++            ("cell".into(), Promised::String("revision".into())),
++        ]);
++        let builder = DelegationBuilder::new()
++            .issuer(subject.clone())
++            .audience(&operator.did())
++            .subject(DelegatedSubject::Specific(subject.did()))
++            .command(vec!["use".into()]);
++        let builder = match expiration {
++            Some(expiration) => builder.expiration(expiration),
++            None => builder,
++        };
++        let delegation = builder.try_build().await.unwrap();
++        let invocation = InvocationBuilder::new()
++            .issuer(operator)
++            .audience(&subject.did())
++            .subject(&subject.did())
++            .command(vec![
++                "use".into(),
++                "get".into(),
++                "memory".into(),
++                "cell".into(),
++            ])
++            .arguments(args)
++            .proofs(vec![delegation.to_cid()])
++            .try_build()
++            .await
++            .unwrap();
++        let bytes = InvocationChain::new(
++            invocation,
++            std::collections::HashMap::from([(
++                delegation.to_cid(),
++                std::sync::Arc::new(delegation),
++            )]),
++        )
++        .to_bytes()
++        .unwrap();
++        let address = Address::builder("https://s3.example.com")
++            .region("auto")
++            .bucket("test")
++            .build()
++            .unwrap();
++        (
++            UcanAuthorizer::new(address, Some(S3Credential::new("key", "secret"))),
++            bytes,
++        )
++    }
++
++    #[dialog_common::test]
++    async fn connection_policy_clamps_and_signs_at_explicit_clock() {
++        let (authorizer, bytes) = connection_fixture().await;
++        let permit = authorizer
++            .authorize_with_policy_and_clock(
++                &bytes,
++                |view| async move {
++                    assert_eq!(view.proofs().len(), 1);
++                    assert!(view.delegation(&view.proofs()[0]).is_some());
++                    assert_eq!(view.audience(), view.subject());
++                    Ok(Some(connection_time(1_000_025)))
++                },
++                || connection_time(1_000_000),
++            )
++            .await
++            .unwrap();
++        let query: BTreeMap<_, _> = permit.url.query_pairs().collect();
++        assert_eq!(query["X-Amz-Expires"], "25");
++        assert_eq!(query["X-Amz-Date"], "19700112T134640Z");
++        let permit = authorizer
++            .authorize_with_policy_and_clock(
++                &bytes,
++                |_| async { Ok(None) },
++                || connection_time(1_000_000),
++            )
++            .await
++            .unwrap();
++        assert!(
++            permit
++                .url
++                .query_pairs()
++                .any(|(key, value)| key == "X-Amz-Expires" && value == "60")
++        );
++    }
++
++    #[dialog_common::test]
++    async fn connection_policy_deadline_exhausted_during_await_is_denied() {
++        let (authorizer, bytes) = connection_fixture().await;
++        let clock = std::sync::atomic::AtomicU64::new(1_000_000);
++        let result = authorizer
++            .authorize_with_policy_and_clock(
++                &bytes,
++                |_| async {
++                    clock.store(1_000_025, std::sync::atomic::Ordering::SeqCst);
++                    Ok(Some(connection_time(1_000_025)))
++                },
++                || connection_time(clock.load(std::sync::atomic::Ordering::SeqCst).into()),
++            )
++            .await;
++        assert!(matches!(
++            result,
++            Err(S3Error::Authorization(AuthorizeError::Expired {
++                expiration: 1_000_025,
++                at: 1_000_025
++            }))
++        ));
++    }
++
++    #[dialog_common::test]
++    async fn connection_policy_denial_preserves_typed_error() {
++        let (authorizer, bytes) = connection_fixture().await;
++        let result = authorizer
++            .authorize_with_policy(&bytes, |view| async move {
++                Err(AuthorizeError::Revoked {
++                    subject: view.subject().clone(),
++                })
++            })
++            .await;
++        assert!(matches!(
++            result,
++            Err(S3Error::Authorization(AuthorizeError::Revoked { .. }))
++        ));
++        let result = authorizer
++            .authorize_with_policy(b"invalid", |_| async {
++                panic!("policy must not see unverified input");
++            })
++            .await;
++        assert!(matches!(
++            result,
++            Err(S3Error::Authorization(AuthorizeError::Malformed { .. }))
++        ));
++    }
++
++    #[test]
++    fn connection_clamp_honors_ancestor_and_rejects_exhausted_window() {
++        let mut request = dialog_remote_s3::request::S3Request::default();
++        let range = TimeRange::new(None, Some(connection_time(1_000_020)));
++        clamp_request(
++            &mut request,
++            range,
++            Some(connection_time(1_000_030)),
++            connection_time(1_000_000),
++        )
++        .unwrap();
++        assert_eq!(request.expires, 20);
++        assert!(clamp_request(&mut request, range, None, connection_time(1_000_020)).is_err());
++    }
++
++    #[dialog_common::test]
++    async fn connection_ancestor_expiry_bounds_permit_and_is_rechecked_after_policy() {
++        let (authorizer, bytes) =
++            connection_fixture_with_expiration(Some(connection_time(1_000_020))).await;
++        let permit = authorizer
++            .authorize_with_policy_and_clock(
++                &bytes,
++                |_| async { Ok(None) },
++                || connection_time(1_000_000),
++            )
++            .await
++            .unwrap();
++        assert!(
++            permit
++                .url
++                .query_pairs()
++                .any(|(key, value)| key == "X-Amz-Expires" && value == "20")
++        );
++        let clock = std::sync::atomic::AtomicU64::new(1_000_000);
++        let result = authorizer
++            .authorize_with_policy_and_clock(
++                &bytes,
++                |_| async {
++                    clock.store(1_000_021, std::sync::atomic::Ordering::SeqCst);
++                    Ok(None)
++                },
++                || connection_time(clock.load(std::sync::atomic::Ordering::SeqCst).into()),
++            )
++            .await;
++        assert!(matches!(
++            result,
++            Err(S3Error::Authorization(AuthorizeError::Expired {
++                expiration: 1_000_020,
++                at: 1_000_021
++            }))
++        ));
++    }
++
++    #[dialog_common::test]
++    async fn connection_bounded_api_refuses_unsigned_urls() {
++        let (mut authorizer, bytes) = connection_fixture().await;
++        authorizer.credential = None;
++        assert!(matches!(
++            authorizer
++                .authorize_with_policy(&bytes, |_| async { Ok(None) })
++                .await,
++            Err(S3Error::Configuration(_))
++        ));
++        assert!(authorizer.authorize(&bytes).await.is_ok());
++    }
++
++    #[dialog_common::test]
++    async fn connection_view_hides_unverified_container_blocks() {
++        let (authorizer, bytes) = connection_fixture().await;
++        let chain = InvocationChain::try_from(bytes.as_slice()).unwrap();
++        let subject = test_signer().await;
++        let attacker = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
++        let forged = dialog_ucan_core::Delegation::forge(
++            subject.did(),
++            attacker.did(),
++            DelegatedSubject::Specific(subject.did()),
++            dialog_ucan_core::command::Command::new(vec!["use".into()]),
++            &attacker,
++        )
++        .await
++        .unwrap();
++        let forged: dialog_ucan_core::Delegation<dialog_varsig::AnySignature> =
++            serde_ipld_dagcbor::from_slice(&serde_ipld_dagcbor::to_vec(&forged).unwrap()).unwrap();
++        let cid = forged.to_cid();
++        let mut blocks = chain.proof_store().lock().unwrap().clone();
++        blocks.insert(cid, std::sync::Arc::new(forged));
++        let bytes = InvocationChain::new(chain.invocation, blocks)
++            .to_bytes()
++            .unwrap();
++        authorizer
++            .authorize_with_policy(&bytes, |view| async move {
++                assert_eq!(view.proofs().len(), 1);
++                assert!(view.delegation(&cid).is_none());
++                Ok(None)
++            })
++            .await
++            .unwrap();
++    }
++
+     /// Helper to create a test signer
+     async fn test_signer() -> Ed25519Signer {
+         Ed25519Signer::import(&[42u8; 32]).await.unwrap()
+diff --git a/rust/dialog-remote-ucan-s3/src/lib.rs b/rust/dialog-remote-ucan-s3/src/lib.rs
+index cd13899..ad76f04 100644
+--- a/rust/dialog-remote-ucan-s3/src/lib.rs
++++ b/rust/dialog-remote-ucan-s3/src/lib.rs
+@@ -17,7 +17,7 @@ mod permit_cache;
+ mod provider;
+ pub mod site;
+ 
+-pub use authorizer::{DefaultResolver, UcanAuthorizer};
++pub use authorizer::{DefaultResolver, UcanAuthorizer, VerifiedInvocation};
+ pub use site::{Ucan, UcanAddress, UcanAuthorization, UcanFork, UcanInvocation, UcanSite};
+ 
+ // Re-export container types from dialog-ucan
