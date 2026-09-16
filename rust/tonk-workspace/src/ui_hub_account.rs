@@ -330,7 +330,7 @@ impl CustomElement for UiHubAccount {
         let host = this.clone();
         let position_change: EventClosure = Closure::wrap(Box::new(move |_event: Event| {
             if host.has_attribute("data-linking") {
-                request_linking_position(&host);
+                request_linking_position_for(&host, RESEAT);
             }
         }));
         if let Some(window) = window() {
@@ -350,7 +350,7 @@ impl CustomElement for UiHubAccount {
             let host = this.clone();
             let callback: FrameClosure = Closure::wrap(Box::new(move |_, _| {
                 if host.has_attribute("data-linking") {
-                    request_linking_position(&host);
+                    request_linking_position_for(&host, RESEAT);
                 }
             }));
             if let Ok(observer) = ResizeObserver::new(callback.as_ref().unchecked_ref()) {
@@ -981,11 +981,24 @@ fn start_linking(this: &HtmlElement) {
     request_linking_position(this);
 }
 
-/// Publish the Hub bar's current viewport rectangle to the top page.
+/// The reason a position update carries: the top page moves an OPEN
+/// cluster to the new seat and does nothing when none is open.
+///
+/// A position update is not a request for a ceremony. The bar keeps its
+/// linking marker until the top page's terminal event arrives, and that
+/// event crosses a frame boundary: the resize observer fired in the gap
+/// after Escape had closed the cluster, its update carried the opening
+/// reason, and the top page opened a fresh cluster over the one the person
+/// had just dismissed, taking focus with it.
+const RESEAT: &str = "reseat";
+
+/// Ask the top page to seat the linking ceremony at the Hub bar's current
+/// viewport rectangle.
 ///
 /// The ceremony cannot measure this element itself: the Hub is a sealed,
-/// opaque-origin guest. The opening click and later scroll/resize events all
-/// use this same path so the two documents cannot disagree about the seat.
+/// opaque-origin guest. The opening click and later position updates use
+/// the same measurement so the two documents cannot disagree about the
+/// seat; only the reason differs (see [`RESEAT`]).
 fn request_linking_position(this: &HtmlElement) {
     request_linking_position_for(this, tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT);
 }
@@ -1447,8 +1460,40 @@ mod tests {
 
         assert_eq!(count, 1, "scrolling must publish one fresh anchor");
         let request: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(request["reason"], "needs-account");
+        assert_eq!(
+            request["reason"], "reseat",
+            "a position update re-seats an open cluster; it is not a request for one"
+        );
         assert!(request["anchor"]["bottom"].is_number());
+    }
+
+    /// Only the opening click asks for a ceremony. Every later position
+    /// update re-seats, so a resize that lands after the person dismissed
+    /// the cluster (the guest learns of that one message later) cannot
+    /// open a fresh one over the bar.
+    #[wasm_bindgen_test]
+    fn it_asks_for_a_ceremony_only_when_linking_starts() {
+        clear_registration_recorder();
+        let calls = record_registration_requests();
+        let host = account_element();
+
+        super::start_linking(&host);
+        window()
+            .unwrap()
+            .dispatch_event(&Event::new("resize").unwrap())
+            .unwrap();
+
+        let reasons: Vec<String> = (0..calls.length())
+            .map(|i| {
+                let payload = calls.get(i).as_string().unwrap_or_default();
+                let request: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                request["reason"].as_str().unwrap_or_default().to_owned()
+            })
+            .collect();
+        host.remove();
+        clear_registration_recorder();
+
+        assert_eq!(reasons, ["needs-account", "reseat"]);
     }
 
     /// A replacement Hub can connect before its container is shown. Its
