@@ -992,12 +992,14 @@
             rel="copy-file"
             href="../tonk-sigil/assets/sigils.svg"
         />
-        <!-- `<tonk-code>` web component bundle. The crate's `install()`
-       injects `<script type="module" src="/tonk-code/tonk-code.js">`
-       at startup; chunked language packs (e.g.
-       `tonk-code-lang-yaml.js`) are loaded on demand by the element
-       via relative imports, so all chunks must sit next to the
-       main bundle in the same directory. The trunk copy below
+        <!-- `<tonk-code>` web component bundle. On a plain page the crate's
+       `install()` injects `<script type="module"
+       src="/tonk-code/tonk-code.js">`; inside a sealed guest the bundle is
+       relayed on demand over `need-code` (nothing rides the guest boot
+       payload — see `tonk-portal/src/bridge.rs`). Either way the chunked
+       language packs (e.g. `tonk-code-lang-yaml.js`) are loaded on demand
+       by the element via relative imports, so all chunks must sit next to
+       the main bundle in the same directory. The trunk copy below
        preserves that layout. -->
         <link
             data-trunk
