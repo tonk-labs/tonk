@@ -237,9 +237,18 @@ a hundred times, and a tag with no definition on the branch is asked
 about once and left alone.
 
 Once resolved, the tag is registered ONCE, with a generated wrapper that
-dispatches through a table. So editing a method is a fact write, not a
-re-registration — `customElements.define` is never called twice, and no
-page reload is needed.
+dispatches through a table the branch keeps current. So editing a method
+is a fact write, not a re-registration — `customElements.define` is
+never called twice, and no page reload is needed. Concretely:
+
+- A tag rendered before anything defines it sits inert, and registers
+  itself when the definition lands. Nothing has to re-render.
+- Re-authoring a tag replaces the implementation for instances already
+  on the page, including reverting it to a definition used earlier.
+- Adding one method to an element already registered gives that method
+  to instances already mounted.
+- Pointing the tag's name at a different element swaps the whole
+  definition; the one it moved away from can no longer change it.
 
 The two halves are separate on purpose. Noticing dispatches a
 `tonk-element-needed` event from the element that needs the definition;

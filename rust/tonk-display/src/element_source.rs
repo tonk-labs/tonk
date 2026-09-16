@@ -87,6 +87,41 @@ fn js_string(value: &str) -> String {
     out
 }
 
+/// Execute `source` under `key`, replacing whatever was last executed
+/// under it.
+///
+/// Distinct from [`execute`]'s content-hash de-duplication, which is
+/// wrong for a definition that can change and change BACK: reverting an
+/// element to a source already seen would hash-match and be skipped,
+/// leaving the realm on the newer definition forever. Keying by tag and
+/// replacing means the last write wins, whatever its content.
+///
+/// Removing the old script does not un-run it — nothing can — but it
+/// keeps `<head>` to one script per element and makes the current
+/// definition of a tag findable while debugging.
+#[cfg(target_arch = "wasm32")]
+pub fn execute_keyed(document: &web_sys::Document, key: &str, source: &str) {
+    use wasm_bindgen::JsCast;
+
+    let Some(head) = document.head() else {
+        return;
+    };
+    let selector = format!("script[data-tonk-element-tag=\"{key}\"]");
+    if let Ok(Some(previous)) = document.query_selector(&selector) {
+        previous.remove();
+    }
+    let Ok(script) = document.create_element("script") else {
+        return;
+    };
+    let _ = script.set_attribute("type", "module");
+    let _ = script.set_attribute("data-tonk-element-tag", key);
+    script.set_text_content(Some(source));
+    if let Some(script) = script.dyn_ref::<web_sys::HtmlScriptElement>() {
+        script.set_async(false);
+    }
+    let _ = head.append_child(&script);
+}
+
 /// Execute `source` in `document`'s realm, once per distinct source.
 ///
 /// Appending a created `<script>` is the one insertion path the HTML
