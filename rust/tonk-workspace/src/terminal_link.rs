@@ -115,10 +115,7 @@ pub(crate) fn reload(host: &HtmlElement) {
         let _ = host.remove_attribute(&format!("data-terminal-{name}"));
     }
     let _ = host.set_attribute("data-terminal-loading", "");
-    text(host, "[data-terminal-name]", "checking request…");
-    text(host, "[data-terminal-recipient]", "");
-    text(host, "[data-terminal-account]", "loading…");
-    text(host, "[data-terminal-deadline]", "");
+    text(host, "[data-terminal-name]", "this terminal");
     enabled(host, "[data-terminal-refresh]", true);
     for selector in [
         "[data-terminal-all]",
@@ -130,7 +127,7 @@ pub(crate) fn reload(host: &HtmlElement) {
     if let Some(list) = node(host, "[data-terminal-spaces]") {
         list.set_text_content(None);
     }
-    status(host, "checking request and available spaces…");
+    status(host, "loading spaces…");
     let host = host.clone();
     spawn_local(async move {
         let request = LinkRequest::from_url(&url, now()).await;
@@ -146,21 +143,6 @@ pub(crate) fn reload(host: &HtmlElement) {
             return;
         };
         text(&host, "[data-terminal-name]", request.label());
-        text(
-            &host,
-            "[data-terminal-recipient]",
-            &format!("terminal key: {}", request.recipient()),
-        );
-        let deadline = js_sys::Date::new_0();
-        deadline.set_time(request.deadline() as f64 * 1000.0);
-        text(
-            &host,
-            "[data-terminal-deadline]",
-            &format!(
-                "approve before {}",
-                deadline.to_iso_string().as_string().unwrap_or_default()
-            ),
-        );
         let result = tonk_host::get_json("/api/account/terminal-links/spaces")
             .await
             .ok()
@@ -170,28 +152,21 @@ pub(crate) fn reload(host: &HtmlElement) {
         }
         let _ = host.remove_attribute("data-terminal-loading");
         let Some(spaces) = result else {
-            status(
-                &host,
-                "spaces could not be loaded. sign in to this browser if needed, then refresh spaces.",
-            );
+            status(&host, "unable to load spaces. sign in, then refresh.");
             return;
         };
-        text(&host, "[data-terminal-account]", &spaces.account);
         if request
             .expected_account()
             .is_some_and(|expected| expected.as_str() != spaces.account)
         {
             status(
                 &host,
-                "this request names a different account. switch to that browser account and refresh spaces.",
+                "switch to the account you used to start this request, then refresh.",
             );
             return;
         }
         if spaces.grant_lifetime_seconds != 90 * 24 * 60 * 60 {
-            status(
-                &host,
-                "the grant lifetime changed. update the browser and request access again.",
-            );
+            status(&host, "reload this page, then run tonk link again.");
             return;
         }
         let encoded: String = request
@@ -230,10 +205,8 @@ pub(crate) fn reload(host: &HtmlElement) {
 
 fn append_space(list: &Element, space: &tonk_worker_api::TerminalLinkSpace) -> Option<()> {
     let document = list.owner_document()?;
-    let row = document.create_element("div").ok()?;
-    row.set_class_name("terminal-space");
-    let label = document.create_element("label").ok()?;
-    label.set_class_name("terminal-choice");
+    let row = document.create_element("label").ok()?;
+    row.set_class_name("terminal-space terminal-choice");
     let input: HtmlInputElement = document.create_element("input").ok()?.dyn_into().ok()?;
     input.set_type("checkbox");
     input.set_disabled(!space.can_delegate);
@@ -246,26 +219,19 @@ fn append_space(list: &Element, space: &tonk_worker_api::TerminalLinkSpace) -> O
             if space.can_delegate { "true" } else { "false" },
         )
         .ok()?;
-    label.append_child(&input).ok()?;
+    row.append_child(&input).ok()?;
+    let copy = document.create_element("span").ok()?;
+    copy.set_class_name("terminal-space-copy");
     let name = document.create_element("span").ok()?;
     name.set_text_content(Some(&space.name));
-    label.append_child(&name).ok()?;
-    row.append_child(&label).ok()?;
-    let detail = document.create_element("p").ok()?;
-    detail.set_class_name("expl");
-    detail.set_text_content(Some(&space.subject));
-    row.append_child(&detail).ok()?;
+    copy.append_child(&name).ok()?;
     if !space.can_delegate {
-        let reason = document.create_element("p").ok()?;
+        let reason = document.create_element("span").ok()?;
         reason.set_class_name("expl");
-        reason.set_text_content(Some(
-            space
-                .reason
-                .as_deref()
-                .unwrap_or("this account cannot grant the required access"),
-        ));
-        row.append_child(&reason).ok()?;
+        reason.set_text_content(Some("ask the space owner for access."));
+        copy.append_child(&reason).ok()?;
     }
+    row.append_child(&copy).ok()?;
     list.append_child(&row).ok()?;
     Some(())
 }
@@ -319,30 +285,24 @@ pub(crate) fn selection_changed(host: &HtmlElement, all_changed: bool) {
         active && selected > 0 && selected <= max,
     );
     if selected > max {
-        status(
-            host,
-            &format!(
-                "{selected} selected exceeds the limit of {max} spaces for one approval. reduce the selection; nothing has been sent."
-            ),
-        );
+        status(host, &format!("choose up to {max} spaces at a time."));
         return;
     }
-    text(
-        host,
-        "[data-terminal-approve]",
-        if selected == 1 {
-            "link 1 selected space"
-        } else {
-            "link selected spaces"
-        },
-    );
+    let action = match selected {
+        0 => "link spaces".to_owned(),
+        1 => "link 1 space".to_owned(),
+        count => format!("link {count} spaces"),
+    };
+    text(host, "[data-terminal-approve]", &action);
     status(
         host,
-        &format!(
-            "{selected} selected; {} available; {} cannot be granted by this account",
-            eligible.len(),
-            choices.len() - eligible.len()
-        ),
+        if choices.is_empty() {
+            "no spaces to link yet. create a space, then refresh."
+        } else if eligible.is_empty() {
+            "ask a space owner for access, then refresh."
+        } else {
+            ""
+        },
     );
 }
 
@@ -404,9 +364,9 @@ pub(crate) fn submit(host: &HtmlElement, decline: bool) {
     status(
         host,
         if decline {
-            "sending decline…"
+            "cancelling…"
         } else {
-            "issuing and delivering the selected grants…"
+            "linking spaces…"
         },
     );
     let token = host
@@ -443,9 +403,9 @@ pub(crate) fn submit(host: &HtmlElement, decline: bool) {
                 status(
                     &host,
                     if decline {
-                        "request declined. the terminal keeps its existing setup."
+                        "request cancelled. you can close this tab."
                     } else {
-                        "selected access was sent. check the terminal for completed setup."
+                        "spaces approved. return to your terminal to finish."
                     },
                 );
             }
@@ -453,18 +413,14 @@ pub(crate) fn submit(host: &HtmlElement, decline: bool) {
                 let _ = host.set_attribute("data-terminal-uncertain", "");
                 status(
                     &host,
-                    "delivery could not be confirmed. check the terminal, or retry this same decision.",
+                    "unable to confirm. check your terminal, or try again.",
                 );
                 enabled(&host, selector, true);
                 enabled(&host, "[data-terminal-refresh]", true);
                 text(
                     &host,
                     selector,
-                    if decline {
-                        "retry decline"
-                    } else {
-                        "retry delivery"
-                    },
+                    if decline { "retry cancel" } else { "try again" },
                 );
             }
         }
@@ -491,19 +447,35 @@ mod tests {
         host.set_attribute("data-terminal-deadline", &(now() + 60).to_string())
             .unwrap();
         let list = node(&host, "[data-terminal-spaces]").unwrap();
-        for (subject, allowed) in [("owned", true), ("shared", true), ("read-only", false)] {
+        for (name, subject, allowed) in [
+            ("Project notes", "did:key:owned", true),
+            ("Team space", "did:key:shared", true),
+            ("Read only", "did:key:read-only", false),
+        ] {
             append_space(
                 &list,
                 &tonk_worker_api::TerminalLinkSpace {
                     repo: subject.into(),
                     subject: subject.into(),
-                    name: subject.into(),
+                    name: name.into(),
                     can_delegate: allowed,
                     reason: (!allowed).then(|| "read-only authority".into()),
                 },
             )
             .unwrap();
         }
+        assert!(!list.text_content().unwrap().contains("did:key:"));
+        assert_eq!(
+            list.query_selector_all("label.terminal-space")
+                .unwrap()
+                .length(),
+            3
+        );
+        assert!(
+            list.text_content()
+                .unwrap()
+                .contains("ask the space owner for access.")
+        );
         let all: HtmlInputElement = node(&host, "[data-terminal-all]")
             .unwrap()
             .dyn_into()
@@ -513,6 +485,13 @@ mod tests {
         let inputs = choices(&host);
         assert!(inputs[0].checked() && inputs[1].checked());
         assert!(!inputs[2].checked() && inputs[2].disabled());
+        assert_eq!(
+            node(&host, "[data-terminal-approve]")
+                .unwrap()
+                .text_content()
+                .unwrap(),
+            "link 2 spaces"
+        );
         assert!(
             !node(&host, "[data-terminal-approve]")
                 .unwrap()
@@ -521,6 +500,13 @@ mod tests {
         inputs[0].set_checked(false);
         selection_changed(&host, false);
         assert!(all.indeterminate());
+        assert_eq!(
+            node(&host, "[data-terminal-approve]")
+                .unwrap()
+                .text_content()
+                .unwrap(),
+            "link 1 space"
+        );
         inputs[1].set_checked(false);
         selection_changed(&host, false);
         assert!(
@@ -533,7 +519,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .unwrap()
-                .contains("1 cannot be granted")
+                .is_empty()
         );
         host.remove();
     }

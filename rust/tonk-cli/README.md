@@ -84,7 +84,7 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
-# Sign in to a passkey-backed account.
+# Administrative account recovery; use tonk link for ordinary space access.
 tonk account status
 tonk account login --name workstation
 tonk account logout
@@ -94,7 +94,8 @@ tonk invite                    # audience-open: anyone holding it can claim
 tonk invite --remote prod      # mint against a named remote
 tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
 tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
-tonk join 'https://...#invite' --name garden
+tonk link                       # select your spaces in the browser
+tonk connect 'AGENT_LINK'       # one-way agent invitation; no browser flow
 ```
 
 `view add` authors `detail` by default; `--kind` also accepts `directory`,
@@ -277,8 +278,9 @@ carry a separate artifact relay, supplied by hand with `tonk remote add
 --revocation-url`; it is never inferred and never required.
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
-embedded ephemeral key); `tonk join` claims one into a fresh space
-(`tonk join <url> --name <space>`).
+embedded ephemeral key). These older sharing links are not CLI access
+credentials: use `tonk link` for your own spaces or obtain a fresh scoped agent
+invitation for `tonk connect`.
 
 A bare `tonk invite` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access
@@ -307,9 +309,10 @@ completed setup, not exclusive agent presence or grant activation.
 Imported identities stay separate from existing CLI accounts and replicas.
 Credentials are retained locally; expiry or revocation blocks further authorized
 remote work and keeps downloaded data available offline. `--via`, `--no-open`
-and `--switch-account` do not apply to scoped agent links. Existing browser
-prompts and `join --agent` keep their legacy account-scoped behavior below;
-new browser issuance remains opt-in until the published CLI compatibility gates pass.
+and `--switch-account` are not accepted by `connect`. There is no `join`
+command or legacy browser-approval fallback. Older prompts must be regenerated
+from an updated browser deployment with scoped agent issuance enabled. Browser
+issuance remains subject to the published CLI release gates.
 
 Connection imports trust the built-in Tonk deployment (`https://tonk.network`).
 For an explicitly selected development deployment, set `TONK_CONNECTION_ORIGIN`
@@ -369,43 +372,16 @@ The default legacy remote guard then refuses the inactive account. The existing
 legacy credentials; conversion is application-level isolation, not an OS sandbox. Release and rollback gates are recorded in
 [the implementation plan](../../plans/001-cli-space-connections.md).
 
-### Legacy account-scoped browser handoffs
+### Older invitation links and interrupted handoffs
 
-Copy a fresh agent prompt from the space's blank canvas, then run its
-`tonk connect 'URL'` command. The invitation is scoped to the browser account,
-including when that account is collaborating in someone else's space.
-Ordinary `tonk join` continues to accept open collaboration invitations.
-It joins as the current CLI identity, requires `--name`, and does not switch
-accounts or send an agent confirmation. The legacy `join --agent` spelling remains available. `connect` recognizes the
-versioned scoped envelope separately and preserves older account-scoped handoffs.
-An old handoff is never silently converted into a new scoped bearer.
+`join`, including `join --agent`, has been removed. `connect` rejects older
+sharing links and account-approval links before importing credentials or opening
+a browser. Humans should run `tonk link` and select the spaces they need.
+Agents need a new one-way scoped invitation copied from an updated Tonk browser.
+The link carries its own identity and grants; the agent never signs into an account.
 
-If the CLI is signed in to a different account, `join --agent` reports both DIDs and
-exits before claiming or binding the space. Ask the user before rerunning with
-`--switch-account EXPECTED_DID`. The flag records consent for that exact account;
-it still requires browser passkey approval. The previous account stays active
-until the approved replacement commits. Cancelling or rejecting approval keeps
-the previous account, its local spaces, and its bindings. Account hydration can
-fail after activation; the replacement stays active and the command reports the
-sync warning.
-
-After joining, `tonk --space NAME join --agent` resumes using local
-`agent-handoff.json` identity metadata. This file contains the repository,
-invitation identity, and required account, without the bearer URL. Resumes repeat
-the account check. A replica without that metadata needs the original scoped
-handoff URL. If its installed authority belongs to another account, use a fresh
-`--name` rather than rewriting that replica's authority. Only `Agent connection
-confirmed` means both the space pull and receipt push completed.
-
-Old browser prompts can contain open invitations. `join --agent` rejects these with
-an instruction to obtain a new account-scoped handoff; they remain valid for
-`join`. Existing spaces retain their seeded views, so upgrading the application
-alone does not replace an old prompt. From a checkout of this version, explicitly
-update the selected space's built-in views and commands with:
-
-```sh
-tonk --space NAME eval /path/to/tonk/rust/tonk-core/assets/library/core.yaml
-```
-
-Reload the space after that evaluation syncs. `join --agent` does not rewrite an
-existing space's library.
+`tonk --space NAME connect` resumes only scoped connection imports. It cannot
+resume an old account-bound handoff. Existing credentials, replicas, aliases and
+unsynced edits are retained; rejection never converts, rebinds or deletes them.
+Use explicit `tonk link --convert-account` when replacing an existing legacy
+account attachment with browser-selected scoped access.

@@ -253,7 +253,9 @@ async fn wait(
                 return link.accept_and_sync(&bytes, &remotes, now()).await;
             }
             204 => {}
-            _ => anyhow::bail!("terminal approval polling was refused"),
+            status => anyhow::bail!(
+                "terminal approval polling was refused (HTTP {status}); check that this deployment serves /connection/read"
+            ),
         }
         if start.elapsed() >= timeout || now() >= link.request.deadline() {
             link.expire()?;

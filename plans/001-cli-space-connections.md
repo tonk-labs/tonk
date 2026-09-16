@@ -6,6 +6,9 @@
 > The protocol decision of 2026-09-16 supersedes the earlier redemption design
 > and its authorizer-checkpoint proposal. Historical evidence is not a work queue.
 
+> Follow-up: [Plan 002](002-cli-access-workflows.md) supersedes the legacy
+> `join` and browser-mediated `connect` compatibility requirements below.
+
 ## Status and intent
 
 - Status: LOCAL IMPLEMENTATION VERIFIED, milestones 0–6. Milestone 7 release
