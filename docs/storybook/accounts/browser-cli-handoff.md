@@ -1,5 +1,30 @@
 # The browser/CLI account handoff
 
+## Current CLI access workflows
+
+Humans use `tonk link` to select spaces in the browser and delegate exact grants
+to a CLI-owned key. Agents use `tonk connect AGENT_LINK` to import a one-way
+scoped invitation; it never launches account approval or changes CLI accounts.
+`join` and `join --agent` are removed. Older sharing/account-approval links and
+legacy URL-free resumes refuse before changing existing local credentials,
+replicas or bindings. Obtain a new scoped invitation for an agent; use `link`
+for personal access.
+
+Copied browser prompts offer only the scoped flow. Older invitations have no
+copy action, and deployments without scoped issuance enabled show an unavailable
+message rather than minting account-bound agent handoffs. Administrative account
+recovery remains a separate legacy API; it is not used by `connect` or `link`.
+
+`ACCT-C13` / `HANDOFF-19` / `HANDOFF-20` below retain historical descriptions of
+the retired agent/account flow. They are not supported CLI entry points. Current
+access journeys are `ACCT-C14` / `HANDOFF-21` and `ACCT-C15` / `HANDOFF-22`.
+See [the follow-up plan](../../../plans/002-cli-access-workflows.md) for current
+refusal, state-preservation and scoped-flow verification. The follow-up CLI
+suite passes 628 tests (two ignored), and both current journeys pass on artifact
+`eebc5c6a953f7630`: agent copy/import/revocation 68.00s, browser-selected terminal
+linking 62.13s. The final CLI also passes an embedded-seed audit and all five
+scoped process checks; the retired account-approval prompt is absent. Earlier screenshots retain their original artifact identities.
+
 ## Summary
 
 The handoff authorizes a native CLI profile through an account passkey in a
@@ -258,6 +283,9 @@ Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
 
 ## Agent handoff
+
+**Historical, retired by Plan 002.** The account-approval agent command described
+in this section has been removed; use the current scoped flow below.
 
 A fresh empty space says “Build this space with an agent”. It explains that the
 person should copy the prompt, give it to their preferred agent, and describe

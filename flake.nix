@@ -340,6 +340,12 @@
               # no `/join` route, and serve its 405.
               TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
               cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
+              # Enable scoped agent invitations in local development. Select
+              # features per binary: the guest pipeline has no such feature.
+              TRUNK_HTML_GENERATED="$PWD/rust/tonk-ui/.index.dev.html"
+              sed -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                  -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                  ./rust/tonk-ui/index.html > "$TRUNK_HTML_GENERATED"
               if [ -n "$SHORTCUT_ORIGIN" ]; then
                 # printf, not a heredoc: a heredoc's body has to sit at column
                 # zero, which nixfmt then reflows the whole surrounding Nix
@@ -366,9 +372,9 @@
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED" "$TRUNK_HTML_GENERATED"' EXIT INT TERM
 
-              trunk serve --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
+              trunk serve "$TRUNK_HTML_GENERATED" --html-output index.html --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
             '';
           };
           "lint" = {

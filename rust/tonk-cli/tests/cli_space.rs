@@ -329,7 +329,13 @@ mod when_nothing_is_registered {
         assert!(stdout.contains("examine state"), "{stdout}");
         assert!(stdout.contains("write facts"), "{stdout}");
         assert!(stdout.contains("collaborate"), "{stdout}");
-        assert!(stdout.contains("--agent"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
         for command in ["connect ", "link "] {
             assert!(
                 stdout
@@ -530,7 +536,13 @@ mod when_resolving_with_precedence {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(!stdout.to_ascii_lowercase().contains("spot"), "{stdout}");
-        assert!(stdout.contains("--agent"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
         for command in ["connect ", "link "] {
             assert!(
                 stdout
@@ -776,7 +788,7 @@ mod when_joining {
     use super::*;
 
     #[dialog_common::test]
-    fn it_rejects_a_duplicate_join_name_before_any_network_work() {
+    fn it_rejects_the_removed_join_command_before_any_network_work() {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
@@ -789,7 +801,7 @@ mod when_joining {
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("already exists"), "{stderr}");
+        assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
     }
 }
 

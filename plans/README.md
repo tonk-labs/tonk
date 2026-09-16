@@ -7,6 +7,7 @@ fresh evidence when updating status. Do not infer implementation from a plan.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- | --- |
+| [002](002-cli-access-workflows.md) | Keep only link and one-way connect for CLI access | P1 | M | 001 | LOCAL IMPLEMENTATION VERIFIED; removes join and browser-mediated connect |
 | [001](001-cli-space-connections.md) | Give the CLI explicit access to spaces | P1 | L | Revised milestones 0–7, in order | LOCAL IMPLEMENTATION VERIFIED (2026-09-16), milestones 0–6; milestone 7 release preparation complete, external release gates unrun |
 
 Plan 001 was originally written on 2026-09-15 and revised to the user's clarified
@@ -32,8 +33,8 @@ revised protocol's gates.
 ## Superseded direction
 
 The target design in [CLI join agent mode](../plan/cli-join-agent.md) is superseded
-by plan 001. Its uncommitted implementation remains present and may supply legacy
-compatibility; this index does not discard or claim to replace those code changes.
+by plan 001. Its implementation was retained in commit `5026010c8`. Plan 002 now removes
+its CLI join and browser-mediated agent entry points without deleting local data.
 
 ## Existing plans
 

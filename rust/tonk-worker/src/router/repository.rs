@@ -995,7 +995,7 @@ async fn run_agent_handoff(
         return run_connection_invite(env, _fresh).await;
     }
     #[cfg(not(feature = "connection-invites"))]
-    run_legacy_agent_handoff(env).await
+    agent_invitations_unavailable(env).await
 }
 
 // Only fingerprints live here: the bearer stays exclusively in the reactor
@@ -1205,84 +1205,25 @@ async fn run_connection_invite(
 }
 
 #[cfg(not(feature = "connection-invites"))]
-async fn run_legacy_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
+async fn agent_invitations_unavailable(
+    env: &crate::router::CommandEnv,
+) -> Result<(), TonkWorkerError> {
     let repo = &env.origin().repo;
-    let subject = {
-        let tonk = env.state().read().await;
-        let repository = tonk
-            .profile
-            .repository(repo)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-        let subject = repository.did();
-        require_real_space(&tonk, &subject).await?;
-        if super::account::provider(&tonk).await.is_none() {
-            return publish_agent_handoff(
-                &tonk,
-                repo,
-                &subject,
-                &tonk.profile.did(),
-                "Create an account or sign in to connect an agent. Open share and choose ‘log in to share’ to get started, then return here to copy your prompt.".into(),
-                String::new(),
-            )
-            .await;
-        }
-        publish_agent_handoff(
-            &tonk,
-            repo,
-            &subject,
-            &tonk.profile.did(),
-            "Generating account-scoped handoff…".into(),
-            String::new(),
-        )
-        .await?;
-        subject
-    };
-    let origin = crate::axum::RequestOrigin::parse(
-        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
-    )
-    .map_err(|error| TonkWorkerError::Internal(format!("invalid handoff origin: {error:?}")))?;
-    let minted =
-        super::create_invite::create_agent_handoff(env.state().clone(), repo.clone(), origin).await;
     let tonk = env.state().read().await;
-    match minted {
-        Ok((response, expected)) => {
-            let current = super::identity::local_root(&tonk).await?;
-            if current.root_did != expected.root_did || current.bytes != expected.bytes {
-                return publish_agent_handoff(
-                    &tonk,
-                    repo,
-                    &subject,
-                    &current.root_did,
-                    "Account changed; generate a new handoff.".into(),
-                    String::new(),
-                )
-                .await;
-            }
-            publish_agent_handoff(
-                &tonk,
-                repo,
-                &subject,
-                &expected.root_did,
-                "ready".into(),
-                response.url().to_string(),
-            )
-            .await
-        }
-        Err(error) => {
-            publish_agent_handoff(
-                &tonk,
-                repo,
-                &subject,
-                &tonk.profile.did(),
-                format!("Could not create an agent handoff: {error}"),
-                String::new(),
-            )
-            .await
-        }
-    }
+    let repository = tonk
+        .profile
+        .repository(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let subject = repository.did();
+    require_real_space(&tonk, &subject).await?;
+    publish_agent_handoff(
+        &tonk, repo, &subject, &tonk.profile.did(),
+        "Agent invitations are not enabled on this deployment yet. To access your own spaces from the terminal, use tonk link on a deployment with terminal linking enabled.".into(),
+        String::new(),
+    ).await
 }
 
 impl dialog_capability::Command for EnableSyncRequest {

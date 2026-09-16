@@ -62,20 +62,20 @@
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
-  <section class="pane terminal-link" data-pane="terminal-link" hidden aria-label="terminal space access">
-    <div class="sect">choose spaces for this terminal</div>
-    <div class="srowd"><span>terminal</span><b class="lft" data-terminal-name>checking request…</b></div>
-    <p class="expl" data-terminal-recipient></p>
-    <div class="srowd"><span>browser account</span><b class="lft" data-terminal-account>loading…</b></div>
-    <p class="expl">allow this terminal to read and build data and views in the selected spaces for 90 days. approve only a request you started with <code>tonk link</code>.</p>
-    <p class="expl" data-terminal-deadline></p>
-    <div class="srowd"><label class="terminal-choice"><input type="checkbox" data-terminal-all disabled>select all available spaces</label><button class="cta" type="button" data-terminal-refresh>refresh spaces</button></div>
-    <p class="expl">this selects the spaces available now. spaces added later require another grant.</p>
-    <div data-terminal-spaces></div>
-    <p class="expl" data-terminal-status role="status" aria-live="polite" tabindex="-1">checking request…</p>
+  <section class="pane terminal-link" data-pane="terminal-link" hidden aria-labelledby="terminal-link-heading">
+    <header class="terminal-header">
+      <div class="terminal-heading-row"><h1 id="terminal-link-heading" class="terminal-heading">link spaces</h1><button class="cta" type="button" data-terminal-refresh>refresh</button></div>
+      <p class="terminal-intro">choose the spaces to use in <strong data-terminal-name>this terminal</strong>.</p>
+    </header>
+    <div class="terminal-toolbar"><label class="terminal-choice"><input type="checkbox" data-terminal-all disabled>select all</label></div>
+    <div class="terminal-spaces" data-terminal-spaces role="group" aria-label="Spaces"></div>
+    <div class="terminal-footer">
+      <p class="expl terminal-permission">this terminal can read and edit these spaces for 90 days. only continue if you started this request.</p>
+      <p class="expl" data-terminal-status role="status" aria-live="polite" tabindex="-1">loading spaces…</p>
+    </div>
     <div class="link-foot">
-      <button class="m-cancel" type="button" data-terminal-decline disabled>decline</button>
-      <button class="m-go" type="button" data-terminal-approve disabled>link selected spaces</button>
+      <button class="m-cancel" type="button" data-terminal-decline disabled>cancel</button>
+      <button class="m-go" type="button" data-terminal-approve disabled>link spaces</button>
     </div>
   </section>
   <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>

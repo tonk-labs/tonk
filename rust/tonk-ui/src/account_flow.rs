@@ -6304,7 +6304,7 @@ mod tests {
             await_terminal_decision(
                 &browser,
                 &request.id(),
-                "selected access was sent. check the terminal for completed setup.",
+                "spaces approved. return to your terminal to finish.",
             )
             .await?;
             browser.enter_default_frame().await?;
@@ -6507,7 +6507,7 @@ mod tests {
         wait_for_text(
             &browser,
             "[data-terminal-status]",
-            "selected access was sent. check the terminal for completed setup.",
+            "spaces approved. return to your terminal to finish.",
         )
         .await?;
         let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
@@ -7289,195 +7289,6 @@ mod tests {
         );
         let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_file)?)?;
         assert_eq!(after["account"], before["account"]);
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_connects_as_the_scoped_browser_account_after_explicit_consent(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        let first = driver_with_prf(&env).await?;
-        sign_up(&first, &env, "handoff-a@example.com").await?;
-        let linked = link_cli(&first, &env).await?;
-        first.quit().await?;
-        let registry_path = linked.profile.path().join("spaces/spaces.json");
-        let registry_before = std::fs::read(&registry_path)?;
-        let status_before =
-            run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-
-        let browser = driver_with_prf(&env).await?;
-        sign_up(&browser, &env, "handoff-b@example.com").await?;
-        let root = get_json(&browser, "/api/identity/root").await?;
-        let expected = successful_body("browser B root", &root)["rootDid"]
-            .as_str()
-            .context("missing B root")?
-            .to_owned();
-        let key = create_space_awaiting_remote(&browser, "Agent handoff", true).await?;
-        let pushed = post_json(
-            &browser,
-            &format!("/api/repository/{key}/branch/main/sync/push"),
-            serde_json::json!({}),
-        )
-        .await?;
-        successful_body("push B's space", &pushed);
-        await_url_containing(&browser, &format!("/space/{key}")).await?;
-        enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, ".agent-prompt__copy").await?;
-        watch_clipboard(&browser).await?;
-        click(&browser, ".agent-prompt__copy").await?;
-        let prompt = copied_text(&browser).await?;
-        capture_handoff_page(&browser, "copied-prompt").await?;
-        assert!(prompt.contains(&format!("--switch-account {expected}")));
-        assert!(prompt.contains("ask me before switching"));
-        let invite = prompt
-            .split("join --agent '")
-            .nth(1)
-            .and_then(|rest| rest.split('\'').next())
-            .context("copied prompt has no agent join URL")?
-            .to_owned();
-        browser.enter_default_frame().await?;
-        let via = env.tonk_web.join("settings/link")?.to_string();
-        let args = vec![
-            "join".into(),
-            "--agent".into(),
-            invite.clone(),
-            "--name".into(),
-            "agent-handoff".into(),
-            "--no-open".into(),
-            "--via".into(),
-            via.clone(),
-        ];
-        let refused = run_cli(&env, &linked.profile, &args).await?;
-        assert!(!refused.status.success());
-        assert!(
-            refused
-                .stderr
-                .contains(&format!("--switch-account {expected}"))
-        );
-        assert_eq!(std::fs::read(&registry_path)?, registry_before);
-        assert!(!refused.stdout.contains("Open this URL"));
-
-        for approve in [false, true] {
-            let mut command = tonk_command_in(&env, &linked.profile);
-            command
-                .args(&args)
-                .args(["--switch-account", &expected])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            let mut child = command.spawn()?;
-            let mut stdout = BufReader::new(child.stdout.take().context("connect stdout missing")?);
-            let mut stderr = child.stderr.take().context("connect stderr missing")?;
-            let approval = tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    let mut line = String::new();
-                    if stdout.read_line(&mut line).await? == 0 {
-                        return Err(anyhow!("connect exited before approval"));
-                    }
-                    if line.starts_with("http") {
-                        return Ok::<_, anyhow::Error>(line.trim().to_owned());
-                    }
-                }
-            })
-            .await
-            .context("connect never asked for approval")??;
-            let approval_url = url::Url::parse(&approval)?;
-            assert!(
-                approval_url
-                    .query_pairs()
-                    .any(|(key, value)| key == "expectedAccount" && value == expected)
-            );
-            goto(&browser, &approval).await?;
-            enter_hub(&browser).await?;
-            wait_for_displayed(&browser, "ui-account-settings [data-pane=\"link\"]").await?;
-            assert_eq!(
-                element(&browser, "[data-link-account]")
-                    .await?
-                    .text()
-                    .await?,
-                expected
-            );
-            capture_handoff_page(&browser, "expected-account-approval").await?;
-            let request = browser
-                .execute("return window.tonk.context.search", Vec::new())
-                .await?;
-            let request = url::form_urlencoded::parse(
-                request
-                    .json()
-                    .as_str()
-                    .unwrap()
-                    .trim_start_matches('?')
-                    .as_bytes(),
-            )
-            .into_owned()
-            .collect::<std::collections::HashMap<_, _>>();
-            let intended = approval_url
-                .query_pairs()
-                .into_owned()
-                .collect::<std::collections::HashMap<_, _>>();
-            assert_eq!(
-                request.get("callback"),
-                intended.get("callback"),
-                "approval must target the current CLI listener"
-            );
-            eprintln!("HANDOFF phase=approval-page approve={approve}");
-            if approve {
-                click(&browser, "[data-link-approve]").await?;
-                use_passkey_consent(&browser).await?;
-            } else {
-                click(&browser, "[data-link-decline]").await?;
-            }
-            if let Err(error) = await_url_path(&browser, "/settings").await {
-                enter_hub(&browser).await?;
-                let status = element(&browser, "[data-ceremony-status]")
-                    .await?
-                    .text()
-                    .await?;
-                return Err(error).context(format!(
-                    "handoff callback did not return; approve={approve}; status={status}"
-                ));
-            }
-            let landed = browser.current_url().await?;
-            assert_eq!(
-                landed
-                    .query_pairs()
-                    .find(|(key, _)| key == "link")
-                    .map(|(_, value)| value.into_owned())
-                    .as_deref(),
-                Some(if approve { "ok" } else { "denied" })
-            );
-            eprintln!("HANDOFF phase=callback-returned approve={approve}");
-            eprintln!("HANDOFF phase=await-cli approve={approve}");
-            let outcome = finish_link(&mut child, &mut stdout, &mut stderr, String::new()).await?;
-            eprintln!("HANDOFF phase=cli-finished approve={approve}");
-            if !approve {
-                assert!(!outcome.status.success());
-                assert_eq!(std::fs::read(&registry_path)?, registry_before);
-                let retained =
-                    run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-                assert_eq!(retained.stdout, status_before.stdout);
-            } else {
-                assert!(outcome.status.success(), "{}", outcome.stderr);
-                assert!(outcome.stdout.contains("Agent connection confirmed"));
-            }
-        }
-        let status = run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-        assert!(status.stdout.contains(&expected));
-        let resumed = run_cli(
-            &env,
-            &linked.profile,
-            &[
-                "--space".into(),
-                "agent-handoff".into(),
-                "join".into(),
-                "--agent".into(),
-            ],
-        )
-        .await?;
-        assert!(resumed.status.success(), "{}", resumed.stderr);
-        assert!(resumed.stdout.contains("Agent connection confirmed"));
-        assert!(!resumed.stdout.contains("Open this URL"));
-        browser.quit().await?;
         Ok(())
     }
 
