@@ -231,15 +231,20 @@ check('editing an element leaves a legacy neighbour alone', await page.evaluate(
 // document listener can register it from there.
 check('an unregistered tag announces itself and gets registered', await page.evaluate(async () => {
   globalThis.asked = [];
-  document.addEventListener('tonk-element-needed', (event) => {
+  globalThis.mainListener = (event) => {
     const { tag } = event.detail;
     globalThis.asked.push(tag);
-    // A listener that has no definition for a tag simply does not
-    // register it — the element stays inert, which is the same state
-    // it was in before it announced itself.
+    // Claim it: the announcement is only remembered once someone
+    // claims it, so an unclaimed tag is re-offered on the next
+    // mutation. Claiming means "mine to answer", not "answered" — the
+    // decline below still counts as handled.
+    event.preventDefault();
+    // A listener with no definition for a tag simply does not register
+    // it; the element stays inert, as it was before it announced.
     if (tag.endsWith('-missing')) return;
     defineTonkElement(tag, { connected: (self) => { self.textContent = `resolved ${tag}`; } });
-  });
+  };
+  document.addEventListener('tonk-element-needed', globalThis.mainListener);
   startTonkElements();
   const el = document.createElement('lazy-one');
   document.body.append(el);
@@ -291,7 +296,30 @@ check('an unanswerable tag is announced once and stays inert', await page.evalua
       && !customElements.get('lazy-missing');
 }));
 
-// 20. Built-in and vendor prefixes are left to their own loaders.
+// 20. An announcement nobody claims is offered again. This is what
+// keeps a tag that rendered before its listener existed from being
+// inert forever — the one announcement would otherwise be the only one.
+check('an unclaimed announcement is re-offered', await page.evaluate(async () => {
+  globalThis.unclaimed = 0;
+  const count = (event) => { if (event.detail.tag === 'lazy-unclaimed') globalThis.unclaimed++; };
+  // Stand the claiming listener down so this announcement goes
+  // unclaimed — the state a page is in before its registry installs.
+  document.removeEventListener('tonk-element-needed', globalThis.mainListener);
+  document.addEventListener('tonk-element-needed', count);
+  document.body.append(document.createElement('lazy-unclaimed'));
+  await new Promise(r => setTimeout(r, 0));
+  const first = globalThis.unclaimed;
+  // Re-offered when the tag NEXT APPEARS — the observer reports added
+  // subtrees, so an element sitting unclaimed where it already is does
+  // not announce again on its own.
+  document.body.append(document.createElement('lazy-unclaimed'));
+  await new Promise(r => setTimeout(r, 0));
+  document.removeEventListener('tonk-element-needed', count);
+  document.addEventListener('tonk-element-needed', globalThis.mainListener);
+  return first === 1 && globalThis.unclaimed > 1;
+}));
+
+// 21. Built-in and vendor prefixes are left to their own loaders.
 check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
   globalThis.asked = [];
   document.body.append(document.createElement('tonk-whatever'));
@@ -300,7 +328,7 @@ check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
   return globalThis.asked.length === 0;
 }));
 
-// 21. A tag deep in an added subtree is found — a view renders a
+// 22. A tag deep in an added subtree is found — a view renders a
 // fragment, not one element at a time.
 check('a tag deep in an added subtree is announced', await page.evaluate(async () => {
   globalThis.asked = [];
@@ -312,7 +340,7 @@ check('a tag deep in an added subtree is announced', await page.evaluate(async (
       && wrapper.querySelector('lazy-deep').textContent === 'resolved lazy-deep';
 }));
 
-// 22. Somewhere the observer cannot see — a shadow root — can announce
+// 23. Somewhere the observer cannot see — a shadow root — can announce
 // its own tags by hand, and the same listener services them.
 check('a shadow root can announce its own tags', await page.evaluate(async () => {
   globalThis.asked = [];

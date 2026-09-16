@@ -256,10 +256,28 @@
     for (const el of root.querySelectorAll?.(":not(:defined)") ?? []) consider(el);
     for (const [tag, el] of found) {
       if (announced.has(tag)) continue;
-      announced.add(tag);
-      el.dispatchEvent(
-        new CustomEvent(NEEDED, { bubbles: true, composed: true, detail: { tag } }),
-      );
+      const event = new CustomEvent(NEEDED, {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        detail: { tag },
+      });
+      el.dispatchEvent(event);
+      // Remember the tag only if someone CLAIMED the announcement, the
+      // same way a tonk consumer event is claimed. An announcement made
+      // before any listener exists would otherwise be the only one ever
+      // made and the tag would stay inert for good; leaving it unmarked
+      // means the next APPEARANCE of the tag offers it again. (Only the
+      // next appearance: the observer reports added subtrees, so an
+      // element sitting unclaimed where it already is does not
+      // re-announce. The ordering that actually matters is guaranteed
+      // elsewhere — an installer adds its listener before this module
+      // evaluates.)
+      //
+      // Claiming says "mine to answer", not "answered": a listener that
+      // finds no definition still claims, so an unknown tag costs one
+      // lookup rather than one per mutation.
+      if (event.defaultPrevented) announced.add(tag);
     }
   };
 
@@ -287,6 +305,13 @@
 
   /** Announce the tags under `root` by hand (a shadow root, say). */
   globalThis.announceTonkElements = (root) => announce(root ?? document);
+
+  // Start on our own evaluation rather than waiting to be called. This
+  // file is injected as a module script, which evaluates on a later
+  // task than the insertion that appended it — so an installer cannot
+  // append it and then call `startTonkElements()` synchronously, and
+  // one that tried would silently never start watching.
+  globalThis.startTonkElements();
 
   // Exposed for tests and for the inspector; not part of the authoring
   // surface.
