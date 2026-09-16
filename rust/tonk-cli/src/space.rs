@@ -791,6 +791,41 @@ pub fn validate_name(name: &str) -> Result<(), SpaceError> {
     }
 }
 
+/// Derive a valid registry name from a free-form display label.
+///
+/// Display labels are authored where no slug rule applies — the web
+/// UI's "Space name" editable, an invite link's `name` parameter, the
+/// worker's own `Untitled` / `Untitled 2` default — so a label reaches
+/// the CLI in a shape [`validate_name`] rejects. The label names the
+/// space; this names the *local* handle for it, and the two are
+/// deliberately independent: nothing here renames the space.
+///
+/// `taken` reports the names already spoken for. Callers decide what
+/// that means: the registry alone, or the registry plus an occupied
+/// canonical site directory.
+///
+/// The result always satisfies [`validate_name`]: ASCII-lowercased,
+/// runs outside `[a-z0-9_]` collapsed to `-`, leading non-alphanumerics
+/// trimmed, and `space` when nothing survives (a label that is entirely
+/// non-ASCII, say). Collisions take the first free `-2`, `-3`, … suffix.
+pub fn derive_name(display_name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let lowered = display_name.to_ascii_lowercase();
+    let stem = lowered
+        .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let stem = stem.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    let stem = if stem.is_empty() { "space" } else { stem };
+    let mut name = stem.to_owned();
+    let mut suffix = 2;
+    while taken(&name) {
+        name = format!("{stem}-{suffix}");
+        suffix += 1;
+    }
+    name
+}
+
 /// Canonicalize a path for use as a binding key, falling back to
 /// the path as given when the filesystem refuses (most often: the
 /// directory has been deleted). A key that cannot be canonicalized
@@ -2218,6 +2253,70 @@ mod tests {
                 "", "Garden", "-lead", "_lead", "sp ace", "dot.", "sl/ash", "über",
             ] {
                 assert!(validate_name(name).is_err(), "{name}");
+            }
+        }
+
+        #[test]
+        fn derived_names_are_always_valid() {
+            for label in [
+                "Untitled",
+                "Untitled 2",
+                "Tonk Team",
+                "My Garden",
+                "  ",
+                "",
+                "日本語",
+                "../etc",
+                "/absolute",
+                "-lead",
+                "Garden_Bed",
+            ] {
+                let derived = derive_name(label, |_| false);
+                validate_name(&derived)
+                    .unwrap_or_else(|error| panic!("{label:?} derived {derived:?}: {error}"));
+            }
+        }
+
+        #[test]
+        fn derived_names_lowercase_and_hyphenate_labels() {
+            for (label, expected) in [
+                ("Untitled", "untitled"),
+                ("Untitled 2", "untitled-2"),
+                ("Tonk Team", "tonk-team"),
+                ("Garden_Bed", "garden_bed"),
+                ("_ 2 Gardens", "2-gardens"),
+                ("日本語", "space"),
+                ("", "space"),
+            ] {
+                assert_eq!(derive_name(label, |_| false), expected, "{label}");
+            }
+        }
+
+        #[test]
+        fn derived_names_step_aside_from_taken_ones() {
+            let taken = ["tonk-team", "tonk-team-2"];
+            assert_eq!(
+                derive_name("Tonk Team", |name| taken.contains(&name)),
+                "tonk-team-3"
+            );
+        }
+
+        /// A label is not a path. `derive_name` is the only thing
+        /// standing between an account-directory label and a directory
+        /// created under `spaces/`, so a label that looks like a path
+        /// must come out as one harmless component.
+        #[test]
+        fn derived_names_cannot_escape_the_spaces_root() {
+            let store = SpaceStore::at(std::path::Path::new("/store"));
+            for label in ["../escape", "/etc/passwd", "a/b", "..", "."] {
+                let derived = derive_name(label, |_| false);
+                let site = store.canonical_site(&derived);
+                assert_eq!(
+                    site.parent(),
+                    Some(store.spaces_root().as_path()),
+                    "{label:?} derived {derived:?} escaping to {}",
+                    site.display()
+                );
             }
         }
     }
