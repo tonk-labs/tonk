@@ -331,18 +331,18 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
 }
 
 #[dialog_common::test]
-async fn agent_join_and_legacy_connect_reject_open_invite_before_mutation() -> anyhow::Result<()> {
+async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
-    for args in [vec!["join", "--agent"], vec!["connect"]] {
+    {
         let home = tempfile::tempdir()?;
         let output = std::process::Command::new(&binary)
-            .args(args)
-            .args([&invite.url, "--no-open"])
+            .arg("connect")
+            .arg(&invite.url)
             .current_dir(home.path())
             .env("HOME", home.path())
             .env("XDG_DATA_HOME", home.path().join("data"))
@@ -354,8 +354,8 @@ async fn agent_join_and_legacy_connect_reject_open_invite_before_mutation() -> a
             .env_remove("TONK_SPACE")
             .output()?;
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("tonk join URL --name NAME"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_agent_invitation"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tonk link"));
         assert!(
             !home.path().join("spaces").exists(),
             "legacy open invite must fail before local account/space writes"

@@ -332,19 +332,19 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Invite preflight, trusted approval routing, exact-invitation retry, receipt publication/isolation, naming fallback, parser, standard-library prompt, and browser authorization integration tests.",
-      "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
+      "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
+      "gaps": "Current personal access uses ACCT-C15; agents use ACCT-C14.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
-      "title": "Copy an empty-space prompt and run tonk join --agent to link, join, pull, and acknowledge that space.",
-      "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+      "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
+      "variants": "Old sharing/account handoffs and legacy resume metadata."
     },
     {
       "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, and real browser multiple-holder copy/close/import/build/confirm/revoke journeys, including responsive and keyboard checks.",
       "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C14",
-      "title": "Copy a scoped agent invitation, run tonk connect, and revoke its grant group from Settings.",
+      "title": "Copy a scoped agent invitation, run one-way tonk connect without browser/account approval, and revoke its grant group from Settings.",
       "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
     },
     {
@@ -1713,7 +1713,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Empty-space prompt connects an agent CLI to the exact originating space (Agent handoff).",
-      "device": "hybrid + second-client",
+      "device": "historical / retired + second-client",
       "file": "verification/accounts.md",
       "id": "HANDOFF-19",
       "priority": "P1",
@@ -1721,7 +1721,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Agent connection validates before authority and retains a named recovery path after interruption (Interrupted agent connection).",
-      "device": "hybrid + offline + restart",
+      "device": "historical / retired",
       "file": "verification/accounts.md",
       "id": "HANDOFF-20",
       "priority": "P1",
@@ -1733,7 +1733,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "HANDOFF-21",
       "priority": "P1",
-      "result": "Local import/restart, service/KV/D1, one-holder and multiple-holder browser journeys passed, including 390px layouts, keyboard focus and reduced motion. External release, Safari and global propagation checks remain pending."
+      "result": "Plan 002 final CLI refuses old links/flags without mutation; multiple-holder browser journey passes (68.00s) on artifact eebc5c6a953f7630. Prior service/KV/D1 and import/restart evidence remains. Layout, keyboard focus and no animation checked; guest reduced-motion preference, external release, Safari and global propagation remain unverified."
     },
     {
       "claim": "Exact selected-space terminal grants (Selected terminal spaces).",

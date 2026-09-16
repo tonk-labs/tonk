@@ -13,10 +13,10 @@ upstream is configured. `--no-sync` disables that wrapper for one command.
 diverged, or has no upstream. Its JSON form keeps `sync.fetched`, so callers can
 distinguish an unreachable upstream from a current comparison.
 
-`tonk invite` mints an invite URL for the current space, carrying the selected
-remote when one resolves. `tonk join <url> --name <name>` creates a local space
-from that invitation. Joining and syncing copy facts; removing a local replica
-does not erase replicas already held elsewhere.
+To access spaces as a person, run `tonk link` and select them in the browser.
+For an agent, copy an agent invitation from Tonk and run `tonk connect`.
+Importing and syncing copy facts; removing a local replica does not erase
+replicas already held elsewhere.
 
 Scoped agent invitations use `tonk connect <agent-link>`; selected browser
 approval uses `tonk link`. Both use ordinary space grants with explicit expiry

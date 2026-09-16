@@ -5,6 +5,12 @@ gates remain unrun. This file does
 not authorize deployment, publishing, or withdrawal of external credentials.
 The controlling contract is [plan 001](001-cli-space-connections.md).
 
+> Plan 002 supersedes old command compatibility: candidate `connect` accepts
+> only scoped agent invitations, and `join` is removed. Old prompts must be
+> regenerated using a browser deployment supporting scoped issuance; no old
+> account-approval fallback is allowed. Historical baseline results below do
+> not imply those workflows remain available in the candidate CLI.
+
 ## Ordering
 
 1. Release and verify the standard revocation authority-subject correction,
@@ -15,25 +21,25 @@ The controlling contract is [plan 001](001-cli-space-connections.md).
    service. Verify authenticated initial delivery and additions against the real
    deployed storage adapter, including restart and account deletion cleanup.
    Route `/connection/*` to the service before the SPA asset fallback.
-3. Publish a CLI that accepts both legacy account-scoped handoffs and v1 scoped
-   bearer invitations and implements selected terminal linking. Verify the exact
+3. Publish a CLI that accepts v1 scoped bearer invitations, rejects legacy
+   sharing/account-approval handoffs, and implements selected terminal linking. Verify the exact
    published package and platform executable integrity; a workspace build does
    not satisfy this gate.
 4. Verify the published CLI with the candidate browser on staging: copied bearer
    after issuer shutdown, two holders, independent invites, terminal one/many/all
    selections, explicit conversion, offline additions/removals and revocation.
-5. Only then enable `connection-invites` for browser issuance. The default build
-   keeps legacy issuance until that compatibility gate is recorded. Legacy copied
-   instructions use the already-supported `connect` spelling. Library seed
-   reconciliation must preserve authored views and space home choices.
+5. Only then enable `connection-invites` for browser issuance. Until enabled,
+   the browser shows that agent invitations are unavailable; it no longer
+   mints legacy account-bound agent handoffs. Library seed reconciliation
+   must preserve authored views and space home choices.
 
 ## Compatibility matrix to record
 
 | Browser / CLI | Required observation | Evidence state |
 | --- | --- | --- |
 | Legacy issuance / downloaded CLI 0.6.15 | Existing account-scoped `connect` flow and explicit mismatch handling | Local baseline artifact and `connect --help` inspected; actual historical compatibility results in main plan. |
-| Legacy issuance / candidate CLI | Existing handoffs keep their authority and recovery behavior | Final full CLI suite passed 628 tests across 33 targets; separately enabled released-CLI compatibility passed one test. |
-| Scoped issuance / candidate CLI | Accountless reusable bearer, six rights, closed issuer, independent CLI account | Local milestone 3 browser/CLI and final ordinary-grant service checks passed; candidate staging gate remains unrun. |
+| Legacy issuance / candidate CLI | Old handoffs refuse without account/space mutation; existing data remains | Plan 002 process rejection/preservation regression and full CLI suite pass (628 tests, two ignored). Old agent/account approval is deliberately unavailable. |
+| Scoped issuance / candidate CLI | Accountless reusable bearer, six rights, closed issuer, independent CLI account | Plan 002 browser multiple-holder copy/import/revocation passes on artifact eebc5c6a953f7630 with the audited final CLI (68.00s), in addition to Plan 001 service evidence; staging remains unrun. |
 | Scoped issuance / CLI 0.6.15 | Refuse unsupported scoped layout before ambient account authority | Local published-executable compatibility fixture passed; no new envelope support is claimed. |
 | Selected browser linking / candidate CLI | Exact CLI key, complete selection, bounded request, durable resume and cancellation | Final snapshot artifact passes one/many/all, conversion, decline and management; historical intermittent-refusal attribution remains qualified below. |
 | Candidate browser / newly published candidate CLI | Both journeys and migration with exact package integrity | Unrun: publication and staging require operator release authorization. |
@@ -144,8 +150,9 @@ Hosted prevalence and cross-region propagation have not been measured locally.
 
 ## Rollback constraints
 
-Browser issuance can return to legacy prompts while existing scoped credentials
-and public management records remain. Keep the compatible CLI available for
+Browser issuance can be disabled while existing scoped credentials and public
+management records remain. Do not restore legacy account-approval agent prompts
+for the candidate CLI: those links are deliberately rejected. Keep the compatible CLI available for
 already-issued v1 grants. Do not remove local replicas, aliases, unsynced edits,
 retained credentials, standard revocation facts, or public proof chains merely
 because browser issuance is disabled.

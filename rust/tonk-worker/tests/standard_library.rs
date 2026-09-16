@@ -648,8 +648,8 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "the resume command must work without a globally installed CLI",
         );
         assert!(
-            copied.contains("npx --yes @tonk/cli connect INVITE --name NEW_NAME"),
-            "the prompt must explain how to reclaim after revoked saved authority",
+            copied.contains("If access expires or is revoked, ask me for a fresh invite."),
+            "the prompt must request fresh authority after expiry or revocation",
         );
     }
 }
@@ -1150,13 +1150,23 @@ fn parse_command_attributes(
 }
 
 #[test]
-fn it_keeps_scoped_agent_prompts_separate_from_legacy_account_approval() {
+fn it_offers_only_scoped_agent_prompts_without_account_approval() {
     for library in [
         STANDARD_LIBRARY,
         include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
     ] {
         assert!(library.contains("hash.startsWith(\"#tonk-agent-v1=\")"));
-        assert!(library.contains("<div data-agent-mode=\"legacy\" hidden>"));
+        assert!(!library.contains("data-agent-mode=\"legacy\""));
+        assert!(!library.contains("--switch-account"));
+        let unsupported = library
+            .split("<div data-agent-mode=\"unsupported\" hidden>")
+            .nth(1)
+            .unwrap()
+            .split("<div data-agent-mode=\"scoped\" hidden>")
+            .next()
+            .unwrap();
+        assert!(!unsupported.contains("wa-copy-button"));
+        assert!(unsupported.contains("tonk link"));
         assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
         assert!(library.contains("event!: &on/new-agent-invite"));
         assert!(library.contains("the: xyz.tonk.agent-handoff/fresh"));

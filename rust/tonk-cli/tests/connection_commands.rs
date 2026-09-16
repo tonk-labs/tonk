@@ -53,10 +53,7 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
         let output = run(command).await?;
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("connection_account_flags_not_supported"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("unexpected argument"), "{stderr}");
         assert!(!stderr.contains(secret) && !stderr.contains("never-print-this-secret"));
         assert!(!home.path().join("state").exists());
     }
@@ -66,6 +63,92 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--space NAME connect"));
     assert!(!home.path().join("state").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
+    fn snapshot(root: &Path) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+        fn visit(
+            root: &Path,
+            dir: &Path,
+            files: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+        ) -> Result<()> {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    visit(root, &path, files)?;
+                } else if entry.file_type()?.is_file() {
+                    files.insert(path.strip_prefix(root)?.to_owned(), std::fs::read(path)?);
+                }
+            }
+            Ok(())
+        }
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files)?;
+        Ok(files)
+    }
+    let home = tempfile::tempdir()?;
+    let mut create = cli(home.path(), home.path());
+    create.args(["space", "new", "retained"]);
+    let output = run(create).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let before = snapshot(&home.path().join("state"))?;
+    let credentials_before = snapshot(&home.path().join("data"))?;
+    for (args, expected) in [
+        (
+            vec![
+                "join",
+                "https://example.test/join#never-print-secret",
+                "--name",
+                "new",
+            ],
+            "unrecognized subcommand",
+        ),
+        (vec!["join", "--agent"], "unrecognized subcommand"),
+        (
+            vec!["connect", "https://example.test/join#never-print-secret"],
+            "unsupported_agent_invitation",
+        ),
+        (
+            vec![
+                "connect",
+                "https://example.test/join?access=old-account-proof#never-print-secret",
+            ],
+            "unsupported_agent_invitation",
+        ),
+        (
+            vec!["--space", "retained", "connect"],
+            "unsupported_connection_resume",
+        ),
+    ] {
+        let mut command = cli(home.path(), home.path());
+        command.args(args);
+        let output = run(command).await?;
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains("never-print-secret") && !stderr.contains("old-account-proof"));
+        assert!(
+            !output
+                .stdout
+                .windows(b"Open this URL".len())
+                .any(|part| part == b"Open this URL")
+        );
+        assert!(
+            before == snapshot(&home.path().join("state"))?,
+            "refusal changed local state"
+        );
+        assert!(
+            credentials_before == snapshot(&home.path().join("data"))?,
+            "refusal changed local credentials"
+        );
+    }
     Ok(())
 }
 
