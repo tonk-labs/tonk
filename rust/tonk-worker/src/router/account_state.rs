@@ -467,6 +467,25 @@ async fn record_account_replica(
     Ok(())
 }
 
+/// Withdraw this device's own library installation ahead of a first
+/// contact with an account that has content, so the merge carries the
+/// device's own facts and not a second copy of the library. Best-effort:
+/// a failure leaves the reconcile after the pull to repair the
+/// duplicate the old way, at the cost of the changelog reads it makes.
+async fn retract_library_before_first_contact(tonk: &TonkState) {
+    match super::repository::retract_local_profile_library(tonk).await {
+        Ok(retracted) if retracted.installations > 0 => log!(
+            "withdrew {} local profile-library installation(s), {} claims, ahead of the account's",
+            retracted.installations,
+            retracted.claims
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            log!("the local profile library was not withdrawn before first contact: {error}")
+        }
+    }
+}
+
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
@@ -489,6 +508,10 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 
     match probe_remote_main(&remote, &tonk.operator).await {
         Ok(RemotePresence::Present(_)) => {
+            // The account has content, so it has a library: this
+            // device's own installation must not ride the merge (see
+            // `retract_local_profile_library`).
+            retract_library_before_first_contact(tonk).await;
             // Adopt the head and materialize the OPERATIONAL regions:
             // the entity/attribute/value indexes and the blob index.
             // That is every fact the branch holds — every delegation
@@ -533,6 +556,9 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                 // `it_adopts_a_losing_candidate_onto_the_winners_content`
                 // in tonk-access-service's `account_remote` tests.
                 Ok(CreateGenesis::Loser(_)) => {
+                    // Another device won the genesis race, and its
+                    // content carries its library.
+                    retract_library_before_first_contact(tonk).await;
                     session
                         .handle()
                         .pull()
@@ -3145,6 +3171,57 @@ pub(crate) mod tests {
         let ready = require_ready_account_state(&state).await.unwrap();
         service.stop().await.unwrap();
         discard(state, &ready.key);
+    }
+
+    /// A device withdraws its own library installation ahead of a first
+    /// contact with an account that has content: every claim the install
+    /// asserted and its records go in one local commit, read from local
+    /// facts and the device's own changelog, so the merge that follows
+    /// carries none of it. A second withdrawal finds nothing, and the
+    /// reconcile afterwards installs afresh rather than reporting an
+    /// installed library it no longer has.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_is_withdrawn_before_first_contact() {
+        use crate::router::repository::{
+            ProfileLibraryOutcome, reconcile_profile_library, reconcile_profile_library_from,
+            retract_local_profile_library,
+        };
+
+        let (state, service, _root, _remote) = linked_account_state(None, false).await;
+        reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+
+        let withdrawn = retract_local_profile_library(&state)
+            .await
+            .expect("the local installation withdraws");
+        assert_eq!(withdrawn.installations, 1, "one recorded installation");
+        assert!(
+            withdrawn.claims > 2,
+            "the install's assertions and its two records: {withdrawn:?}"
+        );
+
+        let again = retract_local_profile_library(&state)
+            .await
+            .expect("a second withdrawal is a no-op");
+        assert_eq!(again.installations, 0);
+        assert_eq!(again.claims, 0);
+
+        assert_eq!(
+            reconcile_profile_library(&state)
+                .await
+                .expect("the shipped library installs on a bare branch"),
+            ProfileLibraryOutcome::Installed,
+            "nothing of the withdrawn installation is left to repair"
+        );
+
+        service.stop().await.unwrap();
+        let key = super::super::identity::local_root(&state)
+            .await
+            .map(|root| root.root_did.repo_key().to_owned())
+            .unwrap_or_default();
+        discard(state, &key);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
