@@ -58,7 +58,13 @@ impl CustomElement for TonkTreeElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["repo", "branch"]
+        // `with` belongs here beside `repo`/`branch`: it is the third input
+        // `resolve` reads. The mounting `<tonk-display>` stamps it, normally
+        // into the view's template content before any clone connects; should
+        // it land after connect instead, `start` has already rendered "no
+        // repository in context" and, unobserved, the element never hears
+        // that the context arrived.
+        &["repo", "branch", "with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
