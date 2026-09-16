@@ -775,30 +775,103 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
         }
         return blobs;
       };
-      // The <tonk-code> editor bundle: import the main bundle to define
-      // <tonk-code> + <tonk-diagnostics-provider>. The language pack is
-      // loaded at runtime via a `./tonk-code-lang-<id>.js` URL built from
-      // import.meta.url, which is the (useless) blob URL inside the guest —
-      // expose a name->blob map the rewritten lookup consults instead.
-      if (d.code && d.code.length) {
-        try {
-          var codeBlobs=mintGraph(d.code);
-          // Expose the minted blob map so the element's on-demand language
-          // loader reuses the SHARED chunk-*.js blobs already minted here
-          // (esp. @codemirror/state/view/language). Re-minting them for a
-          // language pack would create a second @codemirror/state identity,
-          // and CodeMirror's instanceof checks reject the pack
-          // ("Unrecognized extension value … multiple instances of
-          // @codemirror/state"). The loader fetches a language chunk via the
-          // proxied window.fetch and mints ONLY files not already in this map.
-          window.__tonkCodeChunks=codeBlobs;
-          await import(codeBlobs["tonk-code.js"]);
-        } catch(codeErr) {
-          // The editor failing to inject must not abort the whole runtime — the
-          // rest of the view still works; the inspector just lacks an editor.
-          parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(codeErr)+(codeErr&&codeErr.stack?"\n"+codeErr.stack:"")},"*");
-        }
-      }
+      // The <tonk-code> editor bundle. LAZY end-to-end: nothing rides the
+      // boot payload at all, not even a shell. Unlike tonk-prose/tonk-table
+      // — whose builds split a tiny registration shell from a heavy core —
+      // `tonk-code.js` IS the element definition, so there is nothing cheap
+      // to register up front. The whole ~659 kB graph (main + dialog-yaml
+      // pack + shared chunks) crosses the boundary only once something that
+      // needs it appears in the DOM.
+      //
+      // The trigger is the DOM, not a connectedCallback: with the element
+      // undefined, `<tonk-code>` gets no callbacks, so it cannot ask for
+      // itself. Both consumers (tonk-inspector, tonk-notebook) append a
+      // `<tonk-diagnostics-provider>` and THEN await
+      // `customElements.whenDefined("tonk-code")` before mounting an editor
+      // — a promise that simply stays pending until the import below runs
+      // `define`. So observing either tag's arrival catches every real use,
+      // and the consumers need no change: their existing wait resolves when
+      // the bundle lands. Both mount into LIGHT dom, so a document-wide
+      // subtree observer reaches them.
+      (function(){
+        var CODE_TAGS=["TONK-CODE","TONK-DIAGNOSTICS-PROVIDER"];
+        var requested=false;
+        var observer=null;
+        var wants=function(node){
+          if (!node || node.nodeType!==1) return false;
+          if (CODE_TAGS.indexOf(node.tagName)>=0) return true;
+          // A subtree can arrive in one mutation (a node view, an innerHTML
+          // swap), so the added node itself is not necessarily the match.
+          return typeof node.querySelector==="function"
+            && !!node.querySelector("tonk-code,tonk-diagnostics-provider");
+        };
+        var load=function(){
+          if (requested) return;
+          requested=true;
+          if (observer) { observer.disconnect(); observer=null; }
+          // A failed relay must not poison the trigger: clear `requested` and
+          // re-arm the observer so the next element to appear retries the
+          // whole handshake. (tonk-prose/tonk-table clear their cached core
+          // promise for the same reason — there the next connect retries; here
+          // the element is still undefined, so the next arrival is the retry.)
+          var retry=function(){
+            requested=false;
+            if (!observer) {
+              observer=new MutationObserver(onMutations);
+              observer.observe(document.documentElement,{childList:true,subtree:true});
+            }
+          };
+          var timer=setTimeout(function(){
+            window.removeEventListener("message",onCode);
+            parent.postMessage({__tonkRuntime:"warn",error:"tonk-code: no inject-code reply from parent"},"*");
+            retry();
+          },15000);
+          var onCode=function(e){
+            var m=e.data; if(!m||m.__tonkRuntime!=="inject-code") return;
+            clearTimeout(timer);
+            window.removeEventListener("message",onCode);
+            try {
+              var codeBlobs=mintGraph(m.code||[]);
+              // Seed the minted blob map BEFORE importing: the element's
+              // on-demand language loader reads `window.__tonkCodeChunks` at
+              // module-eval time and reuses these SHARED chunk-*.js blobs
+              // (esp. @codemirror/state/view/language). Re-minting them for a
+              // language pack would create a second @codemirror/state
+              // identity, and CodeMirror's instanceof checks reject the pack
+              // ("Unrecognized extension value … multiple instances of
+              // @codemirror/state").
+              window.__tonkCodeChunks=codeBlobs;
+              var entry=codeBlobs["tonk-code.js"];
+              if (!entry) throw new Error("tonk-code: element bundle missing from inject-code");
+              // Defining the element resolves the consumers' pending
+              // `whenDefined`, which is what actually mounts the editors.
+              import(entry).catch(function(importErr){
+                parent.postMessage({__tonkRuntime:"warn",error:"tonk-code import: "+String(importErr)+(importErr&&importErr.stack?"\n"+importErr.stack:"")},"*");
+                retry();
+              });
+            } catch(err) {
+              // A missing editor must not abort the rest of the guest runtime.
+              parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
+              retry();
+            }
+          };
+          window.addEventListener("message",onCode);
+          parent.postMessage({__tonkRuntime:"need-code"},"*");
+        };
+        var onMutations=function(records){
+          for (var ri=0; ri<records.length; ri++){
+            var added=records[ri].addedNodes;
+            for (var ai=0; ai<added.length; ai++){
+              if (wants(added[ai])) { load(); return; }
+            }
+          }
+        };
+        // Anything already in the document (a server-rendered view, or a
+        // fast consumer that mounted before this ran) counts as demand.
+        if (document.querySelector("tonk-code,tonk-diagnostics-provider")) { load(); return; }
+        observer=new MutationObserver(onMutations);
+        observer.observe(document.documentElement,{childList:true,subtree:true});
+      })();
       // The <tonk-prose> markdown editor. LAZY end-to-end: the boot payload
       // carries only the ~4 kB registration shell; the ~400 kB editor core
       // crosses the boundary only when the first <tonk-prose> actually
@@ -1041,10 +1114,14 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
         snippets.push(&entry);
     }
 
-    // The `<tonk-code>` editor bundle graph (main + lang pack + chunks), as
-    // `{name, src}` entries the guest blobs and import-rewrites. Code-split, so
-    // it can't be one self-contained module — the guest mints a blob per file.
-    let code = bundle_graph_entries(fetch_tonk_code_bundles().await);
+    // The `<tonk-code>` editor bundle is NOT in the boot payload — not even a
+    // shell, because `tonk-code.js` is itself the element definition and there
+    // is nothing smaller to register. Its ~659 kB graph (main + dialog-yaml
+    // pack + shared chunks) crosses the boundary over `need-code`, the first
+    // time a `<tonk-code>`/`<tonk-diagnostics-provider>` appears in the
+    // guest's DOM (see the observer in `BOOTSTRAP_JS` and `inject_code_core`).
+    // Most guests — the Hub, settings, join, a space page — never mount an
+    // editor, and now never pay for one.
 
     // The `<tonk-prose>` markdown editor SHELL only (~4 kB): enough to
     // register the element so guest markup upgrades. The editor core stays
@@ -1065,7 +1142,6 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
-    let _ = Reflect::set(&payload, &"code".into(), &code);
     let _ = Reflect::set(&payload, &"prose".into(), &prose);
     let _ = Reflect::set(&payload, &"table".into(), &table);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
@@ -1301,6 +1377,33 @@ fn inject_prose_core(iframe: &HtmlIFrameElement) {
         let payload = Object::new();
         let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject-prose".into());
         let _ = Reflect::set(&payload, &"prose".into(), &prose);
+        let _ = content_window.post_message(&payload, "*");
+    });
+}
+
+/// Reply to a guest's `need-code` request: fetch the `<tonk-code>` editor
+/// bundle graph (the parent is trusted + networked; the sealed guest can't
+/// fetch) and post it back as an `inject-code` envelope on the guest's
+/// window. Called from the page-level message listener when a
+/// `<tonk-code>` or `<tonk-diagnostics-provider>` first appears in that
+/// guest's DOM.
+///
+/// Unlike prose/table this is not a *core* top-up over an already-registered
+/// shell: the element is undefined until this reply lands, because
+/// `tonk-code.js` is the definition. Best-effort all the same — an empty
+/// graph leaves the element undefined, so a consumer's
+/// `whenDefined("tonk-code")` stays pending and it renders without an
+/// editor rather than wedging the runtime.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn inject_code_core(iframe: &HtmlIFrameElement) {
+    let Some(content_window) = iframe.content_window() else {
+        return;
+    };
+    spawn_local(async move {
+        let code = bundle_graph_entries(fetch_tonk_code_bundles().await);
+        let payload = Object::new();
+        let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject-code".into());
+        let _ = Reflect::set(&payload, &"code".into(), &code);
         let _ = content_window.post_message(&payload, "*");
     });
 }
@@ -1599,6 +1702,21 @@ pub(crate) fn install_message_listener() {
                         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                         if let Some(iframe) = matched {
                             inject_prose_core(&iframe);
+                        }
+                    }
+                    // Lazy `<tonk-code>` editor bundle: nothing rides the boot
+                    // payload, so this is the ONLY path by which the element
+                    // is ever defined in a guest. The guest asks when a
+                    // `<tonk-code>`/`<tonk-diagnostics-provider>` first
+                    // appears in its DOM.
+                    "need-code" => {
+                        let matched = registry.borrow().iter().find_map(|entry| {
+                            let cw: JsValue = entry.iframe.content_window()?.into();
+                            (cw == source).then(|| entry.iframe.clone())
+                        });
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        if let Some(iframe) = matched {
+                            inject_code_core(&iframe);
                         }
                     }
                     // Lazy `<tonk-table>` grid core (grid + engine bytes):
