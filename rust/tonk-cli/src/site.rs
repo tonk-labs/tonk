@@ -144,6 +144,12 @@ pub const SITE_DIRNAME: &str = ".tonk";
 /// data: an empty directory is not a site.
 pub fn has_site_data(root: &Path) -> bool {
     root.join(REPO_NAME).is_dir()
+        || root.join(crate::connections::MARKER_FILE).exists()
+        || root.join(crate::connections::DATA_MARKER_FILE).exists()
+        || root
+            .join("data")
+            .join(crate::connections::DATA_MARKER_FILE)
+            .exists()
 }
 
 /// An opened tonk site: profile, operator, repository, and a
@@ -175,6 +181,11 @@ pub struct TonkSite {
 }
 
 impl TonkSite {
+    /// Whether this site uses isolated invitation authority instead of an account.
+    pub fn is_scoped(&self) -> bool {
+        self.operator.is_scoped()
+    }
+
     /// Open an already-existing site at the given directory.
     /// Errors if the directory exists but the dialog repository
     /// inside it is missing or unreadable.
@@ -187,6 +198,7 @@ impl TonkSite {
     /// unique profile name without touching the user's real
     /// data dir.
     pub async fn open_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
@@ -270,6 +282,7 @@ impl TonkSite {
     /// loaded, not clobbered, which is also how `tonk space new
     /// --site <path>` adopts pre-existing storage.
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         // Record the format beside the data, so the next incompatible change
@@ -437,6 +450,14 @@ impl Identity {
     /// A signed-out installation may retain its durable local root. Both
     /// are installation properties, so any replica answers for them.
     pub async fn of(site: &TonkSite) -> Result<Self> {
+        if site.is_scoped() {
+            return Ok(Self {
+                account: None,
+                local_root: None,
+                onboarding: None,
+                profile: site.profile.did().to_string(),
+            });
+        }
         let active = crate::account_session::snapshot(
             &site.profile,
             site.operator.local(),
@@ -1292,6 +1313,7 @@ pub async fn transplant_at_with(
     use tonk_schema::prelude::DidExt as _;
     use tonk_schema::{RepositoryName, Transplant};
 
+    crate::connections::reject_generic_open(root)?;
     let root = root
         .canonicalize()
         .with_context(|| format!("could not canonicalize {}", root.display()))?;

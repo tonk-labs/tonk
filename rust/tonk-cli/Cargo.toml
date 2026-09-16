@@ -18,6 +18,11 @@ path = "src/bin/tonk.rs"
 # `tests/common.rs` from being built as its own empty test
 # binary; list the real test binaries here explicitly.
 [[test]]
+name = "terminal_commands"
+path = "tests/terminal_commands.rs"
+required-features = ["integration-tests"]
+
+[[test]]
 name = "live_migration"
 path = "tests/live_migration.rs"
 
@@ -41,6 +46,18 @@ required-features = ["integration-tests"]
 [[test]]
 name = "handoff"
 path = "tests/handoff.rs"
+
+[[test]]
+name = "connections"
+path = "tests/connections.rs"
+
+[[test]]
+name = "connection_commands"
+path = "tests/connection_commands.rs"
+
+[[test]]
+name = "connection_compatibility"
+path = "tests/connection_compatibility.rs"
 
 [[test]]
 name = "notation"

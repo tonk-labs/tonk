@@ -74,12 +74,23 @@ pub enum SyncError {
     Rejected {
         /// The access decision, as the service stated it.
         reason: String,
+        /// Definitive withdrawal/lapse, retained as a type for delivery recovery.
+        permanent: Option<PermanentRejection>,
     },
     /// Anything else — network, storage, decode. Surfaced
     /// verbatim so the caller can pick the underlying message
     /// up in stderr.
     #[error("{0}")]
     Io(String),
+}
+
+/// Decisions that permanently prevent this exact grant delivery from installing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermanentRejection {
+    /// The authority has passed its signed deadline.
+    Expired,
+    /// The service verified a standard UCAN revocation.
+    Revoked,
 }
 
 impl crate::Coded for SyncError {
@@ -104,7 +115,9 @@ impl crate::Coded for SyncError {
 /// not answer, or could not read what it was sent. Reporting them as denials
 /// would tell someone their authority was refused when nothing was refused,
 /// and stop them where a retry is the right move.
-fn rejection(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+fn rejection(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<(String, Option<PermanentRejection>)> {
     let mut current = Some(error);
     while let Some(error) = current {
         if let Some(reason) = authorization(error)
@@ -115,7 +128,12 @@ fn rejection(error: &(dyn std::error::Error + 'static)) -> Option<String> {
                     | AuthorizeError::Malformed { .. }
             )
         {
-            return Some(reason.to_string());
+            let permanent = match reason {
+                AuthorizeError::Expired { .. } => Some(PermanentRejection::Expired),
+                AuthorizeError::Revoked { .. } => Some(PermanentRejection::Revoked),
+                _ => None,
+            };
+            return Some((reason.to_string(), permanent));
         }
         current = error.source();
     }
@@ -289,6 +307,11 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
 /// came from the boundary that actually said no, and it is what a bug report
 /// needs.
 pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> String {
+    if site.is_scoped() {
+        return format!(
+            "could not sync '{name}': this connection's authority was refused\nthe access service said: {reason}\nrequest a new agent invite if access expired or was revoked; downloaded data and local edits are retained"
+        );
+    }
     let said = format!("the access service said: {reason}");
     let roster = crate::inventory::read_roster(site).await.ok();
     let identity = crate::site::Identity::of(site).await.ok();
@@ -381,7 +404,7 @@ fn map_pull_error(error: PullError) -> SyncError {
 
 fn classify_failure(error: &(dyn std::error::Error + 'static)) -> SyncError {
     match rejection(error) {
-        Some(reason) => SyncError::Rejected { reason },
+        Some((reason, permanent)) => SyncError::Rejected { reason, permanent },
         None => SyncError::Io(error.to_string()),
     }
 }
@@ -397,16 +420,43 @@ mod tests {
         /// The decision is buried under two layers that render it
         /// transparently, which is where a source-walk alone loses it.
         #[dialog_common::test]
+        fn only_expiry_and_standard_revocation_are_permanent_delivery_decisions() {
+            let did: dialog_varsig::Did =
+                "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX"
+                    .parse()
+                    .unwrap();
+            for (reason, expected) in [
+                (
+                    AuthorizeError::Expired {
+                        expiration: 10,
+                        at: 11,
+                    },
+                    PermanentRejection::Expired,
+                ),
+                (
+                    AuthorizeError::Revoked { subject: did },
+                    PermanentRejection::Revoked,
+                ),
+            ] {
+                let error = PushError::Publish(PublishError::from(reason));
+                assert!(
+                    matches!(map_push_error(error), SyncError::Rejected { permanent: Some(actual), .. } if actual == expected)
+                );
+            }
+        }
+
+        #[dialog_common::test]
         fn it_reads_a_decision_out_of_the_wrappers_that_hide_it() {
             let denial = AuthorizeError::PolicyViolation {
                 predicate: "subject is provisioned".to_owned(),
             };
             let error = PushError::FetchRemoteBranch(ResolveError::from(denial).into());
 
-            let SyncError::Rejected { reason } = map_push_error(error) else {
+            let SyncError::Rejected { reason, permanent } = map_push_error(error) else {
                 panic!("an access decision must not read as transport failure");
             };
             assert!(reason.contains("subject is provisioned"), "{reason}");
+            assert!(permanent.is_none());
         }
 
         /// "We could not answer" is not "no". Reporting it as a denial would

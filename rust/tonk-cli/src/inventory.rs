@@ -131,6 +131,34 @@ impl Roster {
     }
 }
 
+/// How this replica obtains authority, independent of roster membership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum AccessKind {
+    /// No configured remote; local authority only.
+    #[serde(rename = "local-only")]
+    LocalOnly,
+    /// Scoped grants delivered with a browser-generated bearer.
+    #[serde(rename = "invite-backed")]
+    Invitation,
+    /// Scoped grants addressed to a retained CLI-generated terminal key.
+    #[serde(rename = "terminal-linked")]
+    TerminalLinked,
+    /// Existing ambient profile/account authority; conversion is explicit.
+    #[serde(rename = "legacy")]
+    Legacy,
+}
+impl AccessKind {
+    /// Truthful local provenance, not a cached remote access verdict.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local-only",
+            Self::Invitation => "invite-backed",
+            Self::TerminalLinked => "terminal-linked",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
 /// One local-replica row.
 ///
 /// Ownership is read from the space's own roster through `owner`,
@@ -138,6 +166,8 @@ impl Roster {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalSpaceInventoryRow {
+    /// Local authority provenance; remote validity is checked when used.
+    pub access_kind: AccessKind,
     /// Registered space name.
     pub name: String,
     /// Repository subject DID.
@@ -242,7 +272,7 @@ pub fn render(rows: &[LocalSpaceInventoryRow]) -> String {
             .chain(rows.iter().filter_map(|row| row.owner.as_deref())),
     );
     let mut listing = Listing::new(
-        &["NAME", "OWNER", "ROLE"],
+        &["NAME", "OWNER", "ROLE", "ACCESS"],
         "no spaces registered; create one with `tonk space new <name>`",
     );
     for row in rows {
@@ -254,6 +284,7 @@ pub fn render(rows: &[LocalSpaceInventoryRow]) -> String {
                 Some(owner) => describe(owner, row.owner_name.as_deref(), length),
             },
             row.role.column().to_owned(),
+            row.access_kind.as_str().to_owned(),
         ]);
     }
     listing.render()
@@ -296,14 +327,38 @@ async fn inspect_replica(
 ) -> Result<(LocalSpaceInventoryRow, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
-    let site = crate::site::TonkSite::open_with(&entry.site, config)
-        .await
-        .with_context(|| format!("could not open {}", entry.site.display()))?;
-    // Every replica opens the same profile, so the first one to get this far
-    // answers for all of them.
-    let identity = match identity {
-        Some(identity) => &*identity,
-        slot => slot.insert(crate::site::Identity::of(&site).await?),
+    let binding = crate::connections::binding_at(&entry.site)?;
+    anyhow::ensure!(
+        entry
+            .connection
+            .as_ref()
+            .is_none_or(|expected| binding.as_ref() == Some(expected)),
+        "inventory connection binding mismatch"
+    );
+    let site = match binding {
+        Some(binding) => {
+            crate::connections::open_bound(&entry.site, &binding, config.account_store.clone())
+                .await?
+        }
+        None => crate::site::TonkSite::open_with(&entry.site, config)
+            .await
+            .with_context(|| format!("could not open {}", entry.site.display()))?,
+    };
+    let scoped_identity;
+    let identity = if site.is_scoped() {
+        scoped_identity = crate::site::Identity::of(&site).await?;
+        &scoped_identity
+    } else {
+        match identity {
+            Some(identity) => &*identity,
+            slot => slot.insert(crate::site::Identity::of(&site).await?),
+        }
+    };
+    let access_kind = match crate::connections::source_at(&entry.site)? {
+        Some(crate::connections::ConnectionSource::Invitation) => AccessKind::Invitation,
+        Some(crate::connections::ConnectionSource::Terminal(_)) => AccessKind::TerminalLinked,
+        None if crate::remote::list(&site).await?.is_empty() => AccessKind::LocalOnly,
+        None => AccessKind::Legacy,
     };
     let subject = site.repository.did().to_string();
     let (roster, note) = match read_roster(&site).await {
@@ -325,6 +380,7 @@ async fn inspect_replica(
     };
     Ok((
         LocalSpaceInventoryRow {
+            access_kind,
             name: name.to_owned(),
             subject,
             // The account slot, not every identity this device holds: the

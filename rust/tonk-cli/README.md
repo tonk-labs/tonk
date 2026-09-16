@@ -1,6 +1,6 @@
 # tonk
 
-A local-only CLI for reading and writing tonk facts via asserted-notation.
+A local-first CLI for reading and writing tonk facts via asserted-notation.
 
 `tonk` is the headless companion to tonk-ui, without a browser: it operates on
 the selected **space** — a named fact store resolved through a central
@@ -22,7 +22,11 @@ tonk space use garden
 # Every local replica, with the owner each space names.
 tonk space
 
-# Sign in. Tonk holds one account at a time.
+# Connect ordinary space access without an account attachment.
+tonk connect 'AGENT_LINK'
+tonk link
+
+# Administrative compatibility: Tonk holds one account at a time.
 tonk account login
 tonk account logout
 
@@ -281,14 +285,94 @@ parses with `tonk-notation`, reads schema types from `tonk-schema`, builds
 invites with `tonk-invite`, and talks to dialog repositories, storage, UCAN
 credentials, and the UCAN-S3 remote through the `dialog-*` crates.
 
-### Connect an agent from the browser
+### Import a scoped agent invitation
+
+This checkout accepts version-one scoped agent links with
+`tonk connect 'AGENT_LINK' [--name NAME]`. It imports the invitation's identity
+and space grants without CLI login or browser approval. Resume with
+`tonk --space NAME connect`; `TONK_SPACE` does not select a resume target.
+The command reports `Agent connection confirmed` only after pulling the space,
+publishing its grant-set acknowledgement, and finishing the directory binding.
+The link is reusable: another holder can use the same grants. Confirmation is
+completed setup, not exclusive agent presence or grant activation.
+
+Imported identities stay separate from existing CLI accounts and replicas.
+Credentials are retained locally; expiry or revocation blocks further authorized
+remote work and keeps downloaded data available offline. `--via`, `--no-open`
+and `--switch-account` do not apply to scoped agent links. Existing browser
+prompts and `join --agent` keep their legacy account-scoped behavior below;
+new browser issuance remains opt-in until the published CLI compatibility gates pass.
+
+Connection imports trust the built-in Tonk deployment (`https://tonk.network`).
+For an explicitly selected development deployment, set `TONK_CONNECTION_ORIGIN`
+to its HTTPS origin or a loopback HTTP origin, for example
+`http://127.0.0.1:8787`. This setting chooses service routing only. The importer
+requires the signed grant endpoint to match that origin's `/ucan/` and verifies
+`/.well-known/tonk` without following redirects. It never chooses an approval
+page from the invite, loads an unrelated account's endpoint, or sends the
+secret-bearing fragment to discovery.
+
+### Link selected spaces to a terminal
+
+Run `tonk link --no-open` to print the signed approval URL, or `tonk link` to
+open it. The CLI first retains a fresh private key locally. The browser receives
+only its public request; select one, several, or all currently available spaces.
+“All” is a snapshot. Each grant lasts 90 days, provided the issuing account's
+existing authority supports that lifetime. Undelegable spaces remain visible
+with a reason. No account catalogue or account-wide grant is installed.
+
+`--label NAME` names this terminal. `--expected-account DID` constrains which
+browser account may approve. `--via ORIGIN` selects an explicitly trusted
+HTTPS deployment (HTTP is allowed for loopback development). Local and headless
+terminals both use authenticated polling bound to the retained request key.
+`--resume REQUEST_ID` resumes an interrupted request; `--cancel REQUEST_ID`
+records local cancellation without revoking any previously issued grants.
+A failed initial selection leaves the previous space registry unchanged.
+
+The browser Settings panel retains public grant groups for later additions and
+standard revocation. A delivery acknowledgement says that grants were sent, not
+that a terminal is online or that remote access is currently valid. Downloaded
+replicas and offline edits remain after revocation or expiry.
+
+### Administrative compatibility
+
+Scoped connections cover ordinary space work. Existing account commands remain
+available for these administrative workflows:
+
+| Task | Explicit compatibility path |
+| --- | --- |
+| Account attachment and recovery | `tonk account login`, `status`, `sync`, `logout`; retained credentials are not silently revoked. |
+| Adopt a local space into account ownership and back it up | `tonk space link NAME`; requires an explicit legacy account attachment. Adopt an existing directory first with `tonk space new NAME --site PATH`. |
+| Inspect or pull account catalogue spaces | `tonk account space`, `tonk account space pull NAME_OR_SUBJECT`. |
+| Review account deletion | `tonk account delete` opens the browser's review and passkey ceremony. |
+| Delete one hosted owned space | `tonk account space delete SUBJECT` preserves the separate scoped review. |
+| Device inventory and explicit withdrawal | `tonk account devices`, `tonk account revoke DID`; an exact retained grant can be republished after its list row was removed. |
+| Hosting/provisioning and remote configuration | Keep the existing account-bound registration and `tonk remote` workflows; scoped grants do not imply ownership or billing authority. |
+
+These are compatibility entry points, not authority implicitly granted by
+`connect` or `link`. Conversion of an existing account attachment requires an
+explicit browser selection; ordinary linking never silently signs out or
+revokes the existing account. `tonk link --convert-account` captures the current
+attachment, installs separate selected-space aliases, then deactivates only that
+same attachment. Existing aliases, paths, heads and unsynced edits stay in their
+original replicas; edits are not transferred into freshly pulled scoped copies.
+The default legacy remote guard then refuses the inactive account. The existing
+`TONK_UNSAFE_ALLOW_DEVICE_ROOT` recovery opt-out can deliberately use retained
+legacy credentials; conversion is application-level isolation, not an OS sandbox. Release and rollback gates are recorded in
+[the implementation plan](../../plans/001-cli-space-connections.md).
+
+### Legacy account-scoped browser handoffs
 
 Copy a fresh agent prompt from the space's blank canvas, then run its
 `tonk connect 'URL'` command. The invitation is scoped to the browser account,
 including when that account is collaborating in someone else's space.
 Ordinary `tonk join` continues to accept open collaboration invitations.
+It joins as the current CLI identity, requires `--name`, and does not switch
+accounts or send an agent confirmation. The legacy `join --agent` spelling remains available. `connect` recognizes the
+versioned scoped envelope separately and preserves older account-scoped handoffs.
+An old handoff is never silently converted into a new scoped bearer.
 
-If the CLI is signed in to a different account, `connect` reports both DIDs and
+If the CLI is signed in to a different account, `join --agent` reports both DIDs and
 exits before claiming or binding the space. Ask the user before rerunning with
 `--switch-account EXPECTED_DID`. The flag records consent for that exact account;
 it still requires browser passkey approval. The previous account stays active
@@ -297,7 +381,7 @@ the previous account, its local spaces, and its bindings. Account hydration can
 fail after activation; the replacement stays active and the command reports the
 sync warning.
 
-After joining, `tonk --space NAME connect` resumes using local
+After joining, `tonk --space NAME join --agent` resumes using local
 `agent-handoff.json` identity metadata. This file contains the repository,
 invitation identity, and required account, without the bearer URL. Resumes repeat
 the account check. A replica without that metadata needs the original scoped
@@ -305,7 +389,7 @@ handoff URL. If its installed authority belongs to another account, use a fresh
 `--name` rather than rewriting that replica's authority. Only `Agent connection
 confirmed` means both the space pull and receipt push completed.
 
-Old browser prompts can contain open invitations. `connect` rejects these with
+Old browser prompts can contain open invitations. `join --agent` rejects these with
 an instruction to obtain a new account-scoped handoff; they remain valid for
 `join`. Existing spaces retain their seeded views, so upgrading the application
 alone does not replace an old prompt. From a checkout of this version, explicitly
@@ -315,5 +399,5 @@ update the selected space's built-in views and commands with:
 tonk --space NAME eval /path/to/tonk/rust/tonk-core/assets/library/core.yaml
 ```
 
-Reload the space after that evaluation syncs. `connect` does not rewrite an
+Reload the space after that evaluation syncs. `join --agent` does not rewrite an
 existing space's library.

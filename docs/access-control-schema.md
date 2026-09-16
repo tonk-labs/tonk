@@ -3,6 +3,8 @@
 The D1 database (`CONTROL` binding) behind `rust/tonk-access-service`.
 It answers one question on the hot path — may this subject be served —
 and holds the billing state that decides it.
+It also stores addressed public connection deliveries, independently of data
+authorization.
 
 Migrations live in `rust/tonk-access-service/migrations/`. The tables
 here are the state after all of them; the SQL in each file is the
@@ -61,7 +63,70 @@ erDiagram
         INTEGER measured_at
         INTEGER deleted_at "when deletion began; the row goes when it finishes"
     }
+
+    connection_delivery {
+        TEXT request_hash PK "hash of the complete CLI-signed request"
+        TEXT recipient "exact CLI DID allowed to read this delivery"
+        TEXT account "authenticated approving account; quota and future delivery pin"
+        TEXT approval_hex "payload digest and length; legacy inline public decision"
+        INTEGER created_at "signed decision issue time"
+        INTEGER approval_deadline "initial publication deadline, not grant expiry"
+        INTEGER payload_size "complete encoded payload size for bounded account quota"
+    }
+
+    connection_addition {
+        INTEGER sequence PK "exclusive transport cursor; never an authority version"
+        TEXT delivery_id UK "content digest of the complete signed addition"
+        TEXT request_hash FK "connection_delivery.request_hash"
+        TEXT recipient "exact original CLI key"
+        TEXT account "authenticated original approving account"
+        TEXT addition_hex "payload digest and length; legacy inline public addition"
+        INTEGER created_at "signed addition issuance time"
+        INTEGER payload_size "complete encoded payload size for bounded account quota"
+    }
+    connection_delivery_chunk {
+        TEXT request_hash PK,FK "connection_delivery.request_hash"
+        INTEGER ordinal PK "ordered chunk index"
+        TEXT content "at most 512 KiB encoded payload"
+    }
+    connection_addition_chunk {
+        TEXT delivery_id PK,FK "connection_addition.delivery_id"
+        INTEGER ordinal PK "ordered chunk index"
+        TEXT content "at most 512 KiB encoded payload"
+    }
 ```
+
+`connection_delivery` has no relationship to the provisioning decision. A row
+delivers ordinary signed grants to an authenticated recipient; it neither enables
+nor disables those grants. First publication requires a currently authorized
+device of an active account. Initial insertion rechecks that existing customer
+remains `Active` inside the atomic write, so a publication authenticated before
+account purge cannot recreate mailbox metadata afterward. There are no anonymous
+pending-request rows.
+Identical publication retries preserve the stored bytes; conflicting decisions
+cannot overwrite them. Completed account deletion removes its mailbox copies and
+chunk children atomically; it leaves standard revocations and client-retained
+proofs and data intact.
+`connection_addition` retains independently signed additions while that CLI is
+offline. Both original account and recipient must match, and new publication
+checks current device authority. Reads return one complete addition per signed
+cursor page. Neither table is read by the data authorization path.
+
+Historical inspection verifies a saved approval/addition at its signed issuance
+time for management and immutable account/recipient pinning. It does not revive
+expired authority. New publication checks current account/device authority;
+new CLI installation checks current space grants, and ordinary data access still
+checks revocations. Independent management-proof expiry does not shorten a live
+space grant.
+
+New payloads use a parent digest and length plus at most 16 ordered chunks,
+committed atomically. Reads verify the complete digest, length, and ordering;
+legacy inline payloads remain readable. Migrations 0007 and 0008 create the
+initial/addition parents; migration 0009 adds payload-size metadata and chunks.
+Apply 0009 before enabling chunk writes, and retain a chunk-aware reader on
+rollback. The codec still bounds complete signed
+payloads to 4 MiB. This avoids D1's 2,000,000-byte string/BLOB/row limit.
+[Cloudflare D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
 
 `account` is drawn above but is **not a table**. `customer.did` is the
 account DID, so identity and subscription share a primary key. That

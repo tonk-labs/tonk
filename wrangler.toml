@@ -27,6 +27,7 @@ run_worker_first = [
   "/@",
   "/@/*",
   "/customer/*",
+  "/connection/*",
   "/ucan",
   "/ucan/*",
 ]

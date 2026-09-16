@@ -154,10 +154,9 @@ mod when_one_account_is_signed_in {
         );
     }
 
-    /// The listing names the space and its owner, and has no access column:
-    /// there is nothing for it to report, because nothing is refused.
+    /// Authority provenance is separate from ownership and is not a remote verdict.
     #[dialog_common::test]
-    fn the_space_listing_carries_an_owner_and_no_access_column() {
+    fn the_space_listing_carries_an_owner_and_local_authority_provenance() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
@@ -168,10 +167,10 @@ mod when_one_account_is_signed_in {
         assert!(stdout.contains("NAME"), "{stdout}");
         assert!(stdout.contains("OWNER"), "{stdout}");
         assert!(stdout.contains("ROLE"), "{stdout}");
-        assert!(!stdout.contains("ACCESS"), "{stdout}");
+        assert!(stdout.contains("ACCESS"), "{stdout}");
         assert!(!stdout.contains("another account"), "{stdout}");
         // Local-only until it is linked: no roster, so no owner.
-        assert!(stdout.contains("local"), "{stdout}");
+        assert!(stdout.contains("local-only"), "{stdout}");
     }
 }
 
@@ -330,6 +329,15 @@ mod when_nothing_is_registered {
         assert!(stdout.contains("examine state"), "{stdout}");
         assert!(stdout.contains("write facts"), "{stdout}");
         assert!(stdout.contains("collaborate"), "{stdout}");
+        assert!(stdout.contains("--agent"), "{stdout}");
+        for command in ["connect ", "link "] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(command)),
+                "{stdout}"
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -522,6 +530,15 @@ mod when_resolving_with_precedence {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(!stdout.to_ascii_lowercase().contains("spot"), "{stdout}");
+        assert!(stdout.contains("--agent"), "{stdout}");
+        for command in ["connect ", "link "] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(command)),
+                "{stdout}"
+            );
+        }
     }
 
     #[dialog_common::test]

@@ -1,0 +1,86 @@
+[package]
+name = "dialog-remote-ucan-s3"
+description = "UCAN-based remote authorization for S3-compatible storage"
+edition = "2024"
+version = "0.1.0"
+authors = ["The Meiosys Project Authors"]
+license = "MPL-2.0"
+
+[features]
+default = []
+helpers = [
+    "dep:anyhow",
+    "dep:bytes",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+    "dialog-common/helpers",
+    "dialog-remote-s3/helpers",
+]
+integration-tests = ["dialog-common/integration-tests"]
+web-integration-tests = ["dialog-common/web-integration-tests"]
+
+[dependencies]
+async-trait = { version = "0.1" }
+base58 = { version = "0.2" }
+blake3 = { version = "1" }
+chrono = { version = "0.4" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+ipld-core = { version = "0.4", features = ["serde"] }
+parking_lot = { version = "0.12" }
+serde = { version = "1", features = ["derive"] }
+serde_bytes = { version = "0.11" }
+serde_ipld_dagcbor = { version = "0.6" }
+serde_json = { version = "1" }
+sieve-cache = { version = "1" }
+signature = { version = "2.2" }
+tracing = { version = "0.1" }
+thiserror = { version = "2" }
+
+# Optional dependencies (helpers feature, cross-platform)
+anyhow = { version = "1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Optional dependencies (helpers feature, native-only server infrastructure)
+bytes = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", optional = true }
+hyper-util = { version = "0.1", optional = true }
+tokio = { version = "1", optional = true, features = ["net", "rt"] }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["cors"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+anyhow = { version = "1" }
+async-signature = { version = "0.5" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14", features = ["helpers"] }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14", features = ["test-fetch"] }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14", features = ["helpers"] }
+serde_json = { version = "1" }
+tokio = { version = "1", features = ["rt", "macros"] }
+wasm-bindgen-test = { version = "0.3" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-14", features = ["helpers"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(feature, values(\"web-integration-tests\", \"helpers\"))",
+  "cfg(dialog_test_wasm_integration)"
+] }

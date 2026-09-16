@@ -17,6 +17,8 @@ const ROUTES: &[&str] = &[
     "/api",
     "/api/account",
     "/api/account/attach",
+    "/api/account/connections",
+    "/api/account/connections/{id}/revoke",
     "/api/account/deletion/plan",
     "/api/account/devices",
     "/api/account/devices/register",

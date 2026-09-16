@@ -17,3 +17,12 @@ distinguish an unreachable upstream from a current comparison.
 remote when one resolves. `tonk join <url> --name <name>` creates a local space
 from that invitation. Joining and syncing copy facts; removing a local replica
 does not erase replicas already held elsewhere.
+
+Scoped agent invitations use `tonk connect <agent-link>`; selected browser
+approval uses `tonk link`. Both use ordinary space grants with explicit expiry
+(normally 90 days, bounded by the issuer's authority). Revocation blocks new
+remote authorizations as it propagates through the service; already-issued transport
+URLs can remain usable for up to 60 seconds. Downloaded data and unsynced edits
+stay local. Queries needing data that was never downloaded still require remote
+access. New authorization is needed after grant expiry or revocation; the CLI
+does not fall back to another account's authority.

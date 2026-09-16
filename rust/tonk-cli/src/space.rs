@@ -33,6 +33,8 @@
 //! cannot read.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,9 @@ pub const STATE_ENV: &str = "TONK_SPACES_STATE";
 
 /// File name of the registry inside the store directory.
 const REGISTRY_FILE: &str = "spaces.json";
+
+/// Cross-process lock covering one complete registry mutation.
+const REGISTRY_LOCK_FILE: &str = "spaces.lock";
 
 /// Pre-rename registry filename, read once and migrated away. See
 /// [`SpaceStore::load`].
@@ -109,6 +114,10 @@ pub struct Registry {
 /// merely joined.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SpaceEntry {
+    /// Explicit scoped credentials for a connection. These public identifiers
+    /// select credentials; they do not replace UCAN validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<crate::connections::ConnectionBinding>,
     /// Absolute path to the site directory backing this space.
     pub site: PathBuf,
 }
@@ -116,7 +125,10 @@ pub struct SpaceEntry {
 impl SpaceEntry {
     /// An entry for `site`.
     pub fn at(site: impl Into<PathBuf>) -> Self {
-        Self { site: site.into() }
+        Self {
+            site: site.into(),
+            connection: None,
+        }
     }
 }
 
@@ -317,6 +329,27 @@ pub struct SpaceStore {
     dir: PathBuf,
 }
 
+/// Exclusive token covering one complete registry read/modify/write.
+///
+/// Callers load and save through this value so they cannot accidentally
+/// release the OS lock between reading a snapshot and publishing its update.
+pub struct RegistryWriteGuard {
+    _file: File,
+    store: SpaceStore,
+}
+
+impl RegistryWriteGuard {
+    /// Load the registry while retaining the exclusive mutation lock.
+    pub fn load(&self) -> Result<Registry, SpaceError> {
+        self.store.load_under_guard()
+    }
+
+    /// Publish the updated registry while retaining the exclusive lock.
+    pub fn save(&self, registry: &Registry) -> Result<(), SpaceError> {
+        self.store.save_unlocked(registry)
+    }
+}
+
 impl SpaceStore {
     /// The real store: [`STATE_ENV`] override, else the platform
     /// data dir (`dirs::data_dir()/tonk`, the same base telemetry
@@ -365,6 +398,35 @@ impl SpaceStore {
     /// The root holding canonical site directories.
     pub fn spaces_root(&self) -> PathBuf {
         self.dir.join(SPACES_DIRNAME)
+    }
+
+    /// Acquire the exclusive cross-process registry mutation guard.
+    pub fn write_guard(&self) -> Result<RegistryWriteGuard, SpaceError> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| SpaceError::Io(format!("could not create {}: {e}", self.dir.display())))?;
+        let path = self.dir.join(REGISTRY_LOCK_FILE);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| {
+                SpaceError::Io(format!(
+                    "could not open registry lock {}: {e}",
+                    path.display()
+                ))
+            })?;
+        file.lock().map_err(|e| {
+            SpaceError::Io(format!(
+                "could not acquire registry lock {}: {e}",
+                path.display()
+            ))
+        })?;
+        Ok(RegistryWriteGuard {
+            _file: file,
+            store: self.clone(),
+        })
     }
 
     /// Canonical site directories that no registry entry names.
@@ -417,7 +479,7 @@ impl SpaceStore {
     /// [`SpaceError::Corrupt`].
     ///
     /// An installation still on the pre-rename layout is converted here
-    /// first — see [`Self::adopt_legacy_layout`] — because this is the
+    /// first — see [`Self::adopt_legacy_layout_unlocked`] — because this is the
     /// first place any command touches the registry, and a store that
     /// reported itself empty would read as "no spaces registered" to
     /// someone holding a full one.
@@ -426,7 +488,36 @@ impl SpaceStore {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return self.adopt_legacy_layout();
+                // An empty current and legacy store is a read-only result:
+                // do not create the state directory or its lock merely to
+                // report an empty registry. Re-check current to close the
+                // race with a writer that published between the two reads.
+                if !self.legacy_registry_path().exists() {
+                    return match std::fs::read_to_string(&path) {
+                        Ok(text) => serde_json::from_str(&text).map_err(|e| SpaceError::Corrupt {
+                            path,
+                            detail: e.to_string(),
+                        }),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            Ok(Registry::default())
+                        }
+                        Err(e) => Err(SpaceError::Io(format!(
+                            "could not read {}: {e}",
+                            path.display()
+                        ))),
+                    };
+                }
+                // Reading a legacy registry remains useful from an explicitly
+                // read-only mounted directory. Otherwise conversion is a
+                // registry mutation and must re-check state under the lock.
+                if std::fs::metadata(&self.dir)
+                    .map(|metadata| metadata.permissions().readonly())
+                    .unwrap_or(false)
+                {
+                    return self.adopt_legacy_layout_unlocked();
+                }
+                let guard = self.write_guard()?;
+                return guard.load();
             }
             Err(e) => {
                 return Err(SpaceError::Io(format!(
@@ -441,22 +532,40 @@ impl SpaceStore {
         })
     }
 
+    /// Load the current registry or convert the legacy layout while the
+    /// caller retains the mutation lock.
+    fn load_under_guard(&self) -> Result<Registry, SpaceError> {
+        let path = self.registry_path();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| SpaceError::Corrupt {
+                path,
+                detail: e.to_string(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.adopt_legacy_layout_unlocked()
+            }
+            Err(e) => Err(SpaceError::Io(format!(
+                "could not read {}: {e}",
+                path.display()
+            ))),
+        }
+    }
+
     /// Convert a pre-rename registry and site root to the current layout,
     /// returning the registry either way.
     ///
-    /// Only reached when `spaces.json` is absent, so a converted store
-    /// never pays for this again. The order is chosen so every
-    /// interruption converges on a re-run: the site directory moves
-    /// first, the rewritten registry lands atomically second, and the
-    /// legacy registry is removed last. A crash before the write leaves the
-    /// old registry naming directories that have moved, which the next run
-    /// fixes because the rewrite is a prefix substitution that does not
-    /// consult the filesystem.
+    /// Only reached when `spaces.json` is absent, so a converted store never
+    /// pays for this again. The site directory moves first, the rewritten
+    /// registry lands atomically second, and the legacy registry is removed
+    /// last. A crash before the write leaves the old registry naming
+    /// directories that have moved; the next run fixes those paths without
+    /// consulting the filesystem. The caller retains the registry lock, or
+    /// an explicitly read-only store makes conversion impossible.
     ///
-    /// Failure is an error rather than an empty registry: silently
-    /// reporting zero spaces to someone who has ten is the one outcome
-    /// worse than refusing to run.
-    fn adopt_legacy_layout(&self) -> Result<Registry, SpaceError> {
+    /// Failure is an error rather than an empty registry: silently reporting
+    /// zero spaces to someone who has ten is the one outcome worse than
+    /// refusing to run.
+    fn adopt_legacy_layout_unlocked(&self) -> Result<Registry, SpaceError> {
         let legacy_path = self.legacy_registry_path();
         let text = match std::fs::read_to_string(&legacy_path) {
             Ok(text) => text,
@@ -519,7 +628,7 @@ impl SpaceStore {
             }
         }
 
-        self.save(&registry)?;
+        self.save_unlocked(&registry)?;
         // Best-effort: the store is already correct without it, and a
         // read-only data dir is not a reason to fail every command. What
         // it costs is a stale file an older `tonk` would still write to.
@@ -527,21 +636,58 @@ impl SpaceStore {
         Ok(registry)
     }
 
-    /// Persist the registry atomically: write a sibling temp file,
-    /// then rename over `spaces.json` so concurrent readers never
-    /// observe a torn write.
+    /// Persist one complete registry value under an internally acquired lock.
+    /// Callers that loaded a value for mutation must instead retain a
+    /// [`RegistryWriteGuard`] across both load and save.
     pub fn save(&self, registry: &Registry) -> Result<(), SpaceError> {
+        let guard = self.write_guard()?;
+        guard.save(registry)
+    }
+
+    /// Write and atomically publish a registry while the caller holds the
+    /// cross-process mutation lock.
+    fn save_unlocked(&self, registry: &Registry) -> Result<(), SpaceError> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| SpaceError::Io(format!("could not create {}: {e}", self.dir.display())))?;
         let path = self.registry_path();
-        let tmp = self.dir.join(format!("{REGISTRY_FILE}.tmp"));
         let text = serde_json::to_string_pretty(registry)
             .map_err(|e| SpaceError::Io(format!("could not serialize registry: {e}")))?;
-        std::fs::write(&tmp, text)
-            .map_err(|e| SpaceError::Io(format!("could not write {}: {e}", tmp.display())))?;
-        std::fs::rename(&tmp, &path).map_err(|e| {
-            SpaceError::Io(format!("could not move {} into place: {e}", tmp.display()))
-        })
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.dir).map_err(|e| {
+            SpaceError::Io(format!(
+                "could not create a temporary registry beside {}: {e}",
+                path.display()
+            ))
+        })?;
+        tmp.write_all(text.as_bytes()).map_err(|e| {
+            SpaceError::Io(format!(
+                "could not write temporary registry {}: {e}",
+                tmp.path().display()
+            ))
+        })?;
+        tmp.as_file_mut().sync_all().map_err(|e| {
+            SpaceError::Io(format!(
+                "could not sync temporary registry {}: {e}",
+                tmp.path().display()
+            ))
+        })?;
+        tmp.persist(&path).map_err(|e| {
+            SpaceError::Io(format!(
+                "could not move {} into place at {}: {}",
+                e.file.path().display(),
+                path.display(),
+                e.error
+            ))
+        })?;
+        #[cfg(unix)]
+        File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| {
+                SpaceError::Io(format!(
+                    "registry was replaced at {}, but its directory could not be synced: {e}",
+                    path.display()
+                ))
+            })?;
+        Ok(())
     }
 
     /// The account this installation is signed into, if any.
@@ -564,9 +710,10 @@ impl SpaceStore {
 
     /// Record (or clear) the signed-in account.
     pub fn set_account(&self, account: Option<AccountRecord>) -> Result<(), SpaceError> {
-        let mut registry = self.load()?;
+        let guard = self.write_guard()?;
+        let mut registry = guard.load()?;
         registry.account = account;
-        self.save(&registry)
+        guard.save(&registry)
     }
 
     /// Resolve the space a command should operate on.
@@ -757,7 +904,7 @@ pub struct Listing {
 
 /// Register an already-mounted canonical site without binding any directory.
 ///
-/// The registry is loaded immediately before the atomic save so a concurrent
+/// The registry is loaded and saved under one exclusive guard so a concurrent
 /// name claim is never silently overwritten.
 pub fn register_existing_unbound(
     store: &SpaceStore,
@@ -765,33 +912,139 @@ pub fn register_existing_unbound(
     site: &Path,
 ) -> Result<(), SpaceError> {
     validate_name(name)?;
-    let site = site.canonicalize().map_err(|error| {
-        SpaceError::Io(format!(
-            "could not canonicalize {}: {error}",
-            site.display()
-        ))
-    })?;
-    let canonical = store.canonical_site(name).canonicalize().map_err(|error| {
+    let site = canonical_existing_site(site)?;
+    let canonical_site = store.canonical_site(name).canonicalize().map_err(|error| {
         SpaceError::Io(format!(
             "account space is not mounted at canonical site {}: {error}",
             store.canonical_site(name).display()
         ))
     })?;
-    if site != canonical {
+    if site != canonical_site {
         return Err(SpaceError::Io(format!(
             "account space must be mounted at canonical site {}",
-            canonical.display()
+            canonical_site.display()
         )));
     }
+    register_existing(store, name, site, None)
+}
 
-    let mut registry = store.load()?;
+/// Register an already-mounted site and bind one directory in the same
+/// registry transaction.
+///
+/// Unlike account-space pulls, invite claims may learn their display name only
+/// after mounting, so their storage directory need not match that name.
+pub fn register_existing_bound(
+    store: &SpaceStore,
+    name: &str,
+    site: &Path,
+    directory: &Path,
+) -> Result<(), SpaceError> {
+    validate_name(name)?;
+    let site = canonical_existing_site(site)?;
+    register_existing(store, name, site, Some(directory))
+}
+
+/// Atomically register scoped connection credentials and an optional directory.
+///
+/// An exact replay is harmless. Occupied names, paths or directory bindings
+/// cannot replace another connection, legacy authority, or unsynced local work.
+/// The importer must durably publish and verify the site and credentials first.
+pub fn register_connection_bound(
+    store: &SpaceStore,
+    name: &str,
+    site: &Path,
+    directory: Option<&Path>,
+    connection: crate::connections::ConnectionBinding,
+) -> Result<(), SpaceError> {
+    validate_name(name)?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
+    let site = canonical_existing_site(site)?;
+    let directory = directory
+        .map(|directory| {
+            directory.canonicalize().map_err(|error| {
+                SpaceError::Io(format!(
+                    "could not canonicalize binding directory {}: {error}",
+                    directory.display()
+                ))
+            })
+        })
+        .transpose()?;
+    if let Some(directory) = &directory
+        && let Some(previous) = registry.bindings.get(directory)
+        && previous != name
+    {
+        return Err(SpaceError::Io(format!(
+            "directory {} is already bound to space '{previous}'",
+            directory.display()
+        )));
+    }
+    let entry = SpaceEntry {
+        site: site.clone(),
+        connection: Some(connection),
+    };
+    if let Some(existing) = registry.spaces.get(name) {
+        if existing != &entry {
+            // An older registry writer can drop the additive connection field.
+            // Restore only the verified caller's binding at the same marked site.
+            let repair = existing.connection.is_none()
+                && canonical(&existing.site) == site
+                && crate::connections::binding_at(&site)
+                    .map_err(|error| SpaceError::Io(error.to_string()))?
+                    .as_ref()
+                    == entry.connection.as_ref();
+            if !repair {
+                return Err(SpaceError::Exists(name.to_owned()));
+            }
+            registry.spaces.insert(name.to_owned(), entry);
+        }
+    } else {
+        if let Some((alias, _)) = registry
+            .spaces
+            .iter()
+            .find(|(_, entry)| canonical(&entry.site) == site)
+        {
+            return Err(SpaceError::Io(format!(
+                "connection directory is already registered as '{alias}'"
+            )));
+        }
+        registry.spaces.insert(name.to_owned(), entry);
+    }
+    if let Some(directory) = directory {
+        registry.bindings.insert(directory, name.to_owned());
+    }
+    guard.save(&registry)
+}
+
+fn register_existing(
+    store: &SpaceStore,
+    name: &str,
+    site: PathBuf,
+    binding_directory: Option<&Path>,
+) -> Result<(), SpaceError> {
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
     if registry.spaces.contains_key(name) {
         return Err(SpaceError::Exists(name.to_owned()));
     }
     registry
         .spaces
         .insert(name.to_owned(), SpaceEntry::at(site));
-    store.save(&registry)
+    if let Some(directory) = binding_directory {
+        registry
+            .bindings
+            .insert(canonical(directory), name.to_owned());
+    }
+    guard.save(&registry)
+}
+
+fn canonical_existing_site(site: &Path) -> Result<PathBuf, SpaceError> {
+    site.canonicalize().map_err(|error| {
+        SpaceError::Io(format!(
+            "could not canonicalize {}: {error}",
+            site.display()
+        ))
+    })
 }
 
 /// Create (or adopt) a space: initialize the site, register the name,
@@ -807,14 +1060,20 @@ pub async fn create(
     config: crate::site::SiteConfig,
 ) -> Result<CreateOutcome, SpaceError> {
     validate_name(name)?;
-    let mut registry = store.load()?;
-    if registry.spaces.contains_key(name) {
-        return Err(SpaceError::Exists(name.to_owned()));
-    }
-
     let target = site_override
         .map(Path::to_path_buf)
         .unwrap_or_else(|| store.canonical_site(name));
+    // Initialization can recover account state and provision remotely. Keep it
+    // outside the registry lock, which those account transitions also need.
+    // A separate target lock prevents two creators from initializing one site.
+    let _creation = creation_guard(store, &target)?;
+    {
+        let guard = store.write_guard()?;
+        if guard.load()?.spaces.contains_key(name) {
+            return Err(SpaceError::Exists(name.to_owned()));
+        }
+    }
+
     // Asked before init, which is idempotent and so cannot tell us
     // afterwards whether it created or adopted.
     let adopted = crate::site::has_site_data(&target);
@@ -850,6 +1109,13 @@ pub async fn create(
         did: site.repository.did().to_string(),
         adopted,
     };
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
+    if registry.spaces.contains_key(name) {
+        // Another operation claimed the alias while initialization ran. Retain
+        // the initialized data so the caller can explicitly adopt it elsewhere.
+        return Err(SpaceError::Exists(name.to_owned()));
+    }
     registry
         .spaces
         .insert(name.to_owned(), SpaceEntry::at(outcome.site.clone()));
@@ -858,8 +1124,48 @@ pub async fn create(
             .bindings
             .insert(canonical(directory), name.to_owned());
     }
-    store.save(&registry)?;
+    guard.save(&registry)?;
     Ok(outcome)
+}
+
+/// Serialize initialization of a target without blocking account transitions.
+fn creation_guard(store: &SpaceStore, target: &Path) -> Result<File, SpaceError> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| SpaceError::Io(error.to_string()))?
+            .join(target)
+    };
+    // Canonicalize the nearest existing ancestor: the target itself does not
+    // exist on first use, and a symlinked parent must not change its lock key
+    // once initialization creates it.
+    let mut ancestor = target.as_path();
+    let base = loop {
+        if let Ok(base) = ancestor.canonicalize() {
+            break base;
+        }
+        ancestor = ancestor.parent().ok_or_else(|| {
+            SpaceError::Io(format!(
+                "could not resolve creation target {}",
+                target.display()
+            ))
+        })?;
+    };
+    let target = base.join(target.strip_prefix(ancestor).expect("ancestor prefix"));
+    let directory = store.root().join("creation-locks");
+    std::fs::create_dir_all(&directory).map_err(|error| SpaceError::Io(error.to_string()))?;
+    let key = blake3::hash(target.as_os_str().as_encoded_bytes()).to_hex();
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(format!("{key}.lock")))
+        .map_err(|error| SpaceError::Io(error.to_string()))?;
+    lock.lock()
+        .map_err(|error| SpaceError::Io(format!("could not lock space creation: {error}")))?;
+    Ok(lock)
 }
 
 /// Outcome of [`transplant`].
@@ -955,7 +1261,8 @@ pub struct UnbindOutcome {
 /// what it replaced: unlike `space new`, nothing is destroyed, so
 /// there is no reason to demand an unbind first.
 pub fn bind(store: &SpaceStore, name: &str, directory: &Path) -> Result<BindOutcome, SpaceError> {
-    let mut registry = store.load()?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
     if !registry.spaces.contains_key(name) {
         return Err(SpaceError::Unknown {
             name: name.to_owned(),
@@ -965,7 +1272,7 @@ pub fn bind(store: &SpaceStore, name: &str, directory: &Path) -> Result<BindOutc
     }
     let directory = canonical(directory);
     let previous = registry.bindings.insert(directory.clone(), name.to_owned());
-    store.save(&registry)?;
+    guard.save(&registry)?;
     Ok(BindOutcome {
         directory,
         name: name.to_owned(),
@@ -976,7 +1283,8 @@ pub fn bind(store: &SpaceStore, name: &str, directory: &Path) -> Result<BindOutc
 /// Unbind `directory`. Exact match only — see
 /// [`SpaceError::NotBound`].
 pub fn unbind(store: &SpaceStore, directory: &Path) -> Result<UnbindOutcome, SpaceError> {
-    let mut registry = store.load()?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
     let key = canonical(directory);
     let Some(name) = registry.bindings.remove(&key) else {
         return Err(SpaceError::NotBound {
@@ -986,7 +1294,7 @@ pub fn unbind(store: &SpaceStore, directory: &Path) -> Result<UnbindOutcome, Spa
             ancestor: directory_binding(&registry, &key),
         });
     };
-    store.save(&registry)?;
+    guard.save(&registry)?;
     Ok(UnbindOutcome {
         directory: key,
         name,
@@ -1037,7 +1345,8 @@ pub fn listing(
 /// fails — and is benign: the entry points at an empty path, `tonk
 /// space` shows it, and re-running `rm` clears it.
 pub fn remove(store: &SpaceStore, name: &str, data: Data) -> Result<RemoveOutcome, SpaceError> {
-    let mut registry = store.load()?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
     let Some(entry) = registry.spaces.remove(name) else {
         return Err(SpaceError::Unknown {
             name: name.to_owned(),
@@ -1074,7 +1383,7 @@ pub fn remove(store: &SpaceStore, name: &str, data: Data) -> Result<RemoveOutcom
             }
         },
     };
-    store.save(&registry)?;
+    guard.save(&registry)?;
 
     Ok(RemoveOutcome {
         name: name.to_owned(),
@@ -1110,11 +1419,48 @@ mod tests {
     mod loading_and_saving {
         use super::*;
 
+        fn assert_waits_for_registry_lock<T: Send + 'static>(
+            directory: &Path,
+            operation: impl FnOnce() -> Result<T, SpaceError> + Send + 'static,
+        ) {
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(directory.join("spaces.lock"))
+                .expect("open registry lock");
+            lock.lock().expect("hold registry lock");
+            let (sent, received) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                sent.send(operation()).expect("send mutation result");
+            });
+
+            assert!(
+                matches!(
+                    received.recv_timeout(std::time::Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "registry mutation ignored the cross-process lock"
+            );
+
+            drop(lock);
+            received
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("writer resumed after unlock")
+                .expect("mutation succeeded");
+            writer.join().expect("writer thread");
+        }
+
         #[test]
         fn it_treats_a_missing_registry_as_empty() {
-            let (_tmp, store) = store();
+            let (tmp, store) = store();
             let registry = store.load().expect("load");
             assert_eq!(registry, Registry::default());
+            assert!(
+                !tmp.path().join(REGISTRY_LOCK_FILE).exists(),
+                "a read-only load must not create a mutation lock"
+            );
         }
 
         #[test]
@@ -1157,6 +1503,185 @@ mod tests {
                 .filter(|n| n.to_string_lossy().ends_with(".tmp"))
                 .collect();
             assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+
+        #[test]
+        fn it_does_not_reuse_another_writers_temp_file() {
+            let (tmp, store) = store();
+            let other_writer = tmp.path().join("spaces.json.tmp");
+            std::fs::write(&other_writer, "another writer's bytes")
+                .expect("seed another writer's temp file");
+
+            store.save(&Registry::default()).expect("save registry");
+
+            assert_eq!(
+                std::fs::read_to_string(other_writer).expect("other temp survives"),
+                "another writer's bytes"
+            );
+            assert_eq!(store.load().expect("load"), Registry::default());
+        }
+
+        #[test]
+        fn it_waits_for_the_registry_lock_before_mutating() {
+            let (tmp, store) = store();
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("seed registry");
+            let project = tmp.path().join("project");
+            std::fs::create_dir(&project).expect("project directory");
+
+            // This is the same OS-visible seam a second `tonk` process sees.
+            // Holding it must stop the whole load/modify/save transaction,
+            // rather than merely serializing the final rename.
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(tmp.path().join("spaces.lock"))
+                .expect("open registry lock");
+            lock.lock().expect("hold registry lock");
+
+            let (sent, received) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                sent.send(bind(&store, "garden", &project))
+                    .expect("send bind result");
+            });
+
+            assert!(
+                matches!(
+                    received.recv_timeout(std::time::Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "registry mutation ignored the cross-process lock"
+            );
+
+            drop(lock);
+            received
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("writer resumed after unlock")
+                .expect("bind succeeded");
+            writer.join().expect("writer thread");
+        }
+
+        #[test]
+        fn it_changes_nothing_when_the_registry_lock_cannot_open() {
+            let (tmp, store) = store();
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("seed registry");
+            let project = tmp.path().join("project");
+            std::fs::create_dir(&project).expect("project directory");
+            let lock_path = tmp.path().join(REGISTRY_LOCK_FILE);
+            std::fs::remove_file(&lock_path).expect("remove seed lock file");
+            std::fs::create_dir(&lock_path).expect("make lock path unopenable as a file");
+            let before = std::fs::read(store.registry_path()).expect("registry before failure");
+
+            let error = bind(&store, "garden", &project).expect_err("lock open must fail");
+
+            assert!(error.to_string().contains("registry lock"), "{error}");
+            assert_eq!(
+                std::fs::read(store.registry_path()).expect("registry after failure"),
+                before
+            );
+        }
+
+        #[test]
+        fn it_waits_for_the_registry_lock_before_switching_accounts() {
+            let (tmp, store) = store();
+            store.save(&Registry::default()).expect("seed registry");
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(tmp.path().join("spaces.lock"))
+                .expect("open registry lock");
+            lock.lock().expect("hold registry lock");
+
+            let (sent, received) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                sent.send(store.set_account(Some(AccountRecord::new("did:key:account"))))
+                    .expect("send account result");
+            });
+
+            assert!(
+                matches!(
+                    received.recv_timeout(std::time::Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "account mutation ignored the cross-process lock"
+            );
+
+            drop(lock);
+            received
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("writer resumed after unlock")
+                .expect("account switch succeeded");
+            writer.join().expect("writer thread");
+        }
+
+        #[test]
+        fn it_waits_for_the_registry_lock_before_registering_a_mounted_space() {
+            let (tmp, store) = store();
+            let site = store.canonical_site("garden");
+            std::fs::create_dir_all(&site).expect("canonical site");
+            let directory = tmp.path().to_path_buf();
+
+            assert_waits_for_registry_lock(&directory, move || {
+                register_existing_unbound(&store, "garden", &site)
+            });
+        }
+
+        #[test]
+        fn it_registers_and_binds_a_claim_before_its_name_is_known() {
+            let (tmp, store) = store();
+            let site = store.canonical_site("connection-123");
+            std::fs::create_dir_all(&site).expect("claimed site");
+            let directory = tmp.path().join("project");
+            std::fs::create_dir(&directory).expect("project directory");
+
+            register_existing_bound(&store, "garden", &site, &directory)
+                .expect("register claimed site");
+
+            let registry = store.load().expect("load registry");
+            assert_eq!(
+                registry.spaces["garden"].site,
+                site.canonicalize().expect("canonical site")
+            );
+            assert_eq!(
+                registry.bindings[&directory.canonicalize().expect("canonical directory")],
+                "garden"
+            );
+        }
+
+        #[test]
+        fn it_waits_for_the_registry_lock_before_unbinding() {
+            let (tmp, store) = store();
+            let project = tmp.path().join("project");
+            std::fs::create_dir(&project).expect("project directory");
+            let mut registry = registry_with(&[("garden", "/tmp/garden")], None);
+            registry.bindings.insert(
+                project.canonicalize().expect("canonical project"),
+                "garden".into(),
+            );
+            store.save(&registry).expect("seed registry");
+            let directory = tmp.path().to_path_buf();
+
+            assert_waits_for_registry_lock(&directory, move || unbind(&store, &project));
+        }
+
+        #[test]
+        fn it_waits_for_the_registry_lock_before_removing() {
+            let (tmp, store) = store();
+            store
+                .save(&registry_with(&[("garden", "/tmp/garden")], None))
+                .expect("seed registry");
+            let directory = tmp.path().to_path_buf();
+
+            assert_waits_for_registry_lock(&directory, move || {
+                remove(&store, "garden", Data::Keep)
+            });
         }
 
         #[dialog_common::test]
@@ -1445,7 +1970,9 @@ mod tests {
                 .save(&registry_with(&[("garden", "/tmp/garden")], None))
                 .expect("save winner");
 
-            let registry = store.adopt_legacy_layout().expect("losing converter");
+            let registry = store
+                .adopt_legacy_layout_unlocked()
+                .expect("losing converter");
             assert_eq!(registry.spaces.keys().collect::<Vec<_>>(), vec!["garden"]);
         }
 
@@ -1781,6 +2308,236 @@ mod tests {
             ] {
                 assert!(validate_name(name).is_err(), "{name}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod connection_registry_tests {
+    use super::*;
+    use crate::connections::ConnectionBinding;
+
+    fn binding(id: &str) -> ConnectionBinding {
+        ConnectionBinding {
+            version: 1,
+            id: id.into(),
+            subject: format!("did:key:{id}"),
+            recipient: format!("did:key:{id}-recipient"),
+            grant_cids: vec![format!("{id}-grant")],
+        }
+    }
+
+    #[test]
+    fn connection_registry_create_allows_same_store_account_initialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let target = store.canonical_site("created");
+        let config = crate::site::SiteConfig {
+            profile_name: "registry-create".into(),
+            profile_directory: dialog_effects::storage::Directory::At(
+                temp.path().join("profile").to_string_lossy().into_owned(),
+            ),
+            require_account: false,
+            provision_account_spaces: false,
+            account_store: store.clone(),
+        };
+        // Simulate an account transition already holding its lock. Initialization
+        // reaches that boundary after creating the target directory. A registry
+        // mutation must still complete, or the two lock orders can deadlock.
+        let account = crate::account_session::exclusive_transition_guard(&store).unwrap();
+        let creating = store.clone();
+        let creator = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(create(&creating, "created", None, None, config))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !target.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            target.exists(),
+            "creation never reached site initialization"
+        );
+        let writing = store.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            sent.send(writing.set_account(None)).unwrap();
+        });
+        let before_release = received.recv_timeout(std::time::Duration::from_secs(2));
+        // Release before asserting, so even a regression unwinds both workers.
+        drop(account);
+        writer.join().unwrap();
+        creator.join().unwrap().unwrap();
+        before_release
+            .expect("registry lock held while waiting for same-store account lock")
+            .unwrap();
+        assert!(store.load().unwrap().spaces.contains_key("created"));
+    }
+
+    #[test]
+    fn connection_registry_publication_and_replay_preserve_other_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let replica = temp.path().join("replica");
+        let directory = temp.path().join("project");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(replica.join("unsynced"), b"local work").unwrap();
+        let original: Registry = serde_json::from_value(serde_json::json!({
+            "spaces": {"legacy": {"site": "/retained/legacy"}},
+            "bindings": {"/retained/project": "legacy"},
+            "account": {"root": "retained-account", "futureAccountField": 7},
+            "futureRegistryField": {"keep": true}
+        }))
+        .unwrap();
+        store.save(&original).unwrap();
+        let credential = binding("invitation");
+        register_connection_bound(
+            &store,
+            "agent",
+            &replica,
+            Some(&directory),
+            credential.clone(),
+        )
+        .unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.account, original.account);
+        assert_eq!(saved.extra, original.extra);
+        assert_eq!(saved.spaces.get("legacy"), original.spaces.get("legacy"));
+        assert_eq!(
+            saved.bindings.get(Path::new("/retained/project")),
+            Some(&"legacy".to_owned())
+        );
+        assert_eq!(saved.spaces["agent"].connection.as_ref(), Some(&credential));
+        assert_eq!(
+            saved.bindings.get(&directory.canonicalize().unwrap()),
+            Some(&"agent".to_owned())
+        );
+        register_connection_bound(&store, "agent", &replica, Some(&directory), credential).unwrap();
+        assert_eq!(
+            store.load().unwrap(),
+            saved,
+            "retry must preserve the complete snapshot"
+        );
+        assert_eq!(
+            std::fs::read(replica.join("unsynced")).unwrap(),
+            b"local work"
+        );
+    }
+
+    #[test]
+    fn connection_registry_repairs_only_matching_marked_legacy_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let replica = temp.path().join("replica");
+        std::fs::create_dir_all(&replica).unwrap();
+        let credential = binding(&"a".repeat(64));
+        let mut original = store.load().unwrap();
+        original
+            .spaces
+            .insert("agent".into(), SpaceEntry::at(replica.clone()));
+        store.save(&original).unwrap();
+        let snapshot = std::fs::read(store.registry_path()).unwrap();
+        // An ordinary unmarked replica must never convert through this repair.
+        assert!(
+            register_connection_bound(&store, "agent", &replica, None, credential.clone()).is_err()
+        );
+        assert_eq!(std::fs::read(store.registry_path()).unwrap(), snapshot);
+        let marker = serde_json::json!({
+            "binding": credential, "remote": "https://example.test/ucan/",
+            "grants": [], "validated_at": 1, "phase": "ready"
+        });
+        std::fs::write(
+            replica.join(crate::connections::MARKER_FILE),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            register_connection_bound(&store, "agent", &replica, None, binding(&"b".repeat(64)))
+                .is_err()
+        );
+        assert_eq!(std::fs::read(store.registry_path()).unwrap(), snapshot);
+        // Registration consumes authority already validated by open_bound/import_at;
+        // this fixture exercises only recovery of the additive registry metadata.
+        register_connection_bound(&store, "agent", &replica, None, credential.clone()).unwrap();
+        let mut expected = original;
+        expected.spaces.get_mut("agent").unwrap().connection = Some(credential);
+        expected.spaces.get_mut("agent").unwrap().site = replica.canonicalize().unwrap();
+        assert_eq!(store.load().unwrap(), expected);
+    }
+
+    #[test]
+    fn connection_registry_collisions_publish_nothing_and_preserve_local_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let directory = temp.path().join("project");
+        for path in [&first, &second, &directory] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(second.join("unsynced"), b"retained").unwrap();
+        register_connection_bound(&store, "first", &first, Some(&directory), binding("first"))
+            .unwrap();
+        let saved = std::fs::read(store.registry_path()).unwrap();
+        for (name, site, target, credentials) in [
+            ("first", &second, None, binding("second")),
+            ("first", &first, None, binding("different")),
+            (
+                "second",
+                &second,
+                Some(directory.as_path()),
+                binding("second"),
+            ),
+            ("duplicate", &first, None, binding("first")),
+        ] {
+            assert!(register_connection_bound(&store, name, site, target, credentials).is_err());
+            assert_eq!(std::fs::read(store.registry_path()).unwrap(), saved);
+        }
+        assert_eq!(std::fs::read(second.join("unsynced")).unwrap(), b"retained");
+    }
+
+    #[test]
+    fn connection_registry_concurrent_imports_and_account_write_preserve_each_other() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(9));
+        let mut writers = Vec::new();
+        for index in 0..8 {
+            let root = temp.path().join(format!("replica-{index}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let store = store.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                register_connection_bound(
+                    &store,
+                    &format!("agent-{index}"),
+                    &root,
+                    None,
+                    binding(&format!("key-{index}")),
+                )
+                .unwrap();
+            }));
+        }
+        barrier.wait();
+        store
+            .set_account(Some(AccountRecord::new("account-changed-concurrently")))
+            .unwrap();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let saved = store.load().unwrap();
+        assert_eq!(saved.spaces.len(), 8);
+        assert_eq!(saved.account.unwrap().root, "account-changed-concurrently");
+        for index in 0..8 {
+            assert_eq!(
+                saved.spaces[&format!("agent-{index}")].connection.as_ref(),
+                Some(&binding(&format!("key-{index}")))
+            );
         }
     }
 }

@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/dialog-remote-ucan-s3"]
 members = [
   "rust/dialog-reactor",
   "rust/tonk-access-service",
@@ -242,3 +243,7 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# Minimal verified-chain transport expiry fix pending upstream publication.
+[patch."https://github.com/dialog-db/dialog-db.git"]
+dialog-remote-ucan-s3 = { path = "vendor/dialog-remote-ucan-s3" }

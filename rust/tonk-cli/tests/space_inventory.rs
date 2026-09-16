@@ -273,7 +273,11 @@ async fn it_lists_another_accounts_space_without_marking_it_out_of_reach() -> Re
     assert_eq!(report.rows[0].role, SpaceRole::Unlisted);
     let rendered = render(&report.rows);
     assert!(!rendered.contains("another account"), "{rendered}");
-    assert!(!rendered.contains("ACCESS"), "{rendered}");
+    assert_eq!(
+        report.rows[0].access_kind,
+        tonk_cli::inventory::AccessKind::LocalOnly
+    );
+    assert!(rendered.contains("local-only"), "{rendered}");
 
     store.set_account(None)?;
     let signed_out = list_local(&store, &config).await?;
@@ -350,6 +354,7 @@ mod rendering {
         role: SpaceRole,
     ) -> LocalSpaceInventoryRow {
         LocalSpaceInventoryRow {
+            access_kind: tonk_cli::inventory::AccessKind::Legacy,
             name: name.to_owned(),
             subject: subject.to_owned(),
             owner: owner.map(str::to_owned),
@@ -394,10 +399,10 @@ mod rendering {
 
         assert_eq!(
             rendered,
-            "NAME                OWNER                    ROLE\n\
-             scratch (z6Mkq7vp)  -                        local\n\
-             garden (z6Mk4e2b)   you (z6Mkccc1)           owner\n\
-             roadmap (z6Mkf0aa)  Ada Lovelace (z6Mkbbb9)  member"
+            "NAME                OWNER                    ROLE    ACCESS\n\
+             scratch (z6Mkq7vp)  -                        local   legacy\n\
+             garden (z6Mk4e2b)   you (z6Mkccc1)           owner   legacy\n\
+             roadmap (z6Mkf0aa)  Ada Lovelace (z6Mkbbb9)  member  legacy"
         );
     }
 
@@ -453,9 +458,9 @@ mod rendering {
 
         assert_eq!(
             rendered,
-            "NAME                OWNER     ROLE\n\
-             outside (z6Mkaaa1)  z6Mkbbb2  -\n\
-             broken (z6Mkccc3)   -         unknown"
+            "NAME                OWNER     ROLE     ACCESS\n\
+             outside (z6Mkaaa1)  z6Mkbbb2  -        legacy\n\
+             broken (z6Mkccc3)   -         unknown  legacy"
         );
     }
 
@@ -500,8 +505,8 @@ mod rendering {
             .expect("header carries the role column");
         for line in rendered.lines().skip(1) {
             let prefix = line
-                .strip_suffix("member")
-                .expect("the role stays at the end of its row");
+                .strip_suffix("member  legacy")
+                .expect("the role and access columns stay at the end of the row");
             assert_eq!(
                 UnicodeWidthStr::width(prefix),
                 role_column,

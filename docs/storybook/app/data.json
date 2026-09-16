@@ -336,8 +336,24 @@
       "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
-      "title": "Copy an empty-space prompt and run tonk connect to link, join, pull, and acknowledge that space.",
+      "title": "Copy an empty-space prompt and run tonk join --agent to link, join, pull, and acknowledge that space.",
       "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+    },
+    {
+      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, and real browser multiple-holder copy/close/import/build/confirm/revoke journeys, including responsive and keyboard checks.",
+      "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C14",
+      "title": "Copy a scoped agent invitation, run tonk connect, and revoke its grant group from Settings.",
+      "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
+    },
+    {
+      "evidence": "Local journey verified on final snapshot artifact: signed codec, atomic import/recovery, HTTP/SQLite/D1 restart, worker and Wasm selection; actual browser/CLI one/many/all, decline, conversion, offline removal and queued revoked/fresh additions (evidence).",
+      "gaps": "Earlier intermittent refusal attribution remains uncertain; monitor in staging. External release, CI, Safari, guest reduced-motion media and global propagation remain unverified.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C15",
+      "title": "Link explicit browser-selected spaces to a CLI-owned terminal key and manage later grants.",
+      "variants": "One/many/all-current; accountless or legacy CLI; signed-in or fresh browser; offline additions, cancellation, expiry and partial revocation."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -800,6 +816,8 @@
       "id": "WEB-03",
       "journey_ids": [
         "ACCT-C13",
+        "ACCT-C14",
+        "ACCT-C15",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
@@ -1710,6 +1728,22 @@
       "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
     },
     {
+      "claim": "Scoped invitation imports without an account and revokes all holders (Scoped agent invitation).",
+      "device": "hybrid + restart + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-21",
+      "priority": "P1",
+      "result": "Local import/restart, service/KV/D1, one-holder and multiple-holder browser journeys passed, including 390px layouts, keyboard focus and reduced motion. External release, Safari and global propagation checks remain pending."
+    },
+    {
+      "claim": "Exact selected-space terminal grants (Selected terminal spaces).",
+      "device": "hybrid + restart + offline",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-22",
+      "priority": "P1",
+      "result": "Verified locally on snapshot artifact d7f3967a6db1fa1a: selections 26.97s, decline 8.83s, offline revoked-then-fresh addition 36.98s and conversion 13.95s pass; checkpoint and earlier captures. Snapshot regression fails before and passes after fix; attribution of every earlier refusal remains uncertain and needs staging monitoring. Lower-layer codec, CLI recovery, worker, HTTP and SQLite/D1 gates pass. External release, CI, Safari and global propagation remain unrun."
+    },
+    {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
       "device": "returning-browser",
       "file": "verification/accounts.md",
@@ -2265,7 +2299,7 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 7,
+    "other": 9,
     "pass": 1,
     "unrun": 110
   },

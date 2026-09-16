@@ -6,6 +6,8 @@ license.workspace = true
 edition.workspace = true
 
 [features]
+# Local opt-in until a compatible CLI is published.
+connection-invites = []
 integration-tests = []
 web-integration-tests = []
 # Test helpers — wire-query builders and seeding fixtures.
@@ -119,6 +121,9 @@ reqwest = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+axum = { workspace = true, features = ["tokio", "http1"] }
 
 [dev-dependencies]
 tonk-template = { workspace = true }

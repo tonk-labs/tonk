@@ -83,6 +83,9 @@ pub use repository::*;
 pub mod membership;
 pub use membership::*;
 
+pub mod agent_connection;
+pub use agent_connection::{AgentGrantGroup, AgentGrantRevocation};
+
 pub mod invitation;
 pub use invitation::*;
 

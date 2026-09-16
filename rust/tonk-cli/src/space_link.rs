@@ -56,15 +56,18 @@ pub fn already_owned_message(name: &str, owner: &str) -> String {
 /// Link one genuinely local-only space into the signed-in account.
 pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Result<LinkOutcome> {
     let registry = store.load()?;
-    let account = registry
-        .account
-        .clone()
-        .context("no account is signed in; run `tonk account login` first")?;
     let entry = registry
         .spaces
         .get(name)
         .with_context(|| format!("unknown space '{name}'"))?
         .clone();
+    if entry.connection.is_some() || crate::connections::binding_at(&entry.site)?.is_some() {
+        bail!("scoped connection access cannot be adopted as account ownership");
+    }
+    let account = registry
+        .account
+        .clone()
+        .context("no account is signed in; run `tonk account login` first")?;
     let account_root: Did = account
         .root
         .parse()
@@ -73,6 +76,9 @@ pub async fn execute(store: &SpaceStore, config: &SiteConfig, name: &str) -> Res
     let mut site_config = config.clone();
     site_config.require_account = false;
     let site = crate::site::TonkSite::open_with(&entry.site, site_config).await?;
+    if site.is_scoped() {
+        bail!("scoped connection access cannot be adopted as account ownership");
+    }
     let subject = site.repository.did();
 
     // Ownership is the space's own answer, not the registry's, and it is
