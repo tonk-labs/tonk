@@ -55,7 +55,32 @@ fn with_cors_headers(response: Response) -> Response {
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type, Range");
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "ETag, Content-Length, Content-Range",
+        "ETag, Content-Length, Content-Range, Server-Timing",
+    );
+    response.with_headers(headers)
+}
+
+/// Where an object request's time went, in milliseconds: verifying the
+/// permit, and the binding call itself (for a read, up to the object's
+/// first byte; for a write, the whole store). Reported on the response
+/// as `Server-Timing`, so a HAR splits the server wait the client sees
+/// into the worker's own work and the storage call, which is what tells
+/// a slow object apart from a slow route to it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Timing {
+    verify: u64,
+    store: u64,
+}
+
+fn with_server_timing(response: Response, timing: Timing, started: u64) -> Response {
+    let total = Date::now().as_millis().saturating_sub(started);
+    let headers = response.headers().clone();
+    let _ = headers.set(
+        "Server-Timing",
+        &format!(
+            "verify;dur={}, store;dur={}, total;dur={total}",
+            timing.verify, timing.store
+        ),
     );
     response.with_headers(headers)
 }
@@ -84,8 +109,9 @@ pub async fn handle_delete(req: Request, ctx: RouteContext<()>) -> Result<Respon
 }
 
 async fn serve(mut req: Request, ctx: RouteContext<()>, method: Method) -> Result<Response> {
+    let started = Date::now().as_millis();
     let response = match perform(&mut req, &ctx, method).await {
-        Ok(response) => response,
+        Ok((response, timing)) => with_server_timing(response, timing, started),
         Err(failure) => {
             failure.emit();
             failure.into_response()?
@@ -180,21 +206,23 @@ async fn perform(
     req: &mut Request,
     ctx: &RouteContext<()>,
     method: Method,
-) -> std::result::Result<Response, Failure> {
+) -> std::result::Result<(Response, Timing), Failure> {
+    let started = Date::now().as_millis();
     let key = super::ucan::permit_key(&ctx.env)
         .map_err(|refusal| Failure::Unavailable(format!("{refusal:?}")))?;
     let url = req
         .url()
         .map_err(|error| Failure::Unavailable(format!("request url: {error}")))?;
-    let now = Date::now().as_millis() / 1_000;
+    let now = started / 1_000;
     let claims = key.verify(method, url.path(), url.query(), now)?;
+    let verified = Date::now().as_millis();
 
     let bucket = ctx
         .env
         .bucket("BUCKET")
         .map_err(|error| Failure::Unavailable(format!("Missing BUCKET: {error}")))?;
 
-    match claims.method {
+    let response = match claims.method {
         Method::Get => {
             let range = req
                 .headers()
@@ -202,20 +230,30 @@ async fn perform(
                 .ok()
                 .flatten()
                 .and_then(|value| parse_range(&value));
-            get(&bucket, &claims.key, range).await
+            get(&bucket, &claims.key, range).await?
         }
-        Method::Put => put(req, &bucket, &claims).await,
+        Method::Put => put(req, &bucket, &claims).await?,
         Method::Delete => match store::delete(&bucket, &claims).await {
-            Ok(true) => Ok(Response::empty()
+            Ok(true) => Response::empty()
                 .map_err(|error| Failure::Unavailable(error.to_string()))?
-                .with_status(204)),
-            Ok(false) => precondition_failed(),
-            Err(error) => Err(Failure::Unavailable(format!(
-                "delete {}: {error}",
-                claims.key
-            ))),
+                .with_status(204),
+            Ok(false) => precondition_failed()?,
+            Err(error) => {
+                return Err(Failure::Unavailable(format!(
+                    "delete {}: {error}",
+                    claims.key
+                )));
+            }
         },
-    }
+    };
+    let stored = Date::now().as_millis();
+    Ok((
+        response,
+        Timing {
+            verify: verified.saturating_sub(started),
+            store: stored.saturating_sub(verified),
+        },
+    ))
 }
 
 /// Store the request body as the object the claims name, streaming it

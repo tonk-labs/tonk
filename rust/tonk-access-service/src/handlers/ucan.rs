@@ -87,7 +87,10 @@ fn with_cors_headers(response: Response) -> Response {
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
-    let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
+    let _ = headers.set(
+        "Access-Control-Expose-Headers",
+        "Content-Type, Server-Timing",
+    );
     response.with_headers(headers)
 }
 
@@ -270,6 +273,7 @@ async fn presign(
     origin: &str,
     env: &Env,
 ) -> std::result::Result<(Response, u64), PresignFailure> {
+    let started = Date::now().as_millis();
     let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
     let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
@@ -293,9 +297,11 @@ async fn presign(
         .await
         .map_err(map_access_error)
         .map_err(PresignFailure::authorization)?;
+    let authorized = Date::now().as_millis();
 
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
+    let screened = Date::now().as_millis();
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -322,6 +328,17 @@ async fn presign(
         .map(|r| {
             let headers = Headers::new();
             let _ = headers.set("Content-Type", "application/cbor");
+            // Where the redeem's time went: the chain verify with its
+            // revocation lookups, the servability screen, and the whole.
+            let _ = headers.set(
+                "Server-Timing",
+                &format!(
+                    "authorize;dur={}, screen;dur={}, total;dur={}",
+                    authorized.saturating_sub(started),
+                    screened.saturating_sub(authorized),
+                    Date::now().as_millis().saturating_sub(started)
+                ),
+            );
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
